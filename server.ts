@@ -7,6 +7,7 @@ import { createApp } from './src/server/app';
 import { appPersistence, restoreRuntimes, seedDefaultSkills } from './src/server/apiRouter';
 import { durableObjectRegistry } from './src/services/durable-object/DurableObjectRegistry';
 import { biQuoteProvider } from './src/services/market-data/BiQuoteMarketDataProvider';
+import { marketStateStore } from './src/server/apiRouter';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,8 +62,9 @@ async function listen(app: ReturnType<typeof createApp>, port: number) {
     for (const goat of durableObjectRegistry.getAll()) {
       goat.destroy();
     }
-    // Stop every market-data polling loop.
+    // Stop every market-data polling loop (provider + shared state store).
     biQuoteProvider.stopTicks();
+    marketStateStore.stop();
     server.close(() => {
       console.log('[server] HTTP server closed.');
       process.exit(0);

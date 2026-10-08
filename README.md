@@ -27,6 +27,43 @@ are informational, and the human always executes manually on their own broker.**
 
 The server binds to `0.0.0.0:3000` (override with `PORT`).
 
+## Market data
+
+Live prices come from **biquote.io** -- free, no API key, no signup, 15,000
+requests/minute. Forex, metals, crypto and index CFDs via MetaTrader 5.
+
+Four feed behaviours that silently corrupt analysis are handled in
+`src/services/market-data/BiQuoteMarketDataProvider.ts`:
+
+| Feed behaviour | Consequence if ignored | Handling |
+|---|---|---|
+| OHLC bars arrive **newest-first** | every EMA/RSI/ATR/structure value wrong while the app looks healthy | reversed to ascending on read |
+| `volume` is **always 0** (CFD, no exchange tape) | "volume looks strong" fabricated from zeros | real `tickVolume` mapped instead |
+| Forex **closed Fri-Sun** | Friday's close analysed as a live price | `MarketQuote.stale` / `.marketState` / `.quoteAgeSeconds` |
+| batching needs a **repeated** `?symbols=` param | comma form silently returns one symbol | repeated param |
+
+There is **no automatic fallback to PAPER**. A feed outage surfaces as an
+explicit failure rather than silently turning the app into fiction. Set
+`MARKET_DATA_PROVIDER=paper` to force the simulated feed for offline work --
+`dataMode` then reports `PAPER`.
+
+### Shared market state
+
+`MarketStateStore` keeps one timestamped, persisted view per
+`symbol::timeframe` -- quote, 120 candles, and every derived indicator -- and
+fans it out to every GOAT. It is keyed by **market, not GOAT**, because the
+expensive part is identical for everyone watching the same pair.
+
+Six GOATs on EUR/USD over 40 seconds: **1 poll loop and 3 provider fetches**,
+where per-GOAT polling would have made 48. Counters are exposed at
+`GET /api/settings/status` under `marketState`.
+
+A provider outage keeps the last good snapshot and flags it `degraded`; reasoning
+refuses to run on degraded data so stale prices cannot become a thesis.
+
+See [docs/durable-objects.md](docs/durable-objects.md) for the storage and
+scheduling architecture, including what ports to Cloudflare Durable Objects.
+
 ## Bring-your-own OpenRouter key (BYOK)
 
 The Settings screen stores a per-account OpenRouter API key on the server. It is

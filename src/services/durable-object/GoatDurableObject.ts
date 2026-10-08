@@ -27,13 +27,22 @@ import {
   TradeSignal,
   TradingSkill,
   MarketQuote,
+  Candle,
 } from '../../types';
 import { MarketDataProvider } from '../market-data/MarketDataProvider';
+import {
+  MarketStateSnapshot,
+  MarketStateStore,
+} from '../market-data/MarketStateStore';
 import { ReasoningResult, ReasoningValidationError, TrackerDirective } from '../agent/contracts';
 import { GoatReasoningContext } from '../ai/OpenRouterClient';
 import { SignalGate } from '../agent/SignalGate';
 import { aggregateHardConstraints, HardConstraints } from '../agent/SkillConstraints';
-import { TrackerEvaluator, TrackerEvaluationReport } from '../tracker-sdk/TrackerEvaluator';
+import {
+  TrackerEvaluator,
+  TrackerEvaluationReport,
+  IndicatorSnapshot,
+} from '../tracker-sdk/TrackerEvaluator';
 import { SessionSchedule } from '../tracker-sdk/SessionSchedule';
 import { analyzeMarketStructure, calculateRSI, calculateEMA, calculateATR } from '../tracker-sdk/indicators';
 import { ReasoningGateway } from '../../server/reasoningGateway';
@@ -47,6 +56,13 @@ import {
 export interface GoatDurableObjectOptions {
   reasoning: ReasoningGateway;
   marketProvider: MarketDataProvider;
+  /**
+   * Shared, cached, persisted market state. When supplied, tracker evaluation
+   * reads a pre-computed indicator snapshot instead of refetching candles and
+   * recomputing every indicator on each tick. Optional so unit tests can run
+   * against a bare provider.
+   */
+  marketStateStore?: MarketStateStore;
   signals?: SignalRepository;
   theses?: ThesisRepository;
   wakeEvents?: WakeEventRepository;
@@ -75,6 +91,10 @@ const DEFAULT_BASE_INTERVAL_MS = 45_000;
 const DEFAULT_MAX_BACKOFF_MS = 30 * 60_000;
 const PERIODIC_REVIEW_MS = 5 * 60_000;
 const MAX_TRACKERS = 10;
+
+/** Timeframe and window used to build the reasoning context on a wake. */
+const WAKE_TIMEFRAME = '1h';
+const WAKE_CANDLE_COUNT = 60;
 
 /** Hard floor for INTERVAL schedules; below this we would burn tokens. */
 const MIN_SCHEDULE_INTERVAL_MINUTES = 5;
@@ -211,6 +231,7 @@ export class GoatDurableObject {
 
   private readonly reasoning: ReasoningGateway;
   private readonly marketProvider: MarketDataProvider;
+  private readonly marketStateStore?: MarketStateStore;
   private readonly signalRepo?: SignalRepository;
   private readonly thesisRepo?: ThesisRepository;
   private readonly wakeEventRepo?: WakeEventRepository;
@@ -243,6 +264,7 @@ export class GoatDurableObject {
     this.skills = skills;
     this.reasoning = options.reasoning;
     this.marketProvider = options.marketProvider;
+    this.marketStateStore = options.marketStateStore;
     this.signalRepo = options.signals;
     this.thesisRepo = options.theses;
     this.wakeEventRepo = options.wakeEvents;
@@ -438,14 +460,37 @@ export class GoatDurableObject {
 
     try {
       // ---- Stage 1: market context ------------------------------------
+      /**
+       * Read through the shared store so GOATs waking near each other share
+       * one fetch. A DEGRADED snapshot (provider unreachable, serving last
+       * known values) is treated as a failure here: reasoning must not be
+       * generated from prices we could not confirm.
+       */
       let quote: MarketQuote | undefined;
-      let candles: Awaited<ReturnType<MarketDataProvider['getCandles']>> = [];
+      let candles: Candle[] = [];
 
       try {
-        [quote, candles] = await Promise.all([
-          this.marketProvider.getQuote(market),
-          this.marketProvider.getCandles(market, '1h', 35),
-        ]);
+        if (this.marketStateStore) {
+          const state = await this.marketStateStore.getState(market, WAKE_TIMEFRAME);
+
+          if (state.degraded || !state.quote) {
+            throw new Error(
+              state.error ?? 'market data unavailable',
+            );
+          }
+
+          quote = state.quote;
+          candles = state.candles.slice(-WAKE_CANDLE_COUNT);
+        } else {
+          [quote, candles] = await Promise.all([
+            this.marketProvider.getQuote(market),
+            this.marketProvider.getCandles(
+              market,
+              WAKE_TIMEFRAME,
+              WAKE_CANDLE_COUNT,
+            ),
+          ]);
+        }
       } catch (err) {
         this.recordFailure(
           `Market data unavailable: ${err instanceof Error ? err.message : 'unknown error'}`,
@@ -726,33 +771,93 @@ export class GoatDurableObject {
       this.unsubscribeMarketData();
       this.unsubscribeMarketData = null;
     }
-    if (!this.goatConfig.markets.length || this.stopped) return;
+    if (!this.goatConfig.markets.length || this.stopped || this.paused) return;
 
-    this.unsubscribeMarketData = this.marketProvider.subscribeQuotes(
-      this.goatConfig.markets,
-      (quote: MarketQuote) => {
-        // Fire-and-forget with full error isolation: subscriber errors must
-        // never propagate into the market provider's tick loop.
-        this.evaluateDeterministicTrackers(quote).catch((err) => {
+    /**
+     * Preferred path: subscribe through the shared MarketStateStore.
+     *
+     * The store keys its poll loop by SYMBOL, not by GOAT, so five GOATs
+     * watching EUR/USD share one fetch and one indicator computation per TTL
+     * instead of each running their own. It also computes the indicator
+     * snapshot once and hands it to the tracker evaluator, which used to
+     * recompute every indicator on every 5-second tick per GOAT.
+     *
+     * Fallback (unit tests, no store supplied): subscribe to the provider
+     * directly and compute inline.
+     */
+    if (!this.marketStateStore) {
+      this.unsubscribeMarketData = this.marketProvider.subscribeQuotes(
+        this.goatConfig.markets,
+        (quote: MarketQuote) => {
+          // Fire-and-forget with full error isolation: subscriber errors must
+          // never propagate into the provider's tick loop.
+          void this.evaluateDeterministicTrackers(quote).catch((err) => {
+            console.error(`[goat ${this.id}] tracker evaluation error:`, err);
+          });
+        },
+      );
+      return;
+    }
+
+    this.unsubscribeMarketData = this.marketStateStore.subscribe(
+      this.goatConfig.markets[0],
+      (snapshot) => {
+        void this.onMarketState(snapshot).catch((err) => {
           console.error(`[goat ${this.id}] tracker evaluation error:`, err);
         });
       },
     );
   }
 
+  /**
+   * Deterministic tracker evaluation against a live quote, computing
+   * indicators inline. Used when no MarketStateStore is available.
+   */
   private async evaluateDeterministicTrackers(quote: MarketQuote): Promise<void> {
     if (this.stopped || this.paused) return;
     if (this.runtimeState.isEvaluating) return;
+    if (!this.runtimeState.trackers.some((t) => !t.isTriggered)) return;
 
+    const candles = await this.marketProvider.getCandles(quote.symbol, '15m', 60);
+
+    await this.runTrackers(quote, candles, undefined);
+  }
+
+  /**
+   * Fired by the shared store: the same evaluation against a PRE-COMPUTED
+   * indicator snapshot — no fetch, no recomputation.
+   */
+  private async onMarketState(snapshot: MarketStateSnapshot): Promise<void> {
+    if (this.stopped || this.paused) return;
+    if (this.runtimeState.isEvaluating) return;
+
+    const quote = snapshot.quote;
+    if (!quote) return;
+
+    if (!this.runtimeState.trackers.some((t) => !t.isTriggered)) return;
+
+    const candles =
+      snapshot.candles.length > 0
+        ? snapshot.candles
+        : await this.marketProvider.getCandles(quote.symbol, '15m', 60);
+
+    await this.runTrackers(quote, candles, snapshot.indicators ?? undefined);
+  }
+
+  /** Shared tracker loop for both the store and direct-subscription paths. */
+  private async runTrackers(
+    quote: MarketQuote,
+    candles: Candle[],
+    indicators: IndicatorSnapshot | undefined,
+  ): Promise<void> {
     const matchingTrackers = this.runtimeState.trackers.filter(
       (t) => !t.isTriggered && (t.market === quote.symbol || !t.market),
     );
     if (!matchingTrackers.length) return;
 
-    const candles = await this.marketProvider.getCandles(quote.symbol, '15m', 60);
-
     for (const tracker of matchingTrackers) {
-      const report = TrackerEvaluator.evaluate(tracker, quote, candles);
+      const report = TrackerEvaluator.evaluate(tracker, quote, candles, indicators);
+
       if (report.isTriggered) {
         tracker.isTriggered = true;
         tracker.triggeredAt = this.now();

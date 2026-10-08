@@ -194,16 +194,23 @@ export class TrackerEvaluator {
   /**
    * Deterministically evaluates an active tracker against a live quote and
    * recent candles. NO LLM is invoked.
+   *
+   * `snapshot` may be supplied when the caller already holds a computed
+   * indicator set (see MarketStateStore). Passing it avoids recomputing every
+   * indicator per tracker, which is what made N trackers on one symbol cost N
+   * full calculations on every tick.
    */
   static evaluate(
     tracker: TrackerCondition,
     quote: MarketQuote,
     candles: Candle[],
+    snapshot?: IndicatorSnapshot,
   ): TrackerEvaluationReport {
-    const snapshot = computeIndicatorSnapshot(quote, candles);
+    const computed =
+      snapshot ?? computeIndicatorSnapshot(quote, candles);
     const spread = quote.spread;
 
-    const marketContext = { ...snapshot, spread };
+    const marketContext = { ...computed, spread };
 
     // ---- Generic indicator expression (the primary path) ----------------
     if (
@@ -215,7 +222,7 @@ export class TrackerEvaluator {
         tracker,
         quote,
         candles,
-        snapshot,
+        computed,
         spread,
       );
     }

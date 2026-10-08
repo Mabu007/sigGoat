@@ -34,7 +34,13 @@ import { MarketDataProvider, MarketDataUnavailableError } from './MarketDataProv
 
 const BASE_URL = 'https://biquote.io/api';
 const FETCH_TIMEOUT_MS = 8_000;
-const CANDLES_PER_FETCH = 300;
+/**
+ * BiQuote serves up to 1,000 bars per OHLC call. The cap must clear the
+ * largest backtest window (30d at 1h = 720 bars), otherwise a longer request
+ * is silently truncated and the replay runs on a fraction of the intended
+ * period while still reporting success.
+ */
+const CANDLES_PER_FETCH = 1_000;
 
 /**
  * The UI speaks `EUR/USD`; BiQuote speaks `EURUSD`. Keeping the UI symbols

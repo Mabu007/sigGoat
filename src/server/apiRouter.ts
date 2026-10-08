@@ -32,6 +32,8 @@ import { normaliseSchedule, describeSchedule } from '../services/durable-object/
 import { biQuoteProvider } from '../services/market-data/BiQuoteMarketDataProvider';
 import { paperProvider } from '../services/market-data/PaperMarketDataProvider';
 import { MarketDataProvider } from '../services/market-data/MarketDataProvider';
+import { MarketStateStore } from '../services/market-data/MarketStateStore';
+import { FileMarketStatePersistence } from '../services/market-data/FileMarketStatePersistence';
 import { BacktestEngine } from '../services/backtest/BacktestEngine';
 import { DEFAULT_SKILLS } from '../data/defaultSkills';
 import { telegramService } from '../services/telegram/TelegramService';
@@ -74,9 +76,30 @@ if (marketProvider.dataMode === 'PAPER') {
   );
 }
 
+/**
+ * Shared market state: one fetch + one indicator computation per
+ * (symbol, timeframe) per TTL, fanned out to every GOAT and persisted so a
+ * restart does not start from an empty chart.
+ *
+ * This is the substrate a Cloudflare Durable Object would hold (durable,
+ * per-key derived market state). It is deliberately keyed by MARKET, not by
+ * GOAT, because the expensive thing — indicator computation over candles — is
+ * identical for every GOAT watching the same pair.
+ */
+export const marketStateStore = new MarketStateStore(marketProvider, {
+  ttlMs: 30_000,
+  pollIntervalMs: 5_000,
+  timeframe: '15m',
+  candleCount: 120,
+  ...(marketProvider.dataMode === 'LIVE'
+    ? { persist: new FileMarketStatePersistence() }
+    : {}),
+});
+
 const runtimeOptions = {
   reasoning: reasoningGateway,
   marketProvider,
+  marketStateStore,
   signals: persistence.signals,
   theses: persistence.theses,
   wakeEvents: persistence.wakeEvents,
@@ -312,6 +335,16 @@ apiRouter.get('/settings/status', async (_req, res) => {
        */
       authNotConfiguredReason:
         mode === 'firebase' ? undefined : getFirebaseAdminFailureReason(),
+    },
+    /**
+     * Shared market-state counters. `fetches` far below the number of GOATs
+     * x tick interval is the proof that polling and indicator computation are
+     * de-duplicated rather than repeated per GOAT.
+     */
+    marketState: {
+      ...marketStateStore.stats,
+      activePollers: marketStateStore.activePollers(),
+      activeSubscribers: marketStateStore.activeSubscribers(),
     },
   });
 });
