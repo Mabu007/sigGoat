@@ -55,6 +55,18 @@ export interface MarketQuote {
   high24h: number;
   low24h: number;
   timestamp: number;
+
+  /**
+   * True when the price is real but NOT current — e.g. a forex market closed
+   * over the weekend. A stale quote must never be treated as a live reading.
+   */
+  stale?: boolean;
+
+  /** Provider market state: 'open' | 'closed' | 'unknown'. */
+  marketState?: string;
+
+  /** Seconds since the provider's last actual quote. */
+  quoteAgeSeconds?: number;
 }
 
 /**

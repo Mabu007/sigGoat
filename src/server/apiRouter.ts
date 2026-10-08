@@ -29,6 +29,7 @@ import { UserScopedReasoningGateway } from './reasoningGateway';
 import { buildGoatContext } from './goatContext';
 import { durableObjectRegistry } from '../services/durable-object/DurableObjectRegistry';
 import { normaliseSchedule, describeSchedule } from '../services/durable-object/GoatDurableObject';
+import { biQuoteProvider } from '../services/market-data/BiQuoteMarketDataProvider';
 import { paperProvider } from '../services/market-data/PaperMarketDataProvider';
 import { MarketDataProvider } from '../services/market-data/MarketDataProvider';
 import { BacktestEngine } from '../services/backtest/BacktestEngine';
@@ -47,7 +48,31 @@ const persistence: PersistenceLayer = createPersistence();
 export const appPersistence = persistence;
 
 const reasoningGateway = new UserScopedReasoningGateway(persistence.keys);
-const marketProvider: MarketDataProvider = paperProvider; // swap for a live adapter here
+/**
+ * Market data source: BiQuote live feed (free, no API key).
+ *
+ * There is deliberately NO automatic fallback to the PAPER provider. Silently
+ * swapping in simulated prices would mean a feed outage quietly turns the app
+ * into fiction while the UI still says "LIVE". Instead a provider outage
+ * surfaces as an explicit failure — GOATDurableObject already records
+ * "Market data unavailable" and backs off — and `dataMode` on every response
+ * reports what is actually serving.
+ *
+ * Escape hatch: `MARKET_DATA_PROVIDER=paper` forces the simulated feed. Used
+ * by the test suite (so it stays hermetic and offline) and for UI work with
+ * no connectivity. `dataMode` reports 'PAPER' so it can never be mistaken for
+ * live data.
+ */
+const marketProvider: MarketDataProvider =
+  process.env.MARKET_DATA_PROVIDER === 'paper'
+    ? paperProvider
+    : biQuoteProvider;
+
+if (marketProvider.dataMode === 'PAPER') {
+  console.warn(
+    '[api] MARKET_DATA_PROVIDER=paper — serving SIMULATED prices.',
+  );
+}
 
 const runtimeOptions = {
   reasoning: reasoningGateway,

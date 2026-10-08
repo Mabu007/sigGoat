@@ -27,6 +27,7 @@ beforeAll(async () => {
   // Environment must be in place BEFORE the router module is loaded.
   previousEnv = {
     SIGNALGOAT_ALLOW_DEV_AUTH: process.env.SIGNALGOAT_ALLOW_DEV_AUTH,
+    MARKET_DATA_PROVIDER: process.env.MARKET_DATA_PROVIDER,
     TELEGRAM_WEBHOOK_SECRET: process.env.TELEGRAM_WEBHOOK_SECRET,
     DATA_DIR: process.env.DATA_DIR,
     NODE_ENV: process.env.NODE_ENV,
@@ -35,6 +36,8 @@ beforeAll(async () => {
     GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS,
   };
   process.env.NODE_ENV = 'test';
+  // Hermetic: never touch the live market-data feed from a test.
+  process.env.MARKET_DATA_PROVIDER = 'paper';
   process.env.SIGNALGOAT_ALLOW_DEV_AUTH = '1';
   process.env.TELEGRAM_WEBHOOK_SECRET = 'test-webhook-secret';
   delete process.env.FIREBASE_PROJECT_ID;

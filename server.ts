@@ -6,7 +6,7 @@ import { createServer as createViteServer } from 'vite';
 import { createApp } from './src/server/app';
 import { appPersistence, restoreRuntimes, seedDefaultSkills } from './src/server/apiRouter';
 import { durableObjectRegistry } from './src/services/durable-object/DurableObjectRegistry';
-import { paperProvider } from './src/services/market-data/PaperMarketDataProvider';
+import { biQuoteProvider } from './src/services/market-data/BiQuoteMarketDataProvider';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,8 +61,8 @@ async function listen(app: ReturnType<typeof createApp>, port: number) {
     for (const goat of durableObjectRegistry.getAll()) {
       goat.destroy();
     }
-    // Stop the paper feed tick loop.
-    paperProvider.stopTicks();
+    // Stop every market-data polling loop.
+    biQuoteProvider.stopTicks();
     server.close(() => {
       console.log('[server] HTTP server closed.');
       process.exit(0);
