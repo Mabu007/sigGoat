@@ -1,0 +1,159 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile and configuration preferences",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "telegramChatId": { "type": "string", "maxLength": 64 },
+        "telegramUsername": { "type": "string", "maxLength": 64 },
+        "telegramNotificationsEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "createdAt", "updatedAt"]
+    },
+    "SignalGoat": {
+      "title": "SignalGoat",
+      "description": "User created AI Signal GOAT agent definition and runtime configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "goal": { "type": "string", "maxLength": 1000 },
+        "markets": { "type": "array" },
+        "skillIds": { "type": "array" },
+        "model": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["ACTIVE", "WATCHING", "DORMANT", "INVESTIGATING", "PAUSED"] },
+        "activeThesisId": { "type": "string", "maxLength": 128 },
+        "lastWakeReason": { "type": "string", "maxLength": 500 },
+        "lastWakeTime": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "name", "goal", "markets", "skillIds", "model", "status", "createdAt", "updatedAt"]
+    },
+    "TradingSkill": {
+      "title": "TradingSkill",
+      "description": "Custom trading analysis methodology and rule framework created by a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 500 },
+        "methodology": { "type": "string", "maxLength": 2000 },
+        "constraints": { "type": "string", "maxLength": 1000 },
+        "preferredTimeframes": { "type": "array" },
+        "requiredEvidence": { "type": "string", "maxLength": 1000 },
+        "invalidationRules": { "type": "string", "maxLength": 1000 },
+        "isDefault": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "name", "description", "methodology", "constraints", "preferredTimeframes", "requiredEvidence", "invalidationRules", "createdAt", "updatedAt"]
+    },
+    "MarketThesis": {
+      "title": "MarketThesis",
+      "description": "An active or historical structured thesis formed by a Signal GOAT",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "goatId": { "type": "string", "maxLength": 128 },
+        "market": { "type": "string", "maxLength": 32 },
+        "directionalHypothesis": { "type": "string", "enum": ["BULLISH", "BEARISH", "NEUTRAL"] },
+        "supportingEvidence": { "type": "array" },
+        "relevantTimeframe": { "type": "string", "maxLength": 32 },
+        "confirmationConditions": { "type": "array" },
+        "invalidationConditions": { "type": "array" },
+        "confidence": { "type": "number" },
+        "status": { "type": "string", "enum": ["FORMULATING", "TRACKING", "CONFIRMED", "INVALIDATED", "EXPIRED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "goatId", "market", "directionalHypothesis", "supportingEvidence", "relevantTimeframe", "confirmationConditions", "invalidationConditions", "confidence", "status", "createdAt", "updatedAt"]
+    },
+    "TradeSignal": {
+      "title": "TradeSignal",
+      "description": "Deterministic trade signal produced following thesis confirmation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "goatId": { "type": "string", "maxLength": 128 },
+        "thesisId": { "type": "string", "maxLength": 128 },
+        "market": { "type": "string", "maxLength": 32 },
+        "direction": { "type": "string", "enum": ["LONG", "SHORT", "NO_TRADE"] },
+        "signalType": { "type": "string", "enum": ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP", "CONDITIONAL_SETUP", "NO_TRADE"] },
+        "entry": { "type": "number" },
+        "entryZone": { "type": "string", "maxLength": 64 },
+        "stopLoss": { "type": "number" },
+        "takeProfit": { "type": "number" },
+        "riskReward": { "type": "string", "maxLength": 32 },
+        "confidence": { "type": "number" },
+        "thesis": { "type": "string", "maxLength": 2000 },
+        "rationale": { "type": "string", "maxLength": 2000 },
+        "confirmationRequired": { "type": "string", "maxLength": 1000 },
+        "invalidation": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["ACTIONABLE", "INVALIDATED", "EXPIRED", "NO_TRADE"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "goatId", "market", "direction", "confidence", "thesis", "rationale", "invalidation", "status", "createdAt", "updatedAt"]
+    },
+    "BacktestRecord": {
+      "title": "BacktestRecord",
+      "description": "Historical backtest result generated for a SignalGOAT configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "goatId": { "type": "string", "maxLength": 128 },
+        "market": { "type": "string", "maxLength": 32 },
+        "period": { "type": "string", "maxLength": 32 },
+        "totalSignals": { "type": "number" },
+        "winningSignals": { "type": "number" },
+        "losingSignals": { "type": "number" },
+        "winRate": { "type": "number" },
+        "profitFactor": { "type": "number" },
+        "maxDrawdown": { "type": "number" },
+        "averageRR": { "type": "number" },
+        "equityCurve": { "type": "array" },
+        "trades": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "goatId", "market", "period", "totalSignals", "winningSignals", "losingSignals", "winRate", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "UserProfile" },
+      "description": "User profile and notification settings"
+    },
+    "/users/{userId}/goats/{goatId}": {
+      "schema": { "$ref": "SignalGoat" },
+      "description": "SignalGOAT agent configurations belonging to a user"
+    },
+    "/users/{userId}/skills/{skillId}": {
+      "schema": { "$ref": "TradingSkill" },
+      "description": "Trading skills created and owned by a user"
+    },
+    "/users/{userId}/theses/{thesisId}": {
+      "schema": { "$ref": "MarketThesis" },
+      "description": "Market theses created and tracked by user's GOATs"
+    },
+    "/users/{userId}/signals/{signalId}": {
+      "schema": { "$ref": "TradeSignal" },
+      "description": "Actionable conditional signals or NO_TRADE decisions generated for a user"
+    },
+    "/users/{userId}/backtests/{backtestId}": {
+      "schema": { "$ref": "BacktestRecord" },
+      "description": "Backtest simulation run records"
+    }
+  }
+}

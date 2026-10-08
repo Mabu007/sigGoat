@@ -1,0 +1,23 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+
+# Real secrets. .env.example is committed but must only ever contain empty
+# placeholders for server-side values.
+.env*
+!.env.example
+
+# Runtime state. Contains each user's SAVED OpenRouter API key and Telegram
+# bot token in plaintext — this must never enter version control.
+data/
+
+# Firebase service-account downloads (never commit key material).
+firebase-service-account.json
+*-service-account*.json
+
+# Large scratch artefacts / local tooling output.
+codebase.txt
+.vercel

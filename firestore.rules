@@ -1,0 +1,158 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUserProfile(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.email is string && data.email.size() <= 256
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 128))
+        && (!('telegramChatId' in data) || (data.telegramChatId is string && data.telegramChatId.size() <= 64))
+        && (!('telegramUsername' in data) || (data.telegramUsername is string && data.telegramUsername.size() <= 64))
+        && (!('telegramNotificationsEnabled' in data) || (data.telegramNotificationsEnabled is bool))
+        && data.createdAt is string
+        && data.updatedAt is string;
+    }
+
+    function isValidGoat(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128 && data.userId == request.auth.uid
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.goal is string && data.goal.size() > 0 && data.goal.size() <= 1000
+        && data.markets is list && data.markets.size() <= 20
+        && data.skillIds is list && data.skillIds.size() <= 20
+        && data.model is string && data.model.size() <= 100
+        && data.status is string && data.status in ['ACTIVE', 'WATCHING', 'DORMANT', 'INVESTIGATING', 'PAUSED']
+        && data.createdAt is string
+        && data.updatedAt is string;
+    }
+
+    function isValidSkill(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128 && data.userId == request.auth.uid
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.description is string && data.description.size() <= 500
+        && data.methodology is string && data.methodology.size() <= 2000
+        && data.constraints is string && data.constraints.size() <= 1000
+        && data.preferredTimeframes is list && data.preferredTimeframes.size() <= 10
+        && data.requiredEvidence is string && data.requiredEvidence.size() <= 1000
+        && data.invalidationRules is string && data.invalidationRules.size() <= 1000
+        && data.createdAt is string
+        && data.updatedAt is string;
+    }
+
+    function isValidThesis(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128 && data.userId == request.auth.uid
+        && data.goatId is string && data.goatId.size() <= 128
+        && data.market is string && data.market.size() <= 32
+        && data.directionalHypothesis is string && data.directionalHypothesis in ['BULLISH', 'BEARISH', 'NEUTRAL']
+        && data.supportingEvidence is list && data.supportingEvidence.size() <= 20
+        && data.relevantTimeframe is string && data.relevantTimeframe.size() <= 32
+        && data.confirmationConditions is list && data.confirmationConditions.size() <= 20
+        && data.invalidationConditions is list && data.invalidationConditions.size() <= 20
+        && data.confidence is number
+        && data.status is string && data.status in ['FORMULATING', 'TRACKING', 'CONFIRMED', 'INVALIDATED', 'EXPIRED']
+        && data.createdAt is string
+        && data.updatedAt is string;
+    }
+
+    function isValidSignal(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128 && data.userId == request.auth.uid
+        && data.goatId is string && data.goatId.size() <= 128
+        && data.market is string && data.market.size() <= 32
+        && data.direction is string && data.direction in ['LONG', 'SHORT', 'NO_TRADE']
+        && data.confidence is number
+        && data.thesis is string && data.thesis.size() <= 2000
+        && data.rationale is string && data.rationale.size() <= 2000
+        && data.invalidation is string && data.invalidation.size() <= 1000
+        && data.status is string && data.status in ['ACTIONABLE', 'INVALIDATED', 'EXPIRED', 'NO_TRADE']
+        && data.createdAt is string
+        && data.updatedAt is string;
+    }
+
+    function isValidBacktest(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128 && data.userId == request.auth.uid
+        && data.goatId is string && data.goatId.size() <= 128
+        && data.market is string && data.market.size() <= 32
+        && data.period is string && data.period.size() <= 32
+        && data.totalSignals is number
+        && data.winningSignals is number
+        && data.losingSignals is number
+        && data.winRate is number
+        && data.createdAt is string;
+    }
+
+    // Rules for collections
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming());
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming())
+                    && incoming().id == existing().id && incoming().createdAt == existing().createdAt;
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      match /goats/{goatId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(goatId) && isValidGoat(incoming());
+        allow update: if isOwner(userId) && isValidId(goatId) && isValidGoat(incoming())
+                      && incoming().userId == existing().userId && incoming().createdAt == existing().createdAt;
+        allow delete: if isOwner(userId) && isValidId(goatId);
+      }
+
+      match /skills/{skillId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(skillId) && isValidSkill(incoming());
+        allow update: if isOwner(userId) && isValidId(skillId) && isValidSkill(incoming())
+                      && incoming().userId == existing().userId && incoming().createdAt == existing().createdAt;
+        allow delete: if isOwner(userId) && isValidId(skillId);
+      }
+
+      match /theses/{thesisId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(thesisId) && isValidThesis(incoming());
+        allow update: if isOwner(userId) && isValidId(thesisId) && isValidThesis(incoming())
+                      && incoming().userId == existing().userId && incoming().createdAt == existing().createdAt;
+        allow delete: if isOwner(userId) && isValidId(thesisId);
+      }
+
+      match /signals/{signalId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(signalId) && isValidSignal(incoming());
+        allow update: if isOwner(userId) && isValidId(signalId) && isValidSignal(incoming())
+                      && incoming().userId == existing().userId && incoming().createdAt == existing().createdAt;
+        allow delete: if isOwner(userId) && isValidId(signalId);
+      }
+
+      match /backtests/{backtestId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(backtestId) && isValidBacktest(incoming());
+        allow delete: if isOwner(userId) && isValidId(backtestId);
+      }
+    }
+  }
+}

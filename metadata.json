@@ -1,0 +1,6 @@
+{
+  "name": "SignalGOAT - AI Market Analysis & Signals",
+  "description": "Personal AI market-analysis agent. Continuous evidence-based market reasoning, skills synthesis, backtesting, and actionable trade signals without automated execution.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_AGENT_RUNTIME"]
+}
