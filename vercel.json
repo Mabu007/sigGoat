@@ -3,7 +3,7 @@
   "framework": null,
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "installCommand": "npm install --no-audit --no-fund",
+  "installCommand": "npm ci --include=dev --no-audit --no-fund",
   "functions": {
     "api/index.ts": {
       "maxDuration": 60,
