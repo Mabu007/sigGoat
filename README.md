@@ -114,6 +114,40 @@ ordered chain of conditions to wait for; entry/entryZone describe where the idea
 becomes valid *once those conditions are met*. `SignalGate` then recomputes
 risk/reward from real prices and applies the skill's hard constraints.
 
+## Market tracking timeframe
+
+Each GOAT stores a tracking timeframe (`1m`, `5m`, `15m`, `1h`, `4h`) chosen at
+deploy time or changed later. It is the cadence at which **trackers are
+observed** — not a limit on what the AI may reason about. Poll cadence scales
+with the bar size and is clamped to 5–60s.
+
+Server-side validation is authoritative: `PATCH /api/goats/:id/schedule` rejects
+an unknown timeframe with `400 INVALID_TIMEFRAME`, while creation degrades an
+unrecognised value to `15m` so a client sending a stale enum still gets a
+working GOAT.
+
+Market state carries `status: LIVE | DEGRADED | UNAVAILABLE`. Only `LIVE` may
+satisfy a tracker or produce a thesis; a degraded snapshot is last-known data and
+is refused rather than silently used.
+
+## Daily market recap
+
+Each tracked market accumulates an intraday session. On a trading-date change
+(or via `POST /api/markets/rollup`) the session is rolled into a deterministic
+`DailyMarketRecap` — open/high/low/close, change, range, trend, bar count and
+tracker events — and the ephemeral state is cleared for the new day.
+
+- **Deterministic, not AI.** Every field is aggregated from data already held.
+  No model call is made to restate numbers we already have.
+- **Idempotent** on `"<MARKET>:<YYYY-MM-DD>"`. Re-running merges into the same
+  record: the wider high/low span is kept, and events are unioned by content, so
+  a double rollover cannot create two recaps or double-count an event.
+- **Narrow.** Only ephemeral intraday state is cleared. Recaps, GOAT
+  definitions, ownership, signals and thesis history are never touched.
+
+`DEGRADED` snapshots never contribute to a recap, so a stale price cannot end
+up in a durable historical record.
+
 ## Analysis schedule
 
 Each GOAT carries its own `schedule`, settable at deploy time or changed later.
@@ -185,65 +219,71 @@ mode**. Nothing pretends to be real:
 
 ## Hosting
 
-The same Express app serves two hosts, built from one factory
-(`src/server/app.ts`) so they cannot drift:
+**Vercel runs the application. Cloudflare Durable Objects run the schedule.**
 
-| Host | Entry | Use for |
-|---|---|---|
-| Long-lived Node process | `server.ts` (`npm run dev` / `npm start`) | Local dev, Fly.io, Render, Railway, any VM. **Required if you want scheduled reasoning and tracker alerts.** |
-| Vercel serverless | `api/index.ts` + `vercel.json` | Frontend + request/response API only. |
+```
+Vercel                              Cloudflare
+────────                            ─────────
+UI + API (api/index.ts)             worker/scheduler-worker.ts
+Firebase auth + Firestore           one Durable Object per GOAT
+BiQuote + MarketStateStore          durable: nextWakeAt,
+Trackers (deterministic)              nextTrackerCheckAt,
+GOAT wake -> AI -> SignalGate         generationId, paused
+        ▲                                       │
+        └──── POST /api/internal/wake ◀──── alarm()
+              POST /api/internal/check-trackers   (no AI cost)
+```
 
-### ⚠️ Read this before deploying to Vercel
-
-Per-GOAT reasoning intervals and deterministic tracker polling are
-`setTimeout` loops **inside the Node process**. A serverless function is frozen
-between invocations and reclaimed when idle, so on Vercel:
-
-| Feature | Vercel serverless |
-|---|---|
-| Sign in, save OpenRouter key, create/stop/delete GOATs | ✅ works |
-| Manual "Wake & Re-evaluate", in-app chat, `/analyse` | ✅ works |
-| Telegram webhook (inbound) | ✅ works |
-| Outbound Telegram alerts when a tracker fires | ⚠️ fires only while a request is live |
-| Scheduled/hourly reasoning, "trackers only" polling | ❌ **will not fire** |
-
-Pick one:
-
-1. **Run the app on a long-lived host** (Fly.io / Render / Railway) and use
-   Vercel only for the frontend — recommended.
-2. **Migrate the per-GOAT actors to Cloudflare Durable Objects** — the correct
-   long-term home for them, since they are already modelled as isolated actors
-   in `src/services/durable-object/`.
-3. Stay on Vercel and set every GOAT's schedule to **"Manual only"** so the UI
-   does not promise runs that cannot happen.
+The Durable Object holds **scheduling state only**. It never touches user data,
+GOAT definitions, market data or AI, and it imports no Node-only module —
+`firebase-admin` cannot run on the Workers runtime, which is exactly why nothing
+that needs it lives there. See
+[docs/durable-objects.md](docs/durable-objects.md).
 
 ### Vercel setup
 
-1. Import the repo. `vercel.json` sets build `npm run build`, output `dist`,
-   and routes `/api/*` to the `api/index.ts` function.
-2. Set these under **Settings → Environment Variables** (server secrets only):
+1. Import the repo. `vercel.json` builds `npm run build`, serves `dist`, and
+   routes `/api/*` to the `api/index.ts` function.
+2. Set these under **Settings → Environment Variables**:
 
    ```
-   FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=<base64 of the service account JSON>
-   OPENROUTER_API_KEY=                      # optional platform fallback
-   TELEGRAM_BOT_TOKEN=                      # optional
-   TELEGRAM_WEBHOOK_SECRET=                 # optional
+   FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=<base64 of the service-account JSON>
+   DURABLE_SCHEDULER_URL=https://<worker-name>.<subdomain>.workers.dev
+   DURABLE_SCHEDULER_SECRET=<any long random string>
+   OPENROUTER_API_KEY=                 # optional platform fallback
+   TELEGRAM_BOT_TOKEN=                 # optional
    ```
 
-   Generate the base64 locally with `base64 -w0 firebase-service-account.json`.
-   Do **not** set `SIGNALGOAT_ALLOW_DEV_AUTH` — it must stay unset/`0` in
-   production or anyone can impersonate a user by sending a header.
+   `base64 -w0 firebase-service-account.json`. Never set
+   `SIGNALGOAT_ALLOW_DEV_AUTH` in production.
 
-3. The public Firebase **web** config is already committed in `.env.example` as
-   `VITE_FIREBASE_*` and is inlined at build time. If you use Vercel's build
-   environment instead, add the same `VITE_FIREBASE_*` names under
-   **Settings → Build & Development → Environment Variables**. Setting them
-   only at runtime does nothing — Vite inlines them during `vite build`.
+3. Deploy the scheduler Worker, with the same secret:
 
-4. In the Firebase console, add your Vercel domain (and `localhost` /
-   `127.0.0.1` for local work) to
-   **Authentication → Settings → Authorized domains**, otherwise Google
-   sign-in fails with `auth/unauthorized-domain`.
+   ```
+   npx wrangler deploy
+   ```
+
+   `SCHEDULER_SECRET` and `APP_ORIGIN` are Worker secrets:
+   `npx wrangler secret put SCHEDULER_SECRET`.
+
+4. Public Firebase **web** config is committed in `.env.example` as
+   `VITE_FIREBASE_*` and inlined at build time. Add your Vercel domain (and
+   `localhost` / `127.0.0.1`) to **Authentication → Settings → Authorized
+   domains**, otherwise Google sign-in fails with `auth/unauthorized-domain`.
+
+### What works where
+
+| Feature | Vercel + DO scheduler |
+|---|---|
+| Sign in, save keys, GOAT CRUD, manual wake, chat | yes |
+| Scheduled reasoning at the user's interval | yes — durable alarm |
+| Tracker conditions firing at the tracking cadence | yes — durable alarm, no AI cost |
+| Telegram alerts | yes |
+| Survives Vercel restart / redeploy | yes — alarm state is in the Durable Object |
+
+Without `DURABLE_SCHEDULER_URL` the app falls back to in-process timers and says
+so loudly at boot and in `GET /api/settings/status` (`scheduler.kind`). That
+fallback does **not** survive restarts.
 
 ## Secrets policy
 

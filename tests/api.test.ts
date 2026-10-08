@@ -28,6 +28,7 @@ beforeAll(async () => {
   previousEnv = {
     SIGNALGOAT_ALLOW_DEV_AUTH: process.env.SIGNALGOAT_ALLOW_DEV_AUTH,
     MARKET_DATA_PROVIDER: process.env.MARKET_DATA_PROVIDER,
+    DURABLE_SCHEDULER_SECRET: process.env.DURABLE_SCHEDULER_SECRET,
     TELEGRAM_WEBHOOK_SECRET: process.env.TELEGRAM_WEBHOOK_SECRET,
     DATA_DIR: process.env.DATA_DIR,
     NODE_ENV: process.env.NODE_ENV,
@@ -40,6 +41,7 @@ beforeAll(async () => {
   process.env.MARKET_DATA_PROVIDER = 'paper';
   process.env.SIGNALGOAT_ALLOW_DEV_AUTH = '1';
   process.env.TELEGRAM_WEBHOOK_SECRET = 'test-webhook-secret';
+  process.env.DURABLE_SCHEDULER_SECRET = 'test-scheduler-secret';
   delete process.env.FIREBASE_PROJECT_ID;
   delete process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
@@ -260,5 +262,160 @@ describe('Telegram webhook validation', () => {
     });
     expect(res.status).toBe(200);
     expect(res.json.handled).toBeDefined();
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/* Durable scheduler callbacks                                         */
+/* ------------------------------------------------------------------ */
+
+describe('internal scheduler callbacks', () => {
+  const SECRET_HEADERS = { 'x-scheduler-secret': 'test-scheduler-secret' };
+
+  test('a wrong scheduler secret is rejected with 401', async () => {
+    const res = await req('POST', '/internal/wake', {
+      body: { goatId: 'g', eventId: 'e1' },
+      headers: { 'x-scheduler-secret': 'wrong' },
+    });
+    expect(res.status).toBe(401);
+    expect(res.json.error.code).toBe('UNAUTHORISED');
+  });
+
+  test('a missing scheduler secret is rejected with 401', async () => {
+    const res = await req('POST', '/internal/wake', {
+      body: { goatId: 'g', eventId: 'e1' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  test('missing goatId/eventId is a 400, not a silent no-op', async () => {
+    const res = await req('POST', '/internal/wake', {
+      body: {},
+      headers: SECRET_HEADERS,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('the tracker-check endpoint is equally protected', async () => {
+    const res = await req('POST', '/internal/check-trackers', {
+      body: { goatId: 'g', eventId: 'e1' },
+      headers: { 'x-scheduler-secret': 'wrong' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  test('a valid secret for an unknown GOAT reports handled:false rather than throwing', async () => {
+    const res = await req('POST', '/internal/wake', {
+      body: { goatId: 'does_not_exist', eventId: 'e1' },
+      headers: SECRET_HEADERS,
+    });
+    expect(res.status).toBe(200);
+    expect(res.json.handled).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Tracking timeframe + schedule validation                            */
+/* ------------------------------------------------------------------ */
+
+describe('tracking timeframe is validated server-side', () => {
+  test('an accepted timeframe is persisted', async () => {
+    const res = await req('POST', '/goats', {
+      userId: 'tf_user',
+      body: {
+        name: 'TF',
+        goal: 'g',
+        markets: ['EUR/USD'],
+        skillIds: [],
+        model: 'openai/gpt-4o-mini',
+        timeframe: '5m',
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.json.goat.timeframe).toBe('5m');
+  });
+
+  test('each offered cadence is accepted', async () => {
+    for (const tf of ['1m', '5m', '15m', '1h', '4h']) {
+      const res = await req('POST', '/goats', {
+        userId: `tf_${tf}`,
+        body: {
+          name: `TF ${tf}`,
+          goal: 'g',
+          markets: ['EUR/USD'],
+          skillIds: [],
+          model: 'openai/gpt-4o-mini',
+          timeframe: tf,
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(res.json.goat.timeframe).toBe(tf);
+    }
+  });
+
+  test('an unknown timeframe on CREATE degrades rather than 500s', async () => {
+    const res = await req('POST', '/goats', {
+      userId: 'tf_bad',
+      body: {
+        name: 'TF bad',
+        goal: 'g',
+        markets: ['EUR/USD'],
+        skillIds: [],
+        model: 'openai/gpt-4o-mini',
+        timeframe: '17m',
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.json.goat.timeframe).toBe('15m');
+  });
+
+  test('an unknown timeframe on PATCH is rejected explicitly', async () => {
+    const goatId = await createGoat('tf_patch');
+
+    const res = await req('PATCH', `/goats/${goatId}/schedule`, {
+      userId: 'tf_patch',
+      body: { timeframe: 'nonsense' },
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.json.error.code).toBe('INVALID_TIMEFRAME');
+  });
+
+  test('a valid timeframe PATCH is applied', async () => {
+    const goatId = await createGoat('tf_patch2');
+
+    const res = await req('PATCH', `/goats/${goatId}/schedule`, {
+      userId: 'tf_patch2',
+      body: { timeframe: '4h' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.json.timeframe).toBe('4h');
+  });
+
+  test('an empty PATCH body is rejected rather than silently accepted', async () => {
+    const goatId = await createGoat('tf_patch3');
+    const res = await req('PATCH', `/goats/${goatId}/schedule`, {
+      userId: 'tf_patch3',
+      body: {},
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('daily recap endpoints', () => {
+  test('recaps require a symbol', async () => {
+    const res = await req('GET', '/markets/recaps', { userId: 'rollup_user' });
+    expect(res.status).toBe(400);
+  });
+
+  test('rollup is idempotent and protected by auth', async () => {
+    const unauth = await req('POST', '/markets/rollup');
+    expect(unauth.status).toBe(401);
+
+    const authed = await req('POST', '/markets/rollup', { userId: 'rollup_user' });
+    expect(authed.status).toBe(200);
+    expect(Array.isArray(authed.json.recaps)).toBe(true);
   });
 });

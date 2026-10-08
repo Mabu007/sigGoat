@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   MarketStateStore,
   MemoryMarketStatePersistence,
+  isUsableMarketState,
 } from '../src/services/market-data/MarketStateStore';
 import type {
   MarketDataProvider,
@@ -158,6 +159,40 @@ describe('MarketStateStore — de-duplication', () => {
     expect(a.indicators?.rsi14).toBeGreaterThanOrEqual(0);
   });
 
+  test('key is "<MARKET>:<timeframe>" — market-keyed, never GOAT-keyed', async () => {
+    const provider = makeProvider();
+    const store = new MarketStateStore(provider, { ttlMs: 10_000 });
+    const persist = new MemoryMarketStatePersistence();
+    const persistent = new MarketStateStore(provider, {
+      ttlMs: 10_000,
+      persist,
+    });
+
+    await persistent.getState(SYMBOL, '5m');
+    await sleep(5);
+
+    const state = await store.getState(SYMBOL, '5m');
+    expect(state.key).toBe('EUR/USD:5m');
+    expect(state.key).not.toContain('goat');
+
+    // Two different timeframes must be two distinct entries.
+    await persistent.getState(SYMBOL, '1h');
+    await sleep(5);
+    expect(await persist.load('EUR/USD:5m')).not.toBeNull();
+    expect(await persist.load('EUR/USD:1h')).not.toBeNull();
+  });
+
+  test('a LIVE snapshot reports status LIVE and a latestPrice', async () => {
+    const provider = makeProvider();
+    const store = new MarketStateStore(provider, { ttlMs: 10_000 });
+
+    const state = await store.getState(SYMBOL);
+
+    expect(state.status).toBe('LIVE');
+    expect(state.latestPrice).toBeCloseTo(1.12, 5);
+    expect(isUsableMarketState(state)).toBe(true);
+  });
+
   test('timeframes are cached separately', async () => {
     const provider = makeProvider();
     const store = new MarketStateStore(provider, { ttlMs: 10_000 });
@@ -187,6 +222,7 @@ describe('MarketStateStore — failure handling', () => {
 
     const good = await store.getState(SYMBOL);
     expect(good.degraded).toBe(false);
+    expect(good.status).toBe('LIVE');
 
     fail = true;
     now += 5_000;
@@ -194,6 +230,9 @@ describe('MarketStateStore — failure handling', () => {
 
     // Real data is retained and honestly flagged, rather than discarded.
     expect(degraded.degraded).toBe(true);
+    expect(degraded.status).toBe('DEGRADED');
+    // Degraded data must never be treated as usable by a reasoning consumer.
+    expect(isUsableMarketState(degraded)).toBe(false);
     expect(degraded.error).toContain('provider down');
     expect(degraded.quote?.mid).toBe(good.quote?.mid);
     expect(degraded.indicators).toBe(good.indicators);
@@ -206,6 +245,8 @@ describe('MarketStateStore — failure handling', () => {
     const state = await store.getState(SYMBOL);
 
     expect(state.degraded).toBe(true);
+    expect(state.status).toBe('UNAVAILABLE');
+    expect(isUsableMarketState(state)).toBe(false);
     expect(state.quote).toBeNull();
     expect(state.candles).toEqual([]);
   });
@@ -223,7 +264,7 @@ describe('MarketStateStore — persistence seam', () => {
     await store.getState(SYMBOL);
     await sleep(5);
 
-    const restored = await persist.load('EUR/USD::15m');
+    const restored = await persist.load('EUR/USD:15m');
     expect(restored).not.toBeNull();
     expect(restored?.candles.length).toBe(80);
   });

@@ -2,10 +2,22 @@
 
 ## TL;DR
 
-The architecture SignalGOAT needs is **already built and running**, in a form
-that ports to Cloudflare Durable Objects without rewriting any consumer. The
-Cloudflare *deployment* is deliberately not done yet. See "What is deliberately
-not done" at the bottom for the specific blocker.
+**Shipped.** Vercel remains the application host. A small Cloudflare Worker owns
+per-GOAT Durable Object alarms and nothing else. The Durable Object holds
+scheduling state only; all data, market data, indicators and AI stay on Vercel.
+
+```
+Vercel (application)                Cloudflare (scheduler only)
+─────────────────────               ─────────────────────────
+UI + API + Firebase                 One Durable Object per GOAT
+BiQuote + MarketStateStore          storage: nextWakeAt,
+Trackers (deterministic)              nextTrackerCheckAt,
+GOAT wake, AI, SignalGate            generationId, paused
+       ▲                                     │
+       └──── POST /api/internal/wake ◀─── alarm()
+             POST /api/internal/check-trackers
+             (tracker check spends NO AI)
+```
 
 ---
 
@@ -136,7 +148,42 @@ alongside Vercel env vars. Worth it for reliability; not worth it on day one.
 
 ---
 
-## 5. What is deliberately not done, and why
+## 5. Why the boundary is shaped this way
+
+The Durable Object is deliberately **dumb**. It stores two timestamps and one
+generation id per GOAT, arms one alarm, and POSTs a callback. That is the whole
+implementation (`worker/scheduler-worker.ts`, ~300 lines).
+
+The reason is runtime, not preference:
+
+- `firebase-admin` **cannot run on Workers** (needs Node `crypto`/gRPC). So the
+  DO touches no data. It never needs to.
+- Market data and indicators belong to the app, which already caches them.
+- Reasoning must run where credentials and persistence live.
+
+An earlier design considered putting market state in the DO too. That would have
+meant a second copy of market data and a Workers-runtime rewrite of the
+indicator layer, for no reliability gain: the app already serves those from one
+market-keyed cache.
+
+### One alarm, two schedules
+
+Durable Object storage allows a single alarm per object, but two things need
+firing:
+
+| Alarm kind | Cadence | Cost |
+|---|---|---|
+| `REASONING` | user-chosen interval or times | AI call |
+| `TRACKER_CHECK` | the GOAT's tracking timeframe | **no AI** |
+
+Both are stored; the alarm is armed for whichever is sooner, and the delivery
+reports which one it is. This is what keeps the core loop event-driven on a
+host with no persistent process: a market update that satisfies nothing costs
+zero tokens.
+
+---
+
+## 5b. What is deliberately not done, and why
 
 A partial DO port is worse than none: a half-migrated scheduler that silently
 stops firing is exactly the failure this app must not have. Specifically **not**
@@ -147,14 +194,25 @@ done yet:
 - Alarms are still in-process `setTimeout`, so **schedules do not survive a
   restart or redeploy**.
 
-That last one is the only meaningful gap and it has a cheap mitigation that
-works today -- see below.
+All of the above is now shipped. The one remaining operational requirement is
+that `DURABLE_SCHEDULER_URL` and `DURABLE_SCHEDULER_SECRET` are set in both
+Vercel and the Worker; without them the app falls back to in-process timers and
+says so loudly at boot and in `/api/settings/status`.
 
 ---
 
 ## 6. Recommended sequence
 
-**For the MVP (do not skip step 1):**
+**Status:**
+
+1. ~~Host on a long-lived Node process~~ — not needed; Vercel plus Durable
+   Object alarms is the deployed architecture.
+2. ~~A heartbeat tick making schedules due-based~~ — superseded by real
+   per-GOAT alarms plus a tracker-check tick.
+3. ~~Cut backtest, skills and the quote browser~~ — out of scope for this pass;
+   none of it blocks deployment.
+
+**Still recommended for production:**
 
 1. **Host on a long-lived Node process** -- Railway or Fly.io, `npm start`. The
    scheduler is the product; a serverless freeze silently stops every analysis

@@ -28,16 +28,28 @@ import {
 import { UserScopedReasoningGateway } from './reasoningGateway';
 import { buildGoatContext } from './goatContext';
 import { durableObjectRegistry } from '../services/durable-object/DurableObjectRegistry';
-import { normaliseSchedule, describeSchedule } from '../services/durable-object/GoatDurableObject';
 import { biQuoteProvider } from '../services/market-data/BiQuoteMarketDataProvider';
 import { paperProvider } from '../services/market-data/PaperMarketDataProvider';
 import { MarketDataProvider } from '../services/market-data/MarketDataProvider';
-import { MarketStateStore } from '../services/market-data/MarketStateStore';
+import {
+  MarketStateStore,
+  isUsableMarketState,
+} from '../services/market-data/MarketStateStore';
 import { FileMarketStatePersistence } from '../services/market-data/FileMarketStatePersistence';
 import { BacktestEngine } from '../services/backtest/BacktestEngine';
 import { DEFAULT_SKILLS } from '../data/defaultSkills';
 import { telegramService } from '../services/telegram/TelegramService';
 import { ApiRequestError } from '../services/ai/OpenRouterClient';
+import { durableObjectSchedulerFromEnv } from './scheduler/DurableObjectScheduler';
+import type { WakeScheduler, FiredWake } from './scheduler/types';
+import { InProcessScheduler } from './scheduler/InProcessScheduler';
+import { msUntilNextScheduledTime, normaliseSchedule, describeSchedule } from '../services/durable-object/GoatDurableObject';
+import {
+  TRACKING_TIMEFRAMES,
+  normaliseTrackingTimeframe,
+  pollIntervalForTimeframe,
+} from '../services/market-data/trackingTimeframes';
+import { DailyMarketRollup } from '../services/daily-rolling/DailyMarketRollup';
 
 export const apiRouter = express.Router();
 apiRouter.use(express.json({ limit: '1mb' }));
@@ -96,6 +108,63 @@ export const marketStateStore = new MarketStateStore(marketProvider, {
     : {}),
 });
 
+/**
+ * AUTHORITATIVE SCHEDULER
+ *
+ * In production this is the Cloudflare Durable Object, whose alarms are durable
+ * and survive restarts and redeploys. With no Worker configured (local dev, or
+ * a single-process deploy) it falls back to in-process timers, and that fact is
+ * reported by /api/settings/status so it can never be mistaken for the durable
+ * path.
+ *
+ * The fallback is what makes local development work with no Cloudflare account.
+ */
+const durableScheduler = durableObjectSchedulerFromEnv();
+
+/**
+ * Called when an in-process alarm fires. With a Durable Object scheduler this
+ * is never used, because that actor arms no local timers.
+ */
+let inProcessScheduler: InProcessScheduler | null = null;
+
+if (durableScheduler) {
+  console.log('[api] Durable Object scheduler active.');
+} else {
+  inProcessScheduler = new InProcessScheduler(async (wake) => {
+    await runScheduledWake(wake.goatId, wake.eventId, wake.reason);
+  });
+
+  // Tracker checks spend no AI: they only escalate when a condition is met.
+  inProcessScheduler.onTrackerCheck = async (wake) => {
+    await runTrackerCheck(wake.goatId, wake.eventId);
+  };
+  console.warn(
+    '[api] DURABLE_SCHEDULER_URL not set — using IN-PROCESS timers. ' +
+      'Schedules will NOT survive a restart. Configure the Cloudflare ' +
+      'scheduler worker for production.',
+  );
+}
+
+const scheduler: WakeScheduler = durableScheduler ?? inProcessScheduler!;
+
+/**
+ * Daily market recap + intraday rollover.
+ *
+ * Fed from the same LIVE snapshots the trackers use, so the recap is built
+ * from provider-confirmed data only. Idempotent by trading date.
+ */
+export const dailyRollup = new DailyMarketRollup({
+  recaps: persistence.recaps,
+});
+
+/**
+ * Every fresh market snapshot feeds the daily session, which is what makes a
+ * recap possible at all without a second data pull.
+ */
+marketStateStore.onSnapshot((snapshot) => {
+  dailyRollup.observe(snapshot);
+});
+
 const runtimeOptions = {
   reasoning: reasoningGateway,
   marketProvider,
@@ -103,6 +172,7 @@ const runtimeOptions = {
   signals: persistence.signals,
   theses: persistence.theses,
   wakeEvents: persistence.wakeEvents,
+  scheduler,
 };
 
 function ensureGoatRuntime(goat: SignalGoat) {
@@ -163,6 +233,12 @@ durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
   } catch (err) {
     console.error('[api] Telegram signal notification failed:', err);
   }
+
+  dailyRollup.recordEvent(
+    signal.market,
+    'SIGNAL',
+    `${signal.direction} ${signal.orderType} @ ${signal.entry ?? 'n/a'}`,
+  );
 });
 
 /**
@@ -191,6 +267,12 @@ durableObjectRegistry.onTrackerTriggered(async (goat, report) => {
         calculatedValue: report.calculatedValue,
       },
       token,
+    );
+
+    dailyRollup.recordEvent(
+      report.tracker.market || goat.markets[0] || 'unknown',
+      'TRACKER_TRIGGERED',
+      report.eventReason,
     );
   } catch (err) {
     console.error('[api] Telegram tracker notification failed:', err);
@@ -258,7 +340,7 @@ function isValidModel(model: unknown): boolean {
   );
 }
 
-function validateGoatInput(body: unknown): { name: string; goal: string; markets: string[]; skillIds: string[]; model: string; schedule: GoatSchedule } | null {
+function validateGoatInput(body: unknown): { name: string; goal: string; markets: string[]; skillIds: string[]; model: string; schedule: GoatSchedule; timeframe: ReturnType<typeof normaliseTrackingTimeframe> } | null {
   if (typeof body !== 'object' || body === null) return null;
   const b = body as Record<string, unknown>;
   if (typeof b.name !== 'string' || !b.name.trim() || b.name.length > 100) return null;
@@ -276,8 +358,324 @@ function validateGoatInput(body: unknown): { name: string; goal: string; markets
     skillIds: b.skillIds as string[],
     model: model as string,
     schedule: normaliseSchedule(b.schedule as GoatSchedule | undefined),
+    /**
+     * Tracking timeframe is validated server-side. An unrecognised value falls
+     * back to the default rather than being rejected outright, so a client
+     * sending a stale enum still gets a working GOAT.
+     */
+    timeframe: normaliseTrackingTimeframe(b.timeframe),
   };
 }
+
+
+/* ------------------------------------------------------------------ */
+/* Durable scheduling                                                  */
+/* ------------------------------------------------------------------ */
+
+/** Bumped whenever a GOAT's schedule changes, invalidating stale alarms. */
+function scheduleGeneration(goat: SignalGoat): string {
+  const schedule = normaliseSchedule(goat.schedule);
+  return [
+    goat.id,
+    schedule.mode,
+    schedule.intervalMinutes ?? '-',
+    (schedule.times ?? []).join('.') || '-',
+  ].join(':');
+}
+
+/**
+ * When this GOAT is next due, or null when it has no scheduled reasoning.
+ *
+ * MANUAL never fires on its own. TRACKERS keeps the deterministic trackers
+ * running (driven by market state, not the scheduler) but spends no AI, so it
+ * needs no alarm.
+ */
+/**
+ * Next deterministic tracker check.
+ *
+ * This is NOT a reasoning run and spends no AI. It exists so trackers are
+ * observed on the user's chosen cadence even where no long-lived process
+ * exists to watch them (Vercel). The interval tracks the bar size, clamped so a
+ * 1m timeframe is not polled every millisecond and a 4h timeframe is not
+ * polled every 5 seconds.
+ */
+function computeNextTrackerCheckAt(
+  goat: SignalGoat,
+  from: number = Date.now(),
+): number | null {
+  if (goat.status === 'PAUSED') return null;
+
+  const timeframe = normaliseTrackingTimeframe(goat.timeframe);
+  return from + pollIntervalForTimeframe(timeframe);
+}
+
+function computeNextWakeAt(
+  goat: SignalGoat,
+  from: number = Date.now(),
+): number | null {
+  if (goat.status === 'PAUSED') return null;
+
+  const schedule = normaliseSchedule(goat.schedule);
+
+  switch (schedule.mode) {
+    case 'MANUAL':
+    case 'TRACKERS':
+      return null;
+
+    case 'TIMES': {
+      const times = schedule.times ?? [];
+      if (times.length === 0) return null;
+      return from + msUntilNextScheduledTime(times, from);
+    }
+
+    case 'INTERVAL':
+    default: {
+      const minutes = schedule.intervalMinutes ?? 60;
+      return from + minutes * 60_000;
+    }
+  }
+}
+
+/**
+ * Publishes a GOAT's authoritative schedule to the durable scheduler.
+ *
+ * Never throws: a GOAT must still be creatable and usable when the scheduler
+ * Worker is unreachable. The failure is reported through health() instead.
+ */
+async function syncSchedule(goat: SignalGoat): Promise<void> {
+  const nextWakeAt = computeNextWakeAt(goat);
+  const nextTrackerCheck = computeNextTrackerCheckAt(goat);
+
+  try {
+    await scheduler.sync({
+      goatId: goat.id,
+      nextWakeAt: nextWakeAt ? new Date(nextWakeAt).toISOString() : null,
+      nextTrackerCheckAt: nextTrackerCheck
+        ? new Date(nextTrackerCheck).toISOString()
+        : null,
+      timeframe: normaliseTrackingTimeframe(goat.timeframe),
+      generationId: scheduleGeneration(goat),
+      paused: goat.status === 'PAUSED',
+    });
+  } catch (err) {
+    console.error(
+      `[scheduler] failed to sync ${goat.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
+ * Executes a scheduled wake, applying duplicate suppression BEFORE any work.
+ *
+ * Every trigger path (Durable Object alarm, in-process timer, manual wake)
+ * funnels through here so idempotency cannot be bypassed by adding a new
+ * trigger. This is what stops a duplicated alarm from producing a second AI
+ * call, a second signal or a second Telegram message.
+ */
+async function runScheduledWake(
+  goatId: string,
+  eventId: string,
+  reason: string,
+): Promise<GoatRuntimeState | null> {
+  const goat = await persistence.goats.get(goatId);
+  if (!goat) return null;
+
+  const verdict = scheduler.decide(goatId, {
+    goatId,
+    eventId,
+    generationId: scheduleGeneration(goat),
+    reason,
+    firedAt: Date.now(),
+  });
+
+  if (verdict.allowed === false) {
+    console.log(
+      `[scheduler] suppressed wake for ${goatId}: ${verdict.reason}`,
+    );
+    return null;
+  }
+
+  const runtime = durableObjectRegistry.get(goatId)
+    ? durableObjectRegistry.get(goatId)!
+    : await ensureGoatRuntime(goat);
+
+  const state = await runtime.wake(
+    reason,
+    'SCHEDULED',
+    goat.markets[0],
+  );
+
+  // Re-arm for the following interval, based on when this run actually
+  // finished rather than when it was scheduled, so a slow run does not cause
+  // the interval to drift earlier each cycle.
+  const refreshed = await persistence.goats.get(goatId);
+  if (refreshed) await syncSchedule(refreshed);
+
+  return state;
+}
+
+function isoNow(ms: number | null): string | null {
+  return ms === null ? null : new Date(ms).toISOString();
+}
+
+/**
+ * Deterministic tracker check, called by the Durable Object on the GOAT's
+ * tracking cadence.
+ *
+ * SPENDS NO AI. Trackers are indicator comparisons recomputed from candles;
+ * only when one is actually satisfied does the GOAT escalate to a full
+ * reasoning wake. This is what keeps the market loop event-driven instead of
+ * polling a model.
+ */
+/**
+ * Deterministic tracker check shared by the Durable Object callback and the
+ * in-process timer.
+ *
+ * SPENDS NO AI. Trackers are indicator comparisons recomputed from candles;
+ * only a satisfied condition escalates to a full reasoning wake. Returns the
+ * next check time so the caller can re-anchor its schedule.
+ */
+async function runTrackerCheck(
+  goatId: string,
+  eventId: string,
+): Promise<{ handled: boolean; reason?: string; trackerFired: boolean; nextAt: string | null }> {
+  const goat = await persistence.goats.get(goatId);
+  if (!goat) {
+    return { handled: false, reason: 'not_found', trackerFired: false, nextAt: null };
+  }
+
+  const verdict = scheduler.decide(goatId, {
+    goatId,
+    eventId,
+    generationId: scheduleGeneration(goat),
+    reason: 'Scheduled tracker check',
+    firedAt: Date.now(),
+  });
+
+  if (verdict.allowed === false) {
+    return {
+      handled: false,
+      reason: verdict.reason,
+      trackerFired: false,
+      nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+    };
+  }
+
+  const state = await marketStateStore.getState(
+    goat.markets[0],
+    normaliseTrackingTimeframe(goat.timeframe),
+  );
+
+  // Degraded data must not satisfy a tracker: a stale price is not a signal.
+  if (!isUsableMarketState(state) || !state.quote) {
+    return {
+      handled: false,
+      reason: `market data ${state.status}`,
+      trackerFired: false,
+      nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+    };
+  }
+
+  const runtime = await ensureGoatRuntime(goat);
+  const trackerFired = await runtime.evaluateTrackersNow(state);
+
+  const refreshed = await persistence.goats.get(goatId);
+
+  return {
+    handled: true,
+    trackerFired,
+    nextAt: isoOrNull(
+      refreshed
+        ? computeNextTrackerCheckAt(refreshed)
+        : computeNextTrackerCheckAt(goat),
+    ),
+  };
+}
+
+/**
+ * Deterministic tracker check, called by the Durable Object on the GOAT's
+ * tracking cadence. See runTrackerCheck: it spends no AI unless a condition
+ * actually fires.
+ */
+apiRouter.post('/internal/check-trackers', handle(async (req, res) => {
+  const expected = process.env.DURABLE_SCHEDULER_SECRET?.trim();
+  const provided = req.header('x-scheduler-secret') ?? '';
+
+  if (!expected || provided !== expected) {
+    return fail(res, 401, 'UNAUTHORISED', 'Invalid scheduler secret.');
+  }
+
+  const { goatId, eventId } = req.body ?? {};
+
+  if (
+    typeof goatId !== 'string' ||
+    typeof eventId !== 'string' ||
+    !goatId ||
+    !eventId
+  ) {
+    return fail(res, 400, 'INVALID_INPUT', 'goatId and eventId are required.');
+  }
+
+  const result = await runTrackerCheck(goatId, eventId);
+
+  res.json({ ...result, dataMode: marketProvider.dataMode });
+}));
+
+function isoOrNull(ms: number | null): string | null {
+  return ms === null ? null : new Date(ms).toISOString();
+}
+
+/**
+ * Callback endpoint for the Durable Object scheduler.
+ *
+ * Authenticated with a shared secret (the Worker cannot present a Firebase ID
+ * token — it has no user session and cannot run firebase-admin).
+ */
+apiRouter.post('/internal/wake', handle(async (req, res) => {
+  const expected = process.env.DURABLE_SCHEDULER_SECRET?.trim();
+  const provided =
+    req.header('x-scheduler-secret') ?? '';
+
+  if (!expected || provided !== expected) {
+    return fail(res, 401, 'UNAUTHORISED', 'Invalid scheduler secret.');
+  }
+
+  const { goatId, eventId, reason } = req.body ?? {};
+
+  if (
+    typeof goatId !== 'string' ||
+    typeof eventId !== 'string' ||
+    !goatId ||
+    !eventId
+  ) {
+    return fail(res, 400, 'INVALID_INPUT', 'goatId and eventId are required.');
+  }
+
+  const state = await runScheduledWake(
+    goatId,
+    eventId,
+    typeof reason === 'string' && reason.trim()
+      ? reason.trim().slice(0, 200)
+      : 'Scheduled analysis (durable alarm)',
+  );
+
+  const refreshed = await persistence.goats.get(goatId);
+
+  res.json({
+    handled: state !== null,
+    status: state?.status ?? null,
+    /**
+     * The DO re-arms from THIS value, so the interval stays anchored to when
+     * the run actually finished instead of drifting by one alarm latency per
+     * cycle.
+     */
+    nextAt: isoNow(
+      refreshed ? computeNextWakeAt(refreshed) : null,
+    ),
+    dataMode: marketProvider.dataMode,
+  });
+}));
 
 /* ------------------------------------------------------------------ */
 /* Public routes                                                       */
@@ -341,6 +739,9 @@ apiRouter.get('/settings/status', async (_req, res) => {
      * x tick interval is the proof that polling and indicator computation are
      * de-duplicated rather than repeated per GOAT.
      */
+    scheduler: scheduler.health(),
+    trackingTimeframes: TRACKING_TIMEFRAMES,
+    dailyRollup: dailyRollup.stats,
     marketState: {
       ...marketStateStore.stats,
       activePollers: marketStateStore.activePollers(),
@@ -699,11 +1100,16 @@ apiRouter.post('/goats', handle(async (req, res) => {
     model: input.model,
     status: 'WATCHING',
     schedule: input.schedule,
+    timeframe: input.timeframe,
     createdAt: now,
     updatedAt: now,
   };
 
   await persistence.goats.save(newGoat);
+
+  /** Durable alarm becomes the authoritative schedule. */
+  await syncSchedule(newGoat);
+
   const runtime = await ensureGoatRuntime(newGoat);
 
   /**
@@ -754,6 +1160,9 @@ apiRouter.post('/goats/:id/status', handle(async (req, res) => {
 
   await persistence.goats.save(updated);
 
+  /** A paused GOAT must have its alarm cleared, not merely ignored locally. */
+  await syncSchedule(updated);
+
   // Re-attach so the actor picks up the new status, then apply the action.
   const runtime = await ensureGoatRuntime(updated);
   const state = pausing ? runtime.pause() : runtime.play();
@@ -772,19 +1181,68 @@ apiRouter.patch('/goats/:id/schedule', handle(async (req, res) => {
   const goat = await persistence.goats.getForUser(req.params.id, user.uid);
   if (!goat) return notFound(res);
 
-  const schedule = normaliseSchedule(req.body?.schedule as GoatSchedule | undefined);
+  const hasScheduleField =
+    req.body?.schedule !== undefined && req.body?.schedule !== null;
+  const hasTimeframeField =
+    req.body?.timeframe !== undefined && req.body?.timeframe !== null;
+
+  if (!hasScheduleField && !hasTimeframeField) {
+    return fail(
+      res,
+      400,
+      'INVALID_INPUT',
+      'Provide a schedule, a timeframe, or both.',
+    );
+  }
+
+  const schedule = hasScheduleField
+    ? normaliseSchedule(req.body.schedule as GoatSchedule)
+    : normaliseSchedule(goat.schedule);
+
+  /**
+   * Server-side validation. An unknown timeframe is rejected explicitly here
+   * rather than silently coerced, because the user is choosing a cadence and
+   * silently substituting another one would be misleading.
+   */
+  const timeframe = hasTimeframeField
+    ? req.body.timeframe
+    : goat.timeframe;
+
+  if (
+    hasTimeframeField &&
+    !TRACKING_TIMEFRAMES.includes(timeframe as never)
+  ) {
+    return fail(
+      res,
+      400,
+      'INVALID_TIMEFRAME',
+      `timeframe must be one of: ${TRACKING_TIMEFRAMES.join(', ')}.`,
+    );
+  }
+
   const updated: SignalGoat = {
     ...goat,
     schedule,
+    timeframe: normaliseTrackingTimeframe(timeframe),
     updatedAt: new Date().toISOString(),
   };
 
   await persistence.goats.save(updated);
 
+  /** A changed schedule is a new generation; stale alarms are rejected. */
+  await syncSchedule(updated);
+
   const runtime = await ensureGoatRuntime(updated);
   runtime.setSchedule(schedule);
+  runtime.updateConfig(updated, await allSkillsFor(user.uid));
 
-  res.json({ goat: updated, schedule, dataMode: marketProvider.dataMode });
+  res.json({
+    goat: updated,
+    schedule,
+    timeframe: updated.timeframe,
+    scheduler: scheduler.health(),
+    dataMode: marketProvider.dataMode,
+  });
 }));
 
 
@@ -795,7 +1253,11 @@ apiRouter.delete('/goats/:id', handle(async (req, res) => {
 
   // 1. Stop timers/subscriptions and remove the runtime actor.
   durableObjectRegistry.remove(goat.id);
-  // 2. Remove persisted data.
+  // 2. Clear the durable alarm so a deleted GOAT cannot wake.
+  await scheduler.cancel(goat.id).catch((err) => {
+    console.error('[scheduler] cancel failed:', err);
+  });
+  // 3. Remove persisted data.
   await persistence.goats.delete(goat.id);
 
   res.json({ success: true, deletedId: goat.id });
@@ -852,6 +1314,33 @@ apiRouter.get('/goats/:id/signals', handle(async (req, res) => {
   if (!goat) return notFound(res);
   const signals: TradeSignal[] = await persistence.signals.listByGoat(goat.id, 100);
   res.json({ signals });
+}));
+
+// ---- Daily market recap ------------------------------------------------
+
+apiRouter.get('/markets/recaps', handle(async (req, res) => {
+  const symbol = String(req.query.symbol ?? '').trim();
+  if (!symbol) {
+    return fail(res, 400, 'INVALID_INPUT', 'symbol is required.');
+  }
+
+  const limit = Math.min(
+    90,
+    Math.max(1, parseInt(String(req.query.limit ?? '30'), 10) || 30),
+  );
+
+  const recaps = await dailyRollup.listRecaps(symbol, limit);
+
+  res.json({ symbol, recaps, dataMode: marketProvider.dataMode });
+}));
+
+/**
+ * Forces a daily rollup. Idempotent, so a cron or an operator can call it
+ * freely: re-running merges rather than creating a second record for the day.
+ */
+apiRouter.post('/markets/rollup', handle(async (_req, res) => {
+  const recaps = await dailyRollup.rollUpAll();
+  res.json({ rolledUp: recaps.length, recaps });
 }));
 
 // ---- Backtest ----------------------------------------------------------

@@ -1,53 +1,53 @@
 /**
  * VERCEL SERVERLESS ENTRY
  * =======================
- * Vercel's @vercel/node runtime accepts a default-exported Express app.
+ * Vercel's Node runtime accepts a default-exported Express app.
  *
- * IMPORTANT — WHAT WORKS AND WHAT DOES NOT HERE:
+ * WHAT WORKS HERE
+ *   Every request/response path: auth, GOAT CRUD, saving an OpenRouter key,
+ *   manual "Wake & Re-evaluate", chat, Telegram webhook, daily recaps.
  *
- *   WORKS  : every request/response path (auth, GOAT CRUD, saving an OpenRouter
- *            key, manual "Wake & Re-evaluate", chat, Telegram webhook).
+ * WHY THERE IS NO SCHEDULER IN THIS FILE
+ *   The per-GOAT schedule is owned by a Cloudflare Durable Object alarm
+ *   (see worker/scheduler-worker.ts). This function holds no timers and
+ *   restores no long-lived actors at boot, because a serverless instance is
+ *   frozen between invocations — an in-process timer would silently stop
+ *   firing, which is the failure this architecture exists to prevent.
  *
- *   DOES NOT WORK RELIABLY: the BACKGROUND SCHEDULER.
- *            Per-GOAT reasoning intervals and tracker polling are `setTimeout`
- *            loops inside the long-lived process. A serverless function is
- *            frozen between invocations and reclaimed when idle, so hourly
- *            analyses and tracker alerts stop firing.
+ *   The DO calls POST /api/internal/wake, which runs the full pipeline on
+ *   demand. That request creates the actor, does the work, and returns.
  *
- *            Fix: run this app on a long-lived host (Fly.io / Render / Railway
- *            / a VM) and point Vercel at it, OR migrate the per-GOAT actors
- *            to Cloudflare Durable Objects (the right long-term home).
+ * `restoreRuntimes()` is therefore intentionally NOT called here. Actors are
+ * created lazily by ensureGoatRuntime() when a request needs one, and discarded
+ * when the instance is reclaimed.
  *
- *            Set the GOAT schedule to "Trackers only" or "Manual only" on
- *            serverless so the UI does not promise runs that cannot happen.
+ * Node-only modules (`node:fs`, `firebase-admin`) live under src/server/ and
+ * are fine here: this is the Vercel Node runtime, not the Workers runtime. The
+ * Durable Object worker deliberately imports none of them.
  */
 
 import '../src/server/env';
 import { createApp } from '../src/server/app';
-import {
-  restoreRuntimes,
-  seedDefaultSkills,
-} from '../src/server/apiRouter';
+import { seedDefaultSkills } from '../src/server/apiRouter';
 
-// Seed + restore on cold start. Deliberately NOT awaited in the request
-// path: a cold start should serve the first request immediately.
-let bootstrapped: Promise<void> | undefined;
-function bootstrap(): Promise<void> {
-  if (!bootstrapped) {
-    bootstrapped = (async () => {
-      await seedDefaultSkills();
-      await restoreRuntimes();
-    })().catch((err) => {
-      console.error('[vercel] bootstrap failed:', err);
+// Seeding default skills is a one-time boot concern and is safe on a cold
+// start: it is idempotent and skipped when every skill already exists.
+let seeded: Promise<void> | undefined;
+
+function ensureSeeded(): Promise<void> {
+  if (!seeded) {
+    seeded = seedDefaultSkills().catch((err) => {
+      // A seeding failure must not break the instance; the routes still work.
+      console.error('[vercel] seedDefaultSkills failed:', err);
     });
   }
-  return bootstrapped;
+  return seeded;
 }
 
 const app = createApp({ serveStatic: false });
 
 app.use((_req: unknown, res: import('express').Response, next: import('express').NextFunction) => {
-  void bootstrap().then(() => next(), next);
+  void ensureSeeded().then(() => next(), next);
 });
 
 export default app;

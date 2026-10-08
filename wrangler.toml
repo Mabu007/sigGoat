@@ -1,0 +1,34 @@
+# Cloudflare Durable Object scheduler for SignalGOAT.
+#
+# Separate, tiny deployment. It owns scheduling state ONLY — never user data,
+# GOAT definitions, ownership, market data or AI. The Vercel application
+# remains the host for all of that and calls back into this Worker.
+#
+# Deploy:
+#   npx wrangler deploy
+#
+# The Workers runtime cannot run firebase-admin (it needs Node crypto/gRPC),
+# which is precisely why nothing that touches data lives here.
+
+name = "siggoat-scheduler"
+main = "worker/scheduler-worker.ts"
+compatibility_date = "2026-01-01"
+
+# One Durable Object per GOAT. Wrangler creates the class binding.
+[[durable_objects.bindings]]
+name = "NAMESPACE"
+class_name = "GoatSchedulerDO"
+
+# Required by the DO class above.
+[[migrations]]
+tag = "v1"
+new_classes = ["GoatSchedulerDO"]
+
+# Optional reconciliation: the app also reports health here, and a periodic
+# sweep re-arms any GOAT whose alarm was consumed by a failed delivery.
+# NOT the per-GOAT scheduler — that is the Durable Object alarm.
+[triggers]
+crons = ["*/15 * * * *"]
+
+[observability]
+enabled = true

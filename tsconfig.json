@@ -29,6 +29,7 @@
     "src",
     "tests",
     "api",
+    "worker",
     "server.ts",
     "vite.config.ts"
   ]

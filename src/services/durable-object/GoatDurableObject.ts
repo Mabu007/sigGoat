@@ -33,7 +33,12 @@ import { MarketDataProvider } from '../market-data/MarketDataProvider';
 import {
   MarketStateSnapshot,
   MarketStateStore,
+  isUsableMarketState,
 } from '../market-data/MarketStateStore';
+import {
+  normaliseTrackingTimeframe,
+  pollIntervalForTimeframe,
+} from '../market-data/trackingTimeframes';
 import { ReasoningResult, ReasoningValidationError, TrackerDirective } from '../agent/contracts';
 import { GoatReasoningContext } from '../ai/OpenRouterClient';
 import { SignalGate } from '../agent/SignalGate';
@@ -52,6 +57,7 @@ import {
   ThesisRepository,
   WakeEventRepository,
 } from '../../server/repositories';
+import type { WakeScheduler } from '../../server/scheduler/types';
 
 export interface GoatDurableObjectOptions {
   reasoning: ReasoningGateway;
@@ -85,6 +91,14 @@ export interface GoatDurableObjectOptions {
   periodicReviewMs?: number;
   /** Injectable clock for deterministic tests. */
   now?: () => number;
+  /**
+   * External durable scheduler.
+   *
+   * When supplied, this actor does NOT arm in-process timers: the scheduler
+   * owns the wake schedule and calls back into the API. This is what makes
+   * production independent of a process staying alive.
+   */
+  scheduler?: WakeScheduler;
 }
 
 const DEFAULT_BASE_INTERVAL_MS = 45_000;
@@ -95,6 +109,51 @@ const MAX_TRACKERS = 10;
 /** Timeframe and window used to build the reasoning context on a wake. */
 const WAKE_TIMEFRAME = '1h';
 const WAKE_CANDLE_COUNT = 60;
+
+/**
+ * Hard ceiling on internet research inside a wake. Research is optional
+ * context; it must never hold the reasoning pipeline open.
+ */
+const NEWS_BUDGET_MS = 2_500;
+
+/**
+ * Resolves to `fallback` if `promise` has not settled within `ms`.
+ *
+ * The underlying work is NOT cancelled — it is simply no longer awaited, so a
+ * late resolution cannot mutate state through this path.
+ */
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  fallback: T,
+): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(fallback);
+    }, ms);
+
+    timer.unref?.();
+
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
 
 /** Hard floor for INTERVAL schedules; below this we would burn tokens. */
 const MIN_SCHEDULE_INTERVAL_MINUTES = 5;
@@ -128,8 +187,14 @@ export function normaliseSchedule(schedule: GoatSchedule | undefined): GoatSched
       return { mode: schedule.mode };
 
     case 'TIMES': {
+      /**
+       * Range-validate, not just shape-validate. `/^\d{2}:\d{2}$/` happily
+       * accepts "99:99", which would leave a schedule that is non-empty but can
+       * never fire — a silently dead GOAT. Anything unusable therefore drops
+       * to MANUAL, where the user can see the GOAT simply will not run itself.
+       */
       const times = (schedule.times ?? [])
-        .filter((t) => typeof t === 'string' && /^\d{2}:\d{2}$/.test(t))
+        .filter((t) => typeof t === 'string' && isValidClockTime(t))
         .slice(0, 12);
 
       return times.length > 0 ? { mode: 'TIMES', times } : { mode: 'MANUAL' };
@@ -182,6 +247,17 @@ export function msUntilNextScheduledTime(
   return Math.max(1_000, best);
 }
 
+/** True only for a real 24-hour wall-clock time, e.g. "08:30". */
+export function isValidClockTime(value: string): boolean {
+  const match = /^(\d{2}):(\d{2})$/.exec(value.trim());
+  if (!match) return false;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+
+  return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
+}
+
 /** Short human label for a schedule, used in wake reasons and the UI. */
 export function describeSchedule(schedule: GoatSchedule): string {
   switch (schedule.mode) {
@@ -232,6 +308,7 @@ export class GoatDurableObject {
   private readonly reasoning: ReasoningGateway;
   private readonly marketProvider: MarketDataProvider;
   private readonly marketStateStore?: MarketStateStore;
+  private readonly scheduler?: WakeScheduler;
   private readonly signalRepo?: SignalRepository;
   private readonly thesisRepo?: ThesisRepository;
   private readonly wakeEventRepo?: WakeEventRepository;
@@ -265,6 +342,7 @@ export class GoatDurableObject {
     this.reasoning = options.reasoning;
     this.marketProvider = options.marketProvider;
     this.marketStateStore = options.marketStateStore;
+    this.scheduler = options.scheduler;
     this.signalRepo = options.signals;
     this.thesisRepo = options.theses;
     this.wakeEventRepo = options.wakeEvents;
@@ -301,7 +379,32 @@ export class GoatDurableObject {
 
     this.attachMarketListeners();
 
-    if (options.autoStartScheduler !== false && !this.paused) {
+    /**
+     * Warm the research cache up front so the first wake does not pay for it.
+     * Fire-and-forget: this must never delay startup.
+     *
+     * Only for LIVE data. There is no point spending a network request to
+     * research headlines that will be attached to simulated prices, and doing
+     * so on every actor construction is a needless cost.
+     */
+    if (
+      goat.markets.length > 0 &&
+      this.marketProvider.dataMode === 'LIVE'
+    ) {
+      newsService.prewarm(goat.markets);
+    }
+
+    /**
+     * Only arm an in-process timer when there is no external scheduler.
+     * With a Durable Object scheduler the alarm lives in durable storage and
+     * is re-armed by the DO, so a local timer would be a second, competing
+     * source of truth.
+     */
+    if (
+      options.autoStartScheduler !== false &&
+      !this.paused &&
+      !this.scheduler
+    ) {
       this.scheduleRoutineCheck(this.baseCheckIntervalMs);
     }
   }
@@ -471,11 +574,21 @@ export class GoatDurableObject {
 
       try {
         if (this.marketStateStore) {
+          /**
+           * Reasoning context is read on the wake timeframe (1h). Tracker
+           * observation happens separately on the GOAT's tracking timeframe.
+           */
           const state = await this.marketStateStore.getState(market, WAKE_TIMEFRAME);
 
-          if (state.degraded || !state.quote) {
+          /**
+           * Hard gate: only provider-confirmed, in-TTL data may become a
+           * thesis. DEGRADED (last known values) and UNAVAILABLE are both
+           * refused, so stale prices can never quietly look like a reading.
+           */
+          if (!isUsableMarketState(state) || !state.quote) {
             throw new Error(
-              state.error ?? 'market data unavailable',
+              `market data is ${state.status}` +
+                (state.error ? `: ${state.error}` : ''),
             );
           }
 
@@ -799,6 +912,11 @@ export class GoatDurableObject {
       return;
     }
 
+    /** Tracking cadence comes from the user's chosen timeframe. */
+    const trackingTimeframe = normaliseTrackingTimeframe(
+      this.goatConfig.timeframe,
+    );
+
     this.unsubscribeMarketData = this.marketStateStore.subscribe(
       this.goatConfig.markets[0],
       (snapshot) => {
@@ -806,7 +924,23 @@ export class GoatDurableObject {
           console.error(`[goat ${this.id}] tracker evaluation error:`, err);
         });
       },
+      trackingTimeframe,
+      pollIntervalForTimeframe(trackingTimeframe),
     );
+  }
+
+  /**
+   * Evaluates trackers once against a supplied snapshot.
+   *
+   * Public because the serverless path calls it on demand: there is no
+   * persistent process watching market state there, so the Durable Object's
+   * tracker-check alarm drives it. Deterministic and AI-free — it only
+   * escalates to a reasoning wake when a condition is actually satisfied.
+   *
+   * Returns true when a tracker fired.
+   */
+  async evaluateTrackersNow(snapshot: MarketStateSnapshot): Promise<boolean> {
+    return this.onMarketState(snapshot);
   }
 
   /**
@@ -827,33 +961,54 @@ export class GoatDurableObject {
    * Fired by the shared store: the same evaluation against a PRE-COMPUTED
    * indicator snapshot — no fetch, no recomputation.
    */
-  private async onMarketState(snapshot: MarketStateSnapshot): Promise<void> {
-    if (this.stopped || this.paused) return;
-    if (this.runtimeState.isEvaluating) return;
+  private async onMarketState(
+    snapshot: MarketStateSnapshot,
+  ): Promise<boolean> {
+    if (this.stopped || this.paused) return false;
+    if (this.runtimeState.isEvaluating) return false;
 
     const quote = snapshot.quote;
-    if (!quote) return;
+    if (!quote) return false;
 
-    if (!this.runtimeState.trackers.some((t) => !t.isTriggered)) return;
+    /**
+     * Trackers are deterministic but not clairvoyant: a DEGRADED snapshot is a
+     * stale price and must not be allowed to fire a condition.
+     */
+    if (!isUsableMarketState(snapshot)) return false;
+
+    if (!this.runtimeState.trackers.some((t) => !t.isTriggered)) {
+      return false;
+    }
 
     const candles =
       snapshot.candles.length > 0
         ? snapshot.candles
         : await this.marketProvider.getCandles(quote.symbol, '15m', 60);
 
-    await this.runTrackers(quote, candles, snapshot.indicators ?? undefined);
+    return this.runTrackers(
+      quote,
+      candles,
+      snapshot.indicators ?? undefined,
+    );
   }
 
-  /** Shared tracker loop for both the store and direct-subscription paths. */
+  /**
+   * Shared tracker loop for both the store and direct-subscription paths.
+   *
+   * Returns true when a condition fired. The return value cannot be derived by
+   * counting triggered trackers before and after, because a firing tracker
+   * immediately triggers a wake that REPLACES the tracker list with the next
+   * thesis's trackers.
+   */
   private async runTrackers(
     quote: MarketQuote,
     candles: Candle[],
     indicators: IndicatorSnapshot | undefined,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const matchingTrackers = this.runtimeState.trackers.filter(
       (t) => !t.isTriggered && (t.market === quote.symbol || !t.market),
     );
-    if (!matchingTrackers.length) return;
+    if (!matchingTrackers.length) return false;
 
     for (const tracker of matchingTrackers) {
       const report = TrackerEvaluator.evaluate(tracker, quote, candles, indicators);
@@ -875,9 +1030,11 @@ export class GoatDurableObject {
           quote.symbol,
           { ...report.marketContext, trackerFormula: report.formulaDescription },
         );
-        break;
+        return true;
       }
     }
+
+    return false;
   }
 
   private notifyTrackerTrigger(report: TrackerEvaluationReport): void {
@@ -956,6 +1113,9 @@ export class GoatDurableObject {
    * A PAUSED GOAT never arms a timer at all.
    */
   private scheduleRoutineCheck(delayMs?: number, respectSchedule = false): void {
+    // A durable scheduler owns the schedule; a local timer here would be a
+    // competing source of truth that dies with the process.
+    if (this.scheduler) return;
     if (this.stopped || this.paused) return;
     if (this.scheduledAlarm) clearTimeout(this.scheduledAlarm);
 

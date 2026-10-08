@@ -41,21 +41,50 @@ import {
   computeIndicatorSnapshot,
 } from '../tracker-sdk/TrackerEvaluator';
 
+/**
+ * Usability of a snapshot, in one field.
+ *
+ *   LIVE       — fetched from the provider and within TTL
+ *   DEGRADED   — provider failed; these are the last known values, flagged
+ *   UNAVAILABLE— no usable data at all (cold start during an outage)
+ *
+ * Callers that must not act on unconfirmed prices check this rather than
+ * inferring health from booleans.
+ */
+export type MarketStateStatus =
+  | 'LIVE'
+  | 'DEGRADED'
+  | 'UNAVAILABLE';
+
 export interface MarketStateSnapshot {
+  /** Canonical market id used in the key, e.g. "EUR/USD". */
   symbol: string;
   timeframe: string;
+  /** Storage key: "<MARKET>:<timeframe>". */
+  key: string;
   fetchedAt: number;
+  lastUpdatedAt: number;
+  status: MarketStateStatus;
   /** True when this snapshot is older than the TTL. */
   expired: boolean;
   /** True when the provider failed and these are the last known values. */
   degraded: boolean;
+  /** Convenience: the last known price, or null when there is none. */
+  latestPrice: number | null;
   quote: MarketQuote | null;
   candles: Candle[];
   indicators: IndicatorSnapshot | null;
   /** Milliseconds spent fetching + computing. Useful for spotting hot paths. */
   computeMs: number;
-  /** Provider or computation error that caused `degraded`. */
+  /** Provider or computation error that caused a non-LIVE status. */
   error?: string;
+}
+
+/** True only when the data is fresh and provider-confirmed. */
+export function isUsableMarketState(
+  snapshot: Pick<MarketStateSnapshot, 'status'>,
+): boolean {
+  return snapshot.status === 'LIVE';
 }
 
 /** Where snapshots live between process restarts. */
@@ -108,6 +137,7 @@ export class MarketStateStore {
   private readonly hydrated = new Set<string>();
   private readonly subscribers = new Map<string, Set<(s: MarketStateSnapshot) => void>>();
   private readonly pollers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly observers = new Set<(s: MarketStateSnapshot) => void>();
 
   private readonly ttlMs: number;
   private readonly candleCount: number;
@@ -147,8 +177,14 @@ export class MarketStateStore {
       });
   }
 
+  /**
+   * Storage key: "<MARKET>:<timeframe>".
+   *
+   * Market-keyed, never GOAT-keyed — several GOATs watching EUR/USD at 5m
+   * share one entry, one fetch and one indicator computation.
+   */
   private key(symbol: string, timeframe: string): string {
-    return `${symbol.trim().toUpperCase()}::${timeframe}`;
+    return `${symbol.trim().toUpperCase()}:${timeframe}`;
   }
 
   /**
@@ -194,8 +230,10 @@ export class MarketStateStore {
     symbol: string,
     callback: (snapshot: MarketStateSnapshot) => void,
     timeframe?: string,
+    pollIntervalMs?: number,
   ): () => void {
     const tf = timeframe ?? this.timeframe;
+    const intervalMs = pollIntervalMs ?? this.pollIntervalMs;
     const key = this.key(symbol, tf);
 
     let set = this.subscribers.get(key);
@@ -221,7 +259,7 @@ export class MarketStateStore {
           .catch(() => {
             /* getState never throws. */
           });
-      }, this.pollIntervalMs);
+      }, intervalMs);
 
       timer.unref?.();
       this.pollers.set(key, timer);
@@ -246,6 +284,20 @@ export class MarketStateStore {
   /** Number of live poll loops; used by tests to prove no timer leaks. */
   activePollers(): number {
     return this.pollers.size;
+  }
+
+  /**
+   * Observes EVERY fresh snapshot, independent of subscribers.
+   *
+   * Used by the daily rollup so a recap is built from the same confirmed data
+   * the trackers use. Kept separate from `subscribe` because the rollup must
+   * keep observing even when no GOAT is currently watching a market.
+   */
+  onSnapshot(listener: (snapshot: MarketStateSnapshot) => void): () => void {
+    this.observers.add(listener);
+    return () => {
+      this.observers.delete(listener);
+    };
   }
 
   /** Number of symbols with at least one subscriber. */
@@ -295,8 +347,9 @@ export class MarketStateStore {
       return;
     }
 
+    const prefix = `${symbol.trim().toUpperCase()}:`;
     for (const key of [...this.snapshots.keys()]) {
-      if (key.startsWith(`${symbol.trim().toUpperCase()}::`)) {
+      if (key.startsWith(prefix)) {
         this.snapshots.delete(key);
       }
     }
@@ -307,6 +360,7 @@ export class MarketStateStore {
     this.pollers.forEach((timer) => clearInterval(timer));
     this.pollers.clear();
     this.subscribers.clear();
+    this.observers.clear();
   }
 
   private fanOut(key: string, snapshot: MarketStateSnapshot): void {
@@ -351,12 +405,17 @@ export class MarketStateStore {
       const computeMs = this.now() - startedAt;
       this.stats.computeMsTotal += computeMs;
 
+      const now = this.now();
       const snapshot: MarketStateSnapshot = {
         symbol,
         timeframe,
-        fetchedAt: this.now(),
+        key,
+        fetchedAt: now,
+        lastUpdatedAt: now,
+        status: 'LIVE',
         expired: false,
         degraded: false,
+        latestPrice: quote.mid,
         quote,
         candles,
         indicators,
@@ -365,6 +424,14 @@ export class MarketStateStore {
 
       this.snapshots.set(key, snapshot);
       this.fanOut(key, snapshot);
+
+      for (const listener of [...this.observers]) {
+        try {
+          listener(snapshot);
+        } catch (err) {
+          this.log('[market-state] observer threw', err);
+        }
+      }
 
       // Write-behind: never block the read path on persistence.
       if (this.persist) {
@@ -387,12 +454,24 @@ export class MarketStateStore {
        * because one request failed is strictly worse than showing slightly
        * older real prices, and `degraded` marks them honestly.
        */
+      const hasUsableFallback =
+        previous?.quote !== null &&
+        previous?.quote !== undefined;
+
       const snapshot: MarketStateSnapshot = {
         symbol,
         timeframe,
+        key,
+        /**
+         * Keep the ORIGINAL fetch time. Rewriting it on failure would make a
+         * stale snapshot look freshly confirmed to every downstream check.
+         */
         fetchedAt: previous?.fetchedAt ?? 0,
+        lastUpdatedAt: previous?.lastUpdatedAt ?? 0,
+        status: hasUsableFallback ? 'DEGRADED' : 'UNAVAILABLE',
         expired: false,
         degraded: true,
+        latestPrice: previous?.quote?.mid ?? null,
         quote: previous?.quote ?? null,
         candles: previous?.candles ?? [],
         indicators: previous?.indicators ?? null,

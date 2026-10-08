@@ -301,6 +301,12 @@ export interface SignalGoat {
   status: GoatStatus;
   /** When this GOAT is allowed to spend AI tokens. See GoatSchedule. */
   schedule?: GoatSchedule;
+  /**
+   * User-selected MARKET TRACKING timeframe — the cadence at which this GOAT's
+   * trackers are observed. Does not restrict what the AI may reason about.
+   * See TRACKING_TIMEFRAMES in services/market-data/trackingTimeframes.
+   */
+  timeframe?: '1m' | '5m' | '15m' | '1h' | '4h';
   activeThesisId?: string;
   lastWakeReason?: string;
   lastWakeTime?: string;

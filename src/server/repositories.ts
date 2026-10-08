@@ -18,6 +18,7 @@
 import fs from 'fs';
 import path from 'path';
 import { SignalGoat, TradingSkill, TradeSignal, MarketThesis, WakeEvent, UserProfile } from '../types';
+import type { DailyMarketRecap } from '../services/daily-rolling/DailyMarketRecap';
 import { getFirebaseAdmin } from './firebaseAdmin';
 import type { Firestore } from 'firebase-admin/firestore';
 
@@ -62,6 +63,20 @@ export interface UserProfileRepository {
   findByTelegramChatId(chatId: string): Promise<UserProfile | null>;
 }
 
+/**
+ * Persisted daily market recaps.
+ *
+ * Keyed by "<MARKET>:<YYYY-MM-DD>" which is also the rollover idempotency
+ * key, so `save` overwrites the same day rather than appending a duplicate.
+ */
+export interface MarketRecapRepository {
+  /** Most recent recaps for a market, newest first. */
+  listByMarket(market: string, limit?: number): Promise<DailyMarketRecap[]>;
+  getById(id: string): Promise<DailyMarketRecap | null>;
+  /** Idempotent: the id embeds the trading date. */
+  save(recap: DailyMarketRecap): Promise<void>;
+}
+
 export interface KeyStore {
   getOpenRouterKey(userId: string): Promise<string | undefined>;
   setOpenRouterKey(userId: string, key: string | undefined): Promise<void>;
@@ -78,6 +93,7 @@ export interface PersistenceLayer {
   wakeEvents: WakeEventRepository;
   profiles: UserProfileRepository;
   keys: KeyStore;
+  recaps: MarketRecapRepository;
 }
 
 /* ------------------------------------------------------------------ */
@@ -97,6 +113,7 @@ export class NotFoundError extends Error {
 
 export class InMemoryPersistence implements PersistenceLayer {
   mode: 'memory' = 'memory';
+  recaps = new MemoryMarketRecapRepository();
   goats = new MemoryGoatRepository();
   skills = new MemorySkillRepository();
   signals = new MemorySignalRepository();
@@ -194,6 +211,22 @@ class MemoryProfileRepository implements UserProfileRepository {
   }
 }
 
+class MemoryMarketRecapRepository implements MarketRecapRepository {
+  private store = new Map<string, DailyMarketRecap>();
+  async listByMarket(market: string, limit = 30) {
+    return [...this.store.values()]
+      .filter((r) => r.market === market)
+      .sort((a, b) => b.tradingDate.localeCompare(a.tradingDate))
+      .slice(0, limit);
+  }
+  async getById(id: string) {
+    return this.store.get(id) ?? null;
+  }
+  async save(recap: DailyMarketRecap) {
+    this.store.set(recap.id, { ...recap });
+  }
+}
+
 class MemoryKeyStore implements KeyStore {
   private openRouter = new Map<string, string>();
   private telegram = new Map<string, string>();
@@ -225,10 +258,20 @@ interface FileDbShape {
   wakeEvents: Record<string, WakeEvent[]>;
   profiles: Record<string, UserProfile>;
   keys: { openRouter: Record<string, string>; telegram: Record<string, string> };
+  recaps: Record<string, DailyMarketRecap>;
 }
 
 function emptyDb(): FileDbShape {
-  return { goats: {}, skills: {}, signals: {}, theses: {}, wakeEvents: {}, profiles: {}, keys: { openRouter: {}, telegram: {} } };
+  return {
+    goats: {},
+    skills: {},
+    signals: {},
+    theses: {},
+    wakeEvents: {},
+    profiles: {},
+    keys: { openRouter: {}, telegram: {} },
+    recaps: {},
+  };
 }
 
 export class FilePersistence implements PersistenceLayer {
@@ -240,6 +283,7 @@ export class FilePersistence implements PersistenceLayer {
   wakeEvents: FileWakeEventRepository;
   profiles: FileProfileRepository;
   keys: FileKeyStore;
+  recaps: FileMarketRecapRepository;
 
   private db: FileDbShape = emptyDb();
   private filePath: string;
@@ -257,6 +301,7 @@ export class FilePersistence implements PersistenceLayer {
     this.wakeEvents = new FileWakeEventRepository(this);
     this.profiles = new FileProfileRepository(this);
     this.keys = new FileKeyStore(this);
+    this.recaps = new FileMarketRecapRepository(this);
   }
 
   private load(): void {
@@ -384,6 +429,23 @@ class FileProfileRepository implements UserProfileRepository {
   }
 }
 
+class FileMarketRecapRepository implements MarketRecapRepository {
+  constructor(private parent: FilePersistence) {}
+  async listByMarket(market: string, limit = 30) {
+    return Object.values(this.parent.data.recaps ?? {})
+      .filter((r) => r.market === market)
+      .sort((a, b) => b.tradingDate.localeCompare(a.tradingDate))
+      .slice(0, limit);
+  }
+  async getById(id: string) {
+    return this.parent.data.recaps[id] ?? null;
+  }
+  async save(recap: DailyMarketRecap) {
+    this.parent.data.recaps[recap.id] = recap;
+    this.parent.persist();
+  }
+}
+
 class FileKeyStore implements KeyStore {
   constructor(private parent: FilePersistence) {}
   async getOpenRouterKey(userId: string) {
@@ -417,6 +479,7 @@ export class FirestorePersistence implements PersistenceLayer {
   wakeEvents: FirestoreWakeEventRepository;
   profiles: FirestoreProfileRepository;
   keys: FirestoreKeyStore;
+  recaps: FirestoreMarketRecapRepository;
 
   constructor(private db: Firestore) {
     this.goats = new FirestoreGoatRepository(db);
@@ -426,6 +489,7 @@ export class FirestorePersistence implements PersistenceLayer {
     this.wakeEvents = new FirestoreWakeEventRepository(db);
     this.profiles = new FirestoreProfileRepository(db);
     this.keys = new FirestoreKeyStore(db);
+    this.recaps = new FirestoreMarketRecapRepository(db);
   }
 }
 
@@ -547,6 +611,30 @@ class FirestoreProfileRepository implements UserProfileRepository {
   async findByTelegramChatId(chatId: string) {
     const snap = await this.db.collection(PROFILES).where('telegramChatId', '==', chatId).limit(1).get();
     return snap.empty ? null : (snap.docs[0].data() as UserProfile);
+  }
+}
+
+const RECAPS = 'dailyMarketRecaps';
+
+class FirestoreMarketRecapRepository implements MarketRecapRepository {
+  constructor(private db: Firestore) {}
+  async listByMarket(market: string, limit = 30) {
+    const snap = await this.db
+      .collection(RECAPS)
+      .where('market', '==', market)
+      .orderBy('tradingDate', 'desc')
+      .limit(limit)
+      .get();
+    return snap.docs.map((d) => d.data() as DailyMarketRecap);
+  }
+  async getById(id: string) {
+    const doc = await this.db.collection(RECAPS).doc(id).get();
+    return doc.exists ? (doc.data() as DailyMarketRecap) : null;
+  }
+  async save(recap: DailyMarketRecap) {
+    // doc().set() is an upsert, and the id embeds the trading date, which is
+    // what makes the daily rollup idempotent.
+    await this.db.collection(RECAPS).doc(recap.id).set({ ...recap });
   }
 }
 

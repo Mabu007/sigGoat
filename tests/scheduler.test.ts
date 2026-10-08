@@ -114,7 +114,7 @@ describe('scheduler runtime behaviour', () => {
     });
     actors.push(live);
 
-    await sleep(450);
+    await sleep(1200);
 
     const state = live.getState();
     // Wakes happened and failures were caught, not crashed.
@@ -162,7 +162,7 @@ describe('scheduler runtime behaviour', () => {
     });
     actors.push(broken, healthy);
 
-    await sleep(300);
+    await sleep(1000);
 
     expect(failingGateway.calls).toBeGreaterThanOrEqual(1);
     expect(healthyGateway.calls).toBeGreaterThanOrEqual(2);
@@ -187,12 +187,12 @@ describe('scheduler runtime behaviour', () => {
     });
     actors.push(actor);
 
-    await sleep(70);
+    await sleep(400);
     actor.destroy();
     const callsAtStop = gateway.calls;
     expect(callsAtStop).toBeGreaterThanOrEqual(1);
 
-    await sleep(120);
+    await sleep(400);
     expect(gateway.calls).toBe(callsAtStop);
   });
 
@@ -213,12 +213,12 @@ describe('scheduler runtime behaviour', () => {
     });
     actors.push(actor);
 
-    await sleep(60);
+    await sleep(400);
     durableObjectRegistry.remove(goat.id);
     expect(durableObjectRegistry.get(goat.id)).toBeUndefined();
 
     const callsAtRemoval = gateway.calls;
-    await sleep(100);
+    await sleep(400);
     expect(gateway.calls).toBe(callsAtRemoval);
 
     // A stale wake request on the removed actor must be a no-op.

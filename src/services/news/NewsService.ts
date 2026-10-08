@@ -299,6 +299,34 @@ export class NewsService {
   clearCache(): void {
     this.cache.clear();
   }
+
+  /**
+   * Returns an already-cached snapshot WITHOUT touching the network.
+   *
+   * This exists so the wake pipeline never blocks on research. A cached
+   * snapshot is typically at most 15 minutes old, which is entirely
+   * acceptable for headline context and costs zero latency.
+   */
+  peek(market: string): NewsSnapshot | undefined {
+    return this.cache.get(market.trim().toUpperCase())?.snapshot;
+  }
+
+  /** Cached snapshots for several markets, no network access. */
+  peekAll(symbols: string[]): NewsSnapshot[] {
+    return symbols
+      .map((symbol) => this.peek(symbol))
+      .filter((snapshot): snapshot is NewsSnapshot => Boolean(snapshot));
+  }
+
+  /**
+   * Warms the cache in the background. Fire-and-forget by design: the caller
+   * is explicitly saying it does not need the result yet.
+   */
+  prewarm(symbols: string[]): void {
+    void this.getNewsForMarkets(symbols).catch(() => {
+      /* best effort */
+    });
+  }
 }
 
 function formatAge(ms: number): string {
