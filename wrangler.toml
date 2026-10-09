@@ -36,9 +36,24 @@ name = "NAMESPACE"
 class_name = "GoatSchedulerDO"
 
 # Required by the DO class above.
+#
+# SQLITE-BACKED, NOT KV.
+#
+# This was `new_classes`, which registers a KV-backed Durable Object. That
+# requires a paid plan, and the free plan rejects the whole deploy with
+# `code 10097 — In order to use Durable Objects with a free plan, you must
+# create a namespace using a new_sqlite_classes migration`.
+#
+# The class only uses `storage.get/put/delete`, `transactionSync` and the alarm
+# API — all of which SQLite-backed objects support identically — so nothing in
+# scheduler-worker.ts changes.
+#
+# This is not a destructive migration: the Worker has never been deployed on
+# this account (every lookup returned 404 "does not exist"), so no namespace,
+# no class and no schedule state exists to lose.
 [[migrations]]
 tag = "v1"
-new_classes = ["GoatSchedulerDO"]
+new_sqlite_classes = ["GoatSchedulerDO"]
 
 # --- Shared market data -------------------------------------------------
 # One Durable Object per INSTRUMENT CLASS (fx, metals, energy, index, crypto).
