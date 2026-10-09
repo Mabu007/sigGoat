@@ -10,9 +10,19 @@ coverage/
 .env*
 !.env.example
 
-# Runtime state. Contains each user's SAVED OpenRouter API key and Telegram
-# bot token in plaintext — this must never enter version control.
-data/
+# Runtime state at the REPOSITORY ROOT. Contains each user's SAVED OpenRouter
+# API key and Telegram bot token in plaintext — this must never enter version
+# control.
+#
+# Anchored to the root with a leading slash on purpose. A bare `data/` also
+# matches `src/data/`, which holds the DEFAULT SKILL LIBRARY source code that
+# `src/server/apiRouter.ts` imports. Because that directory was ignored, every
+# file in it was untracked, so a fresh clone could not build the API at all:
+# the Git-connected deploy failed with "Could not resolve ../data/defaultSkills".
+#
+# The root-level path pattern `/data/` still ignores the local state file and
+# `data/market-state/`, while leaving `src/data/` tracked.
+/data/
 
 # Firebase service-account downloads (never commit key material).
 #
