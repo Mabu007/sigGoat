@@ -1,19 +1,22 @@
-# Cloudflare Durable Object scheduler for SignalGOAT.
+# Cloudflare Durable Object runtime for SignalGOAT.
 #
-# Separate, tiny deployment. It owns scheduling state ONLY — never user data,
-# GOAT definitions, ownership, market data or AI. The Vercel application
-# remains the host for all of that and calls back into this Worker.
+# One Worker, two unrelated Durable Object classes, two independent
+# lifecycles. They are deployed together because they share one secret and
+# one authenticated surface, not because they share state.
 #
 # Deploy:
 #   npx wrangler deploy
 #
 # The Workers runtime cannot run firebase-admin (it needs Node crypto/gRPC),
-# which is precisely why nothing that touches data lives here.
+# which is precisely why nothing that touches user data lives here. Both
+# objects hold MARKET/SCHEDULING state only — no user ids, no API keys, no
+# GOAT definitions, no ownership.
 
 name = "siggoat-scheduler"
-main = "worker/scheduler-worker.ts"
+main = "worker/market-data-worker.ts"
 compatibility_date = "2026-01-01"
 
+# --- Per-GOAT scheduler -------------------------------------------------
 # One Durable Object per GOAT. Wrangler creates the class binding.
 [[durable_objects.bindings]]
 name = "NAMESPACE"
@@ -23,6 +26,29 @@ class_name = "GoatSchedulerDO"
 [[migrations]]
 tag = "v1"
 new_classes = ["GoatSchedulerDO"]
+
+# --- Shared market data -------------------------------------------------
+# One Durable Object per INSTRUMENT CLASS (fx, metals, energy, index, crypto).
+#
+# Partitioned by class rather than by symbol: an object per symbol means one
+# alarm per symbol whether or not that market is open, and a single object for
+# everything means one failing symbol blocking every other. Class
+# partitioning gives per-class fault isolation and bounded fan-out while
+# keeping the object count in the single digits.
+#
+# SQLite-backed: the hot queries are range scans by (instrument, open_time_ms)
+# and a bounded delete below the finalized watermark. The SQL backend gives a
+# real PRIMARY KEY (instrument, open_time_ms) UNIQUE constraint, which is what
+# makes candle upserts idempotent at the STORAGE layer rather than by
+# convention.
+[[durable_objects.bindings]]
+name = "MARKET_DATA"
+class_name = "MarketDataDO"
+
+# SQLite storage requires new_sqlite_classes (not new_classes).
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["MarketDataDO"]
 
 # Optional reconciliation: the app also reports health here, and a periodic
 # sweep re-arms any GOAT whose alarm was consumed by a failed delivery.

@@ -191,7 +191,15 @@ export type IndicatorType =
   | 'SWING_HIGH'
   | 'SWING_LOW'
   | 'SESSION_HIGH'
-  | 'SESSION_LOW';
+  | 'SESSION_LOW'
+  /**
+   * Price itself, as a condition target.
+   *
+   * The overwhelmingly common tracker is "price crosses X". Without a PRICE
+   * member in the union that condition has no representation and the runtime
+   * falls back to PRICE implicitly.
+   */
+  | 'PRICE';
 
 export const INDICATOR_TYPES: readonly IndicatorType[] = [
   'RSI',
@@ -204,6 +212,7 @@ export const INDICATOR_TYPES: readonly IndicatorType[] = [
   'SWING_LOW',
   'SESSION_HIGH',
   'SESSION_LOW',
+  'PRICE',
 ] as const;
 
 export type TradingSession =

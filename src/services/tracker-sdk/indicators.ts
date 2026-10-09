@@ -1,18 +1,32 @@
-import { Candle } from '../../types';
+/**
+ * The minimum structural shape every indicator needs.
+ *
+ * Widened from the UI `Candle` type so the canonical `CandleRecord` (which
+ * carries `finalized` and an optional `volume`) can be fed to the SAME
+ * indicator implementations without an adapter. `Candle` satisfies this.
+ */
+export interface OhlcCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
 
 /**
  * Deterministic Indicator & Technical Analysis Toolkit
  * Indicators are deterministic tools that exist below the reasoning layer.
  */
 
-export function calculateSMA(candles: Candle[], period: number): number {
+export function calculateSMA(candles: readonly OhlcCandle[], period: number): number {
   if (candles.length < period) return candles[candles.length - 1]?.close || 0;
   const slice = candles.slice(-period);
   const sum = slice.reduce((acc, c) => acc + c.close, 0);
   return Number((sum / period).toFixed(5));
 }
 
-export function calculateEMA(candles: Candle[], period: number): number {
+export function calculateEMA(candles: readonly OhlcCandle[], period: number): number {
   if (candles.length === 0) return 0;
   if (candles.length < period) return calculateSMA(candles, candles.length);
 
@@ -26,7 +40,7 @@ export function calculateEMA(candles: Candle[], period: number): number {
   return Number(ema.toFixed(5));
 }
 
-export function calculateRSI(candles: Candle[], period: number = 14): number {
+export function calculateRSI(candles: readonly OhlcCandle[], period: number = 14): number {
   if (candles.length <= period) return 50.0;
 
   let gains = 0;
@@ -56,7 +70,7 @@ export function calculateRSI(candles: Candle[], period: number = 14): number {
   return Number(rsi.toFixed(1));
 }
 
-export function calculateATR(candles: Candle[], period: number = 14): number {
+export function calculateATR(candles: readonly OhlcCandle[], period: number = 14): number {
   if (candles.length < 2) return 0.001;
 
   const trs: number[] = [];
@@ -77,7 +91,7 @@ export function calculateATR(candles: Candle[], period: number = 14): number {
 }
 
 export function calculateMACD(
-  candles: Candle[],
+  candles: readonly OhlcCandle[],
   fastPeriod: number = 12,
   slowPeriod: number = 26,
   signalPeriod: number = 9
@@ -97,20 +111,20 @@ export function calculateMACD(
   return { macd, signal, histogram };
 }
 
-export function getHighestHigh(candles: Candle[], lookback: number = 20): number {
+export function getHighestHigh(candles: readonly OhlcCandle[], lookback: number = 20): number {
   if (!candles.length) return 0;
   const slice = candles.slice(-lookback);
   return Math.max(...slice.map(c => c.high));
 }
 
-export function getLowestLow(candles: Candle[], lookback: number = 20): number {
+export function getLowestLow(candles: readonly OhlcCandle[], lookback: number = 20): number {
   if (!candles.length) return 0;
   const slice = candles.slice(-lookback);
   return Math.min(...slice.map(c => c.low));
 }
 
 export function detectSessionExtremes(
-  candles: Candle[],
+  candles: readonly OhlcCandle[],
   session: 'LONDON' | 'NEW_YORK' | 'ASIAN'
 ): { high: number; low: number; valid: boolean; rangePips: number } {
   if (!candles.length) return { high: 0, low: 0, valid: false, rangePips: 0 };
@@ -152,7 +166,7 @@ export interface MarketStructureInfo {
   supplyZone: { low: number; high: number };
 }
 
-export function analyzeMarketStructure(candles: Candle[], currentMid: number): MarketStructureInfo {
+export function analyzeMarketStructure(candles: readonly OhlcCandle[], currentMid: number): MarketStructureInfo {
   if (candles.length < 10) {
     return {
       bias: 'RANGING',

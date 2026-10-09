@@ -188,6 +188,15 @@ export interface TrackerEvaluationReport {
   eventReason: string;
   /** Human-readable condition, e.g. "EMA(20) CROSS_ABOVE 1.085". */
   formulaDescription?: string;
+  /**
+   * Open time of the newest candle this verdict was computed from.
+   *
+   * This is the evaluation CURSOR. Downstream it becomes both the
+   * duplicate-suppression key for a re-delivered event and part of the
+   * notification idempotency key, so the same bar can never produce two
+   * alerts. Null when no candles were available.
+   */
+  evaluatedCandleMs?: number | null;
 }
 
 export class TrackerEvaluator {
@@ -201,6 +210,27 @@ export class TrackerEvaluator {
    * full calculations on every tick.
    */
   static evaluate(
+    tracker: TrackerCondition,
+    quote: MarketQuote,
+    candles: Candle[],
+    snapshot?: IndicatorSnapshot,
+  ): TrackerEvaluationReport {
+    const report = TrackerEvaluator.evaluateInternal(tracker, quote, candles, snapshot);
+
+    /**
+     * Stamp the evaluation cursor once, here, rather than threading the candle
+     * slice through every return path. Downstream this is both the
+     * duplicate-suppression key for a re-delivered event and part of the
+     * notification idempotency key.
+     */
+    return {
+      ...report,
+      evaluatedCandleMs:
+        candles.length > 0 ? candles[candles.length - 1].time : null,
+    };
+  }
+
+  private static evaluateInternal(
     tracker: TrackerCondition,
     quote: MarketQuote,
     candles: Candle[],
@@ -415,6 +445,7 @@ export class TrackerEvaluator {
     eventReason: string,
     marketContext: IndicatorSnapshot & { spread: number },
     formulaDescription?: string,
+    candles?: readonly Candle[],
   ): TrackerEvaluationReport {
     return {
       isTriggered,
@@ -431,6 +462,8 @@ export class TrackerEvaluator {
       eventReason,
       formulaDescription:
         formulaDescription ?? tracker.formulaDescription,
+      evaluatedCandleMs:
+        candles && candles.length ? candles[candles.length - 1].time : null,
     };
   }
 }

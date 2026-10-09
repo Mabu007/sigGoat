@@ -219,26 +219,43 @@ mode**. Nothing pretends to be real:
 
 ## Hosting
 
-**Vercel runs the application. Cloudflare Durable Objects run the schedule.**
+**Vercel runs the application. Cloudflare Durable Objects run the stateful
+runtime.**
 
 ```
-Vercel                              Cloudflare
-────────                            ─────────
-UI + API (api/index.ts)             worker/scheduler-worker.ts
-Firebase auth + Firestore           one Durable Object per GOAT
-BiQuote + MarketStateStore          durable: nextWakeAt,
-Trackers (deterministic)              nextTrackerCheckAt,
-GOAT wake -> AI -> SignalGate         generationId, paused
-        ▲                                       │
-        └──── POST /api/internal/wake ◀──── alarm()
-              POST /api/internal/check-trackers   (no AI cost)
+Vercel                                  Cloudflare (one Worker, two DO classes)
+──────                                  ─────────────────────────────────────
+UI + API (api/index.ts)                 worker/market-data-worker.ts
+Firebase auth + Firestore               GoatSchedulerDO  — one per GOAT id
+OpenRouter (the user's own key)           durable: nextWakeAt, nextTrackerCheckAt,
+Telegram outbox + delivery                                generationId, paused
+Trackers (deterministic)                MarketDataDO     — one per instrument class
+GOAT wake -> AI -> SignalGate             SQLite: candles, session summaries,
+        ▲                                            swings, levels, subscriptions
+        │                                alarms: ingest / finalize / prune
+        ├──── POST /api/internal/wake ◀────────── alarm()
+        ├──── POST /api/internal/check-trackers     (no AI cost)
+        └──── POST /api/internal/market-event ◀──── published candle events
 ```
 
-The Durable Object holds **scheduling state only**. It never touches user data,
-GOAT definitions, market data or AI, and it imports no Node-only module —
-`firebase-admin` cannot run on the Workers runtime, which is exactly why nothing
-that needs it lives there. See
+Neither Durable Object ever sees a user id, an API key, a thesis or a signal, and
+neither imports a Node-only module — `firebase-admin` cannot run on the Workers
+runtime, which is exactly why nothing that needs it lives there. See
 [docs/durable-objects.md](docs/durable-objects.md).
+
+### Market data storage and retention
+
+One-minute OHLC candles are stored once, shared by every GOAT, and bounded by a
+configurable retention policy. The rule that governs all of it:
+
+> **No candle history is deleted before its required durable summary and
+> structural facts are safely persisted.**
+
+Session summaries, the confirmed swing ledger and the level ledger outlive the
+minutes they were derived from, so a GOAT can still explain why it considers a
+level important weeks after the candles are gone. Session boundaries are
+derived from IANA timezone rules, so daylight-saving transitions are correct
+rather than hardcoded to a fixed UTC offset.
 
 ### Vercel setup
 
@@ -249,10 +266,18 @@ that needs it lives there. See
    ```
    FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=<base64 of the service-account JSON>
    DURABLE_SCHEDULER_URL=https://<worker-name>.<subdomain>.workers.dev
-   DURABLE_SCHEDULER_SECRET=<any long random string>
+   DURABLE_SCHEDULER_SECRET=<same value as the Worker's SCHEDULER_SECRET>
+   MARKET_DATA_WORKER_URL=https://<worker-name>.<subdomain>.workers.dev
+   MARKET_DATA_WORKER_SECRET=<a separate random value>
    OPENROUTER_API_KEY=                 # optional platform fallback
    TELEGRAM_BOT_TOKEN=                 # optional
    ```
+
+   Generate the shared secret with `openssl rand -hex 32`. `MARKET_DATA_*` is a
+   **separate** secret from `DURABLE_SCHEDULER_SECRET` so the two surfaces can
+   be rotated independently and a leaked market secret cannot schedule GOAT
+   wakes. Retention overrides (`RETENTION_*`) are optional; see
+   `.env.example` for the defaults.
 
    `base64 -w0 firebase-service-account.json`. Never set
    `SIGNALGOAT_ALLOW_DEV_AUTH` in production.
@@ -266,6 +291,11 @@ that needs it lives there. See
    `SCHEDULER_SECRET` and `APP_ORIGIN` are Worker secrets:
    `npx wrangler secret put SCHEDULER_SECRET`.
 
+   `wrangler.toml` declares two migrations — `v1` uses `new_classes` for
+   `GoatSchedulerDO`, and `v2` uses **`new_sqlite_classes`** for
+   `MarketDataDO`. SQLite storage requires the latter; using `new_classes`
+   there is the usual cause of `SQLite storage unavailable` at runtime.
+
 4. Public Firebase **web** config is committed in `.env.example` as
    `VITE_FIREBASE_*` and inlined at build time. Add your Vercel domain (and
    `localhost` / `127.0.0.1`) to **Authentication → Settings → Authorized
@@ -273,17 +303,35 @@ that needs it lives there. See
 
 ### What works where
 
-| Feature | Vercel + DO scheduler |
+| Feature | Vercel + Durable Objects |
 |---|---|
 | Sign in, save keys, GOAT CRUD, manual wake, chat | yes |
 | Scheduled reasoning at the user's interval | yes — durable alarm |
 | Tracker conditions firing at the tracking cadence | yes — durable alarm, no AI cost |
-| Telegram alerts | yes |
+| Shared one-minute candle history, one provider call per instrument | yes |
+| Bounded retention with summary-before-delete | yes — Durable Object alarm |
+| Session summaries, swing ledger, level ledger | yes — survive candle pruning |
+| Dormant GOATs do not poll | yes — woken by published candle events |
+| Telegram alerts, deduplicated and retried | yes |
 | Survives Vercel restart / redeploy | yes — alarm state is in the Durable Object |
 
 Without `DURABLE_SCHEDULER_URL` the app falls back to in-process timers and says
 so loudly at boot and in `GET /api/settings/status` (`scheduler.kind`). That
-fallback does **not** survive restarts.
+fallback does **not** survive restarts. Without `MARKET_DATA_WORKER_URL` the
+durable market store is not used and `durableMarketData.configured` reports
+`false` — both states are reported rather than silently assumed.
+
+### Checking it is actually working
+
+```
+GET /api/settings/status      scheduler + durableMarketData + filesystemPersistence
+GET /api/markets/ingestion    per-instrument freshness, staleness, prune counts
+GET /api/markets/session?symbol=EUR/USD   the UTC offset in force right now
+```
+
+`filesystemPersistence` reads `disabled` on Vercel by design: the filesystem
+there is ephemeral, so a "persisted" snapshot would vanish on the next cold
+start. The durable home for market state is the Durable Object.
 
 ## Secrets policy
 

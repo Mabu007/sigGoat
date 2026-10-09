@@ -50,6 +50,24 @@ import {
   pollIntervalForTimeframe,
 } from '../services/market-data/trackingTimeframes';
 import { DailyMarketRollup } from '../services/daily-rolling/DailyMarketRollup';
+import {
+  MarketIngestionService,
+  type Subscription as IngestionSubscription,
+} from '../services/market-data/MarketIngestionService';
+import { MemoryCandleRepository } from '../services/market-data/candle-core/CandleRepositories';
+import { retentionPolicyFromEnv } from '../services/market-data/candle-core/RetentionPolicy';
+import {
+  DurableMarketDataClient,
+  durableMarketDataEnvFromProcess,
+  validateMarketEvent,
+  type DurablePartition,
+} from '../services/market-data/DurableMarketDataClient';
+import type { MarketEvent } from '../services/market-data/MarketEvent';
+import { describeSessionSpec, resolveSession } from '../services/market-data/candle-core/SessionCalendar';
+import {
+  NotificationOutbox,
+  MemoryOutboxStore,
+} from '../services/telegram/NotificationOutbox';
 
 export const apiRouter = express.Router();
 apiRouter.use(express.json({ limit: '1mb' }));
@@ -89,6 +107,26 @@ if (marketProvider.dataMode === 'PAPER') {
 }
 
 /**
+ * IS THE APP RUNNING IN A SERVERLESS, EPHEMERAL RUNTIME?
+ *
+ * Vercel functions have a read-only filesystem apart from a small scratch
+ * directory that is discarded on every cold start and on every deploy. Writing
+ * market snapshots there produces files nobody ever reads and writes that
+ * vanish without warning — the exact "silent local persistence" failure mode
+ * this app must not have.
+ *
+ * `VERCEL` is injected by the platform; the others cover self-hosted serverless
+ * deployments that would otherwise be detected too late.
+ */
+export function isEphemeralRuntime(): boolean {
+  if (process.env.VERCEL) return true;
+  if (process.env.AWS_LAMBDA_FUNCTION_NAME) return true;
+  if (process.env.FUNCTION_TARGET) return true; // Google Cloud Functions
+  if (process.env.NETLIFY) return true;
+  return false;
+}
+
+/**
  * Shared market state: one fetch + one indicator computation per
  * (symbol, timeframe) per TTL, fanned out to every GOAT and persisted so a
  * restart does not start from an empty chart.
@@ -97,15 +135,123 @@ if (marketProvider.dataMode === 'PAPER') {
  * per-key derived market state). It is deliberately keyed by MARKET, not by
  * GOAT, because the expensive thing — indicator computation over candles — is
  * identical for every GOAT watching the same pair.
+ *
+ * PERSISTENCE IS DISABLED ON SERVERLESS HOSTS.
+ *
+ * A snapshot written to an ephemeral filesystem is not persistence: it is
+ * discarded on the next cold start, and it fails silently because the writer
+ * swallows its own errors. On Vercel the canonical, durable home for market
+ * state is the Cloudflare MarketDataDO — which is configured separately via
+ * MARKET_DATA_WORKER_URL — so writing a shadow copy to local disk here would
+ * create a second, divergent history rather than a cache.
  */
 export const marketStateStore = new MarketStateStore(marketProvider, {
   ttlMs: 30_000,
   pollIntervalMs: 5_000,
   timeframe: '15m',
   candleCount: 120,
-  ...(marketProvider.dataMode === 'LIVE'
+  ...(marketProvider.dataMode === 'LIVE' && !isEphemeralRuntime()
     ? { persist: new FileMarketStatePersistence() }
     : {}),
+});
+
+/**
+ * CANONICAL MARKET DATA (one-minute candles, shared ingestion)
+ * -------------------------------------------------------
+ * The authoritative ingestion path. Every GOAT that wants candles for an
+ * instrument reads them from here; NO GOAT opens its own provider connection.
+ *
+ * `MarketIngestionService` owns validation, idempotent upsert, per-partition
+ * overlap suppression, provider backoff and freshness, plus the session
+ * finalizer that converts completed sessions into durable summaries BEFORE
+ * pruning their minutes.
+ *
+ * On Vercel this in-process instance is the same logic the Cloudflare
+ * `MarketDataDO` runs; the DO is the durable owner in production and this
+ * service is what serves a self-hosted or development deployment. Both
+ * implement identical rules, so behaviour does not fork between environments.
+ */
+export const candleStorage = new MemoryCandleRepository();
+
+export const marketIngestion = new MarketIngestionService({
+  storage: candleStorage,
+  source: marketProvider,
+  retention: retentionPolicyFromEnv(),
+});
+
+/**
+ * Authenticated client for the Cloudflare market-data Durable Objects.
+ *
+ * Disabled unless both the worker URL and the shared secret are configured —
+ * there is deliberately no insecure fallback. `durableMarketDataClient.enabled`
+ * is reported by /api/settings/status so an unconfigured deployment is never
+ * mistaken for a working one.
+ */
+export const durableMarketDataClient = new DurableMarketDataClient(
+  durableMarketDataEnvFromProcess(),
+);
+
+/**
+ * Durable notification delivery.
+ *
+ * Replaces the inline fire-and-forget Telegram send. A notification is written
+ * to the outbox BEFORE delivery, keyed by the logical decision, so a retried
+ * wake cannot send a second message and a Telegram outage leaves a retryable
+ * record rather than a lost alert.
+ */
+export const notificationOutbox = new NotificationOutbox({
+  store: new MemoryOutboxStore(),
+  deliverer: {
+    deliver: async (record) => {
+      const token =
+        (await persistence.keys.getTelegramToken(record.userId)) ||
+        process.env.TELEGRAM_BOT_TOKEN;
+
+      if (!token) {
+        /**
+         * No credential is a PERMANENT failure, not a transient one. Retrying
+         * would burn the attempt budget on something no retry can fix.
+         */
+        throw new Error('No Telegram bot token configured for this user.');
+      }
+
+      const chatId =
+        (await persistence.profiles.get(record.userId))?.telegramChatId ||
+        process.env.TELEGRAM_CHAT_ID;
+
+      if (!chatId) {
+        throw new Error('No Telegram chat id configured for this user.');
+      }
+
+      const result = await telegramService.sendMessage(
+        chatId,
+        record.body,
+        token,
+      );
+
+      /**
+       * `sendMessage` reports failure in its RESULT rather than by throwing,
+       * because a Telegram 4xx is a normal response, not an exception. Throwing
+       * here is what puts the record into the retry path instead of silently
+       * marking a failed delivery as sent.
+       */
+      if (!result.ok) {
+        throw new Error(result.description ?? 'Telegram delivery failed.');
+      }
+
+      const messageId =
+        result.result && typeof result.result === 'object'
+          ? String((result.result as { message_id?: number }).message_id ?? '')
+          : '';
+
+      /**
+       * An empty message id means the acknowledgement could not be read. The
+       * outbox records that as SENT_UNCONFIRMED and will NOT retry it, which is
+       * the deliberate at-least-once choice documented in NotificationOutbox.
+       */
+      return { messageId };
+    },
+  },
 });
 
 /**
@@ -222,14 +368,31 @@ export async function seedDefaultSkills(): Promise<void> {
 // Signal -> Telegram fan-out (only when the owner configured Telegram).
 durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
   if (signal.direction === 'NO_TRADE' || signal.status !== 'ACTIONABLE') return;
+
+  /**
+   * Persist the notification intent BEFORE any send.
+   *
+   * The idempotency key is the signal's own id, so a retried wake that
+   * re-derives the same logical decision is suppressed here rather than
+   * producing a second Telegram message.
+   */
   try {
-    const token =
-      (await persistence.keys.getTelegramToken(goat.userId)) || process.env.TELEGRAM_BOT_TOKEN;
-    if (!token) return;
-    const profile = await persistence.profiles.get(goat.userId);
-    const chatId = profile?.telegramChatId || process.env.TELEGRAM_CHAT_ID;
-    if (!chatId) return;
-    await telegramService.sendSignalNotification(chatId, signal, goat.name, token);
+    const { id, created } = await notificationOutbox.enqueue({
+      goatId: goat.id,
+      userId: goat.userId,
+      kind: 'SIGNAL',
+      subjectId: signal.id,
+      body: telegramService.formatSignalMessage(signal, goat.name),
+    });
+
+    /**
+     * A duplicate logical signal is suppressed entirely — including its recap
+     * event, because recording the same decision twice would be the same
+     * duplication one layer up.
+     */
+    if (!created) return;
+
+    await notificationOutbox.deliverOne(id);
   } catch (err) {
     console.error('[api] Telegram signal notification failed:', err);
   }
@@ -247,27 +410,28 @@ durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
  * Deliberately separate from the signal fan-out: the user asked to be
  * alerted when a wait-for condition is hit, which happens long before (and
  * independently of) any gate-approved setup.
+ *
+ * The key includes the candle open time when one is available, so the SAME
+ * tracker firing on the SAME bar is delivered once, while the same tracker
+ * legitimately firing on a later bar is a new notification.
  */
 durableObjectRegistry.onTrackerTriggered(async (goat, report) => {
   try {
-    const token =
-      (await persistence.keys.getTelegramToken(goat.userId)) || process.env.TELEGRAM_BOT_TOKEN;
-    if (!token) return;
-    const profile = await persistence.profiles.get(goat.userId);
-    const chatId = profile?.telegramChatId || process.env.TELEGRAM_CHAT_ID;
-    if (!chatId) return;
-
-    await telegramService.sendTrackerTriggered(
-      chatId,
-      goat.name,
-      {
+    const { id, created } = await notificationOutbox.enqueue({
+      goatId: goat.id,
+      userId: goat.userId,
+      kind: 'TRACKER_TRIGGERED',
+      subjectId: report.tracker.id,
+      candleOpenTimeMs: report.evaluatedCandleMs ?? null,
+      body: telegramService.formatTrackerTriggerMessage(goat.name, {
         description: report.tracker.description,
         market: report.tracker.market || goat.markets[0] || '—',
         formula: report.formulaDescription,
         calculatedValue: report.calculatedValue,
-      },
-      token,
-    );
+      }),
+    });
+
+    if (created) await notificationOutbox.deliverOne(id);
 
     dailyRollup.recordEvent(
       report.tracker.market || goat.markets[0] || 'unknown',
@@ -278,6 +442,188 @@ durableObjectRegistry.onTrackerTriggered(async (goat, report) => {
     console.error('[api] Telegram tracker notification failed:', err);
   }
 });
+
+/* ------------------------------------------------------------------ */
+/* Market event routing                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Routes one market event to the GOATs that care about it.
+ *
+ * The filtering is the reason this is event-driven rather than poll-driven:
+ *
+ *   1. A GOAT that is STOPPED is skipped outright. Dormancy means "wait for a
+ *      relevant event"; stopping means "do not run the workflow", and conflating
+ *      the two is how a stopped GOAT quietly wakes.
+ *   2. An event for an instrument the GOAT does not watch is skipped, so
+ *      unrelated market activity costs nothing and triggers no model call.
+ *   3. An event id already processed is skipped, so a redelivered candle cannot
+ *      produce a second wake, a second signal or a second Telegram message.
+ *   4. Only then is a wake scheduled, and only for tracker-relevant events.
+ *
+ * One GOAT failing is contained: each is routed in its own try/catch, so a
+ * broken runtime cannot stop the others from being woken.
+ */
+export async function routeMarketEvent(
+  event: MarketEvent,
+): Promise<{
+  considered: number;
+  woke: number;
+  duplicates: number;
+  irrelevant: number;
+  stopped: number;
+}> {
+  const seen = marketEventDedup(event.eventId);
+  if (!seen) {
+    return { considered: 0, woke: 0, duplicates: 1, irrelevant: 0, stopped: 0 };
+  }
+
+  const goatIds = marketIngestion
+    .listSubscriptions()
+    .filter((subscription) => subscription.instrument === event.instrument)
+    .map((subscription) => subscription.subscriberId);
+
+  let woke = 0;
+  let irrelevant = 0;
+  let stopped = 0;
+
+  for (const goatId of goatIds) {
+    try {
+      const goat = await persistence.goats.get(goatId);
+      if (!goat || goat.status === 'PAUSED') {
+        stopped += 1;
+        continue;
+      }
+
+      /**
+       * Only events the GOAT's own trackers care about may wake it. A
+       * session-finalized notice for a market it does not trade must not cost
+       * a model call.
+       */
+      const runtime = durableObjectRegistry.get(goatId);
+      const hasRelevantTracker = Boolean(
+        runtime?.getState().trackers.some(
+          (tracker) => tracker.market === event.instrument || !tracker.market,
+        ),
+      );
+
+      if (event.type !== 'DATA_STALE' && event.type !== 'DATA_RECOVERED' && !hasRelevantTracker) {
+        irrelevant += 1;
+        continue;
+      }
+
+      const state = await marketStateStore.getState(
+        event.instrument,
+        normaliseTrackingTimeframe(goat.timeframe),
+      );
+
+      /**
+       * A tracker wake from DEGRADED or UNAVAILABLE data is refused. A stale
+       * price must never be able to satisfy a condition.
+       */
+      if (!isUsableMarketState(state)) {
+        irrelevant += 1;
+        continue;
+      }
+
+      if (event.type === 'DATA_STALE') {
+        // Informational only: record the fact, spend no tokens.
+        irrelevant += 1;
+        continue;
+      }
+
+      const active = durableObjectRegistry.get(goatId) ?? (await ensureGoatRuntime(goat));
+
+      await active.wake(
+        `Market event: ${event.type} on ${event.instrument}`,
+        'TRACKER_TRIGGERED',
+        event.instrument,
+        { eventId: event.eventId },
+      );
+
+      woke += 1;
+    } catch (err) {
+      // Containment is the point: one GOAT must not block the rest.
+      console.error(`[market-event] routing failed for ${goatId}:`, err);
+    }
+  }
+
+  return {
+    considered: goatIds.length,
+    woke,
+    duplicates: 0,
+    irrelevant,
+    stopped,
+  };
+}
+
+/**
+ * Bounded, in-memory duplicate suppression for event ids.
+ *
+ * A Map with a hard cap rather than an unbounded Set: an unbounded id cache is
+ * exactly the "growing history in memory" problem the storage policy exists to
+ * prevent. At the cap, the oldest half is dropped — losing an old dedupe entry
+ * is safe because the per-GOAT candle cursor still suppresses the replay.
+ */
+const processedEventIds = new Map<string, number>();
+const EVENT_ID_CACHE_LIMIT = 10_000;
+
+function marketEventDedup(eventId: string): boolean {
+  const now = Date.now();
+
+  /**
+   * A very old id can no longer be in flight; expiring it keeps the cache
+   * bounded without weakening the guarantee that matters (near-term replay).
+   */
+  for (const [id, seenAt] of processedEventIds) {
+    if (now - seenAt > 6 * 60 * 60_000) processedEventIds.delete(id);
+  }
+
+  if (processedEventIds.has(eventId)) return false;
+
+  processedEventIds.set(eventId, now);
+
+  if (processedEventIds.size > EVENT_ID_CACHE_LIMIT) {
+    const entries = [...processedEventIds.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, EVENT_ID_CACHE_LIMIT / 2);
+    for (const [id] of entries) processedEventIds.delete(id);
+  }
+
+  return true;
+}
+
+/**
+ * Mirrors the in-process subscription table into the Cloudflare runtime.
+ *
+ * Failure is non-fatal by design: the in-process path still works, and the
+ * status endpoint reports the durable sync count so an unreachable Worker is
+ * visible rather than silently degrading event delivery.
+ */
+async function syncDurableSubscriptions(
+  subscriptions: readonly IngestionSubscription[],
+): Promise<number> {
+  if (!durableMarketDataClient.isEnabled) return 0;
+
+  let synced = 0;
+
+  for (const subscription of subscriptions) {
+    const partition = MarketIngestionService.partitionFor(
+      subscription.instrument,
+    ) as DurablePartition;
+
+    const result = await durableMarketDataClient.subscribe({
+      partition,
+      subscriberId: subscription.subscriberId,
+      instrument: subscription.instrument,
+      eventTypes: subscription.eventTypes,
+    });
+
+    if (result.ok) synced += 1;
+  }
+
+  return synced;
+}
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -678,6 +1024,137 @@ apiRouter.post('/internal/wake', handle(async (req, res) => {
 }));
 
 /* ------------------------------------------------------------------ */
+/* Internal market-data routes                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Shared-secret auth for internal endpoints.
+ *
+ * These are called by the Cloudflare Durable Object, which has no user session
+ * and cannot present a Firebase ID token. The secret authenticates the
+ * WORKER, not a user, and every handler below still resolves the GOAT through
+ * the application persistence layer and its owner — so an internal caller can
+ * never widen access beyond what the owner already has.
+ */
+function internalAuth(req: Request, res: Response): boolean {
+  const expected = process.env.DURABLE_SCHEDULER_SECRET?.trim();
+  const provided = req.header('x-scheduler-secret') ?? '';
+
+  if (!expected || provided !== expected) {
+    fail(res, 401, 'UNAUTHORISED', 'Invalid scheduler secret.');
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Accepts a market event from the shared runtime and routes it to subscribed
+ * GOATs.
+ *
+ * The event is VALIDATED and its id RECOMPUTED before anything acts on it: a
+ * malformed or altered event is dropped, never partially applied. Duplicate
+ * suppression happens on the event id, so the same candle delivered twice wakes
+ * nothing twice.
+ */
+apiRouter.post('/internal/market-event', handle(async (req, res) => {
+  if (!internalAuth(req, res)) return;
+
+  const event = validateMarketEvent(req.body);
+  if (!event) {
+    return fail(
+      res,
+      400,
+      'INVALID_EVENT',
+      'Market event failed validation or its id did not match its payload.',
+    );
+  }
+
+  const result = await routeMarketEvent(event);
+
+  res.json({
+    handled: true,
+    eventId: event.eventId,
+    subscribersConsidered: result.considered,
+    wokeGoats: result.woke,
+    ignoredAsDuplicate: result.duplicates,
+    ignoredAsIrrelevant: result.irrelevant,
+    filteredAsStopped: result.stopped,
+  });
+}));
+
+/**
+ * Reconciles a market-data runtime: rebuilds this process's view of
+ * subscriptions from durable records.
+ *
+ * Called at boot on a serverless host, where the in-memory subscription table
+ * is destroyed on every cold start. Without this, a fresh container would wake
+ * nobody until each GOAT happened to be touched again.
+ */
+apiRouter.post('/internal/market-sync', handle(async (_req, res) => {
+  if (!internalAuth(_req, res)) return;
+
+  const goats = await persistence.goats.listAll();
+  const subscriptions: IngestionSubscription[] = [];
+
+  for (const goat of goats) {
+    // A stopped GOAT is never subscribed: dormancy waits for events, stopping
+    // means it does not run its workflow at all.
+    if (goat.status === 'PAUSED') continue;
+
+    for (const instrument of goat.markets) {
+      subscriptions.push({
+        subscriberId: goat.id,
+        instrument,
+        eventTypes: ['CANDLE_FINALIZED', 'SESSION_FINALIZED', 'DATA_STALE'],
+      });
+    }
+  }
+
+  const restored = marketIngestion.rebuildSubscriptions(subscriptions);
+  const durableSynced = await syncDurableSubscriptions(subscriptions);
+
+  res.json({
+    restored,
+    durableSynced,
+    byPartition: marketIngestion.subscriptionCounts(),
+    dataMode: marketProvider.dataMode,
+  });
+}));
+
+/**
+ * Observability for the shared market-data layer.
+ *
+ * Reports freshness, staleness, session-finalization state, prune counts,
+ * subscription counts and durable-runtime health. Contains no secrets and no
+ * market payloads, so it is safe to poll.
+ */
+apiRouter.get('/markets/ingestion', handle(async (_req, res) => {
+  res.json({
+    ...marketIngestion.health(),
+    durableRuntime: durableMarketDataClient.describe(),
+  });
+}));
+
+/**
+ * Session geometry for an instrument, with the UTC offset that applies RIGHT
+ * NOW. Lets an operator verify the DST handling is correct in production rather
+ * than trusting the source.
+ */
+apiRouter.get('/markets/session', handle(async (req, res) => {
+  const instrument = String(req.query.symbol ?? 'EUR/USD').trim().toUpperCase();
+
+  if (!/^[A-Z0-9/_-]{1,32}$/.test(instrument)) {
+    return fail(res, 400, 'INVALID_INPUT', 'symbol must be a known instrument id.');
+  }
+
+  res.json({
+    ...describeSessionSpec(instrument, Date.now()),
+    resolved: resolveSession(instrument, Date.now()),
+  });
+}));
+
+/* ------------------------------------------------------------------ */
 /* Public routes                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -747,6 +1224,42 @@ apiRouter.get('/settings/status', async (_req, res) => {
       activePollers: marketStateStore.activePollers(),
       activeSubscribers: marketStateStore.activeSubscribers(),
     },
+    /**
+     * Shared one-minute ingestion: freshness, staleness, subscription counts,
+     * finalization and prune totals. Reported here so "why did this GOAT not
+     * wake" is answerable without log archaeology.
+     */
+    marketIngestion: {
+      stats: marketIngestion.stats,
+      subscriptions: marketIngestion.subscriptionCounts(),
+      subscriptionTotal: marketIngestion.totalSubscriptions(),
+      freshness: marketIngestion
+        .allFreshness()
+        .map((state) => ({
+          instrument: state.instrument,
+          partition: state.partition,
+          lastSuccessfulIngestAtMs: state.lastSuccessfulIngestAtMs,
+          lastCandleOpenTimeMs: state.lastCandleOpenTimeMs,
+          dataLagSeconds: state.dataLagSeconds,
+          consecutiveFailures: state.consecutiveFailures,
+          stale: state.stale,
+          marketOpen: state.marketOpen,
+          lastError: state.lastError,
+        })),
+    },
+    /**
+     * Durable market runtime (Cloudflare). `configured: false` is reported
+     * honestly rather than omitted, so a deployment without the Worker is never
+     * mistaken for one where retention and finalization are running.
+     */
+    durableMarketData: durableMarketDataClient.describe(),
+    /**
+     * Whether this process may write to a local filesystem. False on Vercel and
+     * other ephemeral hosts, where a "persisted" file would vanish on the next
+     * cold start.
+     */
+    filesystemPersistence: isEphemeralRuntime() ? 'disabled' : 'enabled',
+    notifications: await notificationOutbox.health(),
   });
 });
 
