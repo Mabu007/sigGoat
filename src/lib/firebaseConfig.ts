@@ -17,9 +17,23 @@
 
 const raw = import.meta.env as Record<string, string | undefined>;
 
+/**
+ * Reads one Firebase web-config value, accepting EITHER prefix.
+ *
+ * `VITE_FIREBASE_*` is the documented name and wins. `FIREBASE_*` is accepted
+ * because the hosting project stores the same public values under that name,
+ * and Vite only inlines `VITE_`-prefixed variables — so a build configured with
+ * `FIREBASE_*` alone silently produced a client with no Firebase config at all.
+ *
+ * These are public web keys, not secrets: Firebase ships them to every browser
+ * and security rests on the Security Rules, not on hiding them.
+ */
 function required(name: string): string {
-  const value = raw[name]?.trim();
-  return value ?? '';
+  const direct = raw[`VITE_${name}`]?.trim();
+  if (direct) return direct;
+
+  const unprefixed = raw[name]?.trim();
+  return unprefixed ?? '';
 }
 
 /**
@@ -52,10 +66,10 @@ export const firebaseConfig = {
  * bare "Missing or insufficient permissions" from Firestore.
  */
 export const firebaseConfigMissing: string[] = [
-  'VITE_FIREBASE_API_KEY',
-  'VITE_FIREBASE_AUTH_DOMAIN',
-  'VITE_FIREBASE_PROJECT_ID',
-  'VITE_FIREBASE_APP_ID',
+  'FIREBASE_API_KEY',
+  'FIREBASE_AUTH_DOMAIN',
+  'FIREBASE_PROJECT_ID',
+  'FIREBASE_APP_ID',
 ].filter((name) => !required(name));
 
 export const isAuthEmulatorMode =

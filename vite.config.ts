@@ -12,6 +12,22 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
     ],
+
+    /**
+     * EXPOSE `FIREBASE_*` AS WELL AS `VITE_FIREBASE_*`.
+     *
+     * Vite only exposes variables carrying `VITE_` to client code, and this
+     * project reads its Firebase web config as `VITE_FIREBASE_*`. The Vercel
+     * project stores the same values as `FIREBASE_*`, so a build there produced
+     * a bundle with an EMPTY Firebase config: `isFirebaseConfigured` was false,
+     * the app ran in offline mode, and Google sign-in could never work. The
+     * failure was silent — the page loaded normally and only the login did not.
+     *
+     * Both prefixes are now read, with `VITE_FIREBASE_*` taking precedence, so
+     * either naming convention produces a working build. Nothing secret is
+     * exposed: these are the public web keys Firebase ships to every browser.
+     */
+    envPrefix: ['VITE_', 'FIREBASE_'],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
