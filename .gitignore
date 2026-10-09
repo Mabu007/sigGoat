@@ -15,8 +15,13 @@ coverage/
 data/
 
 # Firebase service-account downloads (never commit key material).
+#
+# Covers both the local-dev filename AND the console download pattern
+# `<project>-firebase-adminsdk-<id>.json`, which the previous patterns missed.
 firebase-service-account.json
 *-service-account*.json
+*-firebase-adminsdk-*.json
+firebase-adminsdk-*.json
 
 # Large scratch artefacts / local tooling output.
 codebase.txt
