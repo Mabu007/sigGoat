@@ -28,5 +28,9 @@ codebase.txt
 .vercel
 
 # Generated Vercel serverless bundle (built by `npm run build:api`).
-api/index.js
-api/index.js.map
+#
+# The bundle is NOT committed, but api/index.js IS: Vercel resolves the
+# `functions` map in vercel.json before running the build command, so the entry
+# point must exist in a fresh clone. api/index.js is a shim that re-exports the
+# bundle built here. See api/index.js for the full explanation.
+.api-build/
