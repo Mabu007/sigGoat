@@ -20,15 +20,28 @@ import {
 
 import {
   firebaseConfig,
+  firebaseConfigMissing,
   isAuthEmulatorMode,
   isFirebaseConfigured,
 } from './firebaseConfig';
 
 if (!isFirebaseConfigured) {
+  /**
+   * Names the variables as they ACTUALLY exist on the hosting provider.
+   *
+   * This used to say `VITE_FIREBASE_*`, which are not set anywhere — so anyone
+   * following it would have created duplicate variables that the build does not
+   * read. The real names are the `FIREBASE_*` ones already configured in the
+   * project, mapped by vite.config.ts.
+   */
   console.warn(
     '[firebase] Public config missing. The app will run in local/offline mode. ' +
-      'Set VITE_FIREBASE_API_KEY, VITE_FIREBASE_AUTH_DOMAIN, ' +
-      'VITE_FIREBASE_PROJECT_ID and VITE_FIREBASE_APP_ID before building.',
+      'These must be set in the build environment (they are mapped into the ' +
+      'bundle by vite.config.ts): ' +
+      (firebaseConfigMissing.length > 0
+        ? firebaseConfigMissing.join(', ')
+        : 'FIREBASE_apiKey, FIREBASE_authDomain, FIREBASE_projectId, FIREBASE_appId') +
+      '. Sign-in will not work until they are present.',
   );
 }
 
