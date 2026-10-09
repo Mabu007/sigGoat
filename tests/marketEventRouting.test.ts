@@ -251,6 +251,18 @@ describe('GOAT lifecycle and event routing', () => {
     expect(stopped.status).toBe(200);
     expect(stopped.json.status).toBe('PAUSED');
 
+    /**
+     * Baseline: creating a GOAT runs one initial analysis, which produces a
+     * DEMO NO_TRADE signal. That signal is expected and is NOT the event's
+     * doing, so the assertion below is a DELTA — what matters is that the event
+     * added nothing.
+     */
+    const before = await call('GET', `/goats/${goatId}/signals`, {
+      userId: 'user_stopped',
+    });
+    expect(before.status).toBe(200);
+    const signalCountBefore = before.json.signals.length;
+
     const candleOpenTimeMs = Date.now() - 240_000;
     const response = await internal({
       eventId: `FX:CANDLE_FINALIZED:EUR/USD:${candleOpenTimeMs}`,
@@ -266,11 +278,33 @@ describe('GOAT lifecycle and event routing', () => {
     });
 
     expect(response.status).toBe(200);
+
+    /**
+     * The invariant: a stopped GOAT is never woken.
+     *
+     * Counters are NOT asserted here because they depend on other GOATs in this
+     * shared-process test file, and an assertion about a global count would be
+     * asserting the test file's ordering rather than the behaviour. What is
+     * asserted is specific to THIS GOAT: it produced no wake, so no reasoning
+     * ran and no signal could exist for it.
+     *
+     * Note pausing also removes the GOAT from the routing table
+     * (`subscribeToMarkets`), so it is normally not even considered.
+     */
     expect(response.json.wokeGoats).toBe(0);
 
-    // Dormancy is different from stopping: dormancy would wake, stopping must
-    // not. The response reports the stopped count separately.
-    expect(response.json.filteredAsStopped).toBeGreaterThanOrEqual(1);
+    const signals = await call('GET', `/goats/${goatId}/signals`, {
+      userId: 'user_stopped',
+    });
+    expect(signals.status).toBe(200);
+    expect(signals.json.signals).toHaveLength(signalCountBefore);
+
+    const state = await call('GET', `/goats/${goatId}`, {
+      userId: 'user_stopped',
+    });
+    expect(state.status).toBe(200);
+    expect(state.json.goat.status).toBe('PAUSED');
+    expect(state.json.runtimeState.isEvaluating).toBe(false);
   });
 
   test('an event for an instrument a GOAT does not watch is filtered out', async () => {

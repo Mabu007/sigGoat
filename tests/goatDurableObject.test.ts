@@ -30,8 +30,9 @@ function makeGateway(
     evaluateGoat: evaluate,
     answerGoatQuestion: async () => 'ok',
     hasKeyFor: async () => false,
-    listModels: async () => ({ models: [], fetchedAt: 0 }),
-    testKeyFor: async () => ({ ok: false, latencyMs: 0, error: 'not used here' }),
+    listModels: async () => ({ models: [], provider: 'openrouter', fetchedAt: 0, source: 'stub' }),
+    providerFor: async () => 'openrouter',
+    testKeyFor: async () => ({ ok: false, provider: 'openrouter', latencyMs: 0, error: 'not used here' }),
     invalidate: () => {},
   };
 }

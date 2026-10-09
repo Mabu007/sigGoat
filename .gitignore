@@ -21,3 +21,7 @@ firebase-service-account.json
 # Large scratch artefacts / local tooling output.
 codebase.txt
 .vercel
+
+# Generated Vercel serverless bundle (built by `npm run build:api`).
+api/index.js
+api/index.js.map

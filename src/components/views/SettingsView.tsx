@@ -17,8 +17,21 @@ import {
 interface KeyStatus {
   openRouterKeyConfigured: boolean;
   openRouterKeyInvalid?: boolean;
+  groqKeyConfigured?: boolean;
+  provider?: 'openrouter' | 'groq';
   telegramTokenConfigured: boolean;
   serverKeyFallback: boolean;
+}
+
+type AiProvider = 'openrouter' | 'groq';
+
+interface TelegramStatusResponse {
+  tokenConfigured: boolean;
+  bot: { id: number; username: string; verifiedAt: string } | null;
+  chatId: string | null;
+  webhookSecretConfigured: boolean;
+  webhook: { ok: boolean; pendingUpdates?: number; lastErrorMessage?: string; detail?: string } | null;
+  connected: boolean;
 }
 
 /**
@@ -27,11 +40,28 @@ interface KeyStatus {
  * revalidates — this is convenience, not security.
  */
 const OPENROUTER_KEY_SHAPE = /^sk-(?:or-v\d+-)?[A-Za-z0-9_-]{32,}$/;
+const GROQ_KEY_SHAPE = /^gsk_[A-Za-z0-9_-]{20,}$/;
 const TELEGRAM_TOKEN_SHAPE = /^\d{5,20}:[A-Za-z0-9_-]{30,}$/;
 
-function validateOpenRouterKey(raw: string): string | null {
+/**
+ * Client-side shape check, mirroring the server. Catches a bad paste before a
+ * round trip so the user sees the problem immediately. The server still
+ * revalidates — this is convenience, not security.
+ *
+ * The provider matters: an OpenRouter key pasted into the Groq field is a
+ * different mistake from a typo, and gets a message that says so.
+ */
+function validateProviderKey(raw: string, provider: AiProvider): string | null {
   const value = raw.trim();
   if (!value) return null;
+
+  if (provider === 'groq') {
+    if (!GROQ_KEY_SHAPE.test(value)) {
+      return 'That does not look like a Groq API key. Expected something like gsk_… (console.groq.com/keys). Choose the OpenRouter provider if you have an OpenRouter key.';
+    }
+    return null;
+  }
+
   if (!OPENROUTER_KEY_SHAPE.test(value)) {
     return 'That does not look like an OpenRouter API key. Expected something like sk-or-v1-… (openrouter.ai/keys → Create new key).';
   }
@@ -50,10 +80,15 @@ export const SettingsView: React.FC = () => {
     authError,
   } = useAuth();
 
-  // Keys State (OpenRouter and Telegram only - NO BiQuote user key!)
+  // Keys State. Market data needs no user key; the provider does.
+  const [provider, setProvider] = useState<AiProvider>('openrouter');
   const [openRouterKey, setOpenRouterKey] = useState('');
+  const [groqKey, setGroqKey] = useState('');
   const [telegramToken, setTelegramToken] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
+  const [telegramStatus, setTelegramStatus] = useState<TelegramStatusResponse | null>(null);
+  const [isConnectingTelegram, setIsConnectingTelegram] = useState(false);
+  const [isDisconnectingTelegram, setIsDisconnectingTelegram] = useState(false);
 
   // Status & Feedback State
   const [isSaving, setIsSaving] = useState(false);
@@ -83,16 +118,39 @@ export const SettingsView: React.FC = () => {
       .catch(console.warn);
   }, []);
 
+  const loadTelegramStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/telegram/status', {
+        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
+      });
+      if (!res.ok) return;
+      setTelegramStatus((await res.json()) as TelegramStatusResponse);
+    } catch (err) {
+      console.warn('Unable to read Telegram status:', err);
+    }
+  }, [getApiAuthHeaders]);
+
   useEffect(() => {
     void loadKeyStatus();
-  }, [loadKeyStatus]);
+    void loadTelegramStatus();
+  }, [loadKeyStatus, loadTelegramStatus]);
 
   const platform = serverStatus?.platform;
   const marketData = serverStatus?.marketData;
   const reasoningStatus = serverStatus?.reasoning;
-  const telegramStatus = serverStatus?.telegram;
+  // Deployment-level Telegram facts (server token, secret required).
+  const telegramPlatform = serverStatus?.telegram;
 
-  const hasSavedKey = keyStatus?.openRouterKeyConfigured ?? false;
+  /**
+   * "Saved" tracks the SELECTED provider only.
+   *
+   * Reporting a stored OpenRouter key as satisfying a Groq configuration would
+   * tell the user they are set up when every wake is about to fail.
+   */
+  const hasSavedKey =
+    provider === 'groq'
+      ? (keyStatus?.groqKeyConfigured ?? false)
+      : (keyStatus?.openRouterKeyConfigured ?? false);
 
   const handleSaveKeys = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,7 +160,8 @@ export const SettingsView: React.FC = () => {
 
     // Catch bad pastes before spending a round trip.
     const shapeError =
-      validateOpenRouterKey(openRouterKey) ??
+      validateProviderKey(openRouterKey, 'openrouter') ??
+      validateProviderKey(groqKey, 'groq') ??
       (telegramToken.trim() && !TELEGRAM_TOKEN_SHAPE.test(telegramToken.trim())
         ? 'That does not look like a Telegram bot token. Expected the value from @BotFather, like 123456789:AA…'
         : null);
@@ -118,9 +177,11 @@ export const SettingsView: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
         body: JSON.stringify({
+          provider,
           // Only send fields the user actually filled in; an empty box must
           // never wipe an existing stored secret.
           ...(openRouterKey.trim() ? { openRouterKey: openRouterKey.trim() } : {}),
+          ...(groqKey.trim() ? { groqKey: groqKey.trim() } : {}),
           ...(telegramToken.trim() ? { telegramToken: telegramToken.trim() } : {}),
           ...(telegramChatId.trim() ? { telegramChatId: telegramChatId.trim() } : {}),
         }),
@@ -135,6 +196,8 @@ export const SettingsView: React.FC = () => {
       const body = await res.json().catch(() => null);
       setKeyStatus((prev) => ({
         openRouterKeyConfigured: body?.openRouterKeyConfigured ?? prev?.openRouterKeyConfigured ?? false,
+        groqKeyConfigured: body?.groqKeyConfigured ?? prev?.groqKeyConfigured ?? false,
+        provider: body?.provider ?? provider,
         telegramTokenConfigured: Boolean(telegramToken.trim()) || (prev?.telegramTokenConfigured ?? false),
         serverKeyFallback: prev?.serverKeyFallback ?? false,
       }));
@@ -142,6 +205,7 @@ export const SettingsView: React.FC = () => {
       // Secrets are never read back; clear the inputs so they cannot leak
       // into a screenshot or a later shoulder-surf.
       setOpenRouterKey('');
+      setGroqKey('');
       setTelegramToken('');
       setTestResult({ ok: true, message: 'Saved. Your GOATs will use these credentials on the next reasoning run.' });
     } catch (err) {
@@ -160,12 +224,17 @@ export const SettingsView: React.FC = () => {
 
       // Persist first when a key is typed but unsaved, so the test exercises
       // exactly what will be stored.
-      const pendingKey = openRouterKey.trim();
+      const pendingKey =
+        provider === 'groq' ? groqKey.trim() : openRouterKey.trim();
+
       if (pendingKey) {
         const saveRes = await fetch('/api/settings/keys', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
-          body: JSON.stringify({ openRouterKey: pendingKey }),
+          body: JSON.stringify({
+            provider,
+            ...(provider === 'groq' ? { groqKey: pendingKey } : { openRouterKey: pendingKey }),
+          }),
         });
         if (!saveRes.ok) {
           const body = await saveRes.json().catch(() => null);
@@ -173,6 +242,7 @@ export const SettingsView: React.FC = () => {
           return;
         }
         setOpenRouterKey('');
+        setGroqKey('');
         await loadKeyStatus();
       }
 
@@ -183,14 +253,104 @@ export const SettingsView: React.FC = () => {
       const data = await res.json();
 
       if (data.ok) {
-        setTestResult({ ok: true, message: `OpenRouter connected — model ${data.model} responded in ${data.latencyMs}ms.` });
+        setTestResult({
+          ok: true,
+          message: `${data.provider ?? provider} connected — model ${data.model} responded in ${data.latencyMs}ms.`,
+        });
       } else {
-        setTestResult({ ok: false, message: data.error || 'OpenRouter rejected the key.' });
+        setTestResult({ ok: false, message: data.error || `${provider} rejected the key.` });
       }
     } catch (err: any) {
-      setTestResult({ ok: false, message: err.message || 'Network error reaching OpenRouter.' });
+      setTestResult({ ok: false, message: err.message || `Network error reaching ${provider}.` });
     } finally {
       setIsTestingAi(false);
+    }
+  };
+
+  /**
+   * CONNECTS THE BOT, rather than merely storing a token.
+   *
+   * Storing a token proves nothing: it has not been checked with Telegram, and
+   * no webhook is registered, so no command and no alert would arrive. This
+   * calls `getMe`, registers the webhook, and optionally verifies the chat, and
+   * only reports success if Telegram itself agreed.
+   */
+  const handleConnectTelegram = async () => {
+    const token = telegramToken.trim();
+
+    if (!token) {
+      setSaveError('Paste the bot token from @BotFather first.');
+      return;
+    }
+    if (!TELEGRAM_TOKEN_SHAPE.test(token)) {
+      setSaveError('That does not look like a Telegram bot token. Expected the value from @BotFather, like 123456789:AA…');
+      return;
+    }
+    if (telegramChatId.trim() && !/^-?\d{1,20}$/.test(telegramChatId.trim())) {
+      setSaveError('Your Telegram Chat ID must be numeric. Message @userinfobot to find it.');
+      return;
+    }
+
+    setIsConnectingTelegram(true);
+    setSaveError(null);
+    setTestResult(null);
+
+    try {
+      const res = await fetch('/api/telegram/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
+        body: JSON.stringify({
+          telegramToken: token,
+          ...(telegramChatId.trim() ? { chatId: telegramChatId.trim() } : {}),
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setSaveError(data?.error?.message || `Could not connect the bot (HTTP ${res.status}).`);
+        return;
+      }
+
+      // The token is never read back, so clear the field immediately.
+      setTelegramToken('');
+      setTelegramChatId('');
+      await Promise.all([loadTelegramStatus(), loadKeyStatus()]);
+
+      setTestResult({
+        ok: true,
+        message: data.chatVerified
+          ? `@${data.bot?.username} is connected and verified. Try /processes in Telegram.`
+          : `@${data.bot?.username} is connected and the webhook is registered. Send /start to your bot to finish.`,
+      });
+    } catch (err: any) {
+      setSaveError(err?.message || 'Network error reaching Telegram.');
+    } finally {
+      setIsConnectingTelegram(false);
+    }
+  };
+
+  const handleDisconnectTelegram = async () => {
+    setIsDisconnectingTelegram(true);
+    setSaveError(null);
+    setTestResult(null);
+
+    try {
+      const res = await fetch('/api/telegram/connect', {
+        method: 'DELETE',
+        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setSaveError(body?.error?.message || `Could not disconnect (HTTP ${res.status}).`);
+        return;
+      }
+      await Promise.all([loadTelegramStatus(), loadKeyStatus()]);
+      setTestResult({ ok: true, message: 'Telegram disconnected. The webhook has been removed.' });
+    } catch (err: any) {
+      setSaveError(err?.message || 'Network error reaching Telegram.');
+    } finally {
+      setIsDisconnectingTelegram(false);
     }
   };
 
@@ -308,12 +468,70 @@ export const SettingsView: React.FC = () => {
               <p className="text-xs text-slate-400">Receive human-readable signal alerts and chat with your GOAT on Telegram.</p>
             </div>
           </div>
-          <span className="text-[10px] font-mono px-2 py-0.5 bg-sky-500/10 text-sky-300 border border-sky-500/20 rounded">
-            Two-Way
+          <span
+            className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+              telegramStatus?.connected
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : telegramStatus?.tokenConfigured
+                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                  : 'bg-slate-500/10 border-slate-500/30 text-slate-400'
+            }`}
+          >
+            {telegramStatus?.connected
+              ? `Connected @${telegramStatus.bot?.username}`
+              : telegramStatus?.tokenConfigured
+                ? 'Token saved, not verified'
+                : 'Not connected'}
           </span>
         </div>
 
         <div className="space-y-3 text-xs">
+          {/**
+           * A stored token is NOT a connected bot.
+           *
+           * The old flow saved the token and reported nothing else, so a user
+           * could believe alerts were arriving when no webhook was ever
+           * registered. This states which of the three states is actually true.
+           */}
+          {telegramStatus && (
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3 space-y-1 text-[11px]">
+              {telegramStatus.connected && telegramStatus.webhook?.ok && (
+                <div className="text-emerald-300 flex items-center gap-1.5">
+                  <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    Verified with Telegram as <strong>@{telegramStatus.bot?.username}</strong>. Webhook registered.
+                  </span>
+                </div>
+              )}
+
+              {!telegramStatus.connected && telegramStatus.tokenConfigured && (
+                <div className="text-amber-300 flex items-start gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    A token is stored but the bot is <strong>not</strong> connected, so commands and alerts will not
+                    arrive. Reconnect to verify it with Telegram.
+                    {telegramStatus.webhook && !telegramStatus.webhook.ok && (
+                      <>
+                        {' '}
+                        Telegram reported: {telegramStatus.webhook.detail ?? telegramStatus.webhook.lastErrorMessage}
+                      </>
+                    )}
+                  </span>
+                </div>
+              )}
+
+              {!telegramStatus.webhookSecretConfigured && (
+                <div className="text-rose-300 flex items-start gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    This deployment has no Telegram webhook secret configured, so no bot can be connected securely. An
+                    operator must set TELEGRAM_WEBHOOK_SECRET.
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           <div>
             <label htmlFor="telegram-token" className="block font-semibold text-slate-300 mb-1">
               Telegram Bot Token
@@ -365,15 +583,78 @@ export const SettingsView: React.FC = () => {
             </div>
           )}
 
+          {saveError && (
+            <div className="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-xl flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{saveError}</span>
+            </div>
+          )}
+
+          {testResult && (
+            <div
+              className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
+                testResult.ok
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+              }`}
+            >
+              {testResult.ok ? (
+                <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              )}
+              <span>{testResult.message}</span>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center gap-2 pt-1">
+            {/**
+             * Connect is the action that MAKES it work: it verifies the token
+             * with Telegram and registers the webhook. Send Test only proves the
+             * bot can message one chat, so it is secondary and disabled until
+             * the bot is actually connected.
+             */}
             <button
-              type="submit"
-              disabled={isTestingTelegram}
+              type="button"
+              onClick={() => void handleConnectTelegram()}
+              disabled={isConnectingTelegram || isDisconnectingTelegram}
               className="flex items-center gap-1.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
             >
-              <Send className="w-3.5 h-3.5" />
-              <span>{isTestingTelegram ? 'Sending Test...' : 'Send Test Alert to Telegram'}</span>
+              <Shield className="w-3.5 h-3.5" />
+              <span>
+                {isConnectingTelegram
+                  ? 'Connecting…'
+                  : telegramStatus?.tokenConfigured
+                    ? 'Reconnect Bot'
+                    : 'Connect Bot'}
+              </span>
             </button>
+
+            <button
+              type="submit"
+              disabled={isTestingTelegram || !telegramStatus?.connected}
+              title={
+                telegramStatus?.connected
+                  ? undefined
+                  : 'Connect the bot first — the webhook must be registered before a test means anything.'
+              }
+              className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-100 border border-slate-800 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>{isTestingTelegram ? 'Sending Test...' : 'Send Test Alert'}</span>
+            </button>
+
+            {telegramStatus?.tokenConfigured && (
+              <button
+                type="button"
+                onClick={() => void handleDisconnectTelegram()}
+                disabled={isConnectingTelegram || isDisconnectingTelegram}
+                className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-rose-300 border border-rose-500/30 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>{isDisconnectingTelegram ? 'Disconnecting…' : 'Disconnect'}</span>
+              </button>
+            )}
           </div>
 
           {/* Setup Guide */}
@@ -381,7 +662,8 @@ export const SettingsView: React.FC = () => {
             <strong className="text-slate-300 block mb-1">Quick Telegram Setup:</strong>
             <div>1. Open Telegram, message <strong>@BotFather</strong>, send <code>/newbot</code> to get your Bot Token.</div>
             <div>2. Message <strong>@userinfobot</strong> to get your numerical Chat ID.</div>
-            <div>3. Press &quot;Start&quot; on your new bot, paste credentials above, and click &quot;Send Test Alert&quot;.</div>
+            <div>3. Press &quot;Start&quot; on your new bot, paste both above, then click &quot;Connect Bot&quot;.</div>
+            <div>4. In Telegram send <code>/help</code> to see every command.</div>
           </div>
         </div>
       </form>
@@ -399,6 +681,53 @@ export const SettingsView: React.FC = () => {
         </div>
 
         <div className="space-y-3.5 text-xs">
+          {/**
+           * Provider choice comes FIRST, because the key field below means
+           * different things depending on it. Choosing Groq and pasting an
+           * OpenRouter key is the single most likely mistake here, so the two
+           * are separated before either key is typed.
+           */}
+          <div>
+            <span className="block font-semibold text-slate-300 mb-1.5">
+              Reasoning provider
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  {
+                    id: 'openrouter' as const,
+                    label: 'OpenRouter',
+                    hint: 'Any model in the live catalogue',
+                  },
+                  {
+                    id: 'groq' as const,
+                    label: 'Groq',
+                    hint: 'Fast Llama/Qwen models, own key',
+                  },
+                ]
+              ).map((option) => {
+                const selected = provider === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setProvider(option.id)}
+                    aria-pressed={selected}
+                    className={`text-left rounded-xl border px-3 py-2 transition-colors cursor-pointer ${
+                      selected
+                        ? 'border-amber-500/60 bg-amber-500/10 text-amber-200'
+                        : 'border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <span className="block text-xs font-bold">{option.label}</span>
+                    <span className="block text-[10px] opacity-80">{option.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {provider === 'openrouter' ? (
           <div>
             <div className="flex items-center justify-between mb-1">
               <label htmlFor="openrouter-key" className="font-semibold text-slate-300">
@@ -445,6 +774,40 @@ export const SettingsView: React.FC = () => {
               </p>
             )}
           </div>
+          ) : (
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor="groq-key" className="font-semibold text-slate-300">
+                AI Model API Key (Groq)
+              </label>
+              {hasSavedKey ? (
+                <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-mono">
+                  <CheckCircle className="w-3 h-3" /> Your key is saved
+                </span>
+              ) : (
+                <span className="text-[10px] text-amber-400 flex items-center gap-1 font-mono">
+                  <AlertCircle className="w-3 h-3" /> Not configured
+                </span>
+              )}
+            </div>
+            <input
+              id="groq-key"
+              name="groq-api-key"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={groqKey}
+              onChange={e => setGroqKey(e.target.value)}
+              placeholder={hasSavedKey ? 'Saved — type a new key to replace it' : 'gsk_...'}
+              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 placeholder-slate-400 font-mono focus:outline-none focus:border-amber-500/50"
+            />
+            <p className="text-[10px] text-slate-400 mt-1">
+              Stored per-account on the server and used only for your GOATs. Get one at console.groq.com/keys.
+              Groq is a separate service from OpenRouter: its model names are not interchangeable, and it is not
+              unlimited or always free.
+            </p>
+          </div>
+          )}
 
           {saveError && (
             <div className="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-xl flex items-start gap-2">
@@ -478,7 +841,7 @@ export const SettingsView: React.FC = () => {
               className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-100 border border-slate-800 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
             >
               <Zap className="w-3.5 h-3.5" />
-              <span>{isTestingAi ? 'Testing...' : 'Test OpenRouter Key'}</span>
+              <span>{isTestingAi ? 'Testing...' : `Test ${provider} Key`}</span>
             </button>
             <button
               type="submit"

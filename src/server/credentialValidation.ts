@@ -32,10 +32,21 @@ export class CredentialValidationError extends Error {
 /** OpenRouter issues `sk-or-v1-…`; `sk-…` is the legacy/other shape. */
 const OPENROUTER_KEY_PATTERN = /^sk-(?:or-v\d+-)?[A-Za-z0-9_-]{32,}$/;
 
+/**
+ * Groq issues `gsk_…`.
+ *
+ * Deliberately its own pattern rather than the OpenRouter one: the two
+ * credentials are stored in different fields and must not be interchangeable, so
+ * pasting one where the other belongs is refused at the boundary rather than
+ * becoming a confusing 401 from a provider the user never configured.
+ */
+const GROQ_KEY_PATTERN = /^gsk_[A-Za-z0-9_-]{20,}$/;
+
 /** Telegram bot tokens are `<botId>:<35 char secret>`. */
 const TELEGRAM_TOKEN_PATTERN = /^\d{5,20}:[A-Za-z0-9_-]{30,}$/;
 
 const MAX_OPENROUTER_KEY_LENGTH = 256;
+const MAX_GROQ_KEY_LENGTH = 256;
 const MAX_TELEGRAM_TOKEN_LENGTH = 256;
 
 export interface NormalisedOpenRouterKey {
@@ -84,6 +95,50 @@ export function normaliseOpenRouterKey(
   }
 
   return { key: trimmed };
+}
+
+/**
+ * Validates and normalises a user-supplied Groq key.
+ *
+ * Same contract as the OpenRouter normaliser: blank means "do not change", a
+ * bad shape throws with a message safe to show the user.
+ */
+export function normaliseGroqKey(value: unknown): { key: string | undefined } {
+  if (value === undefined || value === null) {
+    return { key: undefined };
+  }
+
+  if (typeof value !== 'string') {
+    throw new CredentialValidationError('The Groq API key must be text.');
+  }
+
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return { key: undefined };
+  }
+
+  if (trimmed.length > MAX_GROQ_KEY_LENGTH) {
+    throw new CredentialValidationError(
+      `That is not a Groq API key (${trimmed.length} characters). ` +
+        'Groq keys look like gsk_… and are far shorter than this.',
+    );
+  }
+
+  if (!GROQ_KEY_PATTERN.test(trimmed)) {
+    throw new CredentialValidationError(
+      'That does not look like a Groq API key. Expected something like gsk_… ' +
+        '(console.groq.com/keys → API Keys → Create API Key). ' +
+        'Do not paste your OpenRouter key here — choose the OpenRouter provider for that.',
+    );
+  }
+
+  return { key: trimmed };
+}
+
+/** True when a stored Groq key has a plausible shape. */
+export function isPlausibleGroqKey(value: string | undefined): boolean {
+  return typeof value === 'string' && GROQ_KEY_PATTERN.test(value.trim());
 }
 
 export function normaliseTelegramToken(value: unknown): string | undefined {

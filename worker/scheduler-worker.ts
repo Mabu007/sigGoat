@@ -36,6 +36,33 @@ export interface Env {
 }
 
 /**
+ * Callback delivery timeout.
+ *
+ * The alarm handler must not hold the object open indefinitely: a hung request
+ * would block every subsequent alarm for this GOAT.
+ */
+const CALLBACK_TIMEOUT_MS = 10_000;
+
+/** First retry delay after a failed delivery. */
+const RETRY_BASE_MS = 30_000;
+
+/**
+ * Ceiling on retry backoff.
+ *
+ * Bounded, not abandoned: a permanently unreachable app costs one request per
+ * RETRY_CEILING_MS per GOAT, and recovery is automatic with no operator action.
+ */
+const RETRY_CEILING_MS = 15 * 60_000;
+
+/**
+ * Bound on consecutive failures.
+ *
+ * Reported through /status so a stuck GOAT is visible. Retries continue past
+ * it at the ceiling — this is an observability threshold, not a give-up point.
+ */
+const MAX_DELIVERY_ATTEMPTS = 5;
+
+/**
  * Durable Object storage allows only ONE alarm per object, but two things need
  * firing: the reasoning wake (user-chosen interval / time) and the tracker
  * check (user-chosen tracking timeframe).
@@ -66,6 +93,22 @@ interface Goats {
   paused: boolean;
   lastDeliveredAt?: number;
   lastArmedAt?: number;
+  /**
+   * Consecutive FAILED deliveries for the current alarm.
+   *
+   * Reset to 0 on the first success. Bounded by MAX_DELIVERY_ATTEMPTS so a
+   * permanently unreachable app produces a slow, steady retry rather than
+   * either a hot loop or a permanently dead GOAT.
+   */
+  failedDeliveries?: number;
+  /**
+   * When the next retry is allowed.
+   *
+   * A failed delivery must not immediately re-fire: an app that is mid-deploy
+   * would otherwise receive a request every few seconds. This is the floor for
+   * that backoff.
+   */
+  retryAfterAt?: number | null;
 }
 
 export const GoatScheduler = {
@@ -147,6 +190,16 @@ export class GoatSchedulerDO {
 
     if (!goats || goats.paused) return;
 
+    /**
+     * A failed delivery backs off instead of re-firing immediately, so an app
+     * that is briefly unavailable is not hammered and a genuinely dead one is
+     * not spun on.
+     */
+    if (goats.retryAfterAt && Date.now() < goats.retryAfterAt) {
+      await this.arm(goats);
+      return;
+    }
+
     const due = this.pickDue(goats);
     if (!due) return;
 
@@ -165,6 +218,8 @@ export class GoatSchedulerDO {
         ? '/api/internal/wake'
         : '/api/internal/check-trackers';
 
+    let delivered = false;
+
     try {
       const response = await fetch(
         `${this.env.APP_ORIGIN.replace(/\/+$/, '')}${endpoint}`,
@@ -174,6 +229,7 @@ export class GoatSchedulerDO {
             'Content-Type': 'application/json',
             'X-Scheduler-Secret': this.env.SCHEDULER_SECRET,
           },
+          signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
           body: JSON.stringify({
             goatId: goats.goatId,
             eventId,
@@ -185,35 +241,76 @@ export class GoatSchedulerDO {
       );
 
       if (response.ok) {
+        delivered = true;
         goats.lastDeliveredAt = Date.now();
-      }
+        goats.failedDeliveries = 0;
+        goats.retryAfterAt = null;
 
-      /**
-       * The receiver reports the NEXT due time for this kind, which is how the
-       * schedule stays anchored to the app's own clock rather than drifting by
-       * one alarm latency per cycle.
-       */
-      if (response.ok) {
+        /**
+         * The receiver reports the NEXT due time for this kind, which is how
+         * the schedule stays anchored to the app's own clock rather than
+         * drifting by one alarm latency per cycle.
+         *
+         * A missing or unparseable nextAt means "no further wake of this kind"
+         * rather than "wake again immediately": arming on the stale `at` value
+         * would spin the alarm.
+         */
         const body = (await response
           .json()
-          .catch(() => null)) as {
-          nextAt?: string | null;
-        } | null;
+          .catch(() => null)) as { nextAt?: string | null } | null;
+
+        const next = body?.nextAt ? Date.parse(body.nextAt) : NaN;
+        const nextAt = Number.isFinite(next) ? next : null;
 
         if (kind === 'REASONING') {
-          const next = body?.nextAt ? Date.parse(body.nextAt) : NaN;
-          goats.nextWakeAt = Number.isFinite(next) ? next : null;
+          goats.nextWakeAt = nextAt;
         } else {
-          const next = body?.nextAt ? Date.parse(body.nextAt) : NaN;
-          goats.nextTrackerCheckAt = Number.isFinite(next) ? next : null;
+          goats.nextTrackerCheckAt = nextAt;
         }
       }
-      // A failed delivery deliberately does NOT re-arm: a hot retry loop
-      // against a down app is worse than waiting for reconciliation.
     } catch {
-      // Network failure: leave the alarm consumed. Reconciliation re-arms.
+      // Network failure or timeout: handled by the retry branch below.
     }
 
+    if (!delivered) {
+      /**
+       * RETRY WITH BOUNDED BACKOFF.
+       *
+       * The previous behaviour consumed the alarm and re-armed nothing,
+       * relying on a reconciliation sweep that did not exist. One transient
+       * failure during an app deploy therefore stopped that GOAT's schedule
+       * permanently — the GOAT looked healthy in every status endpoint and
+       * simply never woke again.
+       *
+       * Past the attempt bound the schedule is still retried, at the slow
+       * floor, so a permanent outage costs a request every RETRY_CEILING_MS
+       * rather than a tight loop, and recovery is automatic either way.
+       */
+      const failures = (goats.failedDeliveries ?? 0) + 1;
+      goats.failedDeliveries = failures;
+
+      const delay = Math.min(
+        RETRY_BASE_MS * 2 ** (failures - 1),
+        RETRY_CEILING_MS,
+      );
+      goats.retryAfterAt = Date.now() + delay;
+
+      /**
+       * Re-arm at the retry time. `pickDue` only returns a schedule whose time
+       * has passed, so the original `at` remains due and this is a retry of the
+       * SAME event — which the receiver deduplicates on `eventId`, so a retry
+       * cannot produce a second AI call or a second Telegram message.
+       */
+      await this.arm(goats);
+      await this.state.storage.put('goats', goats);
+      return;
+    }
+
+    /**
+     * Always re-arm on success. Without this an alarm with no further due time
+     * stays armed forever and the object is never released.
+     */
+    await this.arm(goats);
     await this.state.storage.put('goats', goats);
   }
 
@@ -249,7 +346,20 @@ export class GoatSchedulerDO {
     return due.sort((a, b) => a.at - b.at)[0];
   }
 
-  /** Arms the single alarm for whichever schedule is soonest. */
+  /**
+   * Arms the single alarm for whichever schedule is soonest.
+   *
+   * THE BACKOFF MUST BE PART OF THIS CALCULATION.
+   *
+   * After a failed delivery `nextWakeAt` is still in the past — that is what
+   * makes it due. Taking `min(nextWakeAt, …)` alone therefore armed the alarm
+   * in the PAST, so Cloudflare re-fired it immediately and the guard at the top
+   * of `alarm()` suppressed the delivery only to re-arm in the past again. That
+   * is a tight loop, which is exactly what the backoff exists to prevent.
+   *
+   * A pending retry floor is raised to at least `retryAfterAt`, so a failed
+   * delivery is genuinely deferred.
+   */
   private async arm(goats: Goats): Promise<void> {
     const times = [goats.nextWakeAt, goats.nextTrackerCheckAt].filter(
       (t): t is number => t !== null && Number.isFinite(t),
@@ -260,7 +370,12 @@ export class GoatSchedulerDO {
       return;
     }
 
-    await this.state.storage.setAlarm(Math.min(...times));
+    const soonest = Math.min(...times);
+
+    // Never arm in the past: an alarm at or before now fires immediately.
+    const floor = Math.max(Date.now() + 1_000, goats.retryAfterAt ?? 0);
+
+    await this.state.storage.setAlarm(Math.max(soonest, floor));
   }
 
   private async handleSchedule(request: Request): Promise<Response> {
@@ -301,6 +416,13 @@ export class GoatSchedulerDO {
       generationId: body.generationId,
       paused: Boolean(body.paused),
       lastArmedAt: Date.now(),
+      /**
+       * A NEW generation clears the retry state. The previous generation's
+       * failures say nothing about this one, and carrying them forward would
+       * delay the first wake of a freshly saved schedule for no reason.
+       */
+      failedDeliveries: 0,
+      retryAfterAt: null,
     };
 
     await this.state.storage.put('goats', record);
@@ -323,9 +445,25 @@ export class GoatSchedulerDO {
     const goats = await this.state.storage.get<Goats>('goats');
     const alarm = await this.state.storage.getAlarm();
 
+    const failedDeliveries = goats?.failedDeliveries ?? 0;
+
     return json({
       goats: goats ?? null,
       armedFor: alarm ?? null,
+      /**
+       * Delivery health, surfaced rather than buried in `goats`.
+       *
+       * `retrying` is the signal that matters operationally: it means the
+       * schedule is alive but the app is not answering, which looks identical
+       * to "nothing is happening" without it.
+       */
+      delivery: {
+        lastDeliveredAt: goats?.lastDeliveredAt ?? null,
+        failedDeliveries,
+        retryAfterAt: goats?.retryAfterAt ?? null,
+        retrying: failedDeliveries > 0,
+        degraded: failedDeliveries >= MAX_DELIVERY_ATTEMPTS,
+      },
     });
   }
 

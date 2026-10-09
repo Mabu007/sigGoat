@@ -15,8 +15,9 @@ function makeResolution(overrides: Partial<TelegramResolution> = {}): TelegramRe
     },
     answerGoatQuestion: async (q) => `Echo: ${q}`,
     hasKeyFor: async () => false,
-    listModels: async () => ({ models: [], fetchedAt: 0 }),
-    testKeyFor: async () => ({ ok: false, latencyMs: 0, error: 'not used here' }),
+    listModels: async () => ({ models: [], provider: 'openrouter', fetchedAt: 0, source: 'stub' }),
+    providerFor: async () => 'openrouter',
+    testKeyFor: async () => ({ ok: false, provider: 'openrouter', latencyMs: 0, error: 'not used here' }),
     invalidate: () => {},
   };
 
@@ -86,15 +87,43 @@ describe('TelegramService.processUpdate', () => {
     expect(svc.sent.length).toBe(0);
   });
 
-  test('chat with no linked GOAT gets an honest message (no fabricated context)', async () => {
+  test('an unlinked chat is acknowledged and fabricates nothing', async () => {
     const svc = new CapturingTelegram();
     const result = await svc.processUpdate(makeUpdate("What's your thesis?"), {
       resolveGoatForChat: async () => null,
       getBotTokenForUser: async () => undefined,
     });
+
+    /**
+     * Handled, and NOTHING sent.
+     *
+     * An unlinked chat resolves to no user, so there is no per-user bot token
+     * to send with. The previous behaviour fell back to the server-wide
+     * TELEGRAM_BOT_TOKEN, which meant any chat id that found the webhook got a
+     * reply from the platform's own bot — and, because the chat path then
+     * resolved whichever GOAT the chat mapped to, an unlinked-looking chat
+     * could be granted conversational access to a user's GOAT.
+     *
+     * The webhook is still acknowledged truthfully so Telegram does not retry
+     * forever, and no market content is invented.
+     */
     expect(result.handled).toBe(true);
-    expect(svc.sent.length).toBe(1);
-    expect(svc.sent[0].text).toContain('No GOAT is linked');
+    expect(svc.sent.length).toBe(0);
+  });
+
+  test('an unlinked chat never receives a message through the shared server bot', async () => {
+    /**
+     * A server-wide token is configured, which is exactly the situation that
+     * used to leak. No user token can be resolved, so nothing may be sent.
+     */
+    const svc = new CapturingTelegram('server-wide-shared-token');
+    const result = await svc.processUpdate(makeUpdate('/processes'), {
+      resolveGoatForChat: async () => null,
+      getBotTokenForUser: async () => undefined,
+    });
+
+    expect(result.handled).toBe(true);
+    expect(svc.sent.length).toBe(0);
   });
 
   test('/start gets the connected message; plain questions go through the canonical gateway', async () => {
@@ -143,8 +172,9 @@ describe('TelegramService.processUpdate', () => {
           throw new Error('model unavailable');
         },
         hasKeyFor: async () => false,
-        listModels: async () => ({ models: [], fetchedAt: 0 }),
-        testKeyFor: async () => ({ ok: false, latencyMs: 0, error: 'not used here' }),
+        listModels: async () => ({ models: [], provider: 'openrouter', fetchedAt: 0, source: 'stub' }),
+        providerFor: async () => 'openrouter',
+        testKeyFor: async () => ({ ok: false, provider: 'openrouter', latencyMs: 0, error: 'not used here' }),
         invalidate: () => {},
       },
     });

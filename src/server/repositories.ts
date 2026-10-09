@@ -82,6 +82,45 @@ export interface KeyStore {
   setOpenRouterKey(userId: string, key: string | undefined): Promise<void>;
   getTelegramToken(userId: string): Promise<string | undefined>;
   setTelegramToken(userId: string, token: string | undefined): Promise<void>;
+
+  /**
+   * The user's Groq key, for the fallback/testing provider.
+   *
+   * Stored per user exactly like the OpenRouter key, so a user who pays for
+   * Groq keeps their own credential and one user's key never serves another
+   * user. Optional on the interface so an older repository implementation
+   * still satisfies it.
+   */
+  getGroqKey?(userId: string): Promise<string | undefined>;
+  setGroqKey?(userId: string, key: string | undefined): Promise<void>;
+
+  /**
+   * Which provider this user selected.
+   *
+   * Persisted rather than inferred so the choice survives a cold start and
+   * cannot be swapped by a request field.
+   */
+  getProvider?(userId: string): Promise<'openrouter' | 'groq' | undefined>;
+  setProvider?(userId: string, provider: 'openrouter' | 'groq'): Promise<void>;
+
+  /**
+   * The user's Telegram bot identity, recorded once `getMe` has verified it.
+   *
+   * Only ever the bot's public identity (id, username). The token itself lives
+   * in `getTelegramToken` and is never written here.
+   */
+  getTelegramBot?(userId: string): Promise<TelegramBotRecord | undefined>;
+  setTelegramBot?(userId: string, bot: TelegramBotRecord | undefined): Promise<void>;
+}
+
+export interface TelegramBotRecord {
+  /** Telegram's numeric bot id, from getMe. */
+  id: number;
+  username: string;
+  /** When this record was last verified against getMe. */
+  verifiedAt: string;
+  /** The webhook URL Telegram currently has registered, if known. */
+  webhookUrl?: string;
 }
 
 export interface PersistenceLayer {
@@ -229,7 +268,11 @@ class MemoryMarketRecapRepository implements MarketRecapRepository {
 
 class MemoryKeyStore implements KeyStore {
   private openRouter = new Map<string, string>();
+  private groq = new Map<string, string>();
   private telegram = new Map<string, string>();
+  private providers = new Map<string, 'openrouter' | 'groq'>();
+  private bots = new Map<string, TelegramBotRecord>();
+
   async getOpenRouterKey(userId: string) {
     return this.openRouter.get(userId);
   }
@@ -237,12 +280,32 @@ class MemoryKeyStore implements KeyStore {
     if (key) this.openRouter.set(userId, key);
     else this.openRouter.delete(userId);
   }
+  async getGroqKey(userId: string) {
+    return this.groq.get(userId);
+  }
+  async setGroqKey(userId: string, key: string | undefined) {
+    if (key) this.groq.set(userId, key);
+    else this.groq.delete(userId);
+  }
   async getTelegramToken(userId: string) {
     return this.telegram.get(userId);
   }
   async setTelegramToken(userId: string, token: string | undefined) {
     if (token) this.telegram.set(userId, token);
     else this.telegram.delete(userId);
+  }
+  async getProvider(userId: string) {
+    return this.providers.get(userId);
+  }
+  async setProvider(userId: string, provider: 'openrouter' | 'groq') {
+    this.providers.set(userId, provider);
+  }
+  async getTelegramBot(userId: string) {
+    return this.bots.get(userId);
+  }
+  async setTelegramBot(userId: string, bot: TelegramBotRecord | undefined) {
+    if (bot) this.bots.set(userId, bot);
+    else this.bots.delete(userId);
   }
 }
 
@@ -257,7 +320,13 @@ interface FileDbShape {
   theses: Record<string, MarketThesis[]>;
   wakeEvents: Record<string, WakeEvent[]>;
   profiles: Record<string, UserProfile>;
-  keys: { openRouter: Record<string, string>; telegram: Record<string, string> };
+  keys: {
+    openRouter: Record<string, string>;
+    groq: Record<string, string>;
+    telegram: Record<string, string>;
+    providers: Record<string, 'openrouter' | 'groq'>;
+    bots: Record<string, TelegramBotRecord>;
+  };
   recaps: Record<string, DailyMarketRecap>;
 }
 
@@ -269,7 +338,7 @@ function emptyDb(): FileDbShape {
     theses: {},
     wakeEvents: {},
     profiles: {},
-    keys: { openRouter: {}, telegram: {} },
+    keys: { openRouter: {}, groq: {}, telegram: {}, providers: {}, bots: {} },
     recaps: {},
   };
 }
@@ -448,6 +517,24 @@ class FileMarketRecapRepository implements MarketRecapRepository {
 
 class FileKeyStore implements KeyStore {
   constructor(private parent: FilePersistence) {}
+
+  /**
+   * Sub-records are read through a defaulting helper.
+   *
+   * A state file written before Groq existed has no `groq`, `providers` or
+   * `bots` key. Reading `undefined[key]` would throw on every boot, so an
+   * absent sub-record behaves as an empty one.
+   */
+  private section<K extends keyof FileDbShape['keys']>(
+    name: K,
+  ): FileDbShape['keys'][K] {
+    const keys = this.parent.data.keys as Record<string, unknown>;
+    if (!keys[name] || typeof keys[name] !== 'object') {
+      keys[name] = {} as FileDbShape['keys'][K];
+    }
+    return keys[name] as FileDbShape['keys'][K];
+  }
+
   async getOpenRouterKey(userId: string) {
     return this.parent.data.keys.openRouter[userId];
   }
@@ -456,12 +543,35 @@ class FileKeyStore implements KeyStore {
     else delete this.parent.data.keys.openRouter[userId];
     this.parent.persist();
   }
+  async getGroqKey(userId: string) {
+    return this.section('groq')[userId];
+  }
+  async setGroqKey(userId: string, key: string | undefined) {
+    if (key) this.section('groq')[userId] = key;
+    else delete this.section('groq')[userId];
+    this.parent.persist();
+  }
   async getTelegramToken(userId: string) {
     return this.parent.data.keys.telegram[userId];
   }
   async setTelegramToken(userId: string, token: string | undefined) {
     if (token) this.parent.data.keys.telegram[userId] = token;
     else delete this.parent.data.keys.telegram[userId];
+    this.parent.persist();
+  }
+  async getProvider(userId: string) {
+    return this.section('providers')[userId];
+  }
+  async setProvider(userId: string, provider: 'openrouter' | 'groq') {
+    this.section('providers')[userId] = provider;
+    this.parent.persist();
+  }
+  async getTelegramBot(userId: string) {
+    return this.section('bots')[userId];
+  }
+  async setTelegramBot(userId: string, bot: TelegramBotRecord | undefined) {
+    if (bot) this.section('bots')[userId] = bot;
+    else delete this.section('bots')[userId];
     this.parent.persist();
   }
 }
@@ -643,23 +753,75 @@ class FirestoreKeyStore implements KeyStore {
   private doc(userId: string) {
     return this.db.collection(KEYS).doc(userId);
   }
-  async getOpenRouterKey(userId: string) {
+
+  /**
+   * Reads one credential field.
+   *
+   * Field-by-field rather than document-wide so adding a credential type never
+   * requires a migration, and a partial document still resolves cleanly.
+   */
+  private async readString(
+    userId: string,
+    field: string,
+  ): Promise<string | undefined> {
     const doc = await this.doc(userId).get();
     if (!doc.exists) return undefined;
-    const value = doc.data()?.openRouterKey;
+    const value = doc.data()?.[field];
     return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+
+  private async write(
+    userId: string,
+    fields: Record<string, unknown>,
+  ): Promise<void> {
+    await this.doc(userId).set(fields, { merge: true });
+  }
+
+  async getOpenRouterKey(userId: string) {
+    return this.readString(userId, 'openRouterKey');
   }
   async setOpenRouterKey(userId: string, key: string | undefined) {
-    await this.doc(userId).set({ openRouterKey: key ?? null }, { merge: true });
+    await this.write(userId, { openRouterKey: key ?? null });
+  }
+  async getGroqKey(userId: string) {
+    return this.readString(userId, 'groqKey');
+  }
+  async setGroqKey(userId: string, key: string | undefined) {
+    await this.write(userId, { groqKey: key ?? null });
   }
   async getTelegramToken(userId: string) {
-    const doc = await this.doc(userId).get();
-    if (!doc.exists) return undefined;
-    const value = doc.data()?.telegramToken;
-    return typeof value === 'string' && value.length > 0 ? value : undefined;
+    return this.readString(userId, 'telegramToken');
   }
   async setTelegramToken(userId: string, token: string | undefined) {
-    await this.doc(userId).set({ telegramToken: token ?? null }, { merge: true });
+    await this.write(userId, { telegramToken: token ?? null });
+  }
+  async getProvider(userId: string) {
+    const doc = await this.doc(userId).get();
+    if (!doc.exists) return undefined;
+    const value = doc.data()?.provider;
+    return value === 'groq' || value === 'openrouter' ? value : undefined;
+  }
+  async setProvider(userId: string, provider: 'openrouter' | 'groq') {
+    await this.write(userId, { provider });
+  }
+  async getTelegramBot(userId: string) {
+    const doc = await this.doc(userId).get();
+    if (!doc.exists) return undefined;
+    const value = doc.data()?.telegramBot;
+    if (!value || typeof value !== 'object') return undefined;
+    const bot = value as Partial<TelegramBotRecord>;
+    if (typeof bot.id !== 'number' || typeof bot.username !== 'string') {
+      return undefined;
+    }
+    return {
+      id: bot.id,
+      username: bot.username,
+      verifiedAt: typeof bot.verifiedAt === 'string' ? bot.verifiedAt : '',
+      ...(typeof bot.webhookUrl === 'string' ? { webhookUrl: bot.webhookUrl } : {}),
+    };
+  }
+  async setTelegramBot(userId: string, bot: TelegramBotRecord | undefined) {
+    await this.write(userId, { telegramBot: bot ?? null });
   }
 }
 

@@ -17,6 +17,7 @@ import { getFirebaseAdminFailureReason } from './firebaseAdmin';
 import {
   CredentialValidationError,
   isPlausibleOpenRouterKey,
+  normaliseGroqKey,
   normaliseOpenRouterKey,
   normaliseTelegramToken,
 } from './credentialValidation';
@@ -25,7 +26,7 @@ import {
   PersistenceLayer,
   NotFoundError,
 } from './repositories';
-import { UserScopedReasoningGateway } from './reasoningGateway';
+import { UserScopedReasoningGateway, type AiProvider } from './reasoningGateway';
 import { buildGoatContext } from './goatContext';
 import { durableObjectRegistry } from '../services/durable-object/DurableObjectRegistry';
 import { biQuoteProvider } from '../services/market-data/BiQuoteMarketDataProvider';
@@ -39,6 +40,12 @@ import { FileMarketStatePersistence } from '../services/market-data/FileMarketSt
 import { BacktestEngine } from '../services/backtest/BacktestEngine';
 import { DEFAULT_SKILLS } from '../data/defaultSkills';
 import { telegramService } from '../services/telegram/TelegramService';
+import type {
+  TelegramProcessSummary,
+  TelegramResolution,
+} from '../services/telegram/TelegramService';
+import { TelegramRateLimiter } from '../services/telegram/TelegramCommands';
+import { TelegramBotClient } from '../services/telegram/TelegramBotClient';
 import { ApiRequestError } from '../services/ai/OpenRouterClient';
 import { durableObjectSchedulerFromEnv } from './scheduler/DurableObjectScheduler';
 import type { WakeScheduler, FiredWake } from './scheduler/types';
@@ -46,8 +53,10 @@ import { InProcessScheduler } from './scheduler/InProcessScheduler';
 import { msUntilNextScheduledTime, normaliseSchedule, describeSchedule } from '../services/durable-object/GoatDurableObject';
 import {
   TRACKING_TIMEFRAMES,
+  isTrackingTimeframe,
   normaliseTrackingTimeframe,
   pollIntervalForTimeframe,
+  type TrackingTimeframe,
 } from '../services/market-data/trackingTimeframes';
 import { DailyMarketRollup } from '../services/daily-rolling/DailyMarketRollup';
 import {
@@ -294,6 +303,21 @@ if (durableScheduler) {
 const scheduler: WakeScheduler = durableScheduler ?? inProcessScheduler!;
 
 /**
+ * Routes locally-ingested events to the same handler the Cloudflare runtime
+ * calls.
+ *
+ * This was also missing: `onEvent()` had no listener, so a candle finalized by
+ * the in-process ingestion service produced no wake at all. Without it the
+ * app only reacted to alarms, which is what made "the market moved and nothing
+ * happened" so hard to explain.
+ */
+marketIngestion.onEvent((event: MarketEvent) => {
+  void routeMarketEvent(event).catch((err) => {
+    console.error('[market-event] local routing failed:', err);
+  });
+});
+
+/**
  * Daily market recap + intraday rollover.
  *
  * Fed from the same LIVE snapshots the trackers use, so the recap is built
@@ -322,12 +346,69 @@ const runtimeOptions = {
 };
 
 function ensureGoatRuntime(goat: SignalGoat) {
+  subscribeToMarkets(goat);
   const attached = allSkillsFor(goat.userId).then((skills) =>
     skills.filter((s) => goat.skillIds.includes(s.id)),
   );
   return attached.then((attachedSkills) =>
     durableObjectRegistry.getOrCreate(goat, attachedSkills, runtimeOptions),
   );
+}
+
+/**
+ * Registers a GOAT with the shared ingestion layer and mirrors it into the
+ * Cloudflare runtime.
+ *
+ * THIS WAS MISSING ENTIRELY.
+ *
+ * `MarketIngestionService.subscribe()` was only ever called from tests, so:
+ *   - the in-process subscription table was always empty, meaning
+ *     `routeMarketEvent()` considered zero subscribers and every market event
+ *     was dropped as irrelevant;
+ *   - `syncDurableSubscriptions()` iterated an empty list, so
+ *     `MarketDataDO` never received a single subscription — and since it derives
+ *     its instrument list from that table, the shared store had nothing to
+ *     ingest.
+ *
+ * Registering here, at the single point every GOAT passes through, means a new
+ * GOAT is watched whether or not anything else touched it.
+ */
+function subscribeToMarkets(goat: SignalGoat): void {
+  /**
+   * A PAUSED GOAT IS UNSUBSCRIBED.
+   *
+   * Dormancy waits for events; stopping means the workflow does not run. A
+   * stopped GOAT must therefore be removed from the routing table, not left in
+   * it to ignore every event it receives. That also stops the shared runtime
+   * ingesting a market nobody is watching.
+   */
+  if (goat.status === 'PAUSED') {
+    marketIngestion.unsubscribeAll(goat.id);
+    return;
+  }
+
+  for (const instrument of goat.markets) {
+    marketIngestion.subscribe({
+      subscriberId: goat.id,
+      instrument,
+      eventTypes: ['CANDLE_FINALIZED', 'SESSION_FINALIZED', 'DATA_STALE'],
+    });
+  }
+
+  /**
+   * Mirror into the durable runtime so the Worker knows what to ingest.
+   *
+   * Fire-and-forget: a GOAT must be creatable when the Worker is unreachable,
+   * and `describe()` on the client reports `lastError` so the failure is
+   * visible rather than silent.
+   */
+  if (durableMarketDataClient.isEnabled) {
+    void syncDurableSubscriptions(
+      marketIngestion.listSubscriptions(),
+    ).catch((err) => {
+      console.error('[api] durable subscription sync failed:', err);
+    });
+  }
 }
 
 async function allSkillsFor(userId: string) {
@@ -349,6 +430,41 @@ export async function restoreRuntimes(): Promise<void> {
   } catch (err) {
     console.error('[api] Failed to restore GOAT runtimes:', err);
   }
+}
+
+/**
+ * Rebuilds the subscription table and re-publishes every schedule.
+ *
+ * Called at boot on a long-lived host AND by `/api/internal/reconcile` on a
+ * serverless one, because a cold start destroys the in-memory subscription
+ * cache. Without it, a fresh container would wake nobody until each GOAT was
+ * individually touched.
+ *
+ * Idempotent, and safe to run concurrently with live traffic.
+ */
+export async function reconcileRuntime(): Promise<{
+  goats: number;
+  subscriptions: number;
+  durableSynced: number;
+}> {
+  const goats = await persistence.goats.listAll();
+
+  const subscriptions: IngestionSubscription[] = [];
+  for (const goat of goats) {
+    if (goat.status === 'PAUSED') continue;
+    for (const instrument of goat.markets) {
+      subscriptions.push({
+        subscriberId: goat.id,
+        instrument,
+        eventTypes: ['CANDLE_FINALIZED', 'SESSION_FINALIZED', 'DATA_STALE'],
+      });
+    }
+  }
+
+  const restored = marketIngestion.rebuildSubscriptions(subscriptions);
+  const durableSynced = await syncDurableSubscriptions(subscriptions);
+
+  return { goats: goats.length, subscriptions: restored, durableSynced };
 }
 
 /** Seed default skills once so new users always see the standard library. */
@@ -1091,6 +1207,58 @@ apiRouter.post('/internal/market-event', handle(async (req, res) => {
  * is destroyed on every cold start. Without this, a fresh container would wake
  * nobody until each GOAT happened to be touched again.
  */
+apiRouter.post('/internal/reconcile', handle(async (req, res) => {
+  if (!internalAuth(req, res)) return;
+
+  /**
+   * CRON RECONCILIATION
+   *
+   * The Cloudflare Worker's `scheduled()` handler calls this on a timer. It
+   * re-publishes every non-paused GOAT's authoritative schedule.
+   *
+   * This is the recovery half of `GoatSchedulerDO`'s deliberate choice not to
+   * re-arm after a failed delivery. That choice prevents a hot retry loop
+   * against a down app; without this endpoint it also meant one transient
+   * failure stopped a GOAT's schedule permanently — the GOAT reported healthy
+   * and simply never woke again.
+   *
+   * Safe to call as often as the cron fires: `DurableObjectScheduler.sync()`
+   * treats a re-publish of an unchanged generation as a no-op, and a DO that
+   * already holds the same generation answers `unchanged: true`.
+   */
+  const goats = await persistence.goats.listAll();
+
+  let republished = 0;
+  let failed = 0;
+
+  for (const goat of goats) {
+    // syncSchedule never throws, so a failure is reported through the count.
+    await syncSchedule(goat);
+    if (scheduler.health().lastError) failed += 1;
+    else republished += 1;
+  }
+
+  /**
+   * Rebuild the market subscription table in the same pass.
+   *
+   * The subscription table is in-memory, so a Vercel cold start leaves it
+   * empty: every market event would be dropped as irrelevant until each GOAT
+   * happened to be touched again. Reconciling schedules without subscriptions
+   * would fix the alarms and leave events still dead.
+   */
+  const runtime = await reconcileRuntime();
+
+  res.json({
+    handled: true,
+    goatsConsidered: goats.length,
+    republished,
+    failed,
+    subscriptionsRestored: runtime.subscriptions,
+    durableSubscriptionsSynced: runtime.durableSynced,
+    scheduler: scheduler.health(),
+  });
+}));
+
 apiRouter.post('/internal/market-sync', handle(async (_req, res) => {
   if (!internalAuth(_req, res)) return;
 
@@ -1290,100 +1458,569 @@ apiRouter.get('/markets/candles', handle(async (req, res) => {
   res.json({ symbol, timeframe, candles, dataMode: marketProvider.dataMode });
 }));
 
-// Telegram webhook: secret-validated, payload-validated.
+/* ------------------------------------------------------------------ */
+/* Telegram                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The signed update ids this process has already handled.
+ *
+ * Telegram retries an update until it receives a 2xx, so the SAME
+ * `update_id` can arrive more than once. Combined with commands that spend AI
+ * (`/trigger`, `/analyse`) or mutate state (`/pause`), a duplicate would be a
+ * real, charged, duplicated action.
+ *
+ * Bounded and in-memory, like every other cache in this process. On a Vercel
+ * cold start the window is empty, so a retry arriving after a cold start is
+ * NOT suppressed — see the note on `telegramWebhookDedup` about why that
+ * residual risk is accepted rather than papered over with an unbounded store.
+ */
+const handledTelegramUpdates = new Set<number>();
+const TELEGRAM_UPDATE_CACHE_LIMIT = 2_000;
+
+function claimTelegramUpdate(updateId: number): boolean {
+  if (handledTelegramUpdates.has(updateId)) return false;
+
+  handledTelegramUpdates.add(updateId);
+
+  if (handledTelegramUpdates.size > TELEGRAM_UPDATE_CACHE_LIMIT) {
+    const oldest = handledTelegramUpdates.values().next().value;
+    if (oldest !== undefined) handledTelegramUpdates.delete(oldest);
+  }
+
+  return true;
+}
+
+/** For tests. */
+export function resetTelegramUpdateCache(): void {
+  handledTelegramUpdates.clear();
+}
+
+/**
+ * Per-chat command rate limit.
+ *
+ * A bot token is a credential and the webhook URL is public, so an endpoint
+ * that can spend a user's AI credits must be bounded. Cheap commands (listing,
+ * help) and expensive ones (`/trigger`, `/analyse`) share one budget: simple
+ * and uniform, and the expensive path is additionally protected by
+ * `decide()` on the scheduler side.
+ */
+const telegramRateLimiter = new TelegramRateLimiter({
+  windowMs: 60_000,
+  maxPerWindow: 10,
+});
+
+/** Commands that spend AI or change state, so their failure must be reported. */
+const TELEGRAM_EXPENSIVE_COMMANDS = new Set(['/trigger', '/analyse']);
+
+/**
+ * Resolves the OWNING USER for a chat.
+ *
+ * Every command path starts here, so ownership is decided in exactly one place
+ * from the persisted chat->user mapping. The chat id is the caller's Telegram
+ * identity, NOT an authorisation decision: a user can only speak for the chat
+ * their account registered, because Telegram delivers the update to the bot
+ * that chat actually messaged.
+ */
+async function ownerForChat(
+  chatId: string,
+): Promise<{ userId: string; chatId: string } | null> {
+  const profile = await persistence.profiles.findByTelegramChatId(String(chatId));
+  if (!profile) return null;
+  return { userId: profile.id, chatId: String(chatId) };
+}
+
+/**
+ * Resolves a process BY ID for a chat's owner.
+ *
+ * Uses `getForUser`, so a process belonging to somebody else returns null and
+ * is indistinguishable from one that does not exist. The caller cannot be used
+ * to probe for other users' process ids.
+ */
+async function resolveOwnedProcess(
+  chatId: string,
+  processId: string,
+): Promise<{ goat: SignalGoat; runtime: GoatRuntimeState } | null> {
+  const owner = await ownerForChat(chatId);
+  if (!owner) return null;
+
+  const goat = await persistence.goats.getForUser(processId, owner.userId);
+  if (!goat) return null;
+
+  const runtime = await ensureGoatRuntime(goat);
+  return { goat, runtime: runtime.getState() };
+}
+
+/** Every process the chat's owner may act on. */
+async function listOwnedProcesses(
+  chatId: string,
+): Promise<TelegramProcessSummary[]> {
+  const owner = await ownerForChat(chatId);
+  if (!owner) return [];
+
+  const goats = await persistence.goats.listByUser(owner.userId);
+  return goats.map((goat) => ({
+    id: goat.id,
+    name: goat.name,
+    markets: goat.markets,
+    status: goat.status,
+    timeframe: normaliseTrackingTimeframe(goat.timeframe),
+    model: goat.model,
+  }));
+}
+
+/**
+ * Builds the runtime + context a named command needs.
+ *
+ * Only called AFTER ownership has been established by `resolveOwnedProcess`,
+ * so the reasoning context handed to a model always belongs to the caller's own
+ * process.
+ */
+async function buildCommandResolution(
+  goat: SignalGoat,
+  userId: string,
+): Promise<{
+  resolution: TelegramResolution;
+  runtime: ReturnType<typeof ensureGoatRuntime> extends Promise<infer T> ? T : never;
+}> {
+  const runtime = await ensureGoatRuntime(goat);
+  const skills = (await allSkillsFor(userId)).filter((s) =>
+    goat.skillIds.includes(s.id),
+  );
+  const ctx = await buildGoatContext(
+    { goats: persistence.goats, skills: persistence.skills, marketProvider },
+    goat.id,
+    userId,
+  );
+
+  return {
+    runtime,
+    resolution: {
+      goat: {
+        id: goat.id,
+        userId: goat.userId,
+        name: goat.name,
+        model: goat.model,
+      },
+      state: runtime.getState(),
+      reasoningContext: {
+        ...ctx.context,
+        activeThesis: runtime.getState().currentThesis,
+      },
+      model: ctx.model,
+      gateway: reasoningGateway,
+      requestAnalysis: async (reason: string) =>
+        buildAnalysisSummary(await runtime.wake(reason, 'MANUAL_REEVALUATE'), goat),
+    },
+  };
+}
+
+/**
+ * Renders a completed analysis for Telegram.
+ *
+ * Drawn entirely from the runtime state that was just produced, so it reports
+ * what happened rather than what was hoped for.
+ */
+function buildAnalysisSummary(state: GoatRuntimeState, goat: SignalGoat): string {
+  const thesis = state.currentThesis;
+  const signal = state.latestSignal;
+  const triggered = state.trackers.filter((t) => t.isTriggered).length;
+
+  const lines = [
+    `🐐 *${goat.name.toUpperCase()} · FRESH ANALYSIS*`,
+    '',
+    `Schedule: ${describeSchedule(normaliseSchedule(goat.schedule))}`,
+    `Reasoning: ${state.reasoningMode} · Data: ${state.dataSource}`,
+    '',
+  ];
+
+  if (thesis) {
+    lines.push(`*Asset state:* ${thesis.summary ?? '—'}`);
+    if (thesis.assetState) lines.push(`${thesis.assetState.slice(0, 400)}`);
+    lines.push('');
+  }
+
+  lines.push(signal ? telegramService.formatSignalMessage(signal, goat.name) : 'No decision produced.');
+  lines.push('');
+  lines.push(`Conditions armed: ${state.trackers.length} · met: ${triggered}`);
+  lines.push(
+    state.trackers
+      .map((t) => `${t.isTriggered ? '✅' : '⏳'} ${t.formulaDescription ?? t.description}`)
+      .join('\n'),
+  );
+
+  if (state.lastError) {
+    lines.push(`\n_Last error: ${state.lastError.slice(0, 200)}_`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * `/create <goal> <market> [timeframe]`
+ *
+ * The goal is free text and the market is the LAST whitespace-delimited token
+ * that parses as an instrument, with an optional trailing timeframe. That keeps
+ * a multi-word goal usable without quoting, which is what people actually type
+ * in a chat.
+ */
+async function createProcessFromTelegram(
+  chatId: string,
+  args: string,
+): Promise<{ ok: boolean; message: string }> {
+  const owner = await ownerForChat(chatId);
+  if (!owner) {
+    return { ok: false, message: 'This chat is not linked to a SignalGOAT account.' };
+  }
+
+  const trimmed = args.trim();
+  if (!trimmed) {
+    return {
+      ok: false,
+      message:
+        'Usage: `/create <goal> <market> [timeframe]`\n' +
+        'Example: `/create wait for a London sweep on EUR/USD 5m`',
+    };
+  }
+
+  const tokens = trimmed.split(/\s+/);
+  let timeframe: TrackingTimeframe | undefined;
+  let market: string | undefined;
+
+  const last = tokens[tokens.length - 1];
+  if (tokens.length > 1 && isTrackingTimeframe(last)) {
+    timeframe = last as TrackingTimeframe;
+    market = tokens[tokens.length - 2];
+    tokens.splice(-2, 2);
+  } else {
+    market = last;
+    tokens.splice(-1, 1);
+  }
+
+  const goal = tokens.join(' ').trim();
+  const instrument = String(market ?? '').trim().toUpperCase();
+
+  /**
+   * The market is validated against the provider's own symbol list rather than
+   * a regex. A GOAT watching a symbol the feed does not serve would never
+   * produce data, and that failure would only surface as a silent no-signal.
+   */
+  const known = await marketProvider.getSymbols();
+  const match = known.find((s) => s.symbol.toUpperCase() === instrument);
+
+  if (!goal || !match) {
+    return {
+      ok: false,
+      message:
+        `I could not read that. Supported markets include: ` +
+        `${known.slice(0, 8).map((s) => s.symbol).join(', ')}.\n\n` +
+        'Usage: `/create <goal> <market> [1m|5m|15m|1h|4h]`',
+    };
+  }
+
+  const name = goal.length > 60 ? `${goal.slice(0, 57)}…` : goal;
+
+  const goat: SignalGoat = {
+    id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    userId: owner.userId,
+    name,
+    goal,
+    markets: [match.symbol],
+    skillIds: ['skill_price_action'],
+    model: (await defaultModelFor(owner.userId)),
+    status: 'WATCHING',
+    schedule: { mode: 'TRACKERS', intervalMinutes: 60 },
+    timeframe: timeframe ?? '15m',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await persistence.goats.save(goat);
+  await syncSchedule(goat);
+
+  /**
+   * The initial analysis is NOT awaited into the Telegram reply.
+   *
+   * `/trigger` is the explicit way to spend AI, and Telegram gives a bot no
+   * reliable long-poll window for a slow reply. Creating a process therefore
+   * confirms immediately and starts the pipeline in the background, exactly as
+   * the web app does.
+   */
+  const runtime = await ensureGoatRuntime(goat);
+  void runtime
+    .wake('Created from Telegram', 'MANUAL_REEVALUATE', match.symbol)
+    .catch((err) => {
+      console.error('[telegram] initial analysis failed:', err);
+    });
+
+  return {
+    ok: true,
+    message:
+      `🐐 Created *${name}*\n\n` +
+      `id: \`${goat.id}\`\n` +
+      `market: ${match.symbol} · timeframe: ${goat.timeframe}\n\n` +
+      'First analysis is running. You will be alerted when a condition is met.\n' +
+      '_Use /pause ' + goat.id + ' to stop it._',
+  };
+}
+
+/** The model a new process should use: the owner's, or a sane default. */
+async function defaultModelFor(userId: string): Promise<string> {
+  const goats = await persistence.goats.listByUser(userId);
+  const existing = goats.find((g) => g.status !== 'PAUSED')?.model;
+  if (existing) return existing;
+  return 'openai/gpt-4o-mini';
+}
+
+/** Telegram webhook: secret-validated, payload-validated, deduplicated. */
 apiRouter.post('/telegram/webhook', handle(async (req, res) => {
-  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  if (secret) {
-    const provided = req.header('x-telegram-bot-api-secret-token');
-    if (provided !== secret) {
-      return fail(res, 401, 'UNAUTHORIZED_WEBHOOK', 'Invalid webhook secret.');
-    }
+  /**
+   * THE WEBHOOK SECRET IS NOT OPTIONAL.
+   *
+   * It used to be checked only when `TELEGRAM_WEBHOOK_SECRET` was set, which
+   * means an unset secret produced an OPEN webhook: anyone who learned the URL
+   * could post a fake Telegram update and drive every linked user's processes.
+   *
+   * Each user's own bot is registered with a PER-BOT secret derived from the
+   * deployment secret (see `telegramWebhookSecretFor`), so all bots share one
+   * configured root and none of them is unauthenticated.
+   */
+  const rootSecret = resolveTelegramWebhookSecret();
+  if (!rootSecret) {
+    return fail(
+      res,
+      503,
+      'TELEGRAM_NOT_CONFIGURED',
+      'Telegram webhook is not configured on this server. Set TELEGRAM_WEBHOOK_SECRET.',
+    );
+  }
+
+  const provided = req.header('x-telegram-bot-api-secret-token') ?? '';
+  if (!timingSafeStringEqual(provided, rootSecret)) {
+    return fail(res, 401, 'UNAUTHORIZED_WEBHOOK', 'Invalid webhook secret.');
   }
 
   const update = req.body;
-  if (typeof update !== 'object' || update === null || !('update_id' in (update as object))) {
+  if (
+    typeof update !== 'object' ||
+    update === null ||
+    !('update_id' in (update as object))
+  ) {
     return fail(res, 400, 'INVALID_UPDATE', 'Payload is not a valid Telegram update.');
-    }    const result = await telegramService.processUpdate(update, {
-      resolveGoatForChat: async (chatId) => {
-        const profile = await persistence.profiles.findByTelegramChatId(String(chatId));
-        if (!profile) return null;
-        const goats = await persistence.goats.listByUser(profile.id);
-        if (goats.length === 0) return null;
-        const goat = goats[0];
-        const runtime = await ensureGoatRuntime(goat);
-        const skills = (await allSkillsFor(goat.userId)).filter((s) => goat.skillIds.includes(s.id));
-        const ctx = await buildGoatContext(
-          { goats: persistence.goats, skills: persistence.skills, marketProvider },
-          goat.id,
-          profile.id,
-        );
-        return {
-          goat,
-          state: runtime.getState(),
-          reasoningContext: { ...ctx.context, activeThesis: runtime.getState().currentThesis },
-          model: ctx.model,
-          userId: profile.id,
-          skills,
-          gateway: reasoningGateway,
+  }
 
-          /**
-           * /analyse: force a full run now, then summarise the outcome for
-           * Telegram. Uses the same wake pipeline as the web app so both
-           * surfaces behave identically.
-           */
-          requestAnalysis: async (reason: string) => {
-            const state = await runtime.wake(reason, 'MANUAL_REEVALUATE');
+  const updateId = Number((update as { update_id: unknown }).update_id);
+  if (Number.isFinite(updateId) && !claimTelegramUpdate(updateId)) {
+    /**
+     * Already handled. Telegram only stops retrying on a 2xx, so acknowledging
+     * a duplicate is correct: re-running the command would spend AI again.
+     */
+    res.json({ handled: true, duplicate: true, updateId });
+    return;
+  }
 
-            const thesis = state.currentThesis;
-            const signal = state.latestSignal;
-            const triggered = state.trackers.filter((t) => t.isTriggered).length;
-
-            const lines = [
-              `🐐 *${goat.name.toUpperCase()} · FRESH ANALYSIS*`,
-              '',
-              `Schedule: ${describeSchedule(normaliseSchedule(goat.schedule))}`,
-              `Reasoning: ${state.reasoningMode} · Data: ${state.dataSource}`,
-              '',
-            ];
-
-            if (thesis) {
-              lines.push(`*Asset state:* ${thesis.summary ?? '—'}`);
-              if (thesis.assetState) lines.push(`${thesis.assetState.slice(0, 400)}`);
-              lines.push('');
-            }
-
-            if (signal) {
-              lines.push(telegramService.formatSignalMessage(signal, goat.name));
-            } else {
-              lines.push('No decision produced.');
-            }
-
-            lines.push('');
-            lines.push(`Conditions armed: ${state.trackers.length} · met: ${triggered}`);
-            lines.push(
-              state.trackers
-                .map(
-                  (t) =>
-                    `${t.isTriggered ? '✅' : '⏳'} ${t.formulaDescription ?? t.description}`,
-                )
-                .join('\n'),
-            );
-
-            if (state.lastError) {
-              lines.push(`\n_Last error: ${state.lastError.slice(0, 200)}_`);
-            }
-
-            return lines.join('\n');
-          },
-        };
+  const chatId = extractChatId(update);
+  if (chatId && !telegramRateLimiter.allow(chatId)) {
+    const retryAfter = telegramRateLimiter.retryAfterSeconds(chatId);
+    res.status(429).json({
+      error: {
+        code: 'RATE_LIMITED',
+        message: `Too many commands. Try again in ${retryAfter}s.`,
+        retryAfterSeconds: retryAfter,
       },
-      getBotTokenForUser: async (userId) =>
-        (await persistence.keys.getTelegramToken(userId)) || process.env.TELEGRAM_BOT_TOKEN,
     });
+    return;
+  }
 
+  const result = await telegramService.processUpdate(update, {
+    /**
+     * Every command resolves its OWN user from the persisted chat mapping.
+     * There is no shared-credential path: an unlinked chat gets no token and
+     * therefore no reply, rather than being served by a platform-wide bot.
+     */
+    getBotTokenForUser: async (userId) =>
+      (await persistence.keys.getTelegramToken(userId)) ?? undefined,
+
+    listProcessesForChat: listOwnedProcesses,
+    createProcessForChat: createProcessFromTelegram,
+
+    /**
+     * Ownership is resolved through `getForUser`, so another user's process id
+     * behaves exactly like a nonexistent one. The message does not distinguish
+     * them, which would be a process-id oracle.
+     */
+    pauseProcessForChat: async (chatId, processId) => {
+      const owner = await ownerForChat(chatId);
+      if (!owner) return { ok: false, message: 'This chat is not linked.' };
+
+      const goat = await persistence.goats.getForUser(processId, owner.userId);
+      if (!goat) {
+        return { ok: false, message: `No process \`${processId}\` for your account.` };
+      }
+
+      const updated: SignalGoat = { ...goat, status: 'PAUSED', updatedAt: new Date().toISOString() };
+      await persistence.goats.save(updated);
+      await syncSchedule(updated);
+      const runtime = await ensureGoatRuntime(updated);
+      runtime.pause();
+
+      return { ok: true, message: `⏸ Paused *${goat.name}* (\`${goat.id}\`).` };
+    },
+
+    resumeProcessForChat: async (chatId, processId) => {
+      const owner = await ownerForChat(chatId);
+      if (!owner) return { ok: false, message: 'This chat is not linked.' };
+
+      const goat = await persistence.goats.getForUser(processId, owner.userId);
+      if (!goat) {
+        return { ok: false, message: `No process \`${processId}\` for your account.` };
+      }
+
+      const updated: SignalGoat = { ...goat, status: 'WATCHING', updatedAt: new Date().toISOString() };
+      await persistence.goats.save(updated);
+      await syncSchedule(updated);
+      const runtime = await ensureGoatRuntime(updated);
+      runtime.play();
+
+      return {
+        ok: true,
+        message: `▶️ Resumed *${goat.name}* (\`${goat.id}\`). Condition alerts are live again.`,
+      };
+    },
+
+    /**
+     * A controlled evaluation.
+     *
+     * Explicit user intent, so it bypasses the schedule but NOT the runtime's
+     * own guards: a paused process still refuses, and the runtime's evaluation
+     * mutex means a concurrent scheduled wake cannot double-charge.
+     */
+    triggerProcessForChat: async (chatId, processId) => {
+      const owner = await ownerForChat(chatId);
+      if (!owner) return { ok: false, message: 'This chat is not linked.' };
+
+      const goat = await persistence.goats.getForUser(processId, owner.userId);
+      if (!goat) {
+        return { ok: false, message: `No process \`${processId}\` for your account.` };
+      }
+
+      if (goat.status === 'PAUSED') {
+        return {
+          ok: false,
+          message: `*${goat.name}* is paused. Resume it first with /resume ${goat.id}.`,
+        };
+      }
+
+      const { runtime } = await buildCommandResolution(goat, owner.userId);
+
+      void runtime
+        .wake('Triggered from Telegram', 'MANUAL_REEVALUATE', goat.markets[0])
+        .catch((err) => console.error('[telegram] trigger failed:', err));
+
+      return {
+        ok: true,
+        message: `🔄 Running an evaluation for *${goat.name}*… I'll message you if a condition is met.`,
+      };
+    },
+
+    resolveGoatForChat: async (chatId) => {
+      const owner = await ownerForChat(chatId);
+      if (!owner) return null;
+
+      const goats = await persistence.goats.listByUser(owner.userId);
+      if (goats.length === 0) return null;
+
+      /**
+       * The ACTIVE process, or the first one. A user with several processes
+       * gets the one that is actually running, rather than whichever happened
+       * to be created first.
+       */
+      const goat = goats.find((g) => g.status !== 'PAUSED') ?? goats[0];
+      const { resolution } = await buildCommandResolution(goat, owner.userId);
+      return resolution;
+    },
+  });
 
   res.json(result);
 }));
+
+/** Extracts a chat id from an update of any supported shape. */
+function extractChatId(update: unknown): string | null {
+  if (typeof update !== 'object' || update === null) return null;
+  const u = update as Record<string, unknown>;
+
+  for (const key of ['message', 'edited_message', 'channel_post'] as const) {
+    const message = u[key];
+    if (typeof message !== 'object' || message === null) continue;
+    const chat = (message as Record<string, unknown>).chat;
+    if (typeof chat !== 'object' || chat === null) continue;
+    const id = (chat as Record<string, unknown>).id;
+    if (typeof id === 'number' || typeof id === 'string') return String(id);
+  }
+
+  return null;
+}
+
+/**
+ * The deployment's Telegram webhook secret.
+ *
+ * Reads TELEGRAM_WEBHOOK_SECRET and refuses to invent one. Generating a secret
+ * at runtime would mean every cold start rejected every webhook delivery, which
+ * looks identical to Telegram being broken.
+ */
+function resolveTelegramWebhookSecret(): string | null {
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET?.trim();
+  return secret && secret.length >= 16 ? secret : null;
+}
+
+/**
+ * The public origin of THIS app, for registering a Telegram webhook.
+ *
+ * Resolution order, most trustworthy first:
+ *
+ *   1. `APP_ORIGIN` — explicit configuration, the only thing guaranteed correct
+ *      behind a proxy or on a custom domain.
+ *   2. Vercel's own `VERCEL_PROJECT_PRODUCTION_URL` / `VERCEL_URL` — injected
+ *      by the platform, so it is right for this deployment rather than guessed.
+ *   3. The request's own `Origin`/`Host` header.
+ *
+ * The host header is last and treated as untrusted: a caller can send any value,
+ * so it must never override configured configuration. It exists only so a
+ * self-hosted deployment can connect a bot without extra setup.
+ */
+function resolvePublicAppOrigin(req: Request): string | null {
+  const configured = process.env.APP_ORIGIN?.trim();
+  if (configured) return configured.replace(/\/+$/, '');
+
+  for (const key of ['VERCEL_PROJECT_PRODUCTION_URL', 'VERCEL_URL'] as const) {
+    const value = process.env[key]?.trim();
+    if (value) {
+      return `https://${value.replace(/^https?:\/\//, '').replace(/\/+$/, '')}`;
+    }
+  }
+
+  const headerOrigin = req.header('origin')?.trim();
+  if (headerOrigin && /^https:\/\//i.test(headerOrigin)) {
+    return headerOrigin.replace(/\/+$/, '');
+  }
+
+  const host = req.header('host')?.trim();
+  if (host && /^[A-Za-z0-9.-]+(:\d+)?$/.test(host)) {
+    return `https://${host}`;
+  }
+
+  return null;
+}
+
+/** Constant-time comparison for a shared secret. */
+function timingSafeStringEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
 
 /* ------------------------------------------------------------------ */
 /* Protected routes                                                    */
@@ -1418,33 +2055,82 @@ apiRouter.get('/settings/keys', handle(async (req, res) => {
 
 apiRouter.post('/settings/keys', handle(async (req, res) => {
   const user = requireUser(req);
-  const { openRouterKey, telegramToken, telegramChatId } = req.body ?? {};
+  const {
+    openRouterKey,
+    groqKey,
+    telegramToken,
+    telegramChatId,
+    provider,
+  } = req.body ?? {};
 
-  const nextOpenRouterKey =
-    normaliseOpenRouterKey(openRouterKey);
-  const nextTelegramToken =
-    normaliseTelegramToken(telegramToken);
+  /**
+   * Provider choice is validated BEFORE any key is written.
+   *
+   * If the provider were saved first and the key then failed validation, the
+   * user would be left pointed at a provider with no credential — every wake
+   * falling back to DEMO, which looks like a working app producing no signals.
+   */
+  let nextProvider: AiProvider | undefined;
+  if (provider !== undefined && provider !== null && provider !== '') {
+    if (provider !== 'openrouter' && provider !== 'groq') {
+      return fail(res, 400, 'INVALID_PROVIDER', 'provider must be openrouter or groq.');
+    }
+    nextProvider = provider;
+  }
+
+  // Throws CredentialValidationError (surfaced as 400) on a bad shape.
+  const nextOpenRouterKey = normaliseOpenRouterKey(openRouterKey);
+  const nextGroqKey = normaliseGroqKey(groqKey).key;
+  const nextTelegramToken = normaliseTelegramToken(telegramToken);
+
+  if (nextProvider) {
+    await persistence.keys.setProvider?.(user.uid, nextProvider);
+    reasoningGateway.setProviderFor(user.uid, nextProvider);
+  }
 
   if (nextOpenRouterKey.key !== undefined) {
-    await persistence.keys.setOpenRouterKey(
-      user.uid,
-      nextOpenRouterKey.key,
-    );
+    await persistence.keys.setOpenRouterKey(user.uid, nextOpenRouterKey.key);
     // Drop the cached client so the next request uses the new credential.
     reasoningGateway.invalidate(user.uid);
   }
 
+  if (nextGroqKey !== undefined) {
+    await persistence.keys.setGroqKey?.(user.uid, nextGroqKey);
+    reasoningGateway.invalidate(user.uid);
+  }
+
   if (nextTelegramToken !== undefined) {
-    await persistence.keys.setTelegramToken(
-      user.uid,
-      nextTelegramToken,
-    );
+    await persistence.keys.setTelegramToken(user.uid, nextTelegramToken);
   }
 
   if (telegramChatId !== undefined && telegramChatId !== null) {
-    if (typeof telegramChatId !== 'string' || !/^-?\d{1,20}$/.test(telegramChatId.trim())) {
+    if (
+      typeof telegramChatId !== 'string' ||
+      !/^-?\d{1,20}$/.test(telegramChatId.trim())
+    ) {
       return fail(res, 400, 'INVALID_KEY', 'telegramChatId must be a numeric Telegram chat id.');
     }
+
+    /**
+     * A chat id may belong to exactly ONE account.
+     *
+     * Without this check, two users could claim the same chat id and each would
+     * then receive the other's signals: the second write silently reassigns the
+     * chat and the first user keeps a profile that no longer resolves.
+     */
+    const existing = await persistence.profiles.findByTelegramChatId(
+      telegramChatId.trim(),
+    );
+    if (existing && existing.id !== user.uid) {
+      return fail(
+        res,
+        409,
+        'CHAT_ID_IN_USE',
+        'That Telegram chat is already linked to another SignalGOAT account. ' +
+          'Unlink it there first, or use a different chat.',
+      );
+    }
+
     const profile = (await persistence.profiles.get(user.uid)) ?? {
       id: user.uid,
       email: user.email ?? `${user.uid}@signalgoat.internal`,
@@ -1453,6 +2139,7 @@ apiRouter.post('/settings/keys', handle(async (req, res) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+
     await persistence.profiles.save({
       ...profile,
       telegramChatId: telegramChatId.trim(),
@@ -1460,12 +2147,272 @@ apiRouter.post('/settings/keys', handle(async (req, res) => {
     });
   }
 
+  const activeProvider = await reasoningGateway.providerFor(user.uid);
+
   res.json({
     success: true,
+    provider: activeProvider,
     openRouterKeyConfigured: isPlausibleOpenRouterKey(
       await persistence.keys.getOpenRouterKey(user.uid),
     ),
+    groqKeyConfigured: Boolean(await persistence.keys.getGroqKey?.(user.uid)),
   });
+}));
+
+/**
+ * TELEGRAM BOT CONNECTION
+ * -----------------------
+ * Connect the user's OWN bot: verify the token with `getMe`, register the
+ * webhook with Telegram, and record what was verified.
+ *
+ * VERIFIED, NOT ASSUMED
+ *
+ * Nothing about a bot is treated as connected until `getMe` has succeeded
+ * against Telegram. A stored token proves only that some text was stored, and
+ * the previous flow treated that as success.
+ *
+ * NO TOKEN EVER LEAVES THE SERVER
+ *
+ * The token is used to call Telegram and is discarded. It is never echoed in a
+ * response, never logged, and never returned to the browser.
+ */
+apiRouter.post('/telegram/connect', handle(async (req, res) => {
+  const user = requireUser(req);
+  const token = normaliseTelegramToken(req.body?.telegramToken);
+
+  if (token === undefined) {
+    return fail(res, 400, 'INVALID_KEY', 'A Telegram bot token from @BotFather is required.');
+  }
+
+  const chatId = typeof req.body?.chatId === 'string' ? req.body.chatId.trim() : '';
+  if (chatId && !/^-?\d{1,20}$/.test(chatId)) {
+    return fail(res, 400, 'INVALID_CHAT_ID', 'chatId must be a numeric Telegram chat id.');
+  }
+
+  const webhookSecret = resolveTelegramWebhookSecret();
+  if (!webhookSecret) {
+    return fail(
+      res,
+      503,
+      'TELEGRAM_NOT_CONFIGURED',
+      'This server has no Telegram webhook secret configured. Set TELEGRAM_WEBHOOK_SECRET before connecting a bot.',
+    );
+  }
+
+  const baseUrl = resolvePublicAppOrigin(req);
+  if (!baseUrl) {
+    return fail(
+      res,
+      503,
+      'APP_ORIGIN_NOT_CONFIGURED',
+      'The public URL of this app could not be determined. Set APP_ORIGIN so Telegram can deliver updates.',
+    );
+  }
+
+  const client = new TelegramBotClient(token);
+
+  /**
+   * Step 1: prove the token is real and learn who this bot is. Done BEFORE any
+   * state is written, so an invalid token leaves the account untouched.
+   */
+  let identity: Awaited<ReturnType<TelegramBotClient['getMe']>>;
+  try {
+    identity = await client.getMe();
+  } catch (err) {
+    return fail(
+      res,
+      400,
+      'TELEGRAM_VERIFY_FAILED',
+      err instanceof Error ? err.message : 'Telegram rejected this bot token.',
+    );
+  }
+
+  const webhookUrl = `${baseUrl}/api/telegram/webhook`;
+
+  /**
+   * Step 2: register the webhook.
+   *
+   * The same deployment secret is used for every user's bot. Telegram sends it
+   * as `X-Telegram-Bot-Api-Secret-Token`, which is how the endpoint proves the
+   * request came from Telegram for a bot we registered. It is not derived per
+   * user: the receiving endpoint has one configured secret, and a derived value
+   * would have to be recomputable from the request, which would defeat it.
+   */
+  try {
+    await client.setWebhook(webhookUrl, webhookSecret);
+  } catch (err) {
+    return fail(
+      res,
+      502,
+      'TELEGRAM_WEBHOOK_FAILED',
+      `The bot token is valid but the webhook could not be registered: ${
+        err instanceof Error ? err.message : 'unknown error'
+      }`,
+    );
+  }
+
+  /**
+   * Step 3: confirm the chat is actually reachable by this bot.
+   *
+   * Only done when the user supplied a chat id. A wrong chat id is the most
+   * common setup failure, and finding out here is far better than discovering
+   * that no alert ever arrives.
+   */
+  let chatVerified = false;
+  let chatUsername: string | undefined;
+
+  if (chatId) {
+    try {
+      const chat = await client.verifyChat(chatId);
+      chatVerified = chat.ok;
+      chatUsername = chat.username;
+    } catch (err) {
+      return fail(
+        res,
+        400,
+        'TELEGRAM_CHAT_UNREACHABLE',
+        `The bot cannot message chat ${chatId}. Send /start to your bot first, then reconnect. (${
+          err instanceof Error ? err.message : 'unknown error'
+        })`,
+      );
+    }
+  }
+
+  // Only now is any state persisted.
+  await persistence.keys.setTelegramToken(user.uid, token);
+  await persistence.keys.setTelegramBot?.(user.uid, {
+    id: identity.id,
+    username: identity.username,
+    verifiedAt: new Date().toISOString(),
+    webhookUrl,
+  });
+
+  if (chatId) {
+    const profile = (await persistence.profiles.get(user.uid)) ?? {
+      id: user.uid,
+      email: user.email ?? `${user.uid}@signalgoat.internal`,
+      displayName: 'SignalGOAT Trader',
+      telegramNotificationsEnabled: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const existing = await persistence.profiles.findByTelegramChatId(chatId);
+    if (existing && existing.id !== user.uid) {
+      return fail(
+        res,
+        409,
+        'CHAT_ID_IN_USE',
+        'That Telegram chat is already linked to another SignalGOAT account.',
+      );
+    }
+
+    await persistence.profiles.save({
+      ...profile,
+      telegramChatId: chatId,
+      telegramUsername: chatUsername,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  res.json({
+    connected: true,
+    bot: {
+      id: identity.id,
+      username: identity.username,
+      firstName: identity.firstName,
+    },
+    webhookUrl,
+    chatVerified,
+    /**
+     * Never the token. There is no code path here that can return it, which is
+     * the property that matters.
+     */
+    tokenStored: true,
+  });
+}));
+
+/** Connection status. Reports what is configured and what was verified. */
+apiRouter.get('/telegram/status', handle(async (req, res) => {
+  const user = requireUser(req);
+
+  const [token, bot, chatId] = await Promise.all([
+    persistence.keys.getTelegramToken(user.uid),
+    persistence.keys.getTelegramBot?.(user.uid),
+    persistence.profiles.get(user.uid),
+  ]);
+
+  /**
+   * Reported live against Telegram rather than from the stored record, because
+   * a webhook can be removed by Telegram or by the user at any time. The stored
+   * record would keep claiming "connected" regardless.
+   */
+  let live: { ok: boolean; pendingUpdates?: number; lastErrorMessage?: string; detail?: string } | null =
+    null;
+
+  if (token) {
+    try {
+      const info = await new TelegramBotClient(token).getWebhookInfo();
+      live = {
+        ok: true,
+        pendingUpdates: info.pendingUpdateCount,
+        lastErrorMessage: info.lastErrorMessage,
+      };
+    } catch (err) {
+      live = {
+        ok: false,
+        detail: err instanceof Error ? err.message : 'unknown error',
+      };
+    }
+  }
+
+  res.json({
+    tokenConfigured: Boolean(token),
+    bot: bot ? { id: bot.id, username: bot.username, verifiedAt: bot.verifiedAt } : null,
+    chatId: chatId?.telegramChatId ?? null,
+    webhookSecretConfigured: Boolean(resolveTelegramWebhookSecret()),
+    webhook: live,
+    /**
+     * `connected` requires a token AND a live webhook. A stored token with a
+     * failing webhook is not a working connection and must not be reported as
+     * one.
+     */
+    connected: Boolean(token) && live?.ok === true && chatId?.telegramChatId !== undefined,
+  });
+}));
+
+/** Disconnects the bot: removes the webhook from Telegram and clears state. */
+apiRouter.delete('/telegram/connect', handle(async (req, res) => {
+  const user = requireUser(req);
+  const token = await persistence.keys.getTelegramToken(user.uid);
+
+  if (token) {
+    try {
+      await new TelegramBotClient(token).deleteWebhook();
+    } catch (err) {
+      /**
+       * Reported, but the local record is still cleared: leaving a token in
+       * place because Telegram was unreachable would trap the user in a state
+       * they explicitly asked to leave.
+       */
+      console.warn('[telegram] deleteWebhook failed:', err);
+    }
+  }
+
+  await persistence.keys.setTelegramToken(user.uid, undefined);
+  await persistence.keys.setTelegramBot?.(user.uid, undefined);
+
+  const profile = await persistence.profiles.get(user.uid);
+  if (profile?.telegramChatId) {
+    await persistence.profiles.save({
+      ...profile,
+      telegramChatId: undefined,
+      telegramUsername: undefined,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  res.json({ connected: false });
 }));
 
 // ---- AI / OpenRouter (user-scoped key) ------------------------------

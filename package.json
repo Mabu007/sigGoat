@@ -8,7 +8,9 @@
   },
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build": "vite build && node scripts/build-api.mjs",
+    "build:web": "vite build",
+    "build:api": "node scripts/build-api.mjs",
     "start": "NODE_ENV=production tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",

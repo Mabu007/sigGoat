@@ -43,12 +43,55 @@
  * alarm handler is idempotent because Cloudflare retries them.
  */
 
+import { sqlAll, sqlFirst, sqlRun, sqlScalar } from './sql';
+import type { SqlValue } from './sql';
+
 export interface MarketDataEnv {
-  /** Shared secret; the Vercel app sends it as `Authorization: Bearer ...`. */
+  /** Scheduler secret. Shared with GoatSchedulerDO. */
   SCHEDULER_SECRET: string;
+  /**
+   * Secret for market-data traffic. The app sends it as
+   * `Authorization: Bearer <MARKET_DATA_WORKER_SECRET>`.
+   *
+   * FALLS BACK TO SCHEDULER_SECRET.
+   *
+   * The app and this Worker originally each compared against a single shared
+   * value under two different names, which meant market-data requests could
+   * only ever succeed if the operator set both variables to the same bytes.
+   * That is a silent, hard-to-diagnose 401. Accepting either value keeps a
+   * single-secret deployment working while still letting the two surfaces be
+   * rotated independently.
+   */
+  MARKET_DATA_SECRET?: string;
   /** Base URL for callbacks into the Vercel application. */
   APP_ORIGIN: string;
 }
+
+/** All partitions this Worker routes to. Kept in one place. */
+const PARTITIONS = ['FX', 'METALS', 'ENERGY', 'INDEX', 'CRYPTO'] as const;
+
+/**
+ * Instruments ingested even with no subscribers.
+ *
+ * `instrumentsFor()` reads the subscription table, which means an object with
+ * no subscribers does no provider work. That is the right default — but on a
+ * cold start there are no subscriptions either, so the object would sit idle
+ * until the app happened to call `/subscribe`, and a market the user creates a
+ * GOAT for would have no history at that moment.
+ *
+ * This small floor keeps the canonical store warm for the liquid instruments
+ * the product defaults to. A subscription adds to it; it never removes.
+ */
+const DEFAULT_INSTRUMENTS: Record<string, string[]> = {
+  FX: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'USD/CHF'],
+  METALS: ['XAU/USD', 'XAG/USD'],
+  ENERGY: ['WTI', 'BRENT'],
+  INDEX: ['US500', 'US100', 'US30'],
+  CRYPTO: ['BTC/USD', 'ETH/USD'],
+};
+
+/** Hard ceiling on instruments per ingestion pass. */
+const MAX_INGEST_INSTRUMENTS = 20;
 
 /* ------------------------------------------------------------------ */
 /* Schema                                                              */
@@ -172,6 +215,21 @@ const MAX_QUERY_ROWS = 5_000;
 /** Rows deleted per prune batch. Bounded so an alarm stays short. */
 const PRUNE_BATCH = 2_000;
 
+/** Instruments finalized / pruned per alarm, so one invocation stays short. */
+const MAX_FINALIZE_INSTRUMENTS = 20;
+
+/**
+ * Newest candle older than this counts as a data gap.
+ *
+ * Two minutes of tolerance: the provider is minute-bar data fetched every
+ * minute, so a single late or closed-market bar must not be reported as an
+ * outage.
+ */
+const STALENESS_THRESHOLD_MS = 2 * 60_000;
+
+/** Per-event POST timeout. An event is a notification, never blocking. */
+const EVENT_POST_TIMEOUT_MS = 5_000;
+
 export class MarketDataDO {
   private readonly state: DurableObjectState;
   private readonly env: MarketDataEnv;
@@ -179,13 +237,37 @@ export class MarketDataDO {
   /** Set once `alarm()` is running, so a nested job cannot recurse. */
   private inAlarm = false;
 
+  /**
+   * Which partition this object owns.
+   *
+   * A Durable Object cannot read back its own name — `idFromName` is a
+   * one-way hash — so the router tells it, via a header, on every request.
+   * Persisted because the ALARM fires with no request to carry the header, and
+   * an alarm that does not know its partition cannot choose its instruments.
+   */
+  private partition: string = 'FX';
+
   constructor(state: DurableObjectState, env: MarketDataEnv) {
     this.state = state;
     this.env = env;
 
     this.state.blockConcurrencyWhile(async () => {
       this.ensureSchema();
-      await this.seedJobs();
+      this.partition = (await this.state.storage.get<string>('partition')) ?? 'FX';
+      this.seedJobs();
+
+      /**
+       * ARM ON CONSTRUCTION.
+       *
+       * Seeding the job queue does not arm the alarm that runs it. The object
+       * therefore sat completely idle until something called `/subscribe` (which
+       * arms as a side effect) or the alarm happened to fire — so a freshly
+       * deployed object ingested nothing at all.
+       *
+       * The next due time is computed from `now`, so this is cheap and safe on
+       * every cold start; the alarm it sets is replaced, not multiplied.
+       */
+      await this.armNext();
     });
   }
 
@@ -198,6 +280,15 @@ export class MarketDataDO {
 
     if (!this.authorised(request)) {
       return json({ error: 'unauthorised' }, 401);
+    }
+
+    const headerPartition = request.headers.get('x-signalgoat-partition');
+    if (headerPartition) {
+      const normalised = headerPartition.trim().toUpperCase();
+      if (normalised !== this.partition) {
+        this.partition = normalised;
+        await this.state.storage.put('partition', normalised);
+      }
     }
 
     switch (url.pathname) {
@@ -233,9 +324,9 @@ export class MarketDataDO {
       // A bounded number of jobs per alarm keeps the handler short and stops a
       // backlog from producing one enormous invocation.
       for (let i = 0; i < 4; i += 1) {
-        const job = await this.dueJob();
-        if (!job) break;
-        await this.runJob(job);
+const job = this.dueJob();
+      if (!job) break;
+      await this.runJob(job);
       }
     } finally {
       this.inAlarm = false;
@@ -266,8 +357,12 @@ export class MarketDataDO {
    *
    * `INSERT OR IGNORE` makes this safe on every start: the due time is only set
    * the first time a job is seen, so a restart does not reset the schedule.
+   *
+   * Synchronous, and wrapped in `transactionSync` so the three rows either all
+   * land or none do. A partially-seeded queue would leave an object with, say,
+   * no PRUNE job at all — a silent, permanent retention leak.
    */
-  private seedJobs(): Promise<unknown> {
+  private seedJobs(): void {
     const now = Date.now();
     const seeds: Array<[string, JobKind, number]> = [
       ['ingest', 'INGEST', now + INGEST_INTERVAL_MS],
@@ -275,37 +370,52 @@ export class MarketDataDO {
       ['prune', 'PRUNE', now + PRUNE_INTERVAL_MS],
     ];
 
-    for (const [name, kind, dueAt] of seeds) {
-      this.sql.exec(
-        `INSERT OR IGNORE INTO jobs (name, kind, due_at_ms) VALUES (?, ?, ?)`,
-        name,
-        kind,
-        dueAt,
-      );
-    }
-
-    return Promise.resolve();
+    this.state.storage.transactionSync(() => {
+      for (const [name, kind, dueAt] of seeds) {
+        this.sql.exec(
+          `INSERT OR IGNORE INTO jobs (name, kind, due_at_ms) VALUES (?, ?, ?)`,
+          name,
+          kind,
+          dueAt,
+        );
+      }
+    });
   }
 
-  private async dueJob(): Promise<JobRow | null> {
-    return this.sql
-      .exec(
-        `SELECT name, kind, due_at_ms, attempts, last_error
-           FROM jobs
-          WHERE due_at_ms <= ?
-          ORDER BY due_at_ms ASC
-          LIMIT 1`,
-        Date.now(),
-      )
-      .first<JobRow>();
+  private dueJob(): JobRow | null {
+    return sqlFirst<JobRow & Record<string, SqlValue>>(
+      this.sql,
+      `SELECT name, kind, due_at_ms, attempts, last_error
+         FROM jobs
+        WHERE due_at_ms <= ?
+        ORDER BY due_at_ms ASC
+        LIMIT 1`,
+      Date.now(),
+    ) as JobRow | null;
   }
 
+  /**
+   * Runs one job.
+   *
+   * THE KIND MUST CHANGE THE WORK.
+   *
+   * Every kind used to call `ingestInstruments()`, so FINALIZE and PRUNE were
+   * aliases for INGEST: candles were fetched forever and nothing was ever
+   * summarized or deleted, which is unbounded growth dressed up as retention.
+   * Each kind now does only its own job.
+   */
   private async runJob(job: JobRow): Promise<void> {
     try {
-      const instruments = await this.instrumentsFor(job.kind);
-
-      if (instruments.length > 0) {
-        await this.ingestInstruments(instruments);
+      if (job.kind === 'INGEST') {
+        const instruments = await this.instrumentsFor('INGEST');
+        if (instruments.length > 0) {
+          const { updated, transition } = await this.ingestInstruments(instruments);
+          await this.publishEvents(updated, transition);
+        }
+      } else if (job.kind === 'FINALIZE') {
+        await this.finalizeDue();
+      } else if (job.kind === 'PRUNE') {
+        await this.pruneBelowWatermark();
       }
 
       this.sql.exec(
@@ -350,19 +460,18 @@ export class MarketDataDO {
 
   /** Arms the single alarm for the earliest due job. */
   private async armNext(): Promise<void> {
-    const row = await this.sql
-      .exec(
-        `SELECT MIN(due_at_ms) AS due FROM jobs WHERE due_at_ms > ?`,
-        Date.now(),
-      )
-      .first<{ due: number | null }>();
+    const due = sqlScalar(
+      this.sql,
+      `SELECT MIN(due_at_ms) AS due FROM jobs WHERE due_at_ms > ?`,
+      Date.now(),
+    );
 
-    if (!row || row.due === null) {
+    if (due === null) {
       await this.state.storage.deleteAlarm();
       return;
     }
 
-    await this.state.storage.setAlarm(Math.max(Date.now() + 1_000, row.due));
+    await this.state.storage.setAlarm(Math.max(Date.now() + 1_000, due));
   }
 
   /* ---------------------------------------------------------------- */
@@ -370,20 +479,28 @@ export class MarketDataDO {
   /* ---------------------------------------------------------------- */
 
   /**
-   * Instruments this object owns.
+   * Instruments this object owns: subscribed instruments plus a warm floor.
    *
-   * Derived from the SUBSCRIPTION table rather than from a static list, so an
-   * object with no subscribers does no provider work at all. This is what makes
-   * the object count independent of the catalogue size.
+   * The subscription table is the primary source — a user watching a market
+   * nobody else watches still gets it ingested. `DEFAULT_INSTRUMENTS` for this
+   * partition is added so a cold object is not idle before the first
+   * subscription arrives.
    */
   private async instrumentsFor(_kind: JobKind): Promise<string[]> {
-    const rows = await this.sql
-      .exec(
-        `SELECT DISTINCT instrument FROM subscriptions ORDER BY instrument LIMIT 200`,
-      )
-      .toArray<{ instrument: string }>();
+    const rows = sqlAll<{ instrument: string } & Record<string, SqlValue>>(
+      this.sql,
+      `SELECT DISTINCT instrument FROM subscriptions ORDER BY instrument LIMIT 200`,
+    );
 
-    return rows.map((row) => row.instrument);
+    const merged = new Set<string>();
+    for (const instrument of DEFAULT_INSTRUMENTS[this.partition] ?? []) {
+      merged.add(instrument);
+    }
+    for (const row of rows) {
+      merged.add(row.instrument);
+    }
+
+    return [...merged].slice(0, 200);
   }
 
   /**
@@ -392,27 +509,52 @@ export class MarketDataDO {
    * BiQuote needs no API key, so this is safe to run from the Worker — which is
    * the whole reason market ingestion can live here instead of on Vercel, where
    * a serverless function would be killed between requests.
+   *
+   * Returns only the instruments that actually produced new data, plus any
+   * freshness STATE CHANGE, so the caller can publish events for those and
+   * nothing else.
    */
-  private async ingestInstruments(instruments: string[]): Promise<void> {
-    const limit = Math.min(instruments.length, 20);
+  private async ingestInstruments(instruments: string[]): Promise<{
+    updated: string[];
+    transition: Array<{ instrument: string; recovered: boolean }>;
+  }> {
+    const limit = Math.min(instruments.length, MAX_INGEST_INSTRUMENTS);
+    const updated: string[] = [];
+    const transition: Array<{ instrument: string; recovered: boolean }> = [];
 
     for (let i = 0; i < limit; i += 1) {
       const instrument = instruments[i];
+const before = await this.isStale(instrument, Date.now());
+
       try {
         const bars = await fetchCandles(instrument, '1m', 180);
         if (bars.length > 0) {
-          this.upsertCandles(instrument, bars);
+          const newestWritten = this.upsertCandles(instrument, bars);
+          if (newestWritten !== null) updated.push(instrument);
         }
+        await this.bumpSuccess(instrument);
       } catch {
         /**
          * One failing instrument must not abort the batch. The freshness
          * counters record the gap and the next job retries it.
          */
-        this.bumpFailure(instrument);
+        await this.bumpFailure(instrument);
         continue;
       }
-      this.bumpSuccess(instrument);
+
+      /**
+       * A gap is only EVENTFUL when it CHANGES state. Emitting DATA_STALE on
+       * every pass while already stale would wake every subscriber once a
+       * minute for no new information, and the app spends a deterministic
+       * tracker evaluation on each one.
+       */
+      const after = await this.isStale(instrument, Date.now());
+      if (before !== after) {
+        transition.push({ instrument, recovered: !after });
+      }
     }
+
+    return { updated, transition };
   }
 
   /**
@@ -437,14 +579,15 @@ export class MarketDataDO {
       close: number;
       volume?: number;
     }>,
-  ): void {
+  ): number | null {
     /**
      * Rows are written individually rather than as one batched statement,
      * because the Workers SQL binding API exposes parameterised exec rather
      * than a multi-row INSERT helper. The loop is bounded (180 bars per
-     * instrument, 20 instruments per job) so the transaction stays short.
+     * instrument, 20 instruments per job) so the statement count stays low.
      */
     const now = Date.now();
+    let newestWritten: number | null = null;
 
     for (const bar of bars) {
       const openTimeMs = Math.floor(bar.time / 60_000) * 60_000;
@@ -458,7 +601,15 @@ export class MarketDataDO {
         continue;
       }
 
-      this.sql.exec(
+      /**
+       * `rowsWritten` is 0 when the ON CONFLICT WHERE guard rejected the row —
+       * a byte-identical redelivery — and positive for a genuine insert or a
+       * real correction. Only a real write may advance `newestWritten`, which
+       * is what stops a redundant ingestion pass from republishing an event for
+       * a candle every consumer has already processed.
+       */
+      const { rowsWritten } = sqlRun(
+        this.sql,
         `INSERT INTO candles
            (instrument, open_time_ms, open, high, low, close, volume,
             finalized, revision, received_at_ms, updated_at_ms)
@@ -496,21 +647,46 @@ export class MarketDataDO {
         now,
         now,
       );
+
+      if (rowsWritten > 0) {
+        newestWritten =
+          newestWritten === null
+            ? openTimeMs
+            : Math.max(newestWritten, openTimeMs);
+      }
     }
+
+    return newestWritten;
   }
 
-  private bumpSuccess(instrument: string): void {
-    this.state.storage.put(`fresh:${instrument}`, {
+  private async bumpSuccess(instrument: string): Promise<void> {
+    await this.state.storage.put(`fresh:${instrument}`, {
       at: Date.now(),
       ok: true,
     });
   }
 
-  private bumpFailure(instrument: string): void {
-    this.state.storage.put(`fresh:${instrument}`, {
+  private async bumpFailure(instrument: string): Promise<void> {
+    await this.state.storage.put(`fresh:${instrument}`, {
       at: Date.now(),
       ok: false,
     });
+  }
+
+  /**
+   * True when this instrument's newest stored candle is older than the staleness
+   * threshold. Read from the candles table rather than KV so it cannot drift
+   * from what is actually stored.
+   */
+  private async isStale(instrument: string, nowMs: number): Promise<boolean> {
+    const newest = sqlScalar(
+      this.sql,
+      `SELECT MAX(open_time_ms) FROM candles WHERE instrument = ?`,
+      instrument,
+    );
+
+    if (newest === null) return true;
+    return nowMs - newest > STALENESS_THRESHOLD_MS;
   }
 
   /* ---------------------------------------------------------------- */
@@ -524,7 +700,8 @@ export class MarketDataDO {
       : await this.instrumentsFor('INGEST');
 
     try {
-      await this.ingestInstruments(instruments);
+      const { updated, transition } = await this.ingestInstruments(instruments);
+      await this.publishEvents(updated, transition);
     } catch (err) {
       return json({ error: String(err) }, 502);
     }
@@ -552,28 +729,45 @@ export class MarketDataDO {
     if (!instrument) return json({ error: 'instrument required' }, 400);
 
     // Bounded, index-backed read. No query here can return an unbounded set.
-    const rows = Number.isFinite(beforeMs) && beforeMs > 0
-      ? await this.sql.exec(
-          `SELECT instrument, open_time_ms, open, high, low, close, volume,
-                  finalized, revision, received_at_ms, updated_at_ms
-             FROM candles
-            WHERE instrument = ? AND open_time_ms < ?
-            ORDER BY open_time_ms DESC
-            LIMIT ?`,
-          instrument,
-          beforeMs,
-          limit,
-        ).toArray()
-      : await this.sql.exec(
-          `SELECT instrument, open_time_ms, open, high, low, close, volume,
-                  finalized, revision, received_at_ms, updated_at_ms
-             FROM candles
-            WHERE instrument = ?
-            ORDER BY open_time_ms DESC
-            LIMIT ?`,
-          instrument,
-          limit,
-        ).toArray();
+    type CandleRow = {
+      instrument: string;
+      open_time_ms: number;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number | null;
+      finalized: number;
+      revision: number;
+      received_at_ms: number;
+      updated_at_ms: number;
+    } & Record<string, SqlValue>;
+
+    const rows: CandleRow[] =
+      Number.isFinite(beforeMs) && beforeMs > 0
+        ? sqlAll<CandleRow>(
+            this.sql,
+            `SELECT instrument, open_time_ms, open, high, low, close, volume,
+                    finalized, revision, received_at_ms, updated_at_ms
+               FROM candles
+              WHERE instrument = ? AND open_time_ms < ?
+              ORDER BY open_time_ms DESC
+              LIMIT ?`,
+            instrument,
+            beforeMs,
+            limit,
+          )
+        : sqlAll<CandleRow>(
+            this.sql,
+            `SELECT instrument, open_time_ms, open, high, low, close, volume,
+                    finalized, revision, received_at_ms, updated_at_ms
+               FROM candles
+              WHERE instrument = ?
+              ORDER BY open_time_ms DESC
+              LIMIT ?`,
+            instrument,
+            limit,
+          );
 
     return json({
       instrument,
@@ -648,42 +842,40 @@ export class MarketDataDO {
   }
 
   private async handleStatus(): Promise<Response> {
-    const counts = await this.sql
-      .exec(
-        `SELECT instrument, COUNT(*) AS n, MAX(open_time_ms) AS newest
-           FROM candles GROUP BY instrument`,
-      )
-      .toArray<{ instrument: string; n: number; newest: number }>();
+    const counts = sqlAll<
+      { instrument: string; n: number; newest: number } & Record<string, SqlValue>
+    >(
+      this.sql,
+      `SELECT instrument, COUNT(*) AS n, MAX(open_time_ms) AS newest
+         FROM candles GROUP BY instrument`,
+    );
 
-    const subscriptions = await this.sql
-      .exec(`SELECT COUNT(*) AS n FROM subscriptions`)
-      .first<{ n: number }>();
+    const jobs = sqlAll<JobRow & Record<string, SqlValue>>(
+      this.sql,
+      `SELECT name, kind, due_at_ms, attempts, last_error FROM jobs ORDER BY name`,
+    );
 
-    const summaries = await this.sql
-      .exec(`SELECT COUNT(*) AS n FROM session_summaries`)
-      .first<{ n: number }>();
-
-    const levels = await this.sql
-      .exec(`SELECT COUNT(*) AS n FROM levels`)
-      .first<{ n: number }>();
-
-    const jobs = await this.sql
-      .exec(
-        `SELECT name, kind, due_at_ms, attempts, last_error FROM jobs ORDER BY name`,
-      )
-      .toArray<JobRow>();
+    const alarm = await this.state.storage.getAlarm();
 
     return json({
+      partition: this.partition,
       instruments: counts.map((row) => ({
         instrument: row.instrument,
-        candles: row.n,
-        newestCandleOpenTimeMs: row.newest,
+        candles: Number(row.n),
+        newestCandleOpenTimeMs: row.newest === null ? null : Number(row.newest),
       })),
-      subscriptions: subscriptions?.n ?? 0,
-      sessionSummaries: summaries?.n ?? 0,
-      levels: levels?.n ?? 0,
+      subscriptions:
+        sqlScalar(this.sql, `SELECT COUNT(*) FROM subscriptions`) ?? 0,
+      sessionSummaries:
+        sqlScalar(this.sql, `SELECT COUNT(*) FROM session_summaries`) ?? 0,
+      levels: sqlScalar(this.sql, `SELECT COUNT(*) FROM levels`) ?? 0,
+      candles: sqlScalar(this.sql, `SELECT COUNT(*) FROM candles`) ?? 0,
       jobs,
-      armedFor: null,
+      /**
+       * The real armed time. It used to be hardcoded null, so an operator could
+       * not tell a healthy queue from a stalled one.
+       */
+      armedFor: alarm,
     });
   }
 
@@ -706,75 +898,95 @@ export class MarketDataDO {
     candles: number;
     summaryId: string | null;
   }> {
-    const session = await this.sql
-      .exec(
-        `SELECT MIN(closes_at_ms) AS oldest, MAX(closes_at_ms) AS newest
-           FROM session_summaries WHERE instrument = ?`,
-        instrument,
-      )
-      .first<{ oldest: number | null; newest: number | null }>();
+    type SummaryRow = { oldest: number | null; newest: number | null } & Record<
+      string,
+      SqlValue
+    >;
+    type AggregateRow = {
+      n: number;
+      o: number;
+      h: number;
+      l: number;
+      newest_ms: number | null;
+      oldest_ms: number | null;
+    } & Record<string, SqlValue>;
+
+    const session = sqlFirst<SummaryRow>(
+      this.sql,
+      `SELECT MIN(closes_at_ms) AS oldest, MAX(closes_at_ms) AS newest
+         FROM session_summaries WHERE instrument = ?`,
+      instrument,
+    );
 
     // No summary yet: nothing has been finalized, so nothing may be deleted.
     if (session?.newest === null || session?.newest === undefined) {
-      return { outcome: 'SKIPPED_NO_WATERMARK', pruned: 0, candles: 0, summaryId: null };
+      return {
+        outcome: 'SKIPPED_NO_WATERMARK',
+        pruned: 0,
+        candles: 0,
+        summaryId: null,
+      };
     }
 
-    const watermark = session.newest;
+    const watermark = Number(session.newest);
 
-    const agg = await this.sql
-      .exec(
-        `SELECT COUNT(*)        AS n,
-                MIN(open)        AS o,
-                MAX(high)       AS h,
-                MIN(low)         AS l,
-                MAX(open_time_ms) AS newest_ms,
-                MIN(open_time_ms) AS oldest_ms
-           FROM candles
-          WHERE instrument = ? AND open_time_ms < ?`,
-        instrument,
-        watermark,
-      )
-      .first<{
-        n: number; o: number; h: number; l: number;
-        newest_ms: number | null; oldest_ms: number | null;
-      }>();
+    const agg = sqlFirst<AggregateRow>(
+      this.sql,
+      `SELECT COUNT(*)          AS n,
+              MIN(open)          AS o,
+              MAX(high)          AS h,
+              MIN(low)           AS l,
+              MAX(open_time_ms)  AS newest_ms,
+              MIN(open_time_ms)  AS oldest_ms
+         FROM candles
+        WHERE instrument = ? AND open_time_ms < ?`,
+      instrument,
+      watermark,
+    );
 
-    if (!agg || agg.n === 0) {
-      return { outcome: 'NOTHING_TO_FINALIZE', pruned: 0, candles: 0, summaryId: null };
+    if (!agg || Number(agg.n) === 0) {
+      return {
+        outcome: 'NOTHING_TO_FINALIZE',
+        pruned: 0,
+        candles: 0,
+        summaryId: null,
+      };
     }
 
-    const last = await this.sql
-      .exec(
-        `SELECT close FROM candles
-          WHERE instrument = ? AND open_time_ms < ?
-          ORDER BY open_time_ms DESC LIMIT 1`,
-        instrument,
-        watermark,
-      )
-      .first<{ close: number }>();
+    const last = sqlFirst<{ close: number } & Record<string, SqlValue>>(
+      this.sql,
+      `SELECT close FROM candles
+        WHERE instrument = ? AND open_time_ms < ?
+        ORDER BY open_time_ms DESC LIMIT 1`,
+      instrument,
+      watermark,
+    );
 
-    const summaryId = `${instrument}#${agg.newest_ms}`;
+    const newestMs = Number(agg.newest_ms);
+    const summaryId = `${instrument}#${newestMs}`;
 
     const summary = {
       id: summaryId,
       instrument,
-      sessionDate: new Date(agg.newest_ms).toISOString().slice(0, 10),
-      opensAtMs: agg.oldest_ms,
+      sessionDate: new Date(newestMs).toISOString().slice(0, 10),
+      opensAtMs: Number(agg.oldest_ms),
       closesAtMs: watermark,
-      open: agg.o,
-      high: agg.h,
-      low: agg.l,
-      close: last?.close ?? agg.o,
-      range: agg.h - agg.l,
-      candleCount: agg.n,
+      open: Number(agg.o),
+      high: Number(agg.h),
+      low: Number(agg.l),
+      close: last ? Number(last.close) : Number(agg.o),
+      range: Number(agg.h) - Number(agg.l),
+      candleCount: Number(agg.n),
       computedAtMs: Date.now(),
       schemaVersion: 1,
     };
 
     /**
      * Write the summary, then verify it read back, and only then delete.
-     * The verification is a real read: a write that reports success without
-     * being durable would otherwise be followed by an irreversible delete.
+     *
+     * The verification is a real read. A write that reports success without
+     * being durable would otherwise be followed by an irreversible delete, and
+     * the watermark would advance over candles nothing had summarized.
      */
     this.sql.exec(
       `INSERT INTO session_summaries
@@ -791,64 +1003,261 @@ export class MarketDataDO {
       Date.now(),
     );
 
-    const verified = await this.sql
-      .exec(`SELECT id FROM session_summaries WHERE id = ?`, summary.id)
-      .first<{ id: string }>();
+    const verified = sqlFirst<{ id: string } & Record<string, SqlValue>>(
+      this.sql,
+      `SELECT id FROM session_summaries WHERE id = ?`,
+      summary.id,
+    );
 
     if (!verified) {
       return {
         outcome: 'FAILED_VERIFICATION',
         pruned: 0,
-        candles: agg.n,
+        candles: Number(agg.n),
         summaryId,
       };
     }
 
-    // Bounded delete, strictly below the watermark.
-    const doomed = await this.sql
-      .exec(
-        `SELECT open_time_ms FROM candles
-          WHERE instrument = ? AND open_time_ms < ?
-          ORDER BY open_time_ms ASC
-          LIMIT ?`,
-        instrument,
-        watermark,
-        PRUNE_BATCH,
-      )
-      .toArray<{ open_time_ms: number }>();
+    const pruned = this.pruneInstrument(instrument, watermark);
 
-    if (doomed.length === 0) {
-      return { outcome: 'FINALIZED', pruned: 0, candles: agg.n, summaryId };
-    }
-
-    this.state.storage.transaction(async () => {
-      for (const row of doomed) {
-        this.sql.exec(
-          `DELETE FROM candles WHERE instrument = ? AND open_time_ms = ?`,
-          instrument,
-          row.open_time_ms,
-        );
-      }
-    });
-
-    return { outcome: 'FINALIZED', pruned: doomed.length, candles: agg.n, summaryId };
+    return {
+      outcome: 'FINALIZED',
+      pruned,
+      candles: Number(agg.n),
+      summaryId,
+    };
   }
 
   private async candleCounts(instruments: string[]): Promise<Record<string, number>> {
     const counts: Record<string, number> = {};
     for (const instrument of instruments) {
-      const row = await this.sql
-        .exec(`SELECT COUNT(*) AS n FROM candles WHERE instrument = ?`, instrument)
-        .first<{ n: number }>();
-      counts[instrument] = row?.n ?? 0;
+      counts[instrument] =
+        sqlScalar(
+          this.sql,
+          `SELECT COUNT(*) FROM candles WHERE instrument = ?`,
+          instrument,
+        ) ?? 0;
     }
     return counts;
   }
 
   private authorised(request: Request): boolean {
-    return (
-      request.headers.get('authorization') === `Bearer ${this.env.SCHEDULER_SECRET}`
+    const provided = request.headers.get('authorization') ?? '';
+    if (!provided.startsWith('Bearer ')) return false;
+
+    const token = provided.slice(7).trim();
+    const accepted = [this.env.MARKET_DATA_SECRET, this.env.SCHEDULER_SECRET]
+      .filter((value): value is string => typeof value === 'string' && value.length > 0);
+
+    return accepted.some((secret) => timingSafeEqual(token, secret));
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Event publication                                                 */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * POSTs market events to the application.
+   *
+   * THE MISSING LINK.
+   *
+   * The Worker ingested candles and the app had an authenticated
+   * `/api/internal/market-event` endpoint, but nothing ever called it. The
+   * canonical store therefore grew while every consumer stayed blind, and the
+   * only way a GOAT woke was its own scheduled alarm.
+   *
+   * Failure is non-fatal and deliberately so: events are a NOTIFICATION, not
+   * the data itself. The app re-reads candles from this object through
+   * `/candles`, so a dropped event is a missed wake-up that the next ingestion
+   * pass recovers, never a lost or wrong price.
+   */
+  private async publishEvents(
+    updated: string[],
+    transition: Array<{ instrument: string; recovered: boolean }>,
+  ): Promise<number> {
+    if (this.env.APP_ORIGIN) {
+      for (const instrument of updated) {
+        const newest = sqlScalar(
+          this.sql,
+          `SELECT MAX(open_time_ms) FROM candles WHERE instrument = ?`,
+          instrument,
+        );
+        if (newest === null) continue;
+        await this.postEvent({
+          type: 'CANDLE_FINALIZED',
+          instrument,
+          candleOpenTimeMs: newest,
+          finalized: true,
+        });
+      }
+
+      for (const change of transition) {
+        await this.postEvent({
+          type: change.recovered ? 'DATA_RECOVERED' : 'DATA_STALE',
+          instrument: change.instrument,
+          candleOpenTimeMs: null,
+          finalized: false,
+        });
+      }
+    }
+
+    return updated.length + transition.length;
+  }
+
+  /**
+   * Builds and delivers ONE event.
+   *
+   * The id is RECOMPUTED here with the same rule the app validates against
+   * (`partition:type:instrument:candleOpenTimeMs`), because the app refuses any
+   * event whose id does not match its payload — which would silently drop
+   * every event if the two disagreed.
+   */
+  private async postEvent(input: {
+    type: 'CANDLE_FINALIZED' | 'DATA_STALE' | 'DATA_RECOVERED' | 'SESSION_FINALIZED';
+    instrument: string;
+    candleOpenTimeMs: number | null;
+    finalized: boolean;
+  }): Promise<void> {
+    const instrument = input.instrument.trim().toUpperCase();
+    const createdAtMs = Date.now();
+
+    const event = {
+      eventId: [
+        this.partition,
+        input.type,
+        instrument,
+        input.candleOpenTimeMs === null ? 'na' : String(input.candleOpenTimeMs),
+      ].join(':'),
+      eventIdVersion: 1 as const,
+      type: input.type,
+      partition: this.partition,
+      instrument,
+      candleOpenTimeMs: input.candleOpenTimeMs,
+      finalized: input.finalized,
+      reference:
+        input.candleOpenTimeMs === null
+          ? null
+          : `${instrument}#${input.candleOpenTimeMs}`,
+      context: {
+        lagSeconds:
+          input.candleOpenTimeMs === null
+            ? undefined
+            : Math.max(0, Math.round((createdAtMs - input.candleOpenTimeMs - 60_000) / 1000)),
+        dataQuality: 'OK' as const,
+      },
+      schemaVersion: 1 as const,
+      createdAtMs,
+    };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EVENT_POST_TIMEOUT_MS);
+
+    try {
+      await fetch(
+        `${this.env.APP_ORIGIN.replace(/\/+$/, '')}/api/internal/market-event`,
+        {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Scheduler-Secret': this.env.SCHEDULER_SECRET,
+          },
+          body: JSON.stringify(event),
+        },
+      );
+    } catch {
+      // See the method doc: a dropped notification is recoverable, not fatal.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Scheduled finalization and pruning                                */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Finalizes every instrument that has a due summary.
+   *
+   * Runs on the FINALIZE cadence. Bounded to a fixed number of instruments per
+   * pass so one alarm stays short.
+   */
+  private async finalizeDue(): Promise<number> {
+    const instruments = sqlAll<{ instrument: string } & Record<string, SqlValue>>(
+      this.sql,
+      `SELECT DISTINCT instrument FROM candles ORDER BY instrument LIMIT ?`,
+      MAX_FINALIZE_INSTRUMENTS,
     );
+
+    let finalized = 0;
+    for (const row of instruments) {
+      const result = await this.finalizeInstrument(row.instrument);
+      if (result.summaryId) finalized += 1;
+    }
+    return finalized;
+  }
+
+  /**
+   * Bounded delete strictly below each instrument's finalized watermark.
+   *
+   * Never deletes above the watermark: an un-finalized candle is still the only
+   * record of a minute the provider may still correct.
+   */
+  private async pruneBelowWatermark(): Promise<number> {
+    const watermarks = sqlAll<
+      { instrument: string; watermark: number } & Record<string, SqlValue>
+    >(
+      this.sql,
+      `SELECT instrument, MAX(closes_at_ms) AS watermark
+         FROM session_summaries
+        GROUP BY instrument
+        LIMIT ?`,
+      MAX_FINALIZE_INSTRUMENTS,
+    );
+
+    let pruned = 0;
+    for (const row of watermarks) {
+      const watermark = Number(row.watermark);
+      if (!Number.isFinite(watermark)) continue;
+      pruned += this.pruneInstrument(row.instrument, watermark);
+    }
+    return pruned;
+  }
+
+  private pruneInstrument(instrument: string, watermark: number): number {
+    const doomed = sqlAll<{ open_time_ms: number } & Record<string, SqlValue>>(
+      this.sql,
+      `SELECT open_time_ms FROM candles
+        WHERE instrument = ? AND open_time_ms < ?
+        ORDER BY open_time_ms ASC
+        LIMIT ?`,
+      instrument,
+      watermark,
+      PRUNE_BATCH,
+    );
+
+    if (doomed.length === 0) return 0;
+
+    /**
+     * `transactionSync`, not `transaction`.
+     *
+     * The delete is a synchronous `sql.exec()` sequence, and that is exactly
+     * what `transactionSync` is for: the whole batch commits atomically or none
+     * of it does, so a crash mid-delete cannot leave a half-pruned range. The
+     * previous code wrapped these in an `async` `storage.transaction()`
+     * without awaiting it, so the deletes escaped the transaction entirely.
+     */
+    this.state.storage.transactionSync(() => {
+      for (const row of doomed) {
+        this.sql.exec(
+          `DELETE FROM candles WHERE instrument = ? AND open_time_ms = ?`,
+          instrument,
+          Number(row.open_time_ms),
+        );
+      }
+    });
+
+    return doomed.length;
   }
 }
 
@@ -969,24 +1378,85 @@ function clampInt(
   return Math.max(min, Math.min(max, parsed));
 }
 
+/**
+ * Constant-time string comparison.
+ *
+ * A secret compared with `===` leaks its length and its matching prefix
+ * through timing. Cheap to do properly and it removes the question entirely.
+ * Length is compared first, which is safe: the length of a bearer token is not
+ * the secret.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+import { GoatScheduler, type Env as SchedulerEnv } from './scheduler-worker';
+
 export { GoatScheduler, GoatSchedulerDO } from './scheduler-worker';
 export type { Env as SchedulerEnv } from './scheduler-worker';
 
-import { GoatScheduler } from './scheduler-worker';
+type WorkerEnv = MarketDataEnv &
+  SchedulerEnv & {
+    NAMESPACE: DurableObjectNamespace;
+    MARKET_DATA: DurableObjectNamespace;
+  };
+
+/**
+ * Worker-wide request authentication.
+ *
+ * Accepts the scheduler secret OR the market-data secret. Both surfaces are
+ * independently rotatable, and neither should accept the other's value.
+ * Compared in constant time.
+ */
+function workerAuthorised(
+  request: Request,
+  env: MarketDataEnv & SchedulerEnv,
+): boolean {
+  const provided = request.headers.get('authorization') ?? '';
+  if (!provided.startsWith('Bearer ')) return false;
+
+  const token = provided.slice(7).trim();
+  const accepted = [env.SCHEDULER_SECRET, env.MARKET_DATA_SECRET].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+
+  return accepted.some((secret) => timingSafeEqual(token, secret));
+}
+
+/** Health check. Deliberately unauthenticated so uptime needs no credential. */
+function handlePublicHealth(env: WorkerEnv): Response {
+  return json({
+    ok: true,
+    service: 'siggoat-scheduler',
+    time: new Date().toISOString(),
+    appOriginConfigured: Boolean(env.APP_ORIGIN),
+    schedulerSecretConfigured: Boolean(env.SCHEDULER_SECRET),
+    marketDataSecretConfigured: Boolean(env.MARKET_DATA_SECRET),
+  });
+}
 
 export default {
-  async fetch(
-    request: Request,
-    env: MarketDataEnv & {
-      NAMESPACE: DurableObjectNamespace;
-      MARKET_DATA: DurableObjectNamespace;
-    },
-  ): Promise<Response> {
+  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const url = new URL(request.url);
-    const authorised =
-      request.headers.get('authorization') === `Bearer ${env.SCHEDULER_SECRET}`;
 
-    if (!authorised) {
+    /**
+     * Unauthenticated health probe.
+     *
+     * Reports only whether configuration is PRESENT, never its value. This is
+     * what makes "is the Worker alive?" answerable without handing a credential
+     * to a monitor.
+     */
+    if (url.pathname === '/health') {
+      return handlePublicHealth(env);
+    }
+
+    if (!workerAuthorised(request, env)) {
       return json({ error: 'unauthorised' }, 401);
     }
 
@@ -1004,11 +1474,26 @@ export default {
       const action = marketMatch[2] ?? '/status';
       const stub = env.MARKET_DATA.get(env.MARKET_DATA.idFromName(partition));
 
+      /**
+       * The partition travels to the object as a header. A Durable Object
+       * cannot read back its own name — `idFromName` is a one-way hash — and
+       * the object needs it to choose its warm instrument floor and to prefix
+       * every event id it publishes.
+       *
+       * Query strings are preserved for reads; only the body is carried for
+       * writes, and both are forwarded with the caller's own method so a GET is
+       * not silently turned into a bodyless POST.
+       */
+      const headers = new Headers(request.headers);
+      headers.set('x-signalgoat-partition', partition);
+
+      const body = request.method === 'GET' ? undefined : await request.text();
+
       return stub.fetch(
-        new Request(`https://do${action}`, {
-          method: 'POST',
-          headers: request.headers,
-          body: request.method === 'POST' ? await request.text() : undefined,
+        new Request(`https://do${action}${url.search}`, {
+          method: request.method,
+          headers,
+          body: body && body.length > 0 ? body : undefined,
         }),
       );
     }
@@ -1023,5 +1508,66 @@ export default {
     }
 
     return json({ error: 'not_found' }, 404);
+  },
+
+  /**
+   * CRON RECONCILIATION
+   * ===================
+   *
+   * wrangler.toml declares a 15-minute cron, but the Worker exported no
+   * `scheduled()` handler — so the trigger fired into nothing and the
+   * reconciliation the config comment described did not exist.
+   *
+   * WHY IT IS NEEDED
+   *
+   * `GoatSchedulerDO.alarm()` deliberately does NOT re-arm after a failed
+   * delivery, on the reasoning that a hot retry loop against a down app is
+   * worse than waiting. That reasoning is right, but it needs a second half:
+   * something must eventually re-arm, or a single transient failure during an
+   * app deploy silently stops that GOAT's schedule FOREVER. This handler is
+   * that something.
+   *
+   * A Durable Object namespace cannot be enumerated, so this does not walk the
+   * namespace. It asks the application to re-publish every GOAT it owns; the
+   * scheduler client already treats a re-sync of an unchanged generation as a
+   * no-op, so this is cheap and idempotent.
+   */
+  async scheduled(
+    _controller: ScheduledControllerLike,
+    env: WorkerEnv,
+    ctx: ExecutionContextLike,
+  ): Promise<void> {
+    if (!env.APP_ORIGIN || !env.SCHEDULER_SECRET) {
+      // Not configured: nothing to reconcile, and nothing is logged so a
+      // half-configured Worker does not fill its logs with the same line.
+      return;
+    }
+
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const response = await fetch(
+            `${env.APP_ORIGIN.replace(/\/+$/, '')}/api/internal/reconcile`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Scheduler-Secret': env.SCHEDULER_SECRET,
+              },
+              body: JSON.stringify({ at: Date.now() }),
+            },
+          );
+
+          if (!response.ok) {
+            console.warn(
+              `[cron] reconcile returned HTTP ${response.status}`,
+            );
+          }
+        } catch (err) {
+          // A failed reconciliation is not fatal: the next tick tries again.
+          console.warn('[cron] reconcile failed:', String(err).slice(0, 200));
+        }
+      })(),
+    );
   },
 };

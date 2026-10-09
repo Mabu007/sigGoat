@@ -55,11 +55,14 @@ function countingGateway(fail: boolean): ReasoningGateway & { calls: number; tim
     async hasKeyFor() {
       return false;
     },
+    async providerFor() {
+      return 'openrouter' as const;
+    },
     async listModels() {
-      return { models: [], fetchedAt: 0 };
+      return { models: [], provider: 'openrouter' as const, fetchedAt: 0, source: 'stub' };
     },
     async testKeyFor() {
-      return { ok: false, latencyMs: 0, error: 'not used here' };
+      return { ok: false, provider: 'openrouter' as const, latencyMs: 0, error: 'not used here' };
     },
     invalidate() {},
   };

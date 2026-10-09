@@ -43,8 +43,9 @@ function gateway(options: {
     evaluateGoat: options.evaluate ?? (async () => NO_TRADE_RESULT),
     answerGoatQuestion: async () => 'ok',
     hasKeyFor: async () => options.hasKey ?? false,
-    listModels: async () => ({ models: [], fetchedAt: 0 }),
-    testKeyFor: async () => ({ ok: false, latencyMs: 0, error: 'not used here' }),
+    listModels: async () => ({ models: [], provider: 'openrouter', fetchedAt: 0, source: 'stub' }),
+    providerFor: async () => 'openrouter',
+    testKeyFor: async () => ({ ok: false, provider: 'openrouter', latencyMs: 0, error: 'not used here' }),
     invalidate: () => {},
   };
 }

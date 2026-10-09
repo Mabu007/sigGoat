@@ -897,7 +897,7 @@ function serialiseThesis(
   return thesis ?? null;
 }
 
-function buildReasoningUserPrompt(
+export function buildReasoningUserPrompt(
   context: GoatReasoningContext,
 ): string {
   const candles =
@@ -979,7 +979,7 @@ function buildReasoningUserPrompt(
   ].join('\n');
 }
 
-function buildReasoningSystemPrompt(): string {
+export function buildReasoningSystemPrompt(): string {
   return `
 You are the reasoning engine for SignalGOAT.
 
@@ -1230,7 +1230,7 @@ RULES:
 `.trim();
 }
 
-function buildChatSystemPrompt(
+export function buildChatSystemPrompt(
   context: GoatReasoningContext,
 ): string {
   return `
@@ -1468,7 +1468,7 @@ function stripMarkdownCodeFence(
     .trim();
 }
 
-function tryParseJson(
+export function tryParseJson(
   content: string,
 ): unknown {
   const cleaned =
@@ -1512,7 +1512,7 @@ function tryParseJson(
   return undefined;
 }
 
-function parseUsage(
+export function parseUsage(
   usage: unknown,
 ): OpenRouterUsage | undefined {
   if (!isRecord(usage)) {
