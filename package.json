@@ -42,5 +42,8 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "jose": "^5.10.0"
   }
 }
