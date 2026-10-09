@@ -14,6 +14,34 @@ integration was actually exercised.
 | Cloudflare Worker | https://siggoat-scheduler.gtebogo75.workers.dev | Production-verified |
 | Worker health | https://siggoat-scheduler.gtebogo75.workers.dev/health | Production-verified |
 
+## Deploying
+
+**A `git push` is the only reliable check.** `vercel --prod` uploads the working
+tree, so it can succeed against files that a fresh clone does not contain. Two
+real build failures were invisible to the CLI and only appeared on a push:
+
+1. `api/index.js` was a gitignored build artifact, but Vercel resolves the
+   `functions` map in `vercel.json` **before** running the build command
+   (`vc.detectBuilders` precedes `vc.doBuild` in the build trace). The
+   Git-connected build failed with `[unused_function]`. Fixed by committing
+   `api/index.js` as a three-line shim that re-exports the bundle from
+   `.api-build/`.
+2. `.gitignore` had a bare `data/`, which matches at any depth and silently
+   ignored `src/data/` — the default skill library that `apiRouter.ts` imports.
+   A fresh clone could not build at all. Fixed by anchoring it to `/data/`.
+
+To reproduce the remote build before pushing:
+
+```bash
+vercel build          # honours vercel.json exactly as the remote does
+```
+
+or build from a clean clone, which is the stricter check:
+
+```bash
+git clone . /tmp/c && cd /tmp/c && ln -s "$PWD/../node_modules" node_modules && vercel build
+```
+
 ## Status
 
 | Capability | Status |
