@@ -16,6 +16,19 @@ name = "siggoat-scheduler"
 main = "worker/market-data-worker.ts"
 compatibility_date = "2026-01-01"
 
+# Two Durable Object classes share this Worker. The account id is read from
+# CLOUDFLARE_ACCOUNT_ID (or `wrangler login`), so it is deliberately absent here.
+#
+# Secrets this Worker needs (set with `wrangler secret put <NAME>`):
+#   SCHEDULER_SECRET      — authenticates requests INTO the Worker and is sent
+#                           back to the app on alarm deliveries
+#   MARKET_DATA_SECRET    — optional; a separate secret for market-data traffic
+#                           so the two surfaces can be rotated independently
+#   APP_ORIGIN            — the public URL of the Vercel app, e.g.
+#                           https://sig-goat.vercel.app. Without it the Worker
+#                           ingests candles but cannot deliver a single event,
+#                           and the cron reconciliation does nothing.
+
 # --- Per-GOAT scheduler -------------------------------------------------
 # One Durable Object per GOAT. Wrangler creates the class binding.
 [[durable_objects.bindings]]
@@ -50,9 +63,18 @@ class_name = "MarketDataDO"
 tag = "v2"
 new_sqlite_classes = ["MarketDataDO"]
 
-# Optional reconciliation: the app also reports health here, and a periodic
-# sweep re-arms any GOAT whose alarm was consumed by a failed delivery.
-# NOT the per-GOAT scheduler — that is the Durable Object alarm.
+# CRON RECONCILIATION — the app also reports health here.
+#
+# This is NOT the per-GOAT scheduler; that is the Durable Object alarm. This
+# sweep asks the application to re-publish every GOAT it owns, which is what
+# re-arms a schedule whose alarm was consumed by a FAILED delivery.
+#
+# `GoatSchedulerDO.alarm()` deliberately does not re-arm after a failure, to
+# avoid a hot retry loop against a down app. That needs a second half: without
+# this trigger, one transient failure during an app deploy would stop that
+# GOAT's schedule permanently while every status endpoint reported it healthy.
+#
+# The Worker's `scheduled()` handler calls POST {APP_ORIGIN}/api/internal/reconcile.
 [triggers]
 crons = ["*/15 * * * *"]
 
