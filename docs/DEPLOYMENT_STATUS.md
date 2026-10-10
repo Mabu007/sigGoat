@@ -432,22 +432,57 @@ UI theme system.
 
 ### GitHub
 - Branch: **main**, pushed to `https://github.com/Mabu007/sigGoat.git`.
-- Commit SHA: **870e453** (`feat: complete Hyperliquid migration,
-  proposals/auth/security, and Vite fix`), 96 files changed: +16949, -2689
-  (includes the Hyperliquid migration and all session work listed above).
+- Latest commit SHA: **e6e13e5**
+  (`follow-up: chatbot, market category cards, auth flow, Backtest label`),
+  17 files changed: +1392, -162.
+- Parent: **870e453** (`feat: complete Hyperliquid migration, proposals/auth/
+  security, and Vite fix`).
 
 ### Production — https://sig-goat.vercel.app/
-- Deployment of commit 870e453: **completed successfully** (`vercel deploy
-  --prod`), build 39s, ready in ~2m.
-- Smoke test: HTTP 200; title renders `FundAGoat - AI Prop Trading Assistant`;
-  client JS 909,931 bytes and CSS load correctly; production bundle secret scan
-  clean.
-- **Unverified in production**: the deployment has no Firebase Admin credential
-  configured, so auth mode is `none` and protected API routes return 503. The
-  client itself loads and renders; real authentication/authorization flow was
-  verified against the local dev server only. Deploying with
-  `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64` (or `GOOGLE_APPLICATION_CREDENTIALS`)
-  and the required Firestore rules would bring the server-side auth path live.
+- Deployment of commit e6e13e5: **completed successfully** (`vercel deploy
+  --prod`), build 39s, ready in ~1m. Smoke test via `vercel curl` returns HTTP
+  200; the React shell (title `FundAGoat - AI Prop Trading Assistant`) and client
+  JS/CSS load correctly.
+- **Unverified in production**: deployment has no Firebase Admin credential, so
+  auth mode is `none` and protected routes return 503; the client renders
+  normally.
+- **Not yet verified live**: the chatbot endpoints have not been exercised
+  against a configured `OPENROUTER_API_KEY` or a real Firestore deployment
+  (`chats/{chatId}` / `chats/{chatId}/messages/{messageId}`); auth path verified
+  locally only. Deploy with `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64` (+ Firestore
+  rules) and a configured OpenRouter key to bring server-side auth, credentials
+  vault, and chatbot production-ready.
+
+### Completed this follow-up (after 870e453)
+
+- **Market screen redesign**: `QuotesView` now shows four category cards
+  (Currencies → Commodities → Indices → Crypto) with per-category counts of
+  **tracked** instruments; thin markets `xyz:JP225` / `xyz:KR200` removed from
+  `DEFAULT_MARKET_UNIVERSE`, so they are unavailable-by-default and absent from
+  the cards and new-user defaults.
+- **Application-wide chatbot**: `Chat`/`ChatMessage` types, in-memory + file +
+  Firestore repositories, and endpoints `GET /api/chats`, `POST /api/chat`,
+  `GET /api/chat?chatId=`, `DELETE /api/chat/:id`; app-wide panel wired into
+  `App.tsx` and `Header.tsx` with `apodex/apodex-1.1-mini:free`; per-user
+  OpenRouter BYOK from the vault takes precedence over the server key.
+- **Auth flow overhaul**: guest login removed; email/password sign-up +
+  sign-in plus Google OAuth via `AuthGate.tsx` with validation and inline
+  errors; `AuthContext` exports `signupWithEmail` / `loginWithEmail`;
+  `FirebaseError` messages mapped for `auth/email-already-in-use`,
+  `auth/weak-password`, `auth/invalid-email`, `auth/user-disabled`,
+  `auth/too-many-requests`, `auth/network-request-failed`.
+- **Navigation**: mobile tab `shortLabel: 'Test'` → `'Backtest'`.
+- **Firestore**: `firestore.rules` rules for `/chats/{chatId}` and
+  `/chats/{chatId}/messages/{messageId}` (owner-only reads/writes);
+  `firebase-blueprint.json` adds the `Chat` / `ChatMessage` entities.
+- **Tests**: `tests/hyperliquid.test.ts` updated to expect `indices` absent from
+  the default universe; `tests/ui.test.ts` updated for the category-card
+  counts; `npm test` = **795 pass / 0 fail**, `tsc --noEmit` clean,
+  `npm run build` clean.
+- **Production**: `vercel deploy --prod` completed; `sig-goat.vercel.app`
+  responds HTTP 200. **Chatbot not yet verified live** — it has not been
+  exercised against a configured `OPENROUTER_API_KEY` or a real Firestore
+  deployment (see below).
 
 ### Remaining blockers / unverified items
 1. **PropDAO commercial authorisation** — blocking for order placement (see §6 /
