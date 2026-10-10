@@ -370,3 +370,92 @@ UI theme system.
    would. That is the venue's coverage, and it is presented as such.
 6. **No rate-limit alerting.** The client enforces its budget and backs off,
    but there is no metric export when sustained usage approaches the limit.
+7. **Production bundle now served by Vercel** — see "Final verification
+   below" for the current production state.
+
+---
+
+## 11. Final verification — session complete
+
+**Date of last verification: 2026-10-10 (deployment session)**
+
+### Completed this session
+- Removed the empty `Overview` screen; primary navigation is exactly **Markets,
+  Goats, Proposals, Backtest, Settings** (old `overview` hash redirects to
+  Markets).
+- Fixed dark/light theme at its root: `index.html` sets `data-theme` before the
+  bundle loads; `ThemeContext` reads that decision and persists the user's
+  choice to `localStorage` with an OS-fallback; the choice survives refreshes
+  and account switches.
+- Removed every stale market symbol from behavior-affecting code:
+  `SessionCalendar` (classification + per-index zones: EUR/USD→XYZ:JP225 in
+  Asia/Tokyo, XYZ:KR200 in Asia/Seoul; XAU/USD, WTI, US500, NAS100, SPX500
+  sets replaced with `XYZ:GOLD`, `XYZ:SILVER`, `XYZ:CL`, `XYZ:JP225`,
+  `XYZ:KR200`, `BTC`, `ETH`, `SOL`), `MarketStructure` (`defaultDigitsFor`),
+  `RetentionPolicy` (24/7 crypto = BTC/ETH/SOL), `PaperMarketDataProvider`
+  (own independent simulated catalog, untouched), `apiRouter`
+  (`STALE_MARKET_REPLACEMENTS` — removed the fabricated US500→BTC etc.
+  mappings), `goatContext`, `GoatDurableObject`, `GoatsView`, `MarketStateStore`,
+  `MarketIngestionService`, `TelegramService`, `OpenRouterClient`.
+- Stale-symbol migration remains selective: EUR/USD→xyz:EUR, GBP/USD→xyz:GBP,
+  USD/JPY→xyz:JPY, XAU/USD→xyz:GOLD, XAG/USD→xyz:SILVER, GOLD/SLV→xyz:SILVER,
+  WTI/CL→xyz:CL; unrecognized symbols are left as-is and surfaced with a clear
+  "not a market Hyperliquid lists" error (never invented).
+- Backtest configuration resolves from each GOAT's real markets; `/api/markets/
+  search` queries the full live catalogue, not just tracked markets.
+- Backtest `ERR_HTTP_HEADERS_SENT` / Vite-CORS root cause found and fixed:
+  `devViteGuard.ts` routes `/api/*` past Vite's middleware entirely, and the
+  `handle()` wrapper short-circuits error handling once headers are sent — a
+  double-response can no longer reach Vite. Regression-tested
+  (`tests/devViteGuard.test.ts`, 4 pass).
+- Proposal decision flow verified end-to-end: `REJECT` records (200), a second
+  decision returns `409 ALREADY_FINALIZED` (write-once, server-side), and the AI
+  assistant degrades to a DEMO answer when no key is configured with **no key
+  leak**.
+- Execution policy verified: writes return `EXECUTION_DISABLED` unless all three
+  flags are set (`PROPDAO_EXECUTION_ENABLED`, `PROPDAO_EXECUTION_AUTHORISED`,
+  `PROPDAO_EXECUTION_TERMS_REFERENCE`).
+
+### Test, typecheck, build, security results (this session)
+- `bun test`: **795 pass / 0 fail** across 39 files (2900 expect() calls), up
+  from the 773 baseline — 22 new regression tests added (stale symbols,
+  invalid-market retry, devViteGuard).
+- `npx tsc --noEmit`: **clean** (exit 0).
+- `npm run build`: **succeeds** — client bundle + `.api-build/index.mjs`.
+- Live dev-server + route verification: status, `/api/goats`, `/api/backtest/
+  run` (with stale-market fallback and with a real market), `/api/markets/
+  search?q=gold` → `xyz:GOLD`, create GOAT with stale markets, proposal
+  accept/reject write-once, assistant. No `ERR_HTTP_HEADERS_SENT`, no hangs.
+- Bundle secret scan (both local `dist/` and the shipped production bundle):
+  **no PEM blocks, no `iam.gserviceaccount.com`, no `AIza…` keys**. Firebase web
+  config present as expected; service-account/admin-key paths are gitignored.
+
+### GitHub
+- Branch: **main**, pushed to `https://github.com/Mabu007/sigGoat.git`.
+- Commit SHA: **870e453** (`feat: complete Hyperliquid migration,
+  proposals/auth/security, and Vite fix`), 96 files changed: +16949, -2689
+  (includes the Hyperliquid migration and all session work listed above).
+
+### Production — https://sig-goat.vercel.app/
+- Deployment of commit 870e453: **completed successfully** (`vercel deploy
+  --prod`), build 39s, ready in ~2m.
+- Smoke test: HTTP 200; title renders `FundAGoat - AI Prop Trading Assistant`;
+  client JS 909,931 bytes and CSS load correctly; production bundle secret scan
+  clean.
+- **Unverified in production**: the deployment has no Firebase Admin credential
+  configured, so auth mode is `none` and protected API routes return 503. The
+  client itself loads and renders; real authentication/authorization flow was
+  verified against the local dev server only. Deploying with
+  `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64` (or `GOOGLE_APPLICATION_CREDENTIALS`)
+  and the required Firestore rules would bring the server-side auth path live.
+
+### Remaining blockers / unverified items
+1. **PropDAO commercial authorisation** — blocking for order placement (see §6 /
+   execution policy).
+2. **Live PropDAO authenticated testing** — needs a real API key.
+3. **Production auth/Firestore** — no admin credential on this deployment;
+   server-side auth, credentials vault, and Telegram all require it.
+4. **Legacy plaintext key migration** — not automated (§7); users must re-enter
+   keys once after migration.
+5. `xyz:JP225` / `xyz:KR200` may have gaps on quiet intervals.
+6. No rate-limit alerting (budget enforced, no export).
