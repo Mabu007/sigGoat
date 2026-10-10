@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Check, Moon, Palette as PaletteIcon, Sun } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useTheme } from '../../context/ThemeContext';
+import { PropDaoSettings } from './PropDaoSettings';
 import {
   Settings,
   Send,
@@ -69,6 +72,7 @@ function validateProviderKey(raw: string, provider: AiProvider): string | null {
 }
 
 export const SettingsView: React.FC = () => {
+  const { theme, setTheme } = useTheme();
   const {
     currentUser,
     profile,
@@ -386,25 +390,68 @@ export const SettingsView: React.FC = () => {
     <div className="space-y-6 pb-20 max-w-3xl mx-auto">
       {/* Title */}
       <div>
-        <h1 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-          <Settings className="w-5 h-5 text-amber-400" />
-          <span>System Settings &amp; Integrations</span>
+        <h1 className="text-lg font-bold text-fg flex items-center gap-2">
+          <Settings className="w-5 h-5 text-accent-text" />
+          <span>Settings</span>
         </h1>
-        <p className="text-xs text-slate-400 mt-0.5">
-          Configure real-time Telegram notifications, advanced AI reasoning engines, and view market data status.
+        <p className="text-xs text-fg-muted mt-0.5">
+          Account, appearance, model provider, PropDAO connection and Telegram notifications.
         </p>
       </div>
 
-      {/* 1. SOLE MARKET DATA STATUS (AUTOMATIC - NO USER KEY NEEDED) */}
-      <div className="bg-[#0c0f17] border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3">
-        <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+      {/* ---- APPEARANCE ---- */}
+      <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5">
+        <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+            <div className="w-8 h-8 rounded-lg bg-accent-soft border border-accent/30 flex items-center justify-center text-accent-text">
+              <PaletteIcon />
+            </div>
+            <div>
+              <h2 className="text-[13px] font-semibold text-fg">Appearance</h2>
+              <p className="text-[11px] text-fg-muted">
+                Both themes are designed individually, not one inverted into the other.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 flex gap-2">
+          {(['light', 'dark'] as const).map((option) => {
+            const active = theme === option;
+            return (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setTheme(option)}
+                aria-pressed={active}
+                className={`flex flex-1 items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-medium transition-colors ${
+                  active
+                    ? 'border-accent bg-accent-soft text-accent-text'
+                    : 'border-line bg-sunken text-fg-muted hover:border-line-strong hover:text-fg'
+                }`}
+              >
+                {option === 'light' ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
+                {option === 'light' ? 'Light' : 'Dark'}
+                {active && <Check className="ml-auto" size={13} aria-hidden="true" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ---- PROPDAO ---- */}
+      <PropDaoSettings />
+
+      {/* 1. SOLE MARKET DATA STATUS (AUTOMATIC - NO USER KEY NEEDED) */}
+      <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
+        <div className="flex items-center justify-between border-b border-line pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-positive-soft border border-positive/40 flex items-center justify-center text-positive">
               <Activity className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-slate-100">Market Data Engine</h2>
-              <p className="text-xs text-slate-400">
+              <h2 className="text-sm font-bold text-fg">Market Data Engine</h2>
+              <p className="text-xs text-fg-muted">
                 {marketData?.dataMode === 'PAPER'
                   ? 'Deterministic simulated feed — prices are generated locally and are NOT live market prices.'
                   : marketData?.dataMode === 'LIVE'
@@ -414,37 +461,37 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
           {marketData?.dataMode === 'PAPER' ? (
-            <span className="text-[10px] font-mono px-2 py-0.5 bg-amber-500/10 text-amber-300 border border-amber-500/30 rounded flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+            <span className="text-[10px] font-mono px-2 py-0.5 bg-accent/10 text-accent-text border border-accent/40 rounded flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent" />
               PAPER · simulated
             </span>
           ) : (
-            <span className="text-[10px] font-mono px-2 py-0.5 bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 rounded flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-[10px] font-mono px-2 py-0.5 bg-positive-soft text-positive border border-positive/30 rounded flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-positive animate-pulse" />
               Connected
             </span>
           )}
         </div>
 
-        <div className="text-xs text-slate-300 space-y-1.5 bg-slate-900/60 p-3.5 rounded-xl border border-slate-800/80">
+        <div className="text-xs text-fg-muted space-y-1.5 bg-sunken/60 p-3.5 rounded-xl border border-line">
           <div className="flex items-center justify-between">
-            <span className="text-slate-400">Data Mode:</span>
-            <span className={`font-semibold ${marketData?.dataMode === 'PAPER' ? 'text-amber-300' : 'text-emerald-400'}`}>
+            <span className="text-fg-muted">Data Mode:</span>
+            <span className={`font-semibold ${marketData?.dataMode === 'PAPER' ? 'text-accent-text' : 'text-positive'}`}>
               {marketData?.dataMode ?? 'PAPER'}
               {marketData?.dataMode === 'PAPER' && ' (not live prices)'}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-slate-400">Provider:</span>
-            <span className="text-slate-200 font-mono">{marketData?.provider ?? '—'}</span>
+            <span className="text-fg-muted">Provider:</span>
+            <span className="text-fg font-mono">{marketData?.provider ?? '—'}</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-slate-400">Supported Asset Classes:</span>
-            <span className="text-slate-200">Forex Majors &amp; Crosses, Gold, Silver, Crude Oil, Major Indices</span>
+            <span className="text-fg-muted">Supported Asset Classes:</span>
+            <span className="text-fg">Forex Majors &amp; Crosses, Gold, Silver, Crude Oil, Major Indices</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-slate-400">Symbols Available:</span>
-            <span className="font-mono text-amber-300">{marketData?.symbolsCount ?? '—'}</span>
+            <span className="text-fg-muted">Symbols Available:</span>
+            <span className="font-mono text-accent-text">{marketData?.symbolsCount ?? '—'}</span>
           </div>
         </div>
       </div>
@@ -456,25 +503,25 @@ export const SettingsView: React.FC = () => {
           void handleTestTelegram();
         }}
         autoComplete="off"
-        className="bg-[#0c0f17] border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4"
+        className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-4"
       >
-        <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+        <div className="flex items-center justify-between border-b border-line pb-3">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
+            <div className="w-8 h-8 rounded-lg bg-info-soft border border-info/30 flex items-center justify-center text-info">
               <Send className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-slate-100">Telegram Real-Time Alerts &amp; Chat</h2>
-              <p className="text-xs text-slate-400">Receive human-readable signal alerts and chat with your GOAT on Telegram.</p>
+              <h2 className="text-sm font-bold text-fg">Telegram Real-Time Alerts &amp; Chat</h2>
+              <p className="text-xs text-fg-muted">Receive human-readable signal alerts and chat with your GOAT on Telegram.</p>
             </div>
           </div>
           <span
             className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
               telegramStatus?.connected
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                ? 'bg-positive-soft border-positive/40 text-positive'
                 : telegramStatus?.tokenConfigured
-                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                  : 'bg-slate-500/10 border-slate-500/30 text-slate-400'
+                  ? 'bg-accent/10 border-accent/40 text-accent-text'
+                  : 'bg-sunken border-line-strong text-fg-muted'
             }`}
           >
             {telegramStatus?.connected
@@ -494,9 +541,9 @@ export const SettingsView: React.FC = () => {
            * registered. This states which of the three states is actually true.
            */}
           {telegramStatus && (
-            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3 space-y-1 text-[11px]">
+            <div className="rounded-xl border border-line bg-sunken/60 p-3 space-y-1 text-[11px]">
               {telegramStatus.connected && telegramStatus.webhook?.ok && (
-                <div className="text-emerald-300 flex items-center gap-1.5">
+                <div className="text-positive flex items-center gap-1.5">
                   <CheckCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>
                     Verified with Telegram as <strong>@{telegramStatus.bot?.username}</strong>. Webhook registered.
@@ -505,7 +552,7 @@ export const SettingsView: React.FC = () => {
               )}
 
               {!telegramStatus.connected && telegramStatus.tokenConfigured && (
-                <div className="text-amber-300 flex items-start gap-1.5">
+                <div className="text-accent-text flex items-start gap-1.5">
                   <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                   <span>
                     A token is stored but the bot is <strong>not</strong> connected, so commands and alerts will not
@@ -521,7 +568,7 @@ export const SettingsView: React.FC = () => {
               )}
 
               {!telegramStatus.webhookSecretConfigured && (
-                <div className="text-rose-300 flex items-start gap-1.5">
+                <div className="text-negative flex items-start gap-1.5">
                   <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                   <span>
                     This deployment has no Telegram webhook secret configured, so no bot can be connected securely. An
@@ -533,7 +580,7 @@ export const SettingsView: React.FC = () => {
           )}
 
           <div>
-            <label htmlFor="telegram-token" className="block font-semibold text-slate-300 mb-1">
+            <label htmlFor="telegram-token" className="block font-semibold text-fg-muted mb-1">
               Telegram Bot Token
             </label>
             <input
@@ -545,12 +592,12 @@ export const SettingsView: React.FC = () => {
               value={telegramToken}
               onChange={e => setTelegramToken(e.target.value)}
               placeholder={keyStatus?.telegramTokenConfigured ? 'Saved — type a new token to replace it' : 'e.g. 123456789:ABCdefGHIjklmnoPQRstuvWXYZ (from @BotFather)'}
-              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 placeholder-slate-400 font-mono focus:outline-none focus:border-amber-500/50"
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus"
             />
           </div>
 
           <div>
-            <label htmlFor="telegram-chat-id" className="block font-semibold text-slate-300 mb-1">
+            <label htmlFor="telegram-chat-id" className="block font-semibold text-fg-muted mb-1">
               Your Telegram Chat ID
             </label>
             <input
@@ -562,7 +609,7 @@ export const SettingsView: React.FC = () => {
               value={telegramChatId}
               onChange={e => setTelegramChatId(e.target.value)}
               placeholder="e.g. 987654321 (message @userinfobot to see your ID)"
-              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 placeholder-slate-400 font-mono focus:outline-none focus:border-amber-500/50"
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus"
             />
           </div>
 
@@ -570,8 +617,8 @@ export const SettingsView: React.FC = () => {
             <div
               className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
                 testResult.ok
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                  ? 'bg-positive-soft border-positive/40 text-positive'
+                  : 'bg-negative-soft border-negative/40 text-negative'
               }`}
             >
               {testResult.ok ? (
@@ -584,7 +631,7 @@ export const SettingsView: React.FC = () => {
           )}
 
           {saveError && (
-            <div className="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-xl flex items-start gap-2">
+            <div className="p-3 bg-negative-soft border border-negative/40 text-negative rounded-xl flex items-start gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{saveError}</span>
             </div>
@@ -594,8 +641,8 @@ export const SettingsView: React.FC = () => {
             <div
               className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
                 testResult.ok
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                  ? 'bg-positive-soft border-positive/40 text-positive'
+                  : 'bg-negative-soft border-negative/40 text-negative'
               }`}
             >
               {testResult.ok ? (
@@ -618,7 +665,7 @@ export const SettingsView: React.FC = () => {
               type="button"
               onClick={() => void handleConnectTelegram()}
               disabled={isConnectingTelegram || isDisconnectingTelegram}
-              className="flex items-center gap-1.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 bg-info hover:bg-info text-accent-fg font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
             >
               <Shield className="w-3.5 h-3.5" />
               <span>
@@ -638,7 +685,7 @@ export const SettingsView: React.FC = () => {
                   ? undefined
                   : 'Connect the bot first — the webhook must be registered before a test means anything.'
               }
-              className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-100 border border-slate-800 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 bg-sunken hover:bg-raised text-fg border border-line font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
             >
               <Send className="w-3.5 h-3.5" />
               <span>{isTestingTelegram ? 'Sending Test...' : 'Send Test Alert'}</span>
@@ -649,7 +696,7 @@ export const SettingsView: React.FC = () => {
                 type="button"
                 onClick={() => void handleDisconnectTelegram()}
                 disabled={isConnectingTelegram || isDisconnectingTelegram}
-                className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-rose-300 border border-rose-500/30 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+                className="flex items-center gap-1.5 bg-sunken hover:bg-raised text-negative border border-negative/40 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>{isDisconnectingTelegram ? 'Disconnecting…' : 'Disconnect'}</span>
@@ -658,8 +705,8 @@ export const SettingsView: React.FC = () => {
           </div>
 
           {/* Setup Guide */}
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-3 text-[11px] text-slate-400 space-y-1">
-            <strong className="text-slate-300 block mb-1">Quick Telegram Setup:</strong>
+          <div className="bg-sunken/60 border border-line rounded-xl p-3 text-[11px] text-fg-muted space-y-1">
+            <strong className="text-fg-muted block mb-1">Quick Telegram Setup:</strong>
             <div>1. Open Telegram, message <strong>@BotFather</strong>, send <code>/newbot</code> to get your Bot Token.</div>
             <div>2. Message <strong>@userinfobot</strong> to get your numerical Chat ID.</div>
             <div>3. Press &quot;Start&quot; on your new bot, paste both above, then click &quot;Connect Bot&quot;.</div>
@@ -669,14 +716,14 @@ export const SettingsView: React.FC = () => {
       </form>
 
       {/* 3. AI MODEL CONFIGURATION */}
-      <form onSubmit={handleSaveKeys} className="bg-[#0c0f17] border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4">
-        <div className="border-b border-slate-800/80 pb-3">
-          <h2 className="text-sm font-bold text-slate-100 flex items-center gap-2">
-            <Key className="w-4 h-4 text-amber-400" />
+      <form onSubmit={handleSaveKeys} className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-4">
+        <div className="border-b border-line pb-3">
+          <h2 className="text-sm font-bold text-fg flex items-center gap-2">
+            <Key className="w-4 h-4 text-accent-text" />
             <span>AI Reasoning Engine</span>
           </h2>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Configure optional model credentials allowing your SignalGOAT to reason via Claude 3.5 Sonnet, DeepSeek, or Llama.
+          <p className="text-xs text-fg-muted mt-0.5">
+            Configure optional model credentials allowing your FundAGoat to reason via Claude 3.5 Sonnet, DeepSeek, or Llama.
           </p>
         </div>
 
@@ -688,7 +735,7 @@ export const SettingsView: React.FC = () => {
            * are separated before either key is typed.
            */}
           <div>
-            <span className="block font-semibold text-slate-300 mb-1.5">
+            <span className="block font-semibold text-fg-muted mb-1.5">
               Reasoning provider
             </span>
             <div className="grid grid-cols-2 gap-2">
@@ -715,8 +762,8 @@ export const SettingsView: React.FC = () => {
                     aria-pressed={selected}
                     className={`text-left rounded-xl border px-3 py-2 transition-colors cursor-pointer ${
                       selected
-                        ? 'border-amber-500/60 bg-amber-500/10 text-amber-200'
-                        : 'border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700'
+                        ? 'border-accent/60 bg-accent-soft text-accent-text'
+                        : 'border-line bg-sunken text-fg-muted hover:border-line-strong'
                     }`}
                   >
                     <span className="block text-xs font-bold">{option.label}</span>
@@ -730,23 +777,23 @@ export const SettingsView: React.FC = () => {
           {provider === 'openrouter' ? (
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label htmlFor="openrouter-key" className="font-semibold text-slate-300">
+              <label htmlFor="openrouter-key" className="font-semibold text-fg-muted">
                 AI Model API Key (OpenRouter)
               </label>
               {keyStatus?.openRouterKeyInvalid ? (
-                <span className="text-[10px] text-rose-400 flex items-center gap-1 font-mono">
+                <span className="text-[10px] text-negative flex items-center gap-1 font-mono">
                   <AlertCircle className="w-3 h-3" /> Stored key is invalid
                 </span>
               ) : hasSavedKey ? (
-                <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-mono">
+                <span className="text-[10px] text-positive flex items-center gap-1 font-mono">
                   <CheckCircle className="w-3 h-3" /> Your key is saved
                 </span>
               ) : reasoningStatus?.serverKeyConfigured ? (
-                <span className="text-[10px] text-sky-400 flex items-center gap-1 font-mono">
+                <span className="text-[10px] text-info flex items-center gap-1 font-mono">
                   <Zap className="w-3 h-3" /> Using platform key
                 </span>
               ) : (
-                <span className="text-[10px] text-amber-400 flex items-center gap-1 font-mono">
+                <span className="text-[10px] text-accent-text flex items-center gap-1 font-mono">
                   <AlertCircle className="w-3 h-3" /> Not configured
                 </span>
               )}
@@ -760,14 +807,14 @@ export const SettingsView: React.FC = () => {
               value={openRouterKey}
               onChange={e => setOpenRouterKey(e.target.value)}
               placeholder={hasSavedKey ? 'Saved — type a new key to replace it' : 'sk-or-v1-...'}
-              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 placeholder-slate-400 font-mono focus:outline-none focus:border-amber-500/50"
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus"
             />
-            <p className="text-[10px] text-slate-400 mt-1">
+            <p className="text-[10px] text-fg-muted mt-1">
               Stored per-account on the server and used only for your GOATs. Get one at openrouter.ai/keys.
             </p>
 
             {keyStatus?.openRouterKeyInvalid && (
-              <p className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-[10px] leading-relaxed text-rose-300">
+              <p className="mt-2 rounded-lg border border-negative/40 bg-negative-soft p-2 text-[10px] leading-relaxed text-negative">
                 A saved value for this account is not a valid OpenRouter key, so
                 every analysis is failing. Enter a valid key below and save to
                 replace it.
@@ -777,15 +824,15 @@ export const SettingsView: React.FC = () => {
           ) : (
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label htmlFor="groq-key" className="font-semibold text-slate-300">
+              <label htmlFor="groq-key" className="font-semibold text-fg-muted">
                 AI Model API Key (Groq)
               </label>
               {hasSavedKey ? (
-                <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-mono">
+                <span className="text-[10px] text-positive flex items-center gap-1 font-mono">
                   <CheckCircle className="w-3 h-3" /> Your key is saved
                 </span>
               ) : (
-                <span className="text-[10px] text-amber-400 flex items-center gap-1 font-mono">
+                <span className="text-[10px] text-accent-text flex items-center gap-1 font-mono">
                   <AlertCircle className="w-3 h-3" /> Not configured
                 </span>
               )}
@@ -799,9 +846,9 @@ export const SettingsView: React.FC = () => {
               value={groqKey}
               onChange={e => setGroqKey(e.target.value)}
               placeholder={hasSavedKey ? 'Saved — type a new key to replace it' : 'gsk_...'}
-              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 placeholder-slate-400 font-mono focus:outline-none focus:border-amber-500/50"
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus"
             />
-            <p className="text-[10px] text-slate-400 mt-1">
+            <p className="text-[10px] text-fg-muted mt-1">
               Stored per-account on the server and used only for your GOATs. Get one at console.groq.com/keys.
               Groq is a separate service from OpenRouter: its model names are not interchangeable, and it is not
               unlimited or always free.
@@ -810,7 +857,7 @@ export const SettingsView: React.FC = () => {
           )}
 
           {saveError && (
-            <div className="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-xl flex items-start gap-2">
+            <div className="p-3 bg-negative-soft border border-negative/40 text-negative rounded-xl flex items-start gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{saveError}</span>
             </div>
@@ -820,8 +867,8 @@ export const SettingsView: React.FC = () => {
             <div
               className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
                 testResult.ok
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                  ? 'bg-positive-soft border-positive/40 text-positive'
+                  : 'bg-negative-soft border-negative/40 text-negative'
               }`}
             >
               {testResult.ok ? (
@@ -838,7 +885,7 @@ export const SettingsView: React.FC = () => {
               type="button"
               onClick={handleTestAi}
               disabled={isTestingAi || isSaving}
-              className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-100 border border-slate-800 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 bg-sunken hover:bg-raised text-fg border border-line font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
             >
               <Zap className="w-3.5 h-3.5" />
               <span>{isTestingAi ? 'Testing...' : `Test ${provider} Key`}</span>
@@ -846,7 +893,7 @@ export const SettingsView: React.FC = () => {
             <button
               type="submit"
               disabled={isSaving}
-              className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs py-2 px-4 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 bg-accent hover:bg-accent text-accent-fg font-bold text-xs py-2 px-4 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
             >
               <Save className="w-3.5 h-3.5" />
               <span>{isSaving ? 'Saving...' : 'Save Configuration'}</span>
@@ -856,9 +903,9 @@ export const SettingsView: React.FC = () => {
       </form>
 
       {/* 4. USER PROFILE & PERSISTENCE */}
-      <div className="bg-[#0c0f17] border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4">
+      <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-4">
         {(platform?.authMode === 'dev' || platform?.persistenceMode) && (
-          <div className="text-[10px] font-mono text-slate-500 flex flex-wrap gap-3">
+          <div className="text-[10px] font-mono text-fg-subtle flex flex-wrap gap-3">
             <span>Auth mode: {platform?.authMode ?? '—'}</span>
             <span>·</span>
             <span>Persistence: {platform?.persistenceMode ?? '—'}</span>
@@ -866,21 +913,21 @@ export const SettingsView: React.FC = () => {
             <span>Active GOAT actors: {platform?.activeActors ?? 0}</span>
           </div>
         )}
-        <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+        <div className="flex items-center justify-between border-b border-line pb-3">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+            <div className="w-8 h-8 rounded-lg bg-positive-soft border border-positive/40 flex items-center justify-center text-positive">
               <Shield className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-slate-100">Your Account</h2>
-              <p className="text-xs text-slate-400">Cloud synchronization and preferences for your GOAT definitions, skills, and signals.</p>
+              <h2 className="text-sm font-bold text-fg">Your Account</h2>
+              <p className="text-xs text-fg-muted">Cloud synchronization and preferences for your GOAT definitions, skills, and signals.</p>
             </div>
           </div>
           <span
             className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
               isFirebaseConnected
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                ? 'bg-positive-soft border-positive/40 text-positive'
+                : 'bg-accent/10 border-accent/40 text-accent-text'
             }`}
           >
             {isFirebaseConnected ? 'Cloud Synced' : 'Offline / Local'}
@@ -890,18 +937,18 @@ export const SettingsView: React.FC = () => {
         <div className="text-xs space-y-3">
           {currentUser ? (
             <div className="space-y-3">
-              <div className="p-3 bg-slate-900 rounded-xl border border-slate-800 space-y-1">
-                <div className="text-slate-300">
-                  Signed in as: <strong className="text-slate-100">{profile?.email || currentUser.email || 'Trader'}</strong>
+              <div className="p-3 bg-sunken rounded-xl border border-line space-y-1">
+                <div className="text-fg-muted">
+                  Signed in as: <strong className="text-fg">{profile?.email || currentUser.email || 'Trader'}</strong>
                 </div>
-                <div className="text-slate-400 text-[11px] font-mono truncate">
+                <div className="text-fg-muted text-[11px] font-mono truncate">
                   Account Reference: {currentUser.uid ? currentUser.uid.slice(0, 8) + '...' : 'Local'}
                 </div>
               </div>
 
               <button
                 onClick={logout}
-                className="flex items-center gap-1.5 text-xs text-rose-400 hover:text-rose-300 bg-rose-500/10 border border-rose-500/30 px-3.5 py-2 rounded-xl transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 text-xs text-negative hover:text-negative bg-negative-soft border border-negative/40 px-3.5 py-2 rounded-xl transition-colors cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Sign Out</span>
@@ -909,7 +956,7 @@ export const SettingsView: React.FC = () => {
             </div>
           ) : (
             <div className="space-y-3">
-              <p className="text-slate-400">
+              <p className="text-fg-muted">
                 You are currently browsing as a local session. Sign in with Google to sync your GOATs across devices.
               </p>
               <button
@@ -918,9 +965,9 @@ export const SettingsView: React.FC = () => {
                     /* Message is surfaced from authError below. */
                   });
                 }}
-                className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-slate-100 border border-slate-800 font-bold text-xs py-2.5 px-4 rounded-xl transition-colors cursor-pointer"
+                className="flex items-center gap-2 bg-sunken hover:bg-raised text-fg border border-line font-bold text-xs py-2.5 px-4 rounded-xl transition-colors cursor-pointer"
               >
-                <LogIn className="w-4 h-4 text-amber-400" />
+                <LogIn className="w-4 h-4 text-accent-text" />
                 <span>Sign in with Google</span>
               </button>
             </div>
@@ -928,13 +975,13 @@ export const SettingsView: React.FC = () => {
 
           {/* Sign-in failures are configuration problems: show the exact fix. */}
           {authError && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
-              <div className="flex items-start gap-2 text-xs font-bold text-amber-300">
+            <div className="rounded-xl border border-accent/40 bg-accent/10 p-3">
+              <div className="flex items-start gap-2 text-xs font-bold text-accent-text">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>Sign-in failed</span>
               </div>
 
-              <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-[11px] leading-relaxed text-amber-200/90">
+              <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-[11px] leading-relaxed text-accent-text/90">
                 {authError}
               </pre>
             </div>
@@ -942,9 +989,9 @@ export const SettingsView: React.FC = () => {
 
           {/* Honest labelling of which auth mode is actually running. */}
           {authMode === 'dev' && (
-            <div className="rounded-xl border border-amber-500/20 bg-slate-900/60 p-3 text-[11px] text-slate-400">
-              <strong className="text-amber-300">
-                Local mode (SIGNALGOAT_ALLOW_DEV_AUTH=1).
+            <div className="rounded-xl border border-accent/30 bg-sunken/60 p-3 text-[11px] text-fg-muted">
+              <strong className="text-accent-text">
+                Local mode (FUNDAGOAT_ALLOW_DEV_AUTH=1).
               </strong>{' '}
               Identity is a browser-generated local id, not a real account.
               Set the Firebase service-account variable and remove the dev flag
@@ -953,8 +1000,8 @@ export const SettingsView: React.FC = () => {
           )}
 
           {authMode === 'none' && (
-            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-[11px] text-rose-200">
-              <strong className="text-rose-300">
+            <div className="rounded-xl border border-negative/40 bg-negative-soft p-3 text-[11px] text-negative">
+              <strong className="text-negative">
                 No authentication configured.
               </strong>{' '}
               {platform?.authNotConfiguredReason ??

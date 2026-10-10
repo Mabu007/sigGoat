@@ -195,8 +195,8 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
         : new OpenRouterClient({
             apiKey: key,
             headers: {
-              'X-Title': 'SignalGOAT',
-              'HTTP-Referer': 'https://signalgoat.app',
+              'X-Title': 'FundAGoat',
+              'HTTP-Referer': 'https://fundagoat.app',
             },
           });
 

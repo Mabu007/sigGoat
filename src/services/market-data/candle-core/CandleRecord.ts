@@ -1,7 +1,7 @@
 /**
  * CANONICAL CANDLE RECORD
  * =======================
- * The one shape a candle has anywhere in SignalGOAT after it crosses the
+ * The one shape a candle has anywhere in FundAGoat after it crosses the
  * provider boundary.
  *
  * WHY A SEPARATE TYPE FROM `Candle` (src/types)

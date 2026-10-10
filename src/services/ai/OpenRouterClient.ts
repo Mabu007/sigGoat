@@ -42,6 +42,16 @@ export interface GoatReasoningContext {
    * the prompt tells the model to say so rather than invent news.
    */
   news?: NewsSnapshot[];
+
+  /**
+   * The specific trade proposal under discussion, when the question comes
+   * from the proposal assistant rather than general GOAT chat.
+   *
+   * Grounds every answer in the proposal's ACTUAL stored fields (levels,
+   * evidence, decision state, execution restrictions) instead of letting the
+   * model infer them. Serialised into the chat system prompt verbatim.
+   */
+  proposal?: Record<string, unknown> | null;
 }
 
 export interface OpenRouterUsage {
@@ -981,7 +991,7 @@ export function buildReasoningUserPrompt(
 
 export function buildReasoningSystemPrompt(): string {
   return `
-You are the reasoning engine for SignalGOAT.
+You are the reasoning engine for FundAGoat.
 
 You analyze the supplied state of an existing GOAT and return a disciplined,
 conditional market assessment.
@@ -1127,7 +1137,7 @@ Valid:
 - a supplied headline, explicitly labelled as an unverified headline.
 
 Invalid:
-- "EUR/USD usually rises during London";
+- "XYZ:JP225 usually rises during the Tokyo open";
 - "there is probably resistance here";
 - "news probably caused this";
 - "volume appears strong" when volume was not supplied;
@@ -1234,7 +1244,7 @@ export function buildChatSystemPrompt(
   context: GoatReasoningContext,
 ): string {
   return `
-You are the assistant interface for an existing SignalGOAT GOAT.
+You are the assistant interface for an existing FundAGoat GOAT.
 
 You explain the supplied GOAT state.
 
@@ -1302,6 +1312,13 @@ ${JSON.stringify(
     ),
 )}
 
+${
+  context.proposal !== undefined
+    ? `PROPOSAL UNDER DISCUSSION (the complete factual record, including any execution restrictions):\n${JSON.stringify(
+        context.proposal,
+      )}\n\nRules for proposal questions:\n- Ground every answer in the proposal fields above. Cite them; do not invent levels, evidence or status that is not present.\n- Separate FACTS (fields in the record) from INTERPRETATION (your reading of them).\n- If a field is missing or null, say it is not available rather than guessing.\n- Never claim an order was placed or will be placed; execution restrictions in the record are authoritative.\n- A conversation here never modifies the proposal — decisions are made through the explicit Accept/Reject actions only.\n`
+    : ''
+}
 Answer clearly and concisely.
 `.trim();
 }

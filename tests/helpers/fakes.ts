@@ -13,7 +13,7 @@
  */
 
 import type { ReasoningGateway } from '../../src/server/reasoningGateway';
-import type { GoatRuntimeState, SignalGoat } from '../../src/types';
+import type { GoatRuntimeState, FundGoat } from '../../src/types';
 
 export interface StubGatewayOptions {
   /** Replaces the default echo behaviour. */
@@ -74,7 +74,7 @@ export function stubRuntimeState(overrides: Partial<GoatRuntimeState> = {}): Goa
 }
 
 /** A minimal GOAT definition. */
-export function stubGoat(overrides: Partial<SignalGoat> = {}): SignalGoat {
+export function stubGoat(overrides: Partial<FundGoat> = {}): FundGoat {
   return {
     id: 'g1',
     userId: 'u1',

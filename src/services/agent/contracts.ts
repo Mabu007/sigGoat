@@ -3,7 +3,7 @@
  * =============================
  *
  * This is the single runtime boundary between untrusted LLM output and
- * SignalGOAT business logic.
+ * FundAGoat business logic.
  *
  * Pipeline:
  *

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import {
   createChart,
   ColorType,
@@ -9,6 +9,36 @@ import {
   Time,
 } from 'lightweight-charts';
 import { Candle, MarketQuote } from '../types';
+import { useTheme } from '../context/ThemeContext';
+
+/**
+ * Chart palette, read from the CSS custom properties.
+ *
+ * The chart renders to a CANVAS, so it cannot inherit CSS. Reading the tokens
+ * off the document is what keeps it in the active theme — the hard-coded
+ * `#090c12` it used to carry is exactly why a light theme would have produced
+ * a black chart on a white page.
+ *
+ * Read once per theme change rather than per render; `getComputedStyle` is not
+ * free and the values only change with the theme.
+ */
+function readChartPalette() {
+  const style = getComputedStyle(document.documentElement);
+  const token = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
+  return {
+    sunken: token('--color-sunken', '#0d1015'),
+    grid: token('--color-line', '#232833'),
+    border: token('--color-line-strong', '#333a48'),
+    textMuted: token('--color-fg-subtle', '#6d7688'),
+    accent: token('--color-accent-text', '#fbbf24'),
+    labelBackground: token('--color-raised', '#171b24'),
+    positive: token('--color-positive', '#34d399'),
+    negative: token('--color-negative', '#fb7185'),
+    volumeBase: token('--color-line-strong', '#333a48'),
+    volumePositive: token('--color-positive', '#34d399'),
+    volumeNegative: token('--color-negative', '#fb7185'),
+  };
+}
 
 interface ChartProps {
   candles: Candle[];
@@ -26,6 +56,9 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   digits = 5,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const { theme } = useTheme();
+  const palette = useMemo(() => readChartPalette(), [theme]);
+
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
@@ -36,8 +69,8 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     // Create TradingView Lightweight Chart instance
     const chart = createChart(containerRef.current, {
       layout: {
-        background: { type: ColorType.Solid, color: '#090c12' },
-        textColor: '#94a3b8',
+        background: { type: ColorType.Solid, color: palette.sunken },
+        textColor: palette.textMuted,
         fontSize: 11,
       },
       grid: {
@@ -47,25 +80,25 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
       crosshair: {
         mode: 1,
         vertLine: {
-          color: '#f59e0b',
+          color: palette.accent,
           width: 1,
           style: 3,
-          labelBackgroundColor: '#1e293b',
+          labelBackgroundColor: palette.labelBackground,
         },
         horzLine: {
-          color: '#f59e0b',
+          color: palette.accent,
           width: 1,
           style: 3,
-          labelBackgroundColor: '#1e293b',
+          labelBackgroundColor: palette.labelBackground,
         },
       },
       timeScale: {
-        borderColor: '#1e293b',
+        borderColor: palette.border,
         timeVisible: true,
         secondsVisible: false,
       },
       rightPriceScale: {
-        borderColor: '#1e293b',
+        borderColor: palette.border,
         scaleMargins: {
           top: 0.1,
           bottom: 0.2,
@@ -83,11 +116,11 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     });
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#10b981',
-      downColor: '#f43f5e',
+      upColor: palette.positive,
+      downColor: palette.negative,
       borderVisible: false,
-      wickUpColor: '#10b981',
-      wickDownColor: '#f43f5e',
+      wickUpColor: palette.positive,
+      wickDownColor: palette.negative,
       priceFormat: {
         type: 'price',
         precision: digits,
@@ -96,7 +129,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     });
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
-      color: '#334155',
+      color: palette.volumeBase,
       priceFormat: {
         type: 'volume',
       },

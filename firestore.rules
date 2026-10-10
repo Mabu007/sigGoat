@@ -22,6 +22,22 @@ service cloud.firestore {
       return request.resource.data;
     }
 
+    // A credential document id is "<userId>_<provider>". Verified against the
+    // signed-in uid so a crafted id cannot reach another user's record.
+    function isOwnedByUser(recordId, uid) {
+      return recordId is string && recordId.matches('^' + uid.replace('.', '\\.') + '_.+$');
+    }
+
+    // Shape of an AES-256-GCM credential envelope: five dot-separated parts,
+    // version, key id, nonce, ciphertext, tag. Anything else is not something
+    // the vault wrote.
+    function isValidEnvelope(value) {
+      return value is string
+             && value.size() > 0
+             && value.size() <= 4096
+             && value.matches('^v1\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+$');
+    }
+
     function existing() {
       return resource.data;
     }
@@ -106,6 +122,33 @@ service cloud.firestore {
         && data.losingSignals is number
         && data.winRate is number
         && data.createdAt is string;
+    }
+
+    // ------------------------------------------------------------------
+    // CREDENTIALS (DEFENCE IN DEPTH)
+    // ------------------------------------------------------------------
+    //
+    // The server writes these through the Admin SDK, which BYPASSES these
+    // rules entirely. They exist so that if a client SDK is ever pointed at
+    // Firestore directly — or a rule is copied elsewhere — it cannot read or
+    // write another user's encrypted secrets.
+    //
+    // Document id is "<userId>_<provider>", and the body repeats `userId`, so
+    // BOTH are checked. A mismatch means the id and the content disagree,
+    // which is exactly what a crafted write would look like.
+    //
+    // The value here is an AES-256-GCM ENVELOPE ("v1.<keyId>.<nonce>…"), not
+    // a plaintext key. `isValidEnvelope` enforces the shape so a client
+    // cannot smuggle an arbitrary string into a field the server will later
+    // attempt to decrypt and report on.
+    match /credentials/{recordId} {
+      allow get, list: if isSignedIn()
+                       && isOwnedByUser(recordId, request.auth.uid)
+                       && resource.data.userId == request.auth.uid
+                       && isValidEnvelope(resource.data.envelope);
+
+      // Denied by default. The server never asks the client to write here.
+      allow create, update, delete: if false;
     }
 
     // Rules for collections

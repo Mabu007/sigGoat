@@ -2,9 +2,9 @@ import { describe, test, expect } from 'bun:test';
 import { BacktestEngine } from '../src/services/backtest/BacktestEngine';
 import { PaperMarketDataProvider, PAPER_DATA_MODE } from '../src/services/market-data/PaperMarketDataProvider';
 import { MarketDataProvider } from '../src/services/market-data/MarketDataProvider';
-import { SignalGoat, TradingSkill, Candle, MarketSymbol, MarketQuote } from '../src/types';
+import { FundGoat, TradingSkill, Candle, MarketSymbol, MarketQuote } from '../src/types';
 
-function makeGoat(): SignalGoat {
+function makeGoat(): FundGoat {
   return {
     id: 'goat_bt_1',
     userId: 'user_1',

@@ -33,11 +33,30 @@ export async function buildGoatContext(
     .map((id) => allSkills.find((s) => s.id === id))
     .filter((s): s is TradingSkill => Boolean(s));
 
-  const market = goat.markets[0] ?? 'EUR/USD';
+  /**
+   * No hardcoded fallback market. If a GOAT has no markets, there is nothing
+   * safe to quote — a stale conventional pair (e.g. US500) is not a market
+   * this venue lists, and requesting it would degrade the shared store, so the
+   * GOAT must have at least one configured market.
+   */
+  const market = goat.markets[0] ?? '';
+  if (!market) {
+    throw new NotFoundError('GOAT has no market configured');
+  }
 
   const [quote, candles] = await Promise.all([
-    deps.marketProvider.getQuote(market).catch(() => undefined),
-    deps.marketProvider.getCandles(market, '1h', 35).catch(() => []),
+    deps.marketProvider
+      .getQuote(market)
+      .catch((err) => {
+        console.warn(`[goat-context] quote for ${market} unavailable:`, err);
+        return undefined;
+      }),
+    deps.marketProvider
+      .getCandles(market, '1h', 35)
+      .catch((err) => {
+        console.warn(`[goat-context] candles for ${market} unavailable:`, err);
+        return [];
+      }),
   ]);
 
   const struct = analyzeMarketStructure(candles, quote?.mid ?? 0);

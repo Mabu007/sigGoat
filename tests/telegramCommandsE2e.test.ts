@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import express from 'express';
 import type { Server } from 'http';
 import fs from 'fs';
+import { TEST_MASTER_KEY } from './helpers/encryptionEnv';
 import os from 'os';
 import path from 'path';
 
@@ -33,6 +34,8 @@ beforeAll(async () => {
     TELEGRAM_WEBHOOK_SECRET: process.env.TELEGRAM_WEBHOOK_SECRET,
     APP_ORIGIN: process.env.APP_ORIGIN,
     DATA_DIR: process.env.DATA_DIR,
+    CREDENTIAL_ENCRYPTION_KEY: process.env.CREDENTIAL_ENCRYPTION_KEY,
+    CREDENTIAL_ENCRYPTION_KEY_ID: process.env.CREDENTIAL_ENCRYPTION_KEY_ID,
     NODE_ENV: process.env.NODE_ENV,
     FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID,
     FIREBASE_SERVICE_ACCOUNT_JSON: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
@@ -40,6 +43,9 @@ beforeAll(async () => {
   };
 
   process.env.NODE_ENV = 'test';
+  // The vault fails closed without a master key; tests must supply one.
+  process.env.CREDENTIAL_ENCRYPTION_KEY = TEST_MASTER_KEY;
+  process.env.CREDENTIAL_ENCRYPTION_KEY_ID = 'test-key';
   process.env.MARKET_DATA_PROVIDER = 'paper';
   process.env.SIGNALGOAT_ALLOW_DEV_AUTH = '1';
   process.env.DURABLE_SCHEDULER_SECRET = SCHEDULER_SECRET;

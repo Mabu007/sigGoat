@@ -202,4 +202,45 @@ Lower low broken on intermediate timeframe, signaling structural trend exhaustio
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   },
+  {
+    id: 'skill_mean_reversion',
+    userId: 'system',
+    name: 'Mean Reversion',
+    description: 'Fades extended moves back toward a statistical mean, only when the extension is objectively measurable.',
+    methodology: 'Define the mean (session VWAP proxy or 20-period SMA) and the extension threshold from ATR. Enter only when price has stretched a defined multiple of ATR away from the mean AND shows rejection evidence. Fade back toward the mean, never into an active expansion.',
+    constraints: 'REQUIRE_INVALIDATION_BEFORE_TRADE, REQUIRE_EVIDENCE_BEFORE_ACTIONABLE, LIMIT_ORDERS_ONLY',
+    preferredTimeframes: ['15m', '1h'],
+    requiredEvidence: 'Price extended at least 1.5x ATR(14) from the 20-SMA, plus a rejection candle closing back toward the mean.',
+    invalidationRules: 'A close beyond the extension extreme, or the mean itself breaking (structure shift), invalidates the reversion thesis.',
+    rawMarkdown: `---
+id: skill_mean_reversion
+name: Mean Reversion
+timeframes: 15m, 1h
+---
+
+# Mean Reversion
+
+Fade measurable extensions back toward the statistical mean.
+
+## Thesis Formation
+- Establish the mean: 20-period SMA on the tracking timeframe.
+- Measure extension in ATR units; require at least 1.5x ATR(14).
+- Only fade when a rejection candle closes back toward the mean.
+
+## Event Interpretation
+- Treat a fresh breakout with displacement as expansion, NOT extension.
+- The reversion target is the mean; do not hold through a structure break.
+
+## Constraints
+REQUIRE_INVALIDATION_BEFORE_TRADE
+REQUIRE_EVIDENCE_BEFORE_ACTIONABLE
+LIMIT_ORDERS_ONLY
+
+## Invalidation Rules
+Close beyond the extension extreme, or the mean breaking with displacement.
+`,
+    isDefault: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
 ];

@@ -53,27 +53,33 @@ const MAX_TITLE_LENGTH = 220;
  */
 const MAX_HEADLINE_AGE_MS = 3 * 24 * 60 * 60_000;
 
-/** Query terms per instrument, so the feed is actually relevant. */
+/**
+ * Query terms per instrument, so the feed is actually relevant.
+ *
+ * Keys are the VENUE's own symbol names (Hyperliquid), not conventional FX
+ * pairs from a previous provider: news is fetched for markets this app can
+ * actually serve, so BTC or xyz:GOLD rather than EUR/USD or XAU/USD.
+ */
 const MARKET_QUERIES: Record<string, string[]> = {
-  'EUR/USD': ['EUR USD euro dollar forex'],
-  'GBP/USD': ['GBP USD pound dollar forex'],
-  'USD/JPY': ['USD JPY dollar yen forex'],
-  'AUD/USD': ['AUD USD aussie dollar forex'],
-  'USD/CAD': ['USD CAD loonie forex'],
-  'USD/CHF': ['USD CHF franc forex'],
-  'NZD/USD': ['NZD USD kiwi dollar forex'],
-  'EUR/GBP': ['EUR GBP euro pound sterling forex'],
-  'EUR/JPY': ['EUR JPY euro yen forex'],
-  'GBP/JPY': ['GBP JPY sterling yen forex'],
-  'XAU/USD': ['gold price XAU USD bullion'],
-  'XAG/USD': ['silver price XAG USD'],
-  'WTI': ['WTI crude oil price'],
-  'US30': ['Dow Jones index 30'],
-  'NAS100': ['Nasdaq 100 index'],
-  'SPX500': ['S&P 500 index'],
+  BTC: ['bitcoin price', 'BTC market'],
+  ETH: ['ethereum price', 'ETH market'],
+  SOL: ['solana price', 'SOL market'],
+  XRP: ['XRP ripple price'],
+  DOGE: ['dogecoin price'],
+  BNB: ['BNB binance coin price'],
+  'XYZ:EUR': ['euro dollar EURUSD forex'],
+  'XYZ:GBP': ['pound dollar GBPUSD forex'],
+  'XYZ:JPY': ['yen dollar USDJPY forex'],
+  'XYZ:GOLD': ['gold price bullion XAU'],
+  'XYZ:SILVER': ['silver price XAG'],
+  'XYZ:CL': ['WTI crude oil price'],
+  'XYZ:BRENTOIL': ['brent crude oil price'],
+  'XYZ:NATGAS': ['natural gas price'],
+  'XYZ:JP225': ['Nikkei 225 index'],
+  'XYZ:KR200': ['KOSPI 200 index'],
 };
 
-const GENERIC_QUERY: string[] = ['forex market outlook'];
+const GENERIC_QUERY: string[] = ['market outlook'];
 
 function queriesFor(symbol: string): string[] {
   const normalised = symbol.trim().toUpperCase();
@@ -203,7 +209,7 @@ export class NewsService {
           signal: controller.signal,
           headers: {
             // Some RSS endpoints reject requests without a UA.
-            'User-Agent': 'SignalGOAT/1.0 (+market research)',
+            'User-Agent': 'FundAGoat/1.0 (+market research)',
             Accept: 'application/rss+xml, application/xml, text/xml',
           },
         });

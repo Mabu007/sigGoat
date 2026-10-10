@@ -69,10 +69,12 @@ const BASE_PRICES: Record<string, number> = {
   GER40: 19480.0,
 };
 
-const BASE_VOLATILITY: Record<MarketSymbol['category'], number> = {
+const BASE_VOLATILITY: Partial<Record<MarketSymbol['category'], number>> = {
   forex: 0.004,
+  currencies: 0.004,
   commodities: 0.012,
   indices: 0.008,
+  crypto: 0.02,
 };
 
 export function paperTimeframeToMs(tf: string): number {
@@ -168,7 +170,7 @@ function buildCandle(symbol: string, tfMs: number, barIndex: number): Candle {
 }
 
 export class PaperMarketDataProvider implements MarketDataProvider {
-  readonly name = 'BiQuote Paper';
+  readonly name = 'Paper (simulated)';
   readonly dataMode: DataMode = PAPER_DATA_MODE;
 
   private subscribers: Map<string, Set<(quote: MarketQuote) => void>> = new Map();

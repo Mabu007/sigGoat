@@ -1,7 +1,29 @@
+/**
+ * The four market categories FundAGoat presents.
+ *
+ * `currencies` and `crypto` are separate on purpose. A conventional
+ * "forex" bucket only makes sense if the provider actually lists FX pairs;
+ * Hyperliquid lists currencies as HIP-3 instruments on a specific deployer
+ * dex, so the category is named for what it contains rather than for a market
+ * convention the venue does not implement. `crypto` is the catch-all for
+ * every unclassified perpetual, which is honest — every such instrument
+ * really is a crypto asset.
+ */
 export type MarketCategory =
-  | 'forex'
+  | 'crypto'
+  | 'currencies'
   | 'commodities'
-  | 'indices';
+  | 'indices'
+  /** @deprecated Use 'currencies'. Retained so pre-existing records and tests compile. */
+  | 'forex';
+
+/** The four categories FundAGoat presents; `forex` is a legacy input alias. */
+export type CanonicalMarketCategory = Exclude<MarketCategory, 'forex'>;
+
+/** `forex` -> `currencies`. Idempotent; unknown values pass through. */
+export function normaliseMarketCategory(category: string): MarketCategory {
+  return category === 'forex' ? 'currencies' : (category as MarketCategory);
+}
 
 /**
  * Where market data came from.
@@ -67,6 +89,49 @@ export interface MarketQuote {
 
   /** Seconds since the provider's last actual quote. */
   quoteAgeSeconds?: number;
+
+  /* ---------------------------------------------------------------- */
+  /* PROVIDER-AVAILABILITY FLAGS                                       */
+  /* ---------------------------------------------------------------- */
+  /*
+   * The numeric fields above are REQUIRED by this interface, which predates
+   * any provider that could leave them empty. Hyperliquid genuinely does not
+   * publish a 24h high/low, and a coin with an empty book has no bid or ask.
+   *
+   * Filling those with 0 would be a lie that also defeats the signal gate: a
+   * zero spread reads as "perfectly tight", so every trade would pass a
+   * `SPREAD_UNDER_x_PIPS` check on a market with no quote at all.
+   *
+   * So the numbers stay 0 for compatibility and these flags say whether the
+   * value is REAL. Consumers must branch on the flag, not the number.
+   */
+
+  /** `bid`/`ask` came from the provider rather than defaulting to 0. */
+  bidProvided?: boolean;
+  askProvided?: boolean;
+  /** `change24h` is derived from a real reference price. */
+  change24hProvided?: boolean;
+  /** Hyperliquid publishes no 24h high/low; always false today. */
+  high24hProvided?: boolean;
+  low24hProvided?: boolean;
+
+  /** Why a quote is missing, when it is. */
+  unavailableReason?: string;
+
+  /* Provider extras, present when the source supplies them. */
+  /** 24h notional volume in quote currency. */
+  volume24h?: number;
+  openInterest?: number;
+  fundingRate?: number;
+  /** 'native' for first-party perps, 'hip3' for deployer markets. */
+  deployment?: string;
+  category?: MarketCategory;
+  /** Which perp dex this market came from. '' is the default dex. */
+  dex?: string;
+  szDecimals?: number;
+  maxLeverage?: number;
+  /** A member of the polled default universe. */
+  tracked?: boolean;
 }
 
 /**
@@ -299,7 +364,7 @@ export interface TradingSkill {
   updatedAt: string;
 }
 
-export interface SignalGoat {
+export interface FundGoat {
   id: string;
   userId: string;
   name: string;
@@ -470,6 +535,20 @@ export interface TradeSignal {
     | 'INVALIDATED'
     | 'EXPIRED'
     | 'NO_TRADE';
+
+  /**
+   * The user's final decision on this proposal, once made.
+   *
+   * Separate from `status`, which describes the SIGNAL's lifecycle — a user
+   * rejecting an actionable proposal does not make the setup "invalidated",
+   * it records a human decision about it. Persisted so web and Telegram see
+   * the same finalised state, and write-once: a second decision on a finalised
+   * proposal is refused rather than overwriting the first.
+   */
+  decision?: 'ACCEPTED' | 'REJECTED';
+  decidedAt?: string;
+  /** Optional user-supplied note attached to the decision. */
+  decisionNote?: string;
 
   updatedAt: string;
 }

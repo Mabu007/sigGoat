@@ -6,10 +6,10 @@
  * THE PROBLEM THIS SOLVES
  *
  * Before this, every GOAT opened its own subscription to the market provider.
- * Ten GOATs watching EUR/USD meant ten poll loops, ten request bursts every
- * five seconds and ten independent failure modes — and each one silently kept
- * its own private copy of the candle window, which is the storage growth the
- * storage policy exists to prevent.
+ * Ten GOATs watching the same instrument meant ten poll loops, ten request
+ * bursts every five seconds and ten independent failure modes — and each one
+ * silently kept its own private copy of the candle window, which is the
+ * storage growth the storage policy exists to prevent.
  *
  * Now there is exactly one ingestion loop per INSTRUMENT, owned by a partition.
  * GOATs subscribe; they never poll. Two GOATs on the same pair cost one fetch.
@@ -156,10 +156,10 @@ export class MarketIngestionService {
    * partition -> (subscriberId + instrument) -> subscription.
    *
    * The key is COMPOSITE, and it has to be. A single GOAT commonly watches
-   * several instruments in the same class (EUR/USD, GBP/USD and USD/JPY are all
-   * FX). Keying on the subscriber alone made the second registration overwrite
-   * the first, silently dropping an instrument the GOAT was watching — the
-   * events for it would never be routed.
+   * several instruments in the same class (e.g. xyz:EUR, xyz:GBP and xyz:JPY
+   * are all FX). Keying on the subscriber alone made the second registration
+   * overwrite the first, silently dropping an instrument the GOAT was
+   * watching — the events for it would never be routed.
    */
   private readonly subscriptions = new Map<
     PartitionKey,

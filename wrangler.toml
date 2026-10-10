@@ -1,4 +1,4 @@
-# Cloudflare Durable Object runtime for SignalGOAT.
+# Cloudflare Durable Object runtime for FundAGoat.
 #
 # One Worker, two unrelated Durable Object classes, two independent
 # lifecycles. They are deployed together because they share one secret and

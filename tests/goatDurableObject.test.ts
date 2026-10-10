@@ -4,9 +4,9 @@ import type { ReasoningGateway } from '../src/server/reasoningGateway';
 import { PaperMarketDataProvider } from '../src/services/market-data/PaperMarketDataProvider';
 import { InMemoryPersistence } from '../src/server/repositories';
 import { ReasoningValidationError, parseReasoningResult } from '../src/services/agent/contracts';
-import { SignalGoat, TradingSkill } from '../src/types';
+import { FundGoat, TradingSkill } from '../src/types';
 
-function makeGoat(): SignalGoat {
+function makeGoat(): FundGoat {
   return {
     id: 'goat_test_1',
     userId: 'user_1',

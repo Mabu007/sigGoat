@@ -4,16 +4,17 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { createApp } from './src/server/app';
+import { createViteGuard } from './src/server/devViteGuard';
 import { appPersistence, restoreRuntimes, seedDefaultSkills } from './src/server/apiRouter';
 import { durableObjectRegistry } from './src/services/durable-object/DurableObjectRegistry';
-import { biQuoteProvider } from './src/services/market-data/BiQuoteMarketDataProvider';
+import { hyperliquidProvider } from './src/services/market-data/hyperliquid/HyperliquidMarketDataProvider';
 import { marketStateStore } from './src/server/apiRouter';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function logStartup(mode: string): void {
   console.log('');
-  console.log('  SignalGOAT starting up');
+  console.log('  FundAGoat starting up');
   console.log(`  Persistence mode: ${appPersistence.mode}`);
   console.log(`  Auth mode: see GET /api/settings/status`);
   console.log(`  Market data: PAPER (deterministic simulated feed — not live prices)`);
@@ -35,7 +36,20 @@ async function startServer() {
     });
 
     const app = createApp({ serveStatic: false });
-    app.use(vite.middlewares);
+
+    /**
+     * VITE MIDDLEWARE IS MOUNTED BEHIND A GUARD, NOT DIRECTLY.
+     *
+     * See `src/server/devViteGuard.ts` for the full rationale: Vite must
+     * never see an `/api` request, or its CORS middleware can write headers
+     * onto a response the API already committed (ERR_HTTP_HEADERS_SENT).
+     * The guard is extracted so the invariant is regression-tested.
+     */
+    app.use(
+      createViteGuard(
+        vite.middlewares as unknown as Parameters<typeof createViteGuard>[0],
+      ),
+    );
 
     await listen(app, PORT);
     return;
@@ -63,7 +77,7 @@ async function listen(app: ReturnType<typeof createApp>, port: number) {
       goat.destroy();
     }
     // Stop every market-data polling loop (provider + shared state store).
-    biQuoteProvider.stopTicks();
+    hyperliquidProvider.stopTicks();
     marketStateStore.stop();
     server.close(() => {
       console.log('[server] HTTP server closed.');
@@ -78,6 +92,6 @@ async function listen(app: ReturnType<typeof createApp>, port: number) {
 }
 
 startServer().catch((err) => {
-  console.error('Failed to start SignalGOAT server:', err);
+  console.error('Failed to start FundAGoat server:', err);
   process.exit(1);
 });

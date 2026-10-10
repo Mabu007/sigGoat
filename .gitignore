@@ -30,6 +30,7 @@ coverage/
 # `<project>-firebase-adminsdk-<id>.json`, which the previous patterns missed.
 firebase-service-account.json
 *-service-account*.json
+service-account.json
 *-firebase-adminsdk-*.json
 firebase-adminsdk-*.json
 

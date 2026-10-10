@@ -7,9 +7,9 @@ import { durableObjectRegistry } from '../src/services/durable-object/DurableObj
 import type { ReasoningGateway } from '../src/server/reasoningGateway';
 import { PaperMarketDataProvider } from '../src/services/market-data/PaperMarketDataProvider';
 import { InMemoryPersistence } from '../src/server/repositories';
-import { SignalGoat, TradingSkill } from '../src/types';
+import { FundGoat, TradingSkill } from '../src/types';
 
-function makeGoat(id: string): SignalGoat {
+function makeGoat(id: string): FundGoat {
   return {
     id,
     userId: 'user_sched',

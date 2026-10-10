@@ -12,7 +12,7 @@ import {
   DataMode,
   GoatRuntimeState,
   GoatSchedule,
-  SignalGoat,
+  FundGoat,
   TradingSkill,
 } from '../types';
 
@@ -42,7 +42,7 @@ export interface CreateSkillInput {
   rawMarkdown?: string;
 }
 
-interface GoatWithRuntimeState extends SignalGoat {
+interface GoatWithRuntimeState extends FundGoat {
   runtimeState?: GoatRuntimeState | null;
 }
 
@@ -52,7 +52,7 @@ interface GoatsResponse {
 }
 
 interface GoatResponse {
-  goat: SignalGoat;
+  goat: FundGoat;
   runtimeState?: GoatRuntimeState | null;
   dataMode?: DataMode;
 }
@@ -73,15 +73,15 @@ interface WakeResponse {
 }
 
 interface StatusResponse {
-  goat: SignalGoat;
-  status: SignalGoat['status'];
+  goat: FundGoat;
+  status: FundGoat['status'];
   runtimeState?: GoatRuntimeState;
   schedule?: GoatSchedule;
   dataMode?: DataMode;
 }
 
 interface ScheduleResponse {
-  goat: SignalGoat;
+  goat: FundGoat;
   schedule: GoatSchedule;
   dataMode?: DataMode;
 }
@@ -106,8 +106,8 @@ interface ApiErrorBody {
 /* -------------------------------------------------------------------------- */
 
 interface GoatContextType {
-  goats: SignalGoat[];
-  activeGoat: SignalGoat | null;
+  goats: FundGoat[];
+  activeGoat: FundGoat | null;
   activeGoatId: string;
   activeGoatState: GoatRuntimeState | null;
 
@@ -121,13 +121,13 @@ interface GoatContextType {
 
   setActiveGoatId: (id: string) => void;
 
-  createGoat: (data: CreateGoatInput) => Promise<SignalGoat>;
+  createGoat: (data: CreateGoatInput) => Promise<FundGoat>;
 
   /** Stop ("PAUSE") or resume ("PLAY") a GOAT's runtime. */
   setGoatStatus: (
     goatId: string,
     action: 'PAUSE' | 'PLAY'
-  ) => Promise<SignalGoat>;
+  ) => Promise<FundGoat>;
 
   /** Permanently remove a GOAT and its runtime. */
   deleteGoat: (goatId: string) => Promise<void>;
@@ -334,7 +334,7 @@ export const GoatProvider: React.FC<{
     getApiAuthHeaders,
   } = useAuth();
 
-  const [goats, setGoats] = useState<SignalGoat[]>([]);
+  const [goats, setGoats] = useState<FundGoat[]>([]);
   const [activeGoatId, setActiveGoatIdState] = useState('');
   const [activeGoatState, setActiveGoatState] =
     useState<GoatRuntimeState | null>(null);
@@ -855,7 +855,7 @@ export const GoatProvider: React.FC<{
   const createGoat = useCallback(
     async (
       input: CreateGoatInput
-    ): Promise<SignalGoat> => {
+    ): Promise<FundGoat> => {
       const name = requireNonEmpty(
         input.name,
         'GOAT name'
@@ -954,7 +954,7 @@ export const GoatProvider: React.FC<{
       } catch (requestError) {
         setRequestError(
           requestError,
-          'Failed to create SignalGOAT.'
+          'Failed to create FundAGoat.'
         );
 
         throw requestError;
@@ -990,7 +990,7 @@ export const GoatProvider: React.FC<{
     async (
       goatId: string,
       action: 'PAUSE' | 'PLAY'
-    ): Promise<SignalGoat> => {
+    ): Promise<FundGoat> => {
       const id = goatId.trim();
 
       if (!id) {

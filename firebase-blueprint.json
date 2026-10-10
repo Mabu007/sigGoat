@@ -16,9 +16,9 @@
       },
       "required": ["id", "email", "createdAt", "updatedAt"]
     },
-    "SignalGoat": {
-      "title": "SignalGoat",
-      "description": "User created AI Signal GOAT agent definition and runtime configuration",
+    "FundGoat": {
+      "title": "FundGoat",
+      "description": "User created AI FundAGoat agent definition and runtime configuration",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
@@ -59,7 +59,7 @@
     },
     "MarketThesis": {
       "title": "MarketThesis",
-      "description": "An active or historical structured thesis formed by a Signal GOAT",
+      "description": "An active or historical structured thesis formed by a FundAGoat",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
@@ -108,7 +108,7 @@
     },
     "BacktestRecord": {
       "title": "BacktestRecord",
-      "description": "Historical backtest result generated for a SignalGOAT configuration",
+      "description": "Historical backtest result generated for a FundAGoat configuration",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
@@ -136,8 +136,8 @@
       "description": "User profile and notification settings"
     },
     "/users/{userId}/goats/{goatId}": {
-      "schema": { "$ref": "SignalGoat" },
-      "description": "SignalGOAT agent configurations belonging to a user"
+      "schema": { "$ref": "FundGoat" },
+      "description": "FundAGoat agent configurations belonging to a user"
     },
     "/users/{userId}/skills/{skillId}": {
       "schema": { "$ref": "TradingSkill" },

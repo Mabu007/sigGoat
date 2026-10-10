@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useGoat } from '../../context/GoatContext';
 import { useAuth } from '../../context/AuthContext';
 import { useMarket } from '../../context/MarketContext';
@@ -26,7 +26,20 @@ export const BacktestView: React.FC = () => {
   const [selectedGoatId, setSelectedGoatId] = useState<string>(
     activeGoat?.id || goats[0]?.id || ''
   );
-  const [selectedMarket, setSelectedMarket] = useState<string>('EUR/USD');
+
+  const [selectedMarket, setSelectedMarket] = useState<string>('');
+
+  // Keep the selection valid as the catalogue and GOAT list load.
+  useEffect(() => {
+    if (selectedMarket) return;
+    // The GOAT's own market is resolved from the goat list, falling back to
+    // the first listed symbol. It used to be hardcoded to a conventional FX
+    // pair the current venue does not list.
+    const fallback =
+      (goats.find(g => g.id === selectedGoatId) || goats[0])?.markets[0] ??
+      symbols[0]?.symbol;
+    if (fallback) setSelectedMarket(fallback);
+  }, [selectedMarket, selectedGoatId, goats, symbols]);
   const [selectedPeriod, setSelectedPeriod] =
     useState<'24h' | '7d' | '30d' | '90d'>('7d');
   const [startingBalance, setStartingBalance] = useState<number>(10000);
@@ -104,16 +117,16 @@ export const BacktestView: React.FC = () => {
       {/* HEADER */}
       <div>
         <div className="flex items-center gap-2">
-          <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-            <History className="w-4 h-4 text-amber-400" />
+          <div className="w-9 h-9 rounded-xl bg-accent-soft border border-accent/30 flex items-center justify-center">
+            <History className="w-4 h-4 text-accent-text" />
           </div>
 
           <div>
-            <h1 className="text-lg font-bold text-slate-100">
+            <h1 className="text-lg font-bold text-fg">
               Backtest your GOAT
             </h1>
 
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="text-xs text-fg-muted mt-0.5">
               Replay your GOAT's signals against historical market conditions.
             </p>
           </div>
@@ -121,13 +134,13 @@ export const BacktestView: React.FC = () => {
       </div>
 
       {/* CONFIGURATION */}
-      <section className="bg-[#0c0f17] border border-slate-800 rounded-2xl p-4 sm:p-5">
+      <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5">
         <div className="mb-4">
-          <h2 className="text-sm font-semibold text-slate-100">
+          <h2 className="text-sm font-semibold text-fg">
             Backtest setup
           </h2>
 
-          <p className="text-[11px] text-slate-500 mt-1">
+          <p className="text-[11px] text-fg-subtle mt-1">
             Choose a GOAT, market, period and starting balance.
           </p>
         </div>
@@ -135,14 +148,14 @@ export const BacktestView: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {/* GOAT */}
           <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1.5">
+            <label className="block text-[11px] font-semibold text-fg-muted mb-1.5">
               GOAT
             </label>
 
             <select
               value={selectedGoatId}
               onChange={e => setSelectedGoatId(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-amber-500/50"
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2.5 text-sm text-fg focus:outline-none focus:border-focus"
             >
               {goats.length === 0 && (
                 <option value="">No GOATs available</option>
@@ -158,14 +171,14 @@ export const BacktestView: React.FC = () => {
 
           {/* MARKET */}
           <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1.5">
+            <label className="block text-[11px] font-semibold text-fg-muted mb-1.5">
               Market
             </label>
 
             <select
               value={selectedMarket}
               onChange={e => setSelectedMarket(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-amber-500/50"
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2.5 text-sm text-fg focus:outline-none focus:border-focus"
             >
               {symbols.map(symbol => (
                 <option key={symbol.symbol} value={symbol.symbol}>
@@ -177,11 +190,11 @@ export const BacktestView: React.FC = () => {
 
           {/* PERIOD */}
           <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1.5">
+            <label className="block text-[11px] font-semibold text-fg-muted mb-1.5">
               Historical period
             </label>
 
-            <div className="grid grid-cols-4 gap-1 bg-slate-900 border border-slate-800 p-1 rounded-xl">
+            <div className="grid grid-cols-4 gap-1 bg-sunken border border-line p-1 rounded-xl">
               {(['24h', '7d', '30d', '90d'] as const).map(period => (
                 <button
                   key={period}
@@ -189,8 +202,8 @@ export const BacktestView: React.FC = () => {
                   onClick={() => setSelectedPeriod(period)}
                   className={`py-2 rounded-lg text-xs font-semibold transition-colors ${
                     selectedPeriod === period
-                      ? 'bg-amber-500 text-slate-950'
-                      : 'text-slate-400 hover:text-slate-200'
+                      ? 'bg-accent text-accent-fg'
+                      : 'text-fg-muted hover:text-fg'
                   }`}
                 >
                   {period}
@@ -201,7 +214,7 @@ export const BacktestView: React.FC = () => {
 
           {/* BALANCE */}
           <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1.5">
+            <label className="block text-[11px] font-semibold text-fg-muted mb-1.5">
               Starting balance
             </label>
 
@@ -212,13 +225,13 @@ export const BacktestView: React.FC = () => {
               onChange={e =>
                 setStartingBalance(Number(e.target.value) || 10000)
               }
-              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 font-mono focus:outline-none focus:border-amber-500/50"
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2.5 text-sm text-fg font-mono focus:outline-none focus:border-focus"
             />
           </div>
         </div>
 
         {errorMsg && (
-          <div className="mt-4 flex items-start gap-2 text-xs bg-rose-500/10 border border-rose-500/30 text-rose-300 p-3 rounded-xl">
+          <div className="mt-4 flex items-start gap-2 text-xs bg-negative-soft border border-negative/40 text-negative p-3 rounded-xl">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <span>{errorMsg}</span>
           </div>
@@ -228,7 +241,7 @@ export const BacktestView: React.FC = () => {
           <button
             onClick={handleRunBacktest}
             disabled={isRunning || !currentGoat}
-            className="w-full sm:w-auto flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-bold text-sm py-2.5 px-6 rounded-xl transition-colors shadow-md"
+            className="w-full sm:w-auto flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-accent-fg font-bold text-sm py-2.5 px-6 rounded-xl transition-colors shadow-md"
           >
             {isRunning ? (
               <>
@@ -243,7 +256,7 @@ export const BacktestView: React.FC = () => {
             )}
           </button>
 
-          <span className="text-[10px] text-slate-500">
+          <span className="text-[10px] text-fg-subtle">
             Historical replay uses only information available at each point in time.
           </span>
         </div>
@@ -251,16 +264,16 @@ export const BacktestView: React.FC = () => {
 
       {/* EMPTY STATE */}
       {!result && !isRunning && (
-        <section className="bg-slate-900/40 border border-slate-800 rounded-2xl p-8 sm:p-12 text-center">
-          <div className="w-12 h-12 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-            <Activity className="w-5 h-5 text-amber-400" />
+        <section className="bg-sunken/40 border border-line rounded-2xl p-8 sm:p-12 text-center">
+          <div className="w-12 h-12 mx-auto rounded-2xl bg-accent-soft border border-accent/30 flex items-center justify-center">
+            <Activity className="w-5 h-5 text-accent-text" />
           </div>
 
-          <h2 className="text-sm font-bold text-slate-200 mt-4">
+          <h2 className="text-sm font-bold text-fg mt-4">
             See how your GOAT would have performed
           </h2>
 
-          <p className="text-xs text-slate-500 max-w-md mx-auto mt-1.5">
+          <p className="text-xs text-fg-subtle max-w-md mx-auto mt-1.5">
             Run a historical replay to see the signals your GOAT generated,
             which setups filled, and how the strategy performed over time.
           </p>
@@ -273,20 +286,20 @@ export const BacktestView: React.FC = () => {
           {/* RESULT HEADER */}
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
             <div>
-              <p className="text-[10px] uppercase tracking-wider font-bold text-amber-400 flex items-center gap-2">
+              <p className="text-[10px] uppercase tracking-wider font-bold text-accent-text flex items-center gap-2">
                 Backtest results
                 {result.dataSource === 'PAPER' && (
-                  <span className="text-[10px] font-mono normal-case px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300">
+                  <span className="text-[10px] font-mono normal-case px-2 py-0.5 rounded bg-accent-soft border border-accent/40 text-accent-text">
                     PAPER DATA · simulated feed
                   </span>
                 )}
               </p>
 
-              <h2 className="text-base font-bold text-slate-100 mt-1">
+              <h2 className="text-base font-bold text-fg mt-1">
                 {currentGoat?.name || 'GOAT'} · {selectedMarket}
               </h2>
 
-              <p className="text-[11px] text-slate-500 mt-0.5">
+              <p className="text-[11px] text-fg-subtle mt-0.5">
                 {selectedPeriod} historical replay · Starting balance{' '}
                 {formatMoney(startingBalance)}
               </p>
@@ -310,7 +323,7 @@ export const BacktestView: React.FC = () => {
             <MetricCard
               label="Win Rate"
               value={`${result.winRate}%`}
-              valueClass="text-emerald-400"
+              valueClass="text-positive"
             />
 
             <MetricCard
@@ -320,38 +333,38 @@ export const BacktestView: React.FC = () => {
               )}`}
               valueClass={
                 result.netDollarPnl >= 0
-                  ? 'text-emerald-400'
-                  : 'text-rose-400'
+                  ? 'text-positive'
+                  : 'text-negative'
               }
             />
 
             <MetricCard
               label="Profit Factor"
               value={String(result.profitFactor)}
-              valueClass="text-amber-300"
+              valueClass="text-accent-text"
             />
 
             <MetricCard
               label="Max Drawdown"
               value={`-${result.maxDrawdown}%`}
-              valueClass="text-rose-400"
+              valueClass="text-negative"
             />
           </div>
 
           {/* SIGNAL RESULTS */}
-          <section className="bg-[#0c0f17] border border-slate-800 rounded-2xl p-4 sm:p-5">
-            <div className="flex items-start justify-between gap-3 border-b border-slate-800/80 pb-3">
+          <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5">
+            <div className="flex items-start justify-between gap-3 border-b border-line pb-3">
               <div>
-                <h3 className="text-sm font-bold text-slate-200">
+                <h3 className="text-sm font-bold text-fg">
                   Signal results
                 </h3>
 
-                <p className="text-[10px] text-slate-500 mt-0.5">
+                <p className="text-[10px] text-fg-subtle mt-0.5">
                   What happened to the setups your GOAT identified.
                 </p>
               </div>
 
-              <span className="text-[10px] font-mono text-slate-500 whitespace-nowrap">
+              <span className="text-[10px] font-mono text-fg-subtle whitespace-nowrap">
                 {result.totalSignals} found
               </span>
             </div>
@@ -390,19 +403,19 @@ export const BacktestView: React.FC = () => {
           </section>
 
           {/* EQUITY CURVE */}
-          <section className="bg-[#0c0f17] border border-slate-800 rounded-2xl p-4 sm:p-5">
+          <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
               <div>
-                <h3 className="text-sm font-bold text-slate-200">
+                <h3 className="text-sm font-bold text-fg">
                   Equity curve
                 </h3>
 
-                <p className="text-[10px] text-slate-500 mt-0.5">
+                <p className="text-[10px] text-fg-subtle mt-0.5">
                   Simulated balance over the backtest period.
                 </p>
               </div>
 
-              <div className="text-xs font-mono font-bold text-amber-400">
+              <div className="text-xs font-mono font-bold text-accent-text">
                 Final:{' '}
                 {formatMoney(
                   equityPoints[equityPoints.length - 1]?.equity ??
@@ -411,7 +424,7 @@ export const BacktestView: React.FC = () => {
               </div>
             </div>
 
-            <div className="w-full h-[180px] bg-slate-950/70 rounded-xl border border-slate-800/80 p-2 overflow-hidden">
+            <div className="w-full h-[180px] bg-sunken rounded-xl border border-line p-2 overflow-hidden">
               <svg
                 viewBox={`0 0 ${chartWidth} ${chartHeight}`}
                 className="w-full h-full"
@@ -424,7 +437,7 @@ export const BacktestView: React.FC = () => {
                   y1={getEquityY(startingBalance)}
                   x2={chartWidth}
                   y2={getEquityY(startingBalance)}
-                  stroke="#334155"
+                  stroke="var(--color-line-strong)"
                   strokeDasharray="4 4"
                   strokeWidth="1"
                 />
@@ -432,7 +445,7 @@ export const BacktestView: React.FC = () => {
                 {equityPoints.length > 0 && (
                   <polyline
                     fill="none"
-                    stroke="#f59e0b"
+                    stroke="var(--color-accent-text)"
                     strokeWidth="2.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -454,7 +467,7 @@ export const BacktestView: React.FC = () => {
               </svg>
             </div>
 
-            <div className="flex justify-between text-[9px] text-slate-600 font-mono mt-1">
+            <div className="flex justify-between text-[9px] text-fg-subtle font-mono mt-1">
               <span>Start</span>
               <span>Time</span>
               <span>End</span>
@@ -462,26 +475,26 @@ export const BacktestView: React.FC = () => {
           </section>
 
           {/* TRADE HISTORY */}
-          <section className="bg-[#0c0f17] border border-slate-800 rounded-2xl p-4 sm:p-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-slate-800/80 pb-3">
+          <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-line pb-3">
               <div>
-                <h3 className="text-sm font-bold text-slate-200">
+                <h3 className="text-sm font-bold text-fg">
                   Signal history
                 </h3>
 
-                <p className="text-[10px] text-slate-500 mt-0.5">
+                <p className="text-[10px] text-fg-subtle mt-0.5">
                   Select a signal to inspect the setup and outcome.
                 </p>
               </div>
 
-              <span className="text-[10px] text-slate-500">
+              <span className="text-[10px] text-fg-subtle">
                 {result.trades.length} records
               </span>
             </div>
 
             <div className="space-y-2 mt-3">
               {result.trades.length === 0 ? (
-                <div className="py-8 text-center text-xs text-slate-500">
+                <div className="py-8 text-center text-xs text-fg-subtle">
                   No signals were generated during this period.
                 </div>
               ) : (
@@ -490,7 +503,7 @@ export const BacktestView: React.FC = () => {
                     key={trade.id}
                     type="button"
                     onClick={() => setInspectedTrade(trade)}
-                    className="w-full text-left flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-amber-500/40 transition-colors cursor-pointer"
+                    className="w-full text-left flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl bg-sunken/60 hover:bg-sunken border border-line hover:border-accent/40 transition-colors cursor-pointer"
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -499,29 +512,29 @@ export const BacktestView: React.FC = () => {
                           direction={trade.direction}
                         />
 
-                        <span className="text-[10px] font-mono text-slate-500">
+                        <span className="text-[10px] font-mono text-fg-subtle">
                           R:R 1:{trade.riskReward}
                         </span>
                       </div>
 
-                      <div className="text-xs font-mono text-slate-300 mt-1.5">
+                      <div className="text-xs font-mono text-fg-muted mt-1.5">
                         Entry{' '}
-                        <strong className="text-slate-100">
+                        <strong className="text-fg">
                           {trade.plannedEntry}
                         </strong>
-                        <span className="text-slate-600 mx-1.5">·</span>
+                        <span className="text-fg-subtle mx-1.5">·</span>
                         SL{' '}
-                        <span className="text-rose-400">
+                        <span className="text-negative">
                           {trade.stopLoss}
                         </span>
-                        <span className="text-slate-600 mx-1.5">·</span>
+                        <span className="text-fg-subtle mx-1.5">·</span>
                         TP{' '}
-                        <span className="text-emerald-400">
+                        <span className="text-positive">
                           {trade.takeProfit}
                         </span>
                       </div>
 
-                      <p className="text-[10px] text-slate-500 mt-1 line-clamp-1">
+                      <p className="text-[10px] text-fg-subtle mt-1 line-clamp-1">
                         {trade.thesis}
                       </p>
                     </div>
@@ -532,7 +545,7 @@ export const BacktestView: React.FC = () => {
                         pnlPips={trade.pnlPips}
                       />
 
-                      <ChevronRight className="w-4 h-4 text-slate-600" />
+                      <ChevronRight className="w-4 h-4 text-fg-subtle" />
                     </div>
                   </button>
                 ))
@@ -541,12 +554,12 @@ export const BacktestView: React.FC = () => {
           </section>
 
           {/* METHODOLOGY */}
-          <details className="bg-slate-900/30 border border-slate-800 rounded-2xl">
-            <summary className="cursor-pointer list-none px-4 py-3 text-xs font-semibold text-slate-300">
+          <details className="bg-sunken/30 border border-line rounded-2xl">
+            <summary className="cursor-pointer list-none px-4 py-3 text-xs font-semibold text-fg-muted">
               How this backtest works
             </summary>
 
-            <div className="px-4 pb-4 text-[11px] leading-relaxed text-slate-500 space-y-2">
+            <div className="px-4 pb-4 text-[11px] leading-relaxed text-fg-subtle space-y-2">
               <p>
                 The replay advances through historical market data in
                 chronological order. At each point, your GOAT only receives
@@ -578,18 +591,18 @@ export const BacktestView: React.FC = () => {
             }
           }}
         >
-          <div className="bg-[#0c0f17] border border-slate-800 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5">
-            <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
+          <div className="bg-surface border border-line rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5">
+            <div className="flex items-start justify-between gap-3 border-b border-line pb-3">
               <div>
                 <div className="flex items-center gap-2">
-                  <Target className="w-4 h-4 text-amber-400" />
+                  <Target className="w-4 h-4 text-accent-text" />
 
-                  <h3 className="text-sm font-bold text-slate-100">
+                  <h3 className="text-sm font-bold text-fg">
                     Signal details
                   </h3>
                 </div>
 
-                <p className="text-[10px] text-slate-500 mt-1">
+                <p className="text-[10px] text-fg-subtle mt-1">
                   Historical replay at the moment this signal was generated.
                 </p>
               </div>
@@ -597,7 +610,7 @@ export const BacktestView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setInspectedTrade(null)}
-                className="text-slate-500 hover:text-slate-200 p-1 rounded-lg"
+                className="text-fg-subtle hover:text-fg p-1 rounded-lg"
                 aria-label="Close signal details"
               >
                 <X className="w-4 h-4" />
@@ -620,11 +633,11 @@ export const BacktestView: React.FC = () => {
 
               {/* THESIS */}
               <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle block">
                   GOAT thesis
                 </span>
 
-                <p className="text-sm text-slate-200 font-medium mt-1 leading-relaxed">
+                <p className="text-sm text-fg font-medium mt-1 leading-relaxed">
                   {inspectedTrade.thesis}
                 </p>
               </div>
@@ -639,13 +652,13 @@ export const BacktestView: React.FC = () => {
                 <DetailValue
                   label="Invalidation"
                   value={inspectedTrade.stopLoss}
-                  valueClass="text-rose-400"
+                  valueClass="text-negative"
                 />
 
                 <DetailValue
                   label="Target"
                   value={inspectedTrade.takeProfit}
-                  valueClass="text-emerald-400"
+                  valueClass="text-positive"
                 />
               </div>
 
@@ -670,17 +683,17 @@ export const BacktestView: React.FC = () => {
               {inspectedTrade.executionPath &&
                 inspectedTrade.executionPath.length > 0 && (
                   <div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle block mb-1.5">
                       What happened
                     </span>
 
-                    <div className="space-y-1.5 bg-slate-900/70 p-3 rounded-xl border border-slate-800">
+                    <div className="space-y-1.5 bg-sunken/70 p-3 rounded-xl border border-line">
                       {inspectedTrade.executionPath.map((step, index) => (
                         <div
                           key={index}
-                          className="flex items-start gap-2 text-[11px] text-slate-300"
+                          className="flex items-start gap-2 text-[11px] text-fg-muted"
                         >
-                          <span className="text-amber-400 mt-0.5">•</span>
+                          <span className="text-accent-text mt-0.5">•</span>
                           <span>{step}</span>
                         </div>
                       ))}
@@ -689,11 +702,11 @@ export const BacktestView: React.FC = () => {
                 )}
             </div>
 
-            <div className="pt-4 mt-4 border-t border-slate-800 flex justify-end">
+            <div className="pt-4 mt-4 border-t border-line flex justify-end">
               <button
                 type="button"
                 onClick={() => setInspectedTrade(null)}
-                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-semibold rounded-xl transition-colors"
+                className="px-4 py-2 bg-sunken hover:bg-raised text-fg text-xs font-semibold rounded-xl transition-colors"
               >
                 Close
               </button>
@@ -719,11 +732,11 @@ interface MetricCardProps {
 const MetricCard: React.FC<MetricCardProps> = ({
   label,
   value,
-  valueClass = 'text-slate-100',
+  valueClass = 'text-fg',
   icon,
 }) => (
-  <div className="bg-[#0c0f17] border border-slate-800 rounded-2xl p-3.5">
-    <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+  <div className="bg-surface border border-line rounded-2xl p-3.5">
+    <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-fg-subtle font-semibold">
       {icon}
       {label}
     </div>
@@ -749,21 +762,21 @@ const ResultStat: React.FC<ResultStatProps> = ({
   icon,
   compact,
 }) => (
-  <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800">
-    <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase text-slate-500">
+  <div className="p-3 bg-sunken/60 rounded-xl border border-line">
+    <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase text-fg-subtle">
       {icon}
       {label}
     </div>
 
     <div
       className={`font-bold font-mono mt-1 ${
-        compact ? 'text-sm text-slate-200' : 'text-base text-slate-100'
+        compact ? 'text-sm text-fg' : 'text-base text-fg'
       }`}
     >
       {value}
     </div>
 
-    <p className="text-[10px] text-slate-500 mt-0.5">
+    <p className="text-[10px] text-fg-subtle mt-0.5">
       {description}
     </p>
   </div>
@@ -784,8 +797,8 @@ const SignalTypeBadge: React.FC<SignalTypeBadgeProps> = ({
     <span
       className={`inline-flex items-center gap-1 font-bold font-mono text-[10px] px-2 py-1 rounded-lg border ${
         isLong
-          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-          : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+          ? 'bg-positive-soft text-positive border-positive/30'
+          : 'bg-negative-soft text-negative border-negative/30'
       }`}
     >
       {isLong ? (
@@ -810,7 +823,7 @@ const OutcomeBadge: React.FC<OutcomeBadgeProps> = ({
 }) => {
   if (outcome === 'WIN') {
     return (
-      <span className="font-mono font-bold text-[10px] px-2 py-1 rounded-lg bg-emerald-500/10 text-emerald-400">
+      <span className="font-mono font-bold text-[10px] px-2 py-1 rounded-lg bg-positive-soft text-positive">
         WIN · +{pnlPips}p
       </span>
     );
@@ -818,7 +831,7 @@ const OutcomeBadge: React.FC<OutcomeBadgeProps> = ({
 
   if (outcome === 'LOSS') {
     return (
-      <span className="font-mono font-bold text-[10px] px-2 py-1 rounded-lg bg-rose-500/10 text-rose-400">
+      <span className="font-mono font-bold text-[10px] px-2 py-1 rounded-lg bg-negative-soft text-negative">
         LOSS · {pnlPips}p
       </span>
     );
@@ -826,14 +839,14 @@ const OutcomeBadge: React.FC<OutcomeBadgeProps> = ({
 
   if (outcome === 'INVALIDATED_BEFORE_FILL') {
     return (
-      <span className="font-mono font-bold text-[10px] px-2 py-1 rounded-lg bg-amber-500/10 text-amber-400">
+      <span className="font-mono font-bold text-[10px] px-2 py-1 rounded-lg bg-accent-soft text-accent-text">
         INVALIDATED
       </span>
     );
   }
 
   return (
-    <span className="font-mono font-bold text-[10px] px-2 py-1 rounded-lg bg-slate-800 text-slate-400">
+    <span className="font-mono font-bold text-[10px] px-2 py-1 rounded-lg bg-raised text-fg-muted">
       EXPIRED
     </span>
   );
@@ -848,10 +861,10 @@ interface DetailValueProps {
 const DetailValue: React.FC<DetailValueProps> = ({
   label,
   value,
-  valueClass = 'text-slate-100',
+  valueClass = 'text-fg',
 }) => (
-  <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800">
-    <span className="text-[10px] uppercase font-bold text-slate-500 block">
+  <div className="bg-sunken/60 p-3 rounded-xl border border-line">
+    <span className="text-[10px] uppercase font-bold text-fg-subtle block">
       {label}
     </span>
 

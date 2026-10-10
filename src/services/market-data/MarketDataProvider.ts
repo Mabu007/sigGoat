@@ -20,9 +20,12 @@ export interface MarketDataProvider {
 
 export class MarketDataUnavailableError extends Error {
   readonly symbol?: string;
-  constructor(message: string, symbol?: string) {
+  /** Machine-readable reason: NOT_LISTED, DELISTED, PROVIDER_ERROR, … */
+  readonly unavailableReason?: string;
+  constructor(message: string, symbol?: string, unavailableReason?: string) {
     super(message);
     this.name = 'MarketDataUnavailableError';
     this.symbol = symbol;
+    this.unavailableReason = unavailableReason;
   }
 }

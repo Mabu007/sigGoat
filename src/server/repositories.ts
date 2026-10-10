@@ -17,9 +17,10 @@
 
 import fs from 'fs';
 import path from 'path';
-import { SignalGoat, TradingSkill, TradeSignal, MarketThesis, WakeEvent, UserProfile } from '../types';
+import { FundGoat, TradingSkill, TradeSignal, MarketThesis, WakeEvent, UserProfile } from '../types';
 import type { DailyMarketRecap } from '../services/daily-rolling/DailyMarketRecap';
-import { getFirebaseAdmin } from './firebaseAdmin';
+import { getFirebaseAdmin, getFirebaseAdminFailureReason } from './firebaseAdmin';
+import { isProductionRuntime } from './auth';
 import type { Firestore } from 'firebase-admin/firestore';
 
 /* ------------------------------------------------------------------ */
@@ -27,11 +28,11 @@ import type { Firestore } from 'firebase-admin/firestore';
 /* ------------------------------------------------------------------ */
 
 export interface GoatRepository {
-  listByUser(userId: string): Promise<SignalGoat[]>;
-  listAll(): Promise<SignalGoat[]>;
-  get(goatId: string): Promise<SignalGoat | null>;
-  getForUser(goatId: string, userId: string): Promise<SignalGoat | null>;
-  save(goat: SignalGoat): Promise<void>;
+  listByUser(userId: string): Promise<FundGoat[]>;
+  listAll(): Promise<FundGoat[]>;
+  get(goatId: string): Promise<FundGoat | null>;
+  getForUser(goatId: string, userId: string): Promise<FundGoat | null>;
+  save(goat: FundGoat): Promise<void>;
   delete(goatId: string): Promise<void>;
 }
 
@@ -45,6 +46,13 @@ export interface SkillRepository {
 export interface SignalRepository {
   listByGoat(goatId: string, limit?: number): Promise<TradeSignal[]>;
   save(signal: TradeSignal): Promise<void>;
+  /**
+   * Replaces an EXISTING signal in place (same id), e.g. when a user records
+   * an accept/reject decision. Returns false when the id does not exist —
+   * decision persistence must fail loudly rather than silently append a
+   * duplicate record.
+   */
+  update(signal: TradeSignal): Promise<boolean>;
 }
 
 export interface ThesisRepository {
@@ -123,6 +131,22 @@ export interface TelegramBotRecord {
   webhookUrl?: string;
 }
 
+/**
+ * At-rest storage for encrypted credentials.
+ *
+ * SEPARATE FROM `KeyStore` ON PURPOSE. `KeyStore` predates the vault and is
+ * still read by the reasoning gateway and the Telegram connect flow, which
+ * accept a value that may or may not be encrypted. `CredentialRecordStore`
+ * has no `get`-that-returns-a-plaintext shape at all — it deals only in
+ * envelopes — so it cannot be used as an accidental plaintext channel.
+ */
+export interface CredentialRecordRepository {
+  saveEncrypted(userId: string, provider: string, envelope: string, updatedAt: string): Promise<void>;
+  readEncrypted(userId: string, provider: string): Promise<{ envelope: string; updatedAt: string } | null>;
+  delete(userId: string, provider: string): Promise<void>;
+  listEncrypted(userId: string): Promise<Array<{ provider: string; envelope: string; updatedAt: string }>>;
+}
+
 export interface PersistenceLayer {
   mode: 'firestore' | 'file' | 'memory';
   goats: GoatRepository;
@@ -133,6 +157,8 @@ export interface PersistenceLayer {
   profiles: UserProfileRepository;
   keys: KeyStore;
   recaps: MarketRecapRepository;
+  /** AES-256-GCM envelopes. Never plaintext. */
+  credentials: CredentialRecordRepository;
 }
 
 /* ------------------------------------------------------------------ */
@@ -160,10 +186,11 @@ export class InMemoryPersistence implements PersistenceLayer {
   wakeEvents = new MemoryWakeEventRepository();
   profiles = new MemoryProfileRepository();
   keys = new MemoryKeyStore();
+  credentials = new MemoryCredentialRecordRepository();
 }
 
 class MemoryGoatRepository implements GoatRepository {
-  private store = new Map<string, SignalGoat>();
+  private store = new Map<string, FundGoat>();
   async listByUser(userId: string) {
     return [...this.store.values()].filter((g) => g.userId === userId);
   }
@@ -177,7 +204,7 @@ class MemoryGoatRepository implements GoatRepository {
     const goat = this.store.get(goatId);
     return goat && goat.userId === userId ? goat : null;
   }
-  async save(goat: SignalGoat) {
+  async save(goat: FundGoat) {
     this.store.set(goat.id, { ...goat });
   }
   async delete(goatId: string) {
@@ -210,6 +237,13 @@ class MemorySignalRepository implements SignalRepository {
     const list = this.store.get(signal.goatId) ?? [];
     list.unshift(signal);
     this.store.set(signal.goatId, list.slice(0, 500));
+  }
+  async update(signal: TradeSignal) {
+    const list = this.store.get(signal.goatId) ?? [];
+    const index = list.findIndex((s) => s.id === signal.id);
+    if (index < 0) return false;
+    list[index] = signal;
+    return true;
   }
 }
 
@@ -309,12 +343,48 @@ class MemoryKeyStore implements KeyStore {
   }
 }
 
+class MemoryCredentialRecordRepository implements CredentialRecordRepository {
+  private records = new Map<string, Map<string, { envelope: string; updatedAt: string }>>();
+
+  private bucket(userId: string) {
+    let entry = this.records.get(userId);
+    if (!entry) {
+      entry = new Map();
+      this.records.set(userId, entry);
+    }
+    return entry;
+  }
+
+  async saveEncrypted(userId: string, provider: string, envelope: string, updatedAt: string) {
+    this.bucket(userId).set(provider, { envelope, updatedAt });
+  }
+  async readEncrypted(userId: string, provider: string) {
+    return this.records.get(userId)?.get(provider) ?? null;
+  }
+  async delete(userId: string, provider: string) {
+    this.records.get(userId)?.delete(provider);
+  }
+  async listEncrypted(userId: string) {
+    const entry = this.records.get(userId);
+    if (!entry) return [];
+    return [...entry.entries()].map(([provider, value]) => ({ provider, ...value }));
+  }
+  /** Test helper: asserts the stored value is an envelope, not plaintext. */
+  rawEnvelopes(userId: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [provider, value] of this.records.get(userId)?.entries() ?? []) {
+      out[provider] = value.envelope;
+    }
+    return out;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* File-backed implementation (self-hosted default; survives restarts) */
 /* ------------------------------------------------------------------ */
 
 interface FileDbShape {
-  goats: Record<string, SignalGoat>;
+  goats: Record<string, FundGoat>;
   skills: Record<string, TradingSkill>;
   signals: Record<string, TradeSignal[]>;
   theses: Record<string, MarketThesis[]>;
@@ -353,6 +423,7 @@ export class FilePersistence implements PersistenceLayer {
   profiles: FileProfileRepository;
   keys: FileKeyStore;
   recaps: FileMarketRecapRepository;
+  credentials: FileCredentialRecordRepository;
 
   private db: FileDbShape = emptyDb();
   private filePath: string;
@@ -371,6 +442,7 @@ export class FilePersistence implements PersistenceLayer {
     this.profiles = new FileProfileRepository(this);
     this.keys = new FileKeyStore(this);
     this.recaps = new FileMarketRecapRepository(this);
+    this.credentials = new FileCredentialRecordRepository(this);
   }
 
   private load(): void {
@@ -417,7 +489,7 @@ class FileGoatRepository implements GoatRepository {
     const goat = this.parent.data.goats[goatId];
     return goat && goat.userId === userId ? goat : null;
   }
-  async save(goat: SignalGoat) {
+  async save(goat: FundGoat) {
     this.parent.data.goats[goat.id] = goat;
     this.parent.persist();
   }
@@ -455,6 +527,14 @@ class FileSignalRepository implements SignalRepository {
     list.unshift(signal);
     this.parent.data.signals[signal.goatId] = list.slice(0, 500);
     this.parent.persist();
+  }
+  async update(signal: TradeSignal) {
+    const list = this.parent.data.signals[signal.goatId] ?? [];
+    const index = list.findIndex((s) => s.id === signal.id);
+    if (index < 0) return false;
+    list[index] = signal;
+    this.parent.persist();
+    return true;
   }
 }
 
@@ -576,6 +656,52 @@ class FileKeyStore implements KeyStore {
   }
 }
 
+/**
+ * Encrypted credential envelopes, one map per user.
+ *
+ * The file on disk therefore contains `v1.<keyId>.<nonce>.<ct>.<tag>` and
+ * nothing else — a state file copied off the host yields ciphertext, not keys.
+ */
+class FileCredentialRecordRepository implements CredentialRecordRepository {
+  constructor(private parent: FilePersistence) {}
+
+  private section(): Record<string, Record<string, { envelope: string; updatedAt: string }>> {
+    const db = this.parent.data as unknown as {
+      credentials?: Record<string, Record<string, { envelope: string; updatedAt: string }>>;
+    };
+    if (!db.credentials || typeof db.credentials !== 'object') db.credentials = {};
+    return db.credentials;
+  }
+
+  private bucket(userId: string) {
+    const all = this.section();
+    if (!all[userId] || typeof all[userId] !== 'object') all[userId] = {};
+    return all[userId];
+  }
+
+  async saveEncrypted(userId: string, provider: string, envelope: string, updatedAt: string) {
+    this.bucket(userId)[provider] = { envelope, updatedAt };
+    this.parent.persist();
+  }
+
+  async readEncrypted(userId: string, provider: string) {
+    return this.section()[userId]?.[provider] ?? null;
+  }
+
+  async delete(userId: string, provider: string) {
+    const entry = this.section()[userId];
+    if (!entry) return;
+    delete entry[provider];
+    if (Object.keys(entry).length === 0) delete this.section()[userId];
+    this.parent.persist();
+  }
+
+  async listEncrypted(userId: string) {
+    const entry = this.section()[userId] ?? {};
+    return Object.entries(entry).map(([provider, value]) => ({ provider, ...value }));
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Firestore implementation (production)                               */
 /* ------------------------------------------------------------------ */
@@ -590,6 +716,7 @@ export class FirestorePersistence implements PersistenceLayer {
   profiles: FirestoreProfileRepository;
   keys: FirestoreKeyStore;
   recaps: FirestoreMarketRecapRepository;
+  credentials: FirestoreCredentialRecordRepository;
 
   constructor(private db: Firestore) {
     this.goats = new FirestoreGoatRepository(db);
@@ -600,6 +727,7 @@ export class FirestorePersistence implements PersistenceLayer {
     this.profiles = new FirestoreProfileRepository(db);
     this.keys = new FirestoreKeyStore(db);
     this.recaps = new FirestoreMarketRecapRepository(db);
+    this.credentials = new FirestoreCredentialRecordRepository(db);
   }
 }
 
@@ -618,21 +746,21 @@ class FirestoreGoatRepository implements GoatRepository {
   }
   async listByUser(userId: string) {
     const snap = await this.col().where('userId', '==', userId).get();
-    return snap.docs.map((d) => d.data() as SignalGoat);
+    return snap.docs.map((d) => d.data() as FundGoat);
   }
   async listAll() {
     const snap = await this.col().get();
-    return snap.docs.map((d) => d.data() as SignalGoat);
+    return snap.docs.map((d) => d.data() as FundGoat);
   }
   async get(goatId: string) {
     const doc = await this.col().doc(goatId).get();
-    return doc.exists ? (doc.data() as SignalGoat) : null;
+    return doc.exists ? (doc.data() as FundGoat) : null;
   }
   async getForUser(goatId: string, userId: string) {
     const goat = await this.get(goatId);
     return goat && goat.userId === userId ? goat : null;
   }
-  async save(goat: SignalGoat) {
+  async save(goat: FundGoat) {
     await this.col().doc(goat.id).set({ ...goat });
   }
   async delete(goatId: string) {
@@ -674,6 +802,13 @@ class FirestoreSignalRepository implements SignalRepository {
   }
   async save(signal: TradeSignal) {
     await this.db.collection(SIGNALS).doc(signal.id).set({ ...signal });
+  }
+  async update(signal: TradeSignal) {
+    const ref = this.db.collection(SIGNALS).doc(signal.id);
+    const snap = await ref.get();
+    if (!snap.exists) return false;
+    await ref.set({ ...signal });
+    return true;
   }
 }
 
@@ -725,6 +860,9 @@ class FirestoreProfileRepository implements UserProfileRepository {
 }
 
 const RECAPS = 'dailyMarketRecaps';
+
+/** Encrypted credential envelopes. See FirestoreCredentialRecordRepository. */
+const CREDENTIALS = 'credentials';
 
 class FirestoreMarketRecapRepository implements MarketRecapRepository {
   constructor(private db: Firestore) {}
@@ -825,6 +963,65 @@ class FirestoreKeyStore implements KeyStore {
   }
 }
 
+/**
+ * Encrypted credential envelopes, one document per (user, provider).
+ *
+ * DOCUMENT-LEVEL, NOT FIELD-LEVEL. `integrationKeys/{uid}` co-located every
+ * secret on the user document, which meant a single `get()` on the profile
+ * returned every key that user had — and Firestore security rules operate at
+ * document granularity, so there was no way to write a rule that permitted the
+ * profile read while denying the credentials. `credentials/{uid}_{provider}`
+ * makes each secret independently addressable and independently rule-able.
+ */
+class FirestoreCredentialRecordRepository implements CredentialRecordRepository {
+  constructor(private db: Firestore) {}
+
+  private doc(userId: string, provider: string) {
+    return this.db.collection(CREDENTIALS).doc(`${userId}_${provider}`);
+  }
+
+  async saveEncrypted(userId: string, provider: string, envelope: string, updatedAt: string) {
+    await this.doc(userId, provider).set({ userId, provider, envelope, updatedAt });
+  }
+
+  async readEncrypted(userId: string, provider: string) {
+    const snap = await this.doc(userId, provider).get();
+    if (!snap.exists) return null;
+    const data = snap.data() ?? {};
+    const envelope = data.envelope;
+    const updatedAt = data.updatedAt;
+    if (typeof envelope !== 'string' || envelope.length === 0) return null;
+    return {
+      envelope,
+      updatedAt: typeof updatedAt === 'string' ? updatedAt : '',
+    };
+  }
+
+  async delete(userId: string, provider: string) {
+    await this.doc(userId, provider).delete();
+  }
+
+  async listEncrypted(userId: string) {
+    // Scoped by the `userId` field rather than `docId.startsWith` so this uses
+    // the collection index instead of a full scan.
+    const snap = await this.db
+      .collection(CREDENTIALS)
+      .where('userId', '==', userId)
+      .get();
+    const out: Array<{ provider: string; envelope: string; updatedAt: string }> = [];
+    for (const docSnap of snap.docs) {
+      const data = docSnap.data();
+      if (typeof data?.provider !== 'string' || typeof data?.envelope !== 'string') continue;
+      out.push({
+        provider: data.provider,
+        envelope: data.envelope,
+        updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : '',
+      });
+    }
+    return out;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Factory                                                             */
 /* ------------------------------------------------------------------ */
@@ -852,11 +1049,46 @@ function getFirestoreDb(): Firestore | null {
   return firestoreDb;
 }
 
+/**
+ * True when this process must not fall back to weaker storage.
+ *
+ * On Vercel a file-backed store is written to an ephemeral scratch directory
+ * that is discarded on the next cold start, so every user's GOATs, skills and
+ * signals would silently vanish between invocations — and an in-memory store
+ * loses them the moment the instance is reclaimed.
+ */
+function mustNotDegrade(): boolean {
+  return isProductionRuntime();
+}
+
 export function createPersistence(dataDir?: string): PersistenceLayer {
   const db = getFirestoreDb();
   if (db) {
     return new FirestorePersistence(db);
   }
+
+  /**
+   * FAIL CLOSED IN PRODUCTION.
+   *
+   * The previous chain was Firestore -> file -> memory, unconditionally. In
+   * production that meant a missing or invalid service account produced a server
+   * that appeared healthy, reported `persistenceMode: 'memory'`, accepted
+   * writes and then lost all of them. A user would create a GOAT, see it
+   * succeed, and find it gone.
+   *
+   * Production now refuses to degrade: the API layer reports the real cause and
+   * protected routes are unreachable, which is a loud, correct failure instead
+   * of a quiet data loss.
+   */
+  if (mustNotDegrade()) {
+    throw new Error(
+      'Firestore is unavailable and this is a production runtime, so ' +
+        'persistence cannot degrade to file or in-memory storage. ' +
+        (getFirebaseAdminFailureReason() ??
+          'Firebase Admin credentials are missing or could not be loaded.'),
+    );
+  }
+
   try {
     return new FilePersistence(dataDir);
   } catch (err) {

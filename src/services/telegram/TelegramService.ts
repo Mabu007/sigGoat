@@ -41,7 +41,7 @@ export interface TelegramSendMessageResponse {
 /**
  * A process, as Telegram needs to see it.
  *
- * A flat summary rather than the whole SignalGoat: the command layer formats
+ * A flat summary rather than the whole FundGoat: the command layer formats
  * messages and must not be handed credentials, market context or thesis text.
  */
 export interface TelegramProcessSummary {
@@ -150,7 +150,7 @@ export class TelegramService {
         `Market: \`${signal.market}\`\n` +
         `Decision: *NO TRADE*\n\n` +
         `*Reason:* ${signal.rationale.slice(0, 800)}\n\n` +
-        `_SignalGOAT: manual analysis only — no order has been placed._`
+        `_FundAGoat: manual analysis only — no order has been placed._`
       );
     }
 
@@ -177,7 +177,7 @@ export class TelegramService {
       `*Confirmation Required:*\n${signal.confirmationRequired.slice(0, 300)}\n\n` +
       `*Why this setup exists:*\n${signal.rationale.slice(0, 600)}\n\n` +
       `_Analyst: ${goatName}_\n` +
-      `_Manual execution only on your own broker — SignalGOAT never places orders._`
+      `_Manual execution only on your own broker — FundAGoat never places orders._`
     );
   }
 
@@ -222,8 +222,8 @@ export class TelegramService {
     }
 
     const text =
-      `🐐 *SignalGOAT Connected!*\n\n` +
-      `Your Telegram is now linked to your AI Signal GOAT.\n\n` +
+      `🐐 *FundAGoat Connected!*\n\n` +
+      `Your Telegram is now linked to your AI FundAGoat.\n\n` +
       `You'll receive clearly-labelled conditional trade ideas and market review summaries.\n` +
       `Signals are informational — execution is always manual, on your own broker.\n\n` +
       `Run /help to see the available commands.\n\n` +
@@ -273,11 +273,11 @@ export class TelegramService {
    */
   formatHelpMessage(): string {
     return [
-      '🐐 *SignalGOAT commands*',
+      '🐐 *FundAGoat commands*',
       '',
       '/create <goal> <market> [timeframe]',
       '   Create a monitoring process. Example:',
-      '   `/create wait for a London sweep on EUR/USD 5m`',
+      '   `/create watch xyz:GOLD for a breakout 15m`',
       '',
       '/processes',
       '   List your processes with their ids and status.',
@@ -297,7 +297,7 @@ export class TelegramService {
       '/status',
       '   Current state of your default process.',
       '',
-      '_SignalGOAT produces analysis and alerts only. It never places an order._',
+      '_FundAGoat produces analysis and alerts only. It never places an order._',
     ].join('\n');
   }
 
@@ -363,9 +363,9 @@ export class TelegramService {
    */
   formatUnlinkedMessage(): string {
     return (
-      '🐐 Welcome to SignalGOAT!\n\n' +
-      'This chat is not linked to a SignalGOAT account yet.\n' +
-      'Open the SignalGOAT app, connect your bot token and chat id in Settings, then create a process.\n\n' +
+      '🐐 Welcome to FundAGoat!\n\n' +
+      'This chat is not linked to a FundAGoat account yet.\n' +
+      'Open the FundAGoat app, connect your bot token and chat id in Settings, then create a process.\n\n' +
       'Run /help once you are connected.'
     );
   }
@@ -583,7 +583,7 @@ export class TelegramService {
     if (command.kind === 'connect') {
       await this.sendMessage(
         chatId,
-        'Bot connection is managed from the SignalGOAT app under Settings → Telegram, where your token is stored securely.',
+        'Bot connection is managed from the FundAGoat app under Settings → Telegram, where your token is stored securely.',
         sendToken,
       );
       return { handled: true, command: '/connect' };

@@ -2,12 +2,14 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useGoat } from '../../context/GoatContext';
 import { useAuth } from '../../context/AuthContext';
 import { useMarket } from '../../context/MarketContext';
+import { SkillParser } from '../../services/agent/SkillParser';
 import {
-  SignalGoat,
+  FundGoat,
   GoatSchedule,
   TrackerCondition,
   WakeEvent,
   TradeSignal,
+  TradingSkill,
 } from '../../types';
 import { SCHEDULE_PRESETS } from '../../types';
 import {
@@ -21,6 +23,7 @@ import {
   ChevronRight,
   ChevronUp,
   Clock,
+  Compass,
   Eye,
   Layers,
   MessageSquare,
@@ -77,7 +80,32 @@ type ModelState = 'loading' | 'ready' | 'error';
 
 const MODEL_CATALOGUE_ENDPOINT = '/api/ai/models';
 
-const DEFAULT_MARKETS = ['EUR/USD', 'GBP/USD'];
+/**
+ * Create-form defaults.
+ *
+ * Venue symbols the provider actually lists, NOT conventional pairs from a
+ * previous provider. `EUR/USD`, `US500` and similar no longer resolve;
+ * selecting them would produce a GOAT that can never fetch data.
+ */
+const DEFAULT_MARKETS = ['BTC', 'ETH'];
+
+/** Starter Markdown handed to the inline skill creator. */
+const SKILL_STARTER_TEMPLATE = `---
+name: My Trading Skill
+timeframes: 15m, 1h
+---
+
+# My Trading Skill
+
+Describe the methodology: what you look for, in what order, and why.
+
+## Constraints
+REQUIRE_INVALIDATION_BEFORE_TRADE
+REQUIRE_EVIDENCE_BEFORE_ACTIONABLE
+
+## Invalidation Rules
+State precisely what would invalidate the thesis.
+`;
 
 const QUICK_PROMPTS = [
   'What are you watching right now?',
@@ -230,6 +258,9 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     askActiveGoat,
     isWaking,
     skills,
+    createSkill,
+    deleteSkill,
+    refreshSkills,
     dataMode,
   } = useGoat();
 
@@ -314,6 +345,202 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   // Navigation
   const [detailGoatId, setDetailGoatId] = useState<string | null>(null);
 
+  /*
+   * ------------------------------------------------------------------
+   * MY SKILLS + GOAT EXPLORER
+   * ------------------------------------------------------------------
+   *
+   * Both reuse the EXISTING architecture: skills come from GoatContext (same
+   * data the create/edit GOAT flow reads), and templates come from the
+   * existing `/api/templates/*` catalogue endpoints (public, system-owned
+   * records; copying is a POST that creates a NEW record owned by the
+   * caller). No second skills system, no new persistence.
+   */
+  const [showSkillsSection, setShowSkillsSection] = useState(false);
+  const [showExplorerSection, setShowExplorerSection] = useState(false);
+
+  /** GOAT templates from /api/templates/goats. */
+  interface GoatTemplate {
+    id: string;
+    name: string;
+    goal: string;
+    markets: string[];
+    skillIds: string[];
+    model: string;
+    timeframe?: string;
+    schedule?: GoatSchedule;
+    isTemplate: boolean;
+    performsTrades: boolean;
+  }
+  const [templates, setTemplates] = useState<GoatTemplate[]>([]);
+  const [templatesState, setTemplatesState] = useState<'idle' | 'loading' | 'ready' | 'error'>(
+    'idle',
+  );
+  const [templatesError, setTemplatesError] = useState('');
+  const [templateDetail, setTemplateDetail] = useState<GoatTemplate | null>(null);
+  const [copyingTemplateId, setCopyingTemplateId] = useState<string | null>(null);
+  const [copyTemplateError, setCopyTemplateError] = useState('');
+
+  /** Skill templates from /api/templates/skills. */
+  interface SkillTemplate {
+    id: string;
+    name: string;
+    description: string;
+    methodology: string;
+    constraints: string;
+    preferredTimeframes: string[];
+    requiredEvidence: string;
+    invalidationRules: string;
+    isTemplate: boolean;
+    executable: boolean;
+  }
+  const [skillTemplates, setSkillTemplates] = useState<SkillTemplate[]>([]);
+
+  /** Inline skill creation (markdown, same builder the Skills view uses). */
+  const [showSkillCreator, setShowSkillCreator] = useState(false);
+  const [skillMarkdownInput, setSkillMarkdownInput] = useState('');
+  const [isSavingSkill, setIsSavingSkill] = useState(false);
+  const [skillCreateError, setSkillCreateError] = useState('');
+
+  const loadTemplates = useCallback(async () => {
+    setTemplatesState('loading');
+    setTemplatesError('');
+
+    try {
+      const [goatRes, skillRes] = await Promise.all([
+        fetch('/api/templates/goats', { headers: { Accept: 'application/json' } }),
+        fetch('/api/templates/skills', { headers: { Accept: 'application/json' } }),
+      ]);
+
+      if (!goatRes.ok) throw new Error(`GOAT templates request failed (${goatRes.status})`);
+      if (!skillRes.ok) throw new Error(`Skill templates request failed (${skillRes.status})`);
+
+      const goatBody = await goatRes.json();
+      const skillBody = await skillRes.json();
+
+      setTemplates(
+        Array.isArray(goatBody.templates)
+          ? (goatBody.templates as GoatTemplate[])
+          : [],
+      );
+      setSkillTemplates(
+        Array.isArray(skillBody.templates)
+          ? (skillBody.templates as SkillTemplate[])
+          : [],
+      );
+      setTemplatesState('ready');
+    } catch (err) {
+      setTemplatesState('error');
+      setTemplatesError(
+        err instanceof Error ? err.message : 'Unable to load the template catalogue.',
+      );
+    }
+  }, []);
+
+  const handleCopyTemplate = async (template: GoatTemplate) => {
+    setCopyTemplateError('');
+    setCopyingTemplateId(template.id);
+
+    try {
+      const response = await fetch(`/api/templates/goats/${template.id}/copy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error?.message ?? `Copy failed (${response.status})`);
+      }
+
+      const body = await response.json();
+
+      if (body?.goat?.id) {
+        // Same path as creating a GOAT: refresh the runtime list and open it.
+        handleOpenDetail(body.goat as FundGoat);
+        setTemplateDetail(null);
+      }
+    } catch (err) {
+      setCopyTemplateError(
+        err instanceof Error ? err.message : 'Failed to create your own copy of this GOAT.',
+      );
+    } finally {
+      setCopyingTemplateId(null);
+    }
+  };
+
+  const handleCreateSkillFromBuilder = async () => {
+    if (!skillMarkdownInput.trim()) {
+      setSkillCreateError('Write the skill content before saving.');
+      return;
+    }
+
+    setIsSavingSkill(true);
+    setSkillCreateError('');
+
+    try {
+      // Parse is a pure function, so the constraints/timeframes are exactly
+      // what the server will store — no divergence with the Skills view.
+      const parsed = SkillParser.parse(skillMarkdownInput.trim());
+      await createSkill({
+        name: parsed.name,
+        description: parsed.description,
+        methodology: parsed.methodology,
+        constraints: parsed.constraints,
+        preferredTimeframes: parsed.preferredTimeframes,
+        requiredEvidence: parsed.requiredEvidence,
+        invalidationRules: parsed.invalidationRules,
+        rawMarkdown: parsed.rawMarkdown,
+      });
+      setShowSkillCreator(false);
+      setSkillMarkdownInput('');
+    } catch (err) {
+      setSkillCreateError(
+        err instanceof Error ? err.message : 'Failed to save the skill.',
+      );
+    } finally {
+      setIsSavingSkill(false);
+    }
+  };
+
+  const handleDeleteSkill = async (id: string) => {
+    // System-owned skills are refused by the server; the guard here avoids
+    // the doomed round-trip and says why.
+    const skill = skills.find((s) => s.id === id);
+    if (skill?.isDefault) return;
+    await deleteSkill(id);
+  };
+
+  const isTemplateSkill = (skillId: string): boolean =>
+    skillTemplates.some((t) => t.id === skillId);
+
+  const [copyingSkillId, setCopyingSkillId] = useState<string | null>(null);
+  const [copySkillError, setCopySkillError] = useState('');
+
+  /** Copies a built-in skill template into the caller's own library. */
+  const handleCopySkillTemplate = async (templateId: string) => {
+    setCopySkillError('');
+    setCopyingSkillId(templateId);
+    try {
+      const res = await fetch(`/api/templates/skills/${templateId}/copy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error?.message ?? `Copy failed (${res.status})`);
+      }
+      // The copy already persisted server-side; re-read the user's library so
+      // it appears without a full page reload.
+      await refreshSkills();
+    } catch (err) {
+      setCopySkillError(
+        err instanceof Error ? err.message : 'Failed to copy the skill template.',
+      );
+    } finally {
+      setCopyingSkillId(null);
+    }
+  };
+
   // Progressive disclosure
   const [showWakeEvents, setShowWakeEvents] = useState(false);
   const [showMarketReviews, setShowMarketReviews] = useState(false);
@@ -336,7 +563,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     {
       sender: 'goat',
       text:
-        "🐐 I'm your SignalGOAT.\n\n" +
+        "🐐 I'm your FundAGoat.\n\n" +
         "Ask me what I'm watching, what my thesis is, " +
         'what conditions I need before acting, or what would invalidate the idea.',
       time: new Date().toLocaleTimeString([], {
@@ -370,7 +597,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
   // GOAT lifecycle actions
   const [pendingDelete, setPendingDelete] =
-    useState<SignalGoat | null>(null);
+    useState<FundGoat | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [actionError, setActionError] = useState('');
   const [showScheduleEditor, setShowScheduleEditor] =
@@ -435,7 +662,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     []
   );
 
-  const handleToggleStatus = async (goat: SignalGoat) => {
+  const handleToggleStatus = async (goat: FundGoat) => {
     setActionError('');
 
     const pausing =
@@ -452,7 +679,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     }
   };
 
-  const handleRequestDelete = (goat: SignalGoat) => {
+  const handleRequestDelete = (goat: FundGoat) => {
     setActionError('');
     setPendingDelete(goat);
   };
@@ -552,7 +779,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   const inspectedState =
     activeGoat?.id === inspectedGoat?.id ? activeGoatState : null;
 
-  const handleOpenDetail = (goat: SignalGoat) => {
+  const handleOpenDetail = (goat: FundGoat) => {
     setActiveGoatId(goat.id);
     setDetailGoatId(goat.id);
 
@@ -768,28 +995,28 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       {!detailGoatId && (
         <div className="space-y-8">
           {/* Hero */}
-          <div className="relative overflow-hidden rounded-3xl border border-slate-800 bg-[#0a0d14] p-5 sm:p-6">
-            <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-amber-500/10 blur-3xl" />
+          <div className="relative overflow-hidden rounded-3xl border border-line bg-raised p-5 sm:p-6">
+            <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-accent-soft blur-3xl" />
 
             <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="flex items-center gap-2">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-amber-500/30 bg-amber-500/10 text-lg">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-accent/40 bg-accent-soft text-lg">
                     🐐
                   </div>
 
                   <div>
                     <div className="flex items-center gap-2">
-                      <h1 className="text-xl font-bold text-slate-100">
+                      <h1 className="text-xl font-bold text-fg">
                         Your GOATs
                       </h1>
 
-                      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400">
+                      <span className="rounded-full border border-positive/40 bg-positive-soft px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-positive">
                         Live
                       </span>
                     </div>
 
-                    <p className="mt-0.5 text-xs text-slate-400">
+                    <p className="mt-0.5 text-xs text-fg-muted">
                       Autonomous market reasoning, grounded in tracked
                       conditions.
                     </p>
@@ -797,15 +1024,15 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 </div>
 
                 <div className="mt-4 flex flex-wrap items-center gap-2">
-                  <span className="rounded-full border border-slate-800 bg-slate-900 px-2.5 py-1 text-[10px] font-mono text-slate-400">
+                  <span className="rounded-full border border-line bg-sunken px-2.5 py-1 text-[10px] font-mono text-fg-muted">
                     {goats.length} GOAT{goats.length === 1 ? '' : 's'}
                   </span>
 
-                  <span className="rounded-full border border-slate-800 bg-slate-900 px-2.5 py-1 text-[10px] font-mono text-slate-400">
+                  <span className="rounded-full border border-line bg-sunken px-2.5 py-1 text-[10px] font-mono text-fg-muted">
                     {liveModelCount || '—'} live models
                   </span>
 
-                  <span className="rounded-full border border-slate-800 bg-slate-900 px-2.5 py-1 text-[10px] font-mono text-slate-400">
+                  <span className="rounded-full border border-line bg-sunken px-2.5 py-1 text-[10px] font-mono text-fg-muted">
                     {dataMode || 'PAPER'} data
                   </span>
                 </div>
@@ -813,7 +1040,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
               <button
                 onClick={onOpenCreateModal}
-                className="flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-bold text-slate-950 shadow-lg shadow-amber-500/10 transition-colors hover:bg-amber-400"
+                className="flex items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-xs font-bold text-accent-fg shadow-lg shadow-accent/10 transition-colors hover:bg-accent-hover"
               >
                 <Plus className="h-4 w-4" />
                 Create GOAT
@@ -825,32 +1052,32 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
           <section className="space-y-3">
             <div className="flex items-center justify-between px-1">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-fg-muted">
                   My GOATs
                 </div>
-                <div className="mt-0.5 text-xs text-slate-500">
+                <div className="mt-0.5 text-xs text-fg-subtle">
                   Open a GOAT to inspect its live reasoning state.
                 </div>
               </div>
 
               {goats.length > 0 && (
-                <span className="text-[10px] font-mono text-slate-500">
+                <span className="text-[10px] font-mono text-fg-subtle">
                   {goats.length} configured
                 </span>
               )}
             </div>
 
             {goats.length === 0 ? (
-              <div className="rounded-3xl border border-dashed border-slate-800 bg-[#0a0d14] px-5 py-12 text-center">
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-500/20 bg-amber-500/10 text-2xl">
+              <div className="rounded-3xl border border-dashed border-line bg-raised px-5 py-12 text-center">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-accent/30 bg-accent-soft text-2xl">
                   🐐
                 </div>
 
-                <h3 className="mt-4 text-sm font-bold text-slate-200">
+                <h3 className="mt-4 text-sm font-bold text-fg">
                   Your first GOAT is waiting.
                 </h3>
 
-                <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-slate-500">
+                <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-fg-subtle">
                   Define an objective, assign markets and choose a live
                   reasoning model. The GOAT builds its own thesis and
                   tracked conditions after deployment.
@@ -858,7 +1085,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
                 <button
                   onClick={onOpenCreateModal}
-                  className="mt-5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400"
+                  className="mt-5 rounded-xl bg-accent px-4 py-2 text-xs font-bold text-accent-fg hover:bg-accent-hover"
                 >
                   Create Your First GOAT
                 </button>
@@ -901,39 +1128,39 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                           handleOpenDetail(goat);
                         }
                       }}
-                      className="group relative overflow-hidden rounded-2xl border border-slate-800 bg-[#0c0f17] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-amber-500/40 hover:bg-[#0e121b] cursor-pointer"
+                      className="group relative overflow-hidden rounded-2xl border border-line bg-surface p-4 text-left transition-all hover:-translate-y-0.5 hover:border-accent/40 hover:bg-raised cursor-pointer"
                     >
                       {hasActionableSignal && (
-                        <div className="absolute inset-x-0 top-0 h-px bg-emerald-400" />
+                        <div className="absolute inset-x-0 top-0 h-px bg-positive" />
                       )}
 
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex min-w-0 items-center gap-2.5">
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-accent/40 bg-accent-soft">
                             🐐
                           </div>
 
                           <div className="min-w-0">
-                            <h3 className="truncate text-sm font-bold text-slate-100 group-hover:text-amber-400">
+                            <h3 className="truncate text-sm font-bold text-fg group-hover:text-accent-text">
                               {goat.name}
                             </h3>
 
-                            <p className="truncate text-[10px] font-mono text-slate-500">
+                            <p className="truncate text-[10px] font-mono text-fg-subtle">
                               {shortModelId(goat.model)}
                             </p>
                           </div>
                         </div>
 
-                        <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-slate-800 bg-slate-900 px-2 py-1 text-[9px] font-mono text-slate-400">
+                        <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-sunken px-2 py-1 text-[9px] font-mono text-fg-muted">
                           <span
                             className={`h-1.5 w-1.5 rounded-full ${
                               state?.status === 'ACTIVE' || state?.status === 'INVESTIGATING'
-                                ? 'bg-emerald-400'
+                                ? 'bg-positive'
                                 : state?.status === 'WATCHING'
-                                  ? 'bg-amber-400'
+                                  ? 'bg-accent'
                                   : state?.status === 'DORMANT' || state?.status === 'PAUSED'
-                                    ? 'bg-slate-500'
-                                    : 'bg-slate-500'
+                                    ? 'bg-fg-subtle'
+                                    : 'bg-fg-subtle'
                             }`}
                           />
                           {state?.status || goat.status}
@@ -941,9 +1168,9 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                       </div>
 
                       {hasActionableSignal && (
-                        <div className="mt-4 flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2">
-                          <Zap className="h-3.5 w-3.5 text-emerald-400" />
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                        <div className="mt-4 flex items-center gap-2 rounded-xl border border-positive/30 bg-positive-soft px-3 py-2">
+                          <Zap className="h-3.5 w-3.5 text-positive" />
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-positive">
                             Actionable signal
                           </span>
                         </div>
@@ -953,25 +1180,25 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                         {goat.markets.slice(0, 4).map(market => (
                           <span
                             key={market}
-                            className="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-[10px] font-mono text-slate-300"
+                            className="rounded-lg border border-line bg-sunken px-2 py-1 text-[10px] font-mono text-fg-muted"
                           >
                             {market}
                           </span>
                         ))}
 
                         {goat.markets.length > 4 && (
-                          <span className="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-[10px] font-mono text-slate-500">
+                          <span className="rounded-lg border border-line bg-sunken px-2 py-1 text-[10px] font-mono text-fg-subtle">
                             +{goat.markets.length - 4}
                           </span>
                         )}
                       </div>
 
-                      <p className="mt-4 line-clamp-2 text-xs leading-relaxed text-slate-400">
+                      <p className="mt-4 line-clamp-2 text-xs leading-relaxed text-fg-muted">
                         {goat.goal}
                       </p>
 
-                      <div className="mt-5 flex items-center justify-between gap-2 border-t border-slate-800/80 pt-3">
-                        <div className="flex items-center gap-3 text-[10px] font-mono text-slate-500">
+                      <div className="mt-5 flex items-center justify-between gap-2 border-t border-line pt-3">
+                        <div className="flex items-center gap-3 text-[10px] font-mono text-fg-subtle">
                           <span>
                             {trackerCount} condition
                             {trackerCount === 1 ? '' : 's'}
@@ -981,8 +1208,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                             <span
                               className={
                                 signalIsNoTrade
-                                  ? 'text-slate-500'
-                                  : 'text-amber-400'
+                                  ? 'text-fg-subtle'
+                                  : 'text-accent-text'
                               }
                             >
                               {latestSignal.direction}
@@ -1017,7 +1244,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                               event.stopPropagation();
                               void handleToggleStatus(goat);
                             }}
-                            className="flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-[10px] font-bold text-slate-300 transition-colors hover:border-amber-500/40 hover:text-amber-300 disabled:opacity-40 cursor-pointer"
+                            className="flex items-center gap-1 rounded-lg border border-line bg-sunken px-2 py-1 text-[10px] font-bold text-fg-muted transition-colors hover:border-accent/40 hover:text-accent-text disabled:opacity-40 cursor-pointer"
                           >
                             {goatIsPaused ? (
                               <Play className="h-3 w-3" />
@@ -1040,13 +1267,13 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                               event.stopPropagation();
                               handleRequestDelete(goat);
                             }}
-                            className="flex items-center gap-1 rounded-lg border border-rose-500/25 bg-rose-500/10 px-2 py-1 text-[10px] font-bold text-rose-300 transition-colors hover:border-rose-500/50 hover:bg-rose-500/20 disabled:opacity-40 cursor-pointer"
+                            className="flex items-center gap-1 rounded-lg border border-negative/30 bg-negative-soft px-2 py-1 text-[10px] font-bold text-negative transition-colors hover:border-negative/50 hover:bg-negative-soft disabled:opacity-40 cursor-pointer"
                           >
                             <Trash2 className="h-3 w-3" />
                             <span>Delete</span>
                           </button>
 
-                          <span className="flex items-center gap-1 text-[11px] font-semibold text-amber-400">
+                          <span className="flex items-center gap-1 text-[11px] font-semibold text-accent-text">
                             Inspect
                             <ChevronRight className="h-3.5 w-3.5" />
                           </span>
@@ -1059,18 +1286,285 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             )}
           </section>
 
-          {/* LIVE MODEL STATUS */}
-          <section className="rounded-2xl border border-slate-800 bg-[#0c0f17] p-4">
+          {/* =========================================================== */}
+          {/* MY SKILLS                                                    */}
+          {/* =========================================================== */}
+          <section className="rounded-2xl border border-line bg-surface p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2.5">
-                <Sparkles className="h-4 w-4 text-amber-400" />
+                <Layers className="h-4 w-4 text-accent-text" />
+                <div>
+                  <h3 className="text-xs font-bold text-fg">My Skills</h3>
+                  <p className="text-[10px] text-fg-subtle">
+                    Strategy constraints attached to your GOATs.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-fg-subtle">
+                  {skills.length} skill{skills.length === 1 ? '' : 's'}
+                </span>
+                <button
+                  onClick={() => {
+                    setSkillMarkdownInput(SKILL_STARTER_TEMPLATE);
+                    setSkillCreateError('');
+                    setShowSkillCreator(true);
+                  }}
+                  className="flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-[10px] font-bold text-accent-fg hover:bg-accent-hover"
+                >
+                  <Plus className="h-3 w-3" />
+                  New skill
+                </button>
+                <button
+                  onClick={() => setShowSkillsSection(prev => !prev)}
+                  aria-expanded={showSkillsSection}
+                  className="flex items-center gap-1 rounded-lg border border-line bg-sunken px-2.5 py-1.5 text-[10px] font-semibold text-fg-muted hover:text-fg"
+                >
+                  {showSkillsSection ? 'Hide' : 'View all'}
+                  <ChevronDown
+                    className={`h-3 w-3 transition-transform ${showSkillsSection ? 'rotate-180' : ''}`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {showSkillsSection && (
+              <div className="mt-3 space-y-2">
+                {skills.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-line bg-raised px-3 py-4 text-center text-[11px] text-fg-subtle">
+                    No skills yet. Create one, or copy a template from the built-in library below —
+                    skills are attached to GOATs in the create/edit flow.
+                  </p>
+                ) : (
+                  skills.map(skill => (
+                    <div
+                      key={skill.id}
+                      className="flex items-start justify-between gap-3 rounded-xl border border-line bg-raised px-3 py-2.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[12px] font-semibold text-fg">{skill.name}</span>
+                          {skill.isDefault ? (
+                            <span className="rounded border border-line bg-sunken px-1.5 py-0.5 text-[9px] font-mono uppercase text-fg-muted">
+                              Built-in
+                            </span>
+                          ) : (
+                            <span className="rounded border border-accent/40 bg-accent-soft px-1.5 py-0.5 text-[9px] font-mono uppercase text-accent-text">
+                              Custom
+                            </span>
+                          )}
+                        </div>
+                        <p className="line-clamp-2 text-[11px] text-fg-muted">{skill.description}</p>
+                      </div>
+
+                      {!skill.isDefault && (
+                        <button
+                          type="button"
+                          aria-label={`Delete skill ${skill.name}`}
+                          onClick={() => void handleDeleteSkill(skill.id)}
+                          className="shrink-0 rounded-lg border border-negative/30 bg-negative-soft px-2 py-1 text-[10px] font-bold text-negative hover:border-negative/50"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+
+                {/* Built-in template library — copied via the existing POST endpoint. */}
+                {skillTemplates.length > 0 && (
+                  <div className="rounded-xl border border-line bg-sunken/60 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-fg-subtle">
+                      Built-in template library
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {skillTemplates.map(tpl => (
+                        <button
+                          key={tpl.id}
+                          type="button"
+                          disabled={copyingSkillId !== null}
+                          title={`${tpl.description}\n\nCopying creates your own editable copy.`}
+                          onClick={() => void handleCopySkillTemplate(tpl.id)}
+                          className="rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[10px] font-semibold text-fg-muted transition-colors hover:border-accent/40 hover:text-accent-text disabled:opacity-50"
+                        >
+                          {copyingSkillId === tpl.id ? 'Copying…' : `+ ${tpl.name}`}
+                        </button>
+                      ))}
+                    </div>
+
+                    {copySkillError && (
+                      <p className="mt-2 rounded-lg border border-negative/30 bg-negative-soft/50 px-2.5 py-1.5 text-[10px] text-negative">
+                        {copySkillError}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* =========================================================== */}
+          {/* GOAT EXPLORER                                                */}
+          {/* =========================================================== */}
+          <section className="rounded-2xl border border-line bg-surface p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2.5">
+                <Compass className="h-4 w-4 text-info" />
+                <div>
+                  <h3 className="text-xs font-bold text-fg">GOAT Explorer</h3>
+                  <p className="text-[10px] text-fg-subtle">
+                    System-created GOAT templates you can inspect and copy into your workspace.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => {
+                  setShowExplorerSection(prev => !prev);
+                  if (!templates.length && templatesState !== 'loading') void loadTemplates();
+                }}
+                aria-expanded={showExplorerSection}
+                className="flex items-center gap-1.5 rounded-lg border border-line bg-sunken px-2.5 py-1.5 text-[10px] font-semibold text-fg-muted hover:text-fg"
+              >
+                {showExplorerSection ? 'Hide' : 'Explore'}
+                <ChevronDown
+                  className={`h-3 w-3 transition-transform ${showExplorerSection ? 'rotate-180' : ''}`}
+                />
+              </button>
+            </div>
+
+            {showExplorerSection && (
+              <div className="mt-3 space-y-2">
+                {templatesState === 'loading' && (
+                  <p className="flex items-center gap-2 px-1 py-3 text-[11px] text-fg-muted">
+                    <RefreshCw className="h-3 w-3 animate-spin" /> Loading system GOATs…
+                  </p>
+                )}
+
+                {templatesState === 'error' && (
+                  <div className="flex items-start gap-2 rounded-xl border border-negative/30 bg-negative-soft/40 p-3">
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-negative" />
+                    <p className="text-[10px] text-negative">{templatesError}</p>
+                  </div>
+                )}
+
+                {templatesState === 'ready' && templates.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-line bg-raised px-3 py-4 text-center text-[11px] text-fg-subtle">
+                    No system GOATs are published yet.
+                  </p>
+                )}
+
+                {templates.map(tpl => {
+                  const detailed = templateDetail?.id === tpl.id;
+                  return (
+                    <div
+                      key={tpl.id}
+                      className="rounded-xl border border-line bg-raised px-3 py-2.5"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setTemplateDetail(detailed ? null : tpl)}
+                        aria-expanded={detailed}
+                        className="w-full text-left"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[12px] font-semibold text-fg">{tpl.name}</span>
+                              <span className="rounded border border-info/40 bg-info-soft px-1.5 py-0.5 text-[9px] font-bold uppercase text-info">
+                                System
+                              </span>
+                            </div>
+                            <p className="mt-0.5 line-clamp-1 text-[11px] text-fg-muted">{tpl.goal}</p>
+                          </div>
+                          <ChevronRight
+                            className={`mt-0.5 h-3.5 w-3.5 shrink-0 text-fg-subtle transition-transform ${detailed ? 'rotate-90' : ''}`}
+                          />
+                        </div>
+                      </button>
+
+                      {detailed && (
+                        <div className="mt-3 space-y-2 border-t border-line pt-3">
+                          <p className="text-[11px] leading-relaxed text-fg-muted">{tpl.goal}</p>
+
+                          <div className="flex flex-wrap gap-1.5">
+                            {tpl.markets.map(market => (
+                              <span
+                                key={market}
+                                className="rounded-lg border border-line bg-sunken px-2 py-1 text-[10px] font-mono text-fg-muted"
+                              >
+                                {market}
+                              </span>
+                            ))}
+                          </div>
+
+                          {tpl.skillIds.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-fg-subtle">
+                                Skills:
+                              </span>
+                              {tpl.skillIds.map(id => (
+                                <span
+                                  key={id}
+                                  className="rounded border border-line bg-sunken px-1.5 py-0.5 font-mono text-[9px] text-fg-muted"
+                                >
+                                  {isTemplateSkill(id) ? `${id} (built-in)` : id}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-2 text-[10px] font-mono text-fg-subtle">
+                            <span>{shortModelId(tpl.model)}</span>
+                            {tpl.timeframe && <span>· {tpl.timeframe}</span>}
+                          </div>
+
+                          <p className="text-[10px] leading-relaxed text-fg-subtle">
+                            These are unverified starting points, not performance claims. Copying
+                            creates a NEW GOAT owned by you; the template itself is never modified.
+                          </p>
+
+                          {copyTemplateError && (
+                            <p className="rounded-lg border border-negative/30 bg-negative-soft/50 px-2.5 py-1.5 text-[10px] text-negative">
+                              {copyTemplateError}
+                            </p>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => void handleCopyTemplate(tpl)}
+                            disabled={copyingTemplateId !== null}
+                            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[10px] font-bold text-accent-fg hover:bg-accent-hover disabled:opacity-50"
+                          >
+                            {copyingTemplateId === tpl.id ? (
+                              <RefreshCw className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Plus className="h-3 w-3" />
+                            )}
+                            {copyingTemplateId === tpl.id ? 'Copying…' : 'Create my own copy'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* LIVE MODEL STATUS */}
+          <section className="rounded-2xl border border-line bg-surface p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2.5">
+                <Sparkles className="h-4 w-4 text-accent-text" />
 
                 <div>
-                  <h3 className="text-xs font-bold text-slate-200">
+                  <h3 className="text-xs font-bold text-fg">
                     Reasoning Model Catalogue
                   </h3>
 
-                  <p className="text-[10px] text-slate-500">
+                  <p className="text-[10px] text-fg-subtle">
                     Live availability from the reasoning provider.
                   </p>
                 </div>
@@ -1078,7 +1572,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
               <div className="flex items-center gap-2">
                 {modelState === 'ready' && (
-                  <span className="text-[10px] font-mono text-emerald-400">
+                  <span className="text-[10px] font-mono text-positive">
                     {liveModelCount} available
                   </span>
                 )}
@@ -1086,7 +1580,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 <button
                   onClick={() => void loadModels()}
                   disabled={modelState === 'loading'}
-                  className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-[10px] font-semibold text-slate-300 hover:text-slate-100 disabled:opacity-50"
+                  className="flex items-center gap-1.5 rounded-lg border border-line bg-sunken px-2.5 py-1.5 text-[10px] font-semibold text-fg-muted hover:text-fg disabled:opacity-50"
                 >
                   <RefreshCw
                     className={`h-3 w-3 ${
@@ -1101,16 +1595,16 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             </div>
 
             {modelState === 'error' && (
-              <div className="mt-3 flex items-start gap-2 rounded-xl border border-rose-500/20 bg-rose-500/5 p-3">
-                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" />
-                <div className="text-[10px] leading-relaxed text-rose-300">
+              <div className="mt-3 flex items-start gap-2 rounded-xl border border-negative/30 bg-negative-soft/40 p-3">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-negative" />
+                <div className="text-[10px] leading-relaxed text-negative">
                   {modelError}
                 </div>
               </div>
             )}
 
             {modelsFetchedAt && modelState === 'ready' && (
-              <div className="mt-3 text-[9px] font-mono text-slate-600">
+              <div className="mt-3 text-[9px] font-mono text-fg-subtle">
                 Catalogue refreshed{' '}
                 {new Date(modelsFetchedAt).toLocaleTimeString([], {
                   hour: '2-digit',
@@ -1122,36 +1616,107 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
         </div>
       )}
 
+      {/* ============================================================= */}
+      {/* SKILL CREATOR (same Markdown builder the Skills view uses)      */}
+      {/* ============================================================= */}
+      {showSkillCreator && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line bg-surface">
+            <div className="flex items-center justify-between border-b border-line px-5 py-4">
+              <div>
+                <h3 className="flex items-center gap-2 text-sm font-bold text-fg">
+                  <Sparkles className="h-4 w-4 text-accent-text" />
+                  New skill (Markdown)
+                </h3>
+                <p className="mt-0.5 text-[11px] text-fg-subtle">
+                  Frontmatter + headings. The parser extracts constraints, timeframes and evidence rules.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSkillCreator(false)}
+                className="rounded-lg p-1.5 text-fg-subtle hover:bg-raised hover:text-fg"
+                aria-label="Close skill creator"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5">
+              {skillCreateError && (
+                <div className="mb-3 rounded-xl border border-negative/40 bg-negative-soft/50 p-2.5 text-[11px] leading-relaxed text-negative">
+                  {skillCreateError}
+                </div>
+              )}
+
+              <textarea
+                value={skillMarkdownInput}
+                onChange={e => setSkillMarkdownInput(e.target.value)}
+                rows={14}
+                placeholder={
+                  '---\nname: My Strategy\ntimeframes: 15m, 1h\n---\n\n# My Strategy\n\nMethodology…\n\n## Constraints\nREQUIRE_INVALIDATION_BEFORE_TRADE\n'
+                }
+                className="w-full resize-none rounded-xl border border-line bg-sunken p-3.5 font-mono text-xs leading-relaxed text-fg placeholder-fg-subtle focus:border-focus focus:outline-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3.5">
+              <button
+                type="button"
+                onClick={() => setShowSkillCreator(false)}
+                className="btn btn-ghost"
+                disabled={isSavingSkill}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCreateSkillFromBuilder()}
+                disabled={isSavingSkill || !skillMarkdownInput.trim()}
+                className="btn btn-primary"
+              >
+                {isSavingSkill ? (
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
+                {isSavingSkill ? 'Saving…' : 'Save skill'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Delete confirmation */}
       {pendingDelete && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md overflow-hidden rounded-3xl border border-rose-500/30 bg-[#0c0f17] shadow-2xl">
-            <div className="flex items-center gap-2 border-b border-slate-800 p-4">
-              <ShieldAlert className="h-4 w-4 text-rose-400" />
-              <h3 className="text-sm font-bold text-slate-100">
+          <div className="w-full max-w-md overflow-hidden rounded-3xl border border-negative/40 bg-surface shadow-2xl">
+            <div className="flex items-center gap-2 border-b border-line p-4">
+              <ShieldAlert className="h-4 w-4 text-negative" />
+              <h3 className="text-sm font-bold text-fg">
                 Delete “{pendingDelete.name}”?
               </h3>
             </div>
 
-            <div className="space-y-3 p-5 text-xs text-slate-300">
+            <div className="space-y-3 p-5 text-xs text-fg-muted">
               <p>
                 This permanently removes the GOAT, its thesis, its tracked
                 conditions and its signals.
               </p>
 
-              <p className="text-[11px] text-slate-500">
+              <p className="text-[11px] text-fg-subtle">
                 This cannot be undone. If you only want it to stop
                 analysing, use <strong>Stop</strong> instead — the GOAT
                 keeps its thesis and conditions and can be resumed.
               </p>
             </div>
 
-            <div className="flex justify-end gap-2 border-t border-slate-800 p-4">
+            <div className="flex justify-end gap-2 border-t border-line p-4">
               <button
                 type="button"
                 onClick={() => setPendingDelete(null)}
                 disabled={isDeleting}
-                className="rounded-xl px-4 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 disabled:opacity-50 cursor-pointer"
+                className="rounded-xl px-4 py-2 text-xs font-semibold text-fg-muted hover:text-fg disabled:opacity-50 cursor-pointer"
               >
                 Cancel
               </button>
@@ -1160,7 +1725,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 type="button"
                 onClick={() => void handleConfirmDelete()}
                 disabled={isDeleting}
-                className="flex items-center gap-2 rounded-xl bg-rose-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-rose-400 disabled:opacity-50 cursor-pointer"
+                className="flex items-center gap-2 rounded-xl bg-negative px-4 py-2 text-xs font-bold text-accent-fg hover:bg-negative disabled:opacity-50 cursor-pointer"
               >
                 {isDeleting ? (
                   <RefreshCw className="h-3.5 w-3.5 animate-spin" />
@@ -1183,10 +1748,10 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       {detailGoatId && inspectedGoat && (
         <div className="space-y-5">
           {/* Navigation */}
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-3">
             <button
               onClick={handleBackToList}
-              className="flex items-center gap-1.5 py-1 text-xs text-slate-400 hover:text-slate-100"
+              className="flex items-center gap-1.5 py-1 text-xs text-fg-muted hover:text-fg"
             >
               <ArrowLeft className="h-4 w-4" />
               All GOATs
@@ -1200,12 +1765,12 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   )
                 }
                 title="Change how often this GOAT analyses the market"
-                className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+                className="flex items-center gap-1.5 rounded-xl border border-line bg-sunken px-3 py-1.5 text-xs font-semibold text-fg-muted hover:bg-raised"
               >
-                <Clock className="h-3.5 w-3.5 text-amber-400" />
+                <Clock className="h-3.5 w-3.5 text-accent-text" />
                 {describeScheduleLabel(inspectedGoat.schedule)}
                 <ChevronDown
-                  className={`h-3 w-3 text-slate-500 transition-transform ${
+                  className={`h-3 w-3 text-fg-subtle transition-transform ${
                     showScheduleEditor
                       ? 'rotate-180'
                       : ''
@@ -1220,10 +1785,10 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   )
                 }
                 disabled={isWaking}
-                className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-xl border border-line bg-sunken px-3 py-1.5 text-xs font-semibold text-fg hover:bg-raised disabled:opacity-50"
               >
                 <RefreshCw
-                  className={`h-3.5 w-3.5 text-amber-400 ${
+                  className={`h-3.5 w-3.5 text-accent-text ${
                     isWaking ? 'animate-spin' : ''
                   }`}
                 />
@@ -1235,12 +1800,12 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   void handleToggleStatus(inspectedGoat)
                 }
                 disabled={busyGoatIds.includes(inspectedGoat.id)}
-                className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-xl border border-line bg-sunken px-3 py-1.5 text-xs font-semibold text-fg hover:bg-raised disabled:opacity-50"
               >
                 {inspectedGoat.status === 'PAUSED' ? (
-                  <Play className="h-3.5 w-3.5 text-emerald-400" />
+                  <Play className="h-3.5 w-3.5 text-positive" />
                 ) : (
-                  <Pause className="h-3.5 w-3.5 text-amber-400" />
+                  <Pause className="h-3.5 w-3.5 text-accent-text" />
                 )}
                 {inspectedGoat.status === 'PAUSED'
                   ? 'Play'
@@ -1253,7 +1818,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 }
                 disabled={busyGoatIds.includes(inspectedGoat.id)}
                 title="Delete this GOAT permanently"
-                className="flex items-center gap-1.5 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-xl border border-negative/30 bg-negative-soft px-3 py-1.5 text-xs font-semibold text-negative hover:bg-negative-soft disabled:opacity-50"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 Delete
@@ -1261,7 +1826,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
               <button
                 onClick={() => setIsChatOpen(true)}
-                className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-1.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
+                className="flex items-center gap-1.5 rounded-xl bg-accent px-3.5 py-1.5 text-xs font-bold text-accent-fg hover:bg-accent-hover"
               >
                 <MessageSquare className="h-3.5 w-3.5" />
                 Chat
@@ -1270,20 +1835,20 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
           </div>
 
           {actionError && (
-            <div className="flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+            <div className="flex items-start gap-2 rounded-xl border border-negative/40 bg-negative-soft p-3 text-xs text-negative">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{actionError}</span>
             </div>
           )}
 
           {showScheduleEditor && (
-            <section className="rounded-2xl border border-amber-500/20 bg-[#0c0f17] p-4">
-              <h3 className="flex items-center gap-2 text-xs font-bold text-slate-100">
-                <Clock className="h-4 w-4 text-amber-400" />
+            <section className="rounded-2xl border border-accent/30 bg-surface p-4">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-fg">
+                <Clock className="h-4 w-4 text-accent-text" />
                 Analysis Interval
               </h3>
 
-              <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+              <p className="mt-1 text-[10px] leading-relaxed text-fg-muted">
                 Controls AI spend only. Trackers keep evaluating on every
                 price tick regardless of this setting.
               </p>
@@ -1324,8 +1889,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                       )}
                       className={`rounded-lg border px-2.5 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40 cursor-pointer ${
                         isActive
-                          ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
-                          : 'border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700'
+                          ? 'border-accent/50 bg-accent-soft text-accent-text'
+                          : 'border-line bg-sunken text-fg-muted hover:border-line-strong'
                       }`}
                     >
                       {preset.label}
@@ -1337,47 +1902,47 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
           )}
 
           {/* Identity */}
-          <section className="relative overflow-hidden rounded-3xl border border-slate-800 bg-[#0c0f17] p-4 sm:p-5">
-            <div className="pointer-events-none absolute -right-24 -top-24 h-56 w-56 rounded-full bg-amber-500/10 blur-3xl" />
+          <section className="relative overflow-hidden rounded-3xl border border-line bg-surface p-4 sm:p-5">
+            <div className="pointer-events-none absolute -right-24 -top-24 h-56 w-56 rounded-full bg-accent-soft blur-3xl" />
 
             <div className="relative flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="min-w-0">
                 <div className="flex items-start gap-3">
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-amber-500/30 bg-amber-500/10 text-xl">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-accent/40 bg-accent-soft text-xl">
                     🐐
                   </div>
 
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h1 className="text-base font-bold text-slate-100 sm:text-lg">
+                      <h1 className="text-base font-bold text-fg sm:text-lg">
                         {inspectedGoat.name}
                       </h1>
 
-                      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-mono font-bold uppercase text-emerald-400">
+                      <span className="rounded-full border border-positive/40 bg-positive-soft px-2 py-0.5 text-[9px] font-mono font-bold uppercase text-positive">
                         {inspectedState?.status || inspectedGoat.status}
                       </span>
 
                       {signalIsActionable && (
-                        <span className="flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase text-emerald-300">
+                        <span className="flex items-center gap-1 rounded-full border border-positive/40 bg-positive-soft px-2 py-0.5 text-[9px] font-bold uppercase text-positive">
                           <Zap className="h-2.5 w-2.5" />
                           Signal Active
                         </span>
                       )}
 
                       {dataSource === 'PAPER' && (
-                        <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-mono text-amber-300">
+                        <span className="rounded-full border border-accent/40 bg-accent-soft px-2 py-0.5 text-[9px] font-mono text-accent-text">
                           PAPER DATA
                         </span>
                       )}
 
                       {reasoningMode === 'DEMO' && (
-                        <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[9px] font-mono text-rose-300">
+                        <span className="rounded-full border border-negative/40 bg-negative-soft px-2 py-0.5 text-[9px] font-mono text-negative">
                           DEMO MODE
                         </span>
                       )}
                     </div>
 
-                    <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-400">
+                    <p className="mt-1 max-w-3xl text-xs leading-relaxed text-fg-muted">
                       {inspectedGoat.goal}
                     </p>
                   </div>
@@ -1388,13 +1953,13 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 {inspectedGoat.markets.map(market => (
                   <span
                     key={market}
-                    className="rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1 text-xs font-mono text-slate-300"
+                    className="rounded-lg border border-line bg-sunken px-2.5 py-1 text-xs font-mono text-fg-muted"
                   >
                     {market}
                   </span>
                 ))}
 
-                <span className="max-w-full truncate rounded-lg border border-slate-800 bg-slate-900/60 px-2 py-1 text-[10px] font-mono text-slate-400">
+                <span className="max-w-full truncate rounded-lg border border-line bg-sunken/60 px-2 py-1 text-[10px] font-mono text-fg-muted">
                   {shortModelId(inspectedGoat.model)}
                 </span>
               </div>
@@ -1408,27 +1973,27 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
           <section
             className={`overflow-hidden rounded-3xl border ${
               signalIsActionable
-                ? 'border-emerald-500/30'
-                : 'border-slate-800'
-            } bg-[#0c0f17]`}
+                ? 'border-positive/40'
+                : 'border-line'
+            } bg-surface`}
           >
-            <div className="border-b border-slate-800/80 p-4 sm:p-5">
+            <div className="border-b border-line p-4 sm:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2">
                   <Target
                     className={`h-4 w-4 ${
                       signalIsActionable
-                        ? 'text-emerald-400'
-                        : 'text-sky-400'
+                        ? 'text-positive'
+                        : 'text-info'
                     }`}
                   />
 
                   <div>
-                    <h3 className="text-sm font-bold text-slate-100">
+                    <h3 className="text-sm font-bold text-fg">
                       Trade Idea
                     </h3>
 
-                    <p className="text-[10px] text-slate-500">
+                    <p className="text-[10px] text-fg-subtle">
                       The current decision produced by the GOAT.
                     </p>
                   </div>
@@ -1438,14 +2003,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   <span
                     className={`rounded-full border px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider ${
                       signalIsActionable
-                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                        : 'border-slate-800 bg-slate-900 text-slate-400'
+                        ? 'border-positive/40 bg-positive-soft text-positive'
+                        : 'border-line bg-sunken text-fg-muted'
                     }`}
                   >
                     {signal.direction}
                   </span>
                 ) : (
-                  <span className="rounded-full border border-slate-800 bg-slate-900 px-2.5 py-1 text-[9px] font-mono text-slate-500">
+                  <span className="rounded-full border border-line bg-sunken px-2.5 py-1 text-[9px] font-mono text-fg-subtle">
                     NO SIGNAL
                   </span>
                 )}
@@ -1455,61 +2020,61 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             {signal && signal.direction !== 'NO_TRADE' ? (
               <div className="space-y-4 p-4 sm:p-5">
                 <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                    <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                  <div className="rounded-xl border border-line bg-sunken/60 p-3">
+                    <span className="block text-[9px] font-bold uppercase tracking-wider text-fg-subtle">
                       Order
                     </span>
-                    <span className="mt-1 block text-xs font-bold font-mono text-amber-300">
+                    <span className="mt-1 block text-xs font-bold font-mono text-accent-text">
                       {signal.orderType || '—'}
                     </span>
                   </div>
 
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                    <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                  <div className="rounded-xl border border-line bg-sunken/60 p-3">
+                    <span className="block text-[9px] font-bold uppercase tracking-wider text-fg-subtle">
                       Entry
                     </span>
-                    <span className="mt-1 block text-xs font-bold font-mono text-slate-100">
+                    <span className="mt-1 block text-xs font-bold font-mono text-fg">
                       {formatEntryDisplay(signal)}
                     </span>
                   </div>
 
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                    <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                  <div className="rounded-xl border border-line bg-sunken/60 p-3">
+                    <span className="block text-[9px] font-bold uppercase tracking-wider text-fg-subtle">
                       Invalidation
                     </span>
-                    <span className="mt-1 block text-xs font-bold font-mono text-rose-400">
+                    <span className="mt-1 block text-xs font-bold font-mono text-negative">
                       {signal.stopLoss ?? '—'}
                     </span>
                   </div>
 
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                    <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                  <div className="rounded-xl border border-line bg-sunken/60 p-3">
+                    <span className="block text-[9px] font-bold uppercase tracking-wider text-fg-subtle">
                       Target
                     </span>
-                    <span className="mt-1 block text-xs font-bold font-mono text-emerald-400">
+                    <span className="mt-1 block text-xs font-bold font-mono text-positive">
                       {signal.takeProfit ?? '—'}
                     </span>
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-slate-800/80 bg-slate-900/40 p-4">
+                <div className="rounded-2xl border border-line bg-sunken/40 p-4">
                   <div className="space-y-3 text-xs leading-relaxed">
                     <div>
-                      <span className="font-bold text-slate-200">
+                      <span className="font-bold text-fg">
                         Rationale
                       </span>
 
-                      <p className="mt-1 text-slate-300">
+                      <p className="mt-1 text-fg-muted">
                         {signal.rationale || 'No rationale recorded.'}
                       </p>
                     </div>
 
-                    <div className="border-t border-slate-800 pt-3">
-                      <span className="font-bold text-slate-200">
+                    <div className="border-t border-line pt-3">
+                      <span className="font-bold text-fg">
                         Confirmation required
                       </span>
 
-                      <p className="mt-1 text-amber-300">
+                      <p className="mt-1 text-accent-text">
                         {signal.confirmationRequired || '—'}
                       </p>
                     </div>
@@ -1518,16 +2083,16 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               </div>
             ) : (
               <div className="p-5 sm:p-6">
-                <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+                <div className="rounded-2xl border border-line bg-sunken/40 p-5">
                   <div className="flex items-start gap-3">
-                    <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-slate-500" />
+                    <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-fg-subtle" />
 
                     <div>
-                      <h4 className="text-xs font-bold text-slate-200">
+                      <h4 className="text-xs font-bold text-fg">
                         No actionable signal
                       </h4>
 
-                      <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                      <p className="mt-1 text-xs leading-relaxed text-fg-subtle">
                         The GOAT can maintain a thesis without emitting a
                         trade signal. A signal only becomes actionable when
                         the required evidence and tracked conditions align.
@@ -1543,17 +2108,17 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
           {/* THESIS                                                       */}
           {/* ========================================================= */}
 
-          <section className="rounded-3xl border border-slate-800 bg-[#0c0f17] p-4 sm:p-5">
-            <div className="flex flex-col gap-3 border-b border-slate-800/80 pb-3 sm:flex-row sm:items-center sm:justify-between">
+          <section className="rounded-3xl border border-line bg-surface p-4 sm:p-5">
+            <div className="flex flex-col gap-3 border-b border-line pb-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2">
-                <TrendingUp className="h-4 w-4 text-amber-400" />
+                <TrendingUp className="h-4 w-4 text-accent-text" />
 
                 <div>
-                  <h3 className="text-sm font-bold text-slate-100">
+                  <h3 className="text-sm font-bold text-fg">
                     Current Thesis
                   </h3>
 
-                  <p className="text-[10px] text-slate-500">
+                  <p className="text-[10px] text-fg-subtle">
                     What the GOAT currently believes and what it is
                     watching to prove or invalidate that belief.
                   </p>
@@ -1561,12 +2126,12 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               </div>
 
               <div className="flex items-center gap-2">
-                <span className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-mono uppercase text-amber-300">
+                <span className="rounded-lg border border-accent/30 bg-accent-soft px-2 py-0.5 text-[9px] font-mono uppercase text-accent-text">
                   {inspectedState?.currentThesis
                     ?.directionalHypothesis || 'NEUTRAL'}
                 </span>
 
-                <span className="text-[10px] font-mono text-slate-500">
+                <span className="text-[10px] font-mono text-fg-subtle">
                   {inspectedState?.currentThesis
                     ? `${inspectedState.currentThesis.confidence}% confidence`
                     : 'No confidence recorded'}
@@ -1577,12 +2142,12 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             <div className="mt-4 space-y-3">
               {/* STEP 1 — the state of the asset(s) */}
               {inspectedState?.currentThesis?.assetState && (
-                <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                <div className="rounded-xl border border-line bg-sunken/50 p-3">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-fg-subtle">
                     Market State
                   </span>
 
-                  <p className="mt-1 text-xs leading-relaxed text-slate-200">
+                  <p className="mt-1 text-xs leading-relaxed text-fg">
                     {inspectedState.currentThesis.assetState}
                   </p>
                 </div>
@@ -1591,8 +2156,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               {/* STEP 2 — the plan: ordered wait-for conditions */}
               {(inspectedState?.currentThesis?.tradePlan
                 ?.length ?? 0) > 0 && (
-                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
-                  <span className="text-[9px] font-bold uppercase tracking-wider text-amber-400">
+                <div className="rounded-xl border border-accent/30 bg-accent/5 p-3">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-accent-text">
                     Plan · what we're waiting for
                   </span>
 
@@ -1603,9 +2168,9 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                     ).map((step, stepIndex) => (
                       <li
                         key={`${stepIndex}-${step.slice(0, 24)}`}
-                        className="flex gap-2 text-xs leading-relaxed text-slate-200"
+                        className="flex gap-2 text-xs leading-relaxed text-fg"
                       >
-                        <span className="shrink-0 font-mono text-amber-400">
+                        <span className="shrink-0 font-mono text-accent-text">
                           {stepIndex + 1}.
                         </span>
                         <span>{step}</span>
@@ -1615,17 +2180,17 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 </div>
               )}
 
-              <p className="text-xs leading-relaxed text-slate-200">
+              <p className="text-xs leading-relaxed text-fg">
                 {inspectedState?.currentThesis?.observationPlan ||
                   (inspectedState?.currentThesis
                     ? 'No observation plan recorded.'
                     : `No active thesis yet. Wake ${inspectedGoat.name} to run its first market review.`)}
               </p>
 
-              <div className="flex flex-wrap gap-x-5 gap-y-2 border-t border-slate-800/70 pt-3 text-[10px] text-slate-500">
+              <div className="flex flex-wrap gap-x-5 gap-y-2 border-t border-line/70 pt-3 text-[10px] text-fg-subtle">
                 <span>
                   Timeframe:{' '}
-                  <strong className="font-mono text-slate-300">
+                  <strong className="font-mono text-fg-muted">
                     {inspectedState?.currentThesis
                       ?.relevantTimeframe || '—'}
                   </strong>
@@ -1633,7 +2198,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
                 <span>
                   Status:{' '}
-                  <strong className="font-mono text-emerald-400">
+                  <strong className="font-mono text-positive">
                     {inspectedState?.currentThesis?.status || '—'}
                   </strong>
                 </span>
@@ -1645,23 +2210,23 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
           {/* TRACKERS                                                     */}
           {/* ========================================================= */}
 
-          <section className="rounded-3xl border border-slate-800 bg-[#0c0f17] p-4 sm:p-5">
-            <div className="flex flex-col gap-2 border-b border-slate-800/80 pb-3 sm:flex-row sm:items-center sm:justify-between">
+          <section className="rounded-3xl border border-line bg-surface p-4 sm:p-5">
+            <div className="flex flex-col gap-2 border-b border-line pb-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2">
-                <Eye className="h-4 w-4 text-amber-400" />
+                <Eye className="h-4 w-4 text-accent-text" />
 
                 <div>
-                  <h3 className="text-sm font-bold text-slate-100">
+                  <h3 className="text-sm font-bold text-fg">
                     Tracked Conditions
                   </h3>
 
-                  <p className="text-[10px] text-slate-500">
+                  <p className="text-[10px] text-fg-subtle">
                     Deterministic events that can wake the GOAT.
                   </p>
                 </div>
               </div>
 
-              <span className="text-[10px] font-mono text-slate-500">
+              <span className="text-[10px] font-mono text-fg-subtle">
                 {inspectedState?.trackers?.length ?? 0} active
               </span>
             </div>
@@ -1671,36 +2236,36 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 <button
                   key={condition.id}
                   onClick={() => setSelectedCondition(condition)}
-                  className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-left hover:border-amber-500/30 hover:bg-slate-900"
+                  className="flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-sunken/60 p-3 text-left hover:border-accent/40 hover:bg-sunken"
                 >
                   <div className="flex min-w-0 items-center gap-2.5">
                     <span
                       className={`h-2 w-2 shrink-0 rounded-full ${
                         condition.isTriggered
-                          ? 'bg-emerald-400'
-                          : 'bg-amber-400'
+                          ? 'bg-positive'
+                          : 'bg-accent'
                       }`}
                     />
 
-                    <span className="truncate text-xs font-medium text-slate-200">
+                    <span className="truncate text-xs font-medium text-fg">
                       {getSemanticConditionText(condition)}
                     </span>
 
                     {condition.formulaDescription && (
-                      <span className="shrink-0 rounded-md border border-slate-800 bg-slate-900 px-1.5 py-0.5 text-[9px] font-mono text-slate-400">
+                      <span className="shrink-0 rounded-md border border-line bg-sunken px-1.5 py-0.5 text-[9px] font-mono text-fg-muted">
                         {condition.formulaDescription}
                       </span>
                     )}
                   </div>
 
                   <div className="flex shrink-0 items-center gap-2">
-                    <span className="hidden text-[10px] font-mono text-slate-500 sm:inline">
+                    <span className="hidden text-[10px] font-mono text-fg-subtle sm:inline">
                       {condition.market}
                     </span>
 
                     {condition.currentCalculatedValue !==
                       undefined && (
-                      <span className="hidden text-[10px] font-mono text-sky-400 sm:inline">
+                      <span className="hidden text-[10px] font-mono text-info sm:inline">
                         now{' '}
                         {
                           condition.currentCalculatedValue
@@ -1711,8 +2276,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                     <span
                       className={`rounded-md px-2 py-0.5 text-[9px] font-mono ${
                         condition.isTriggered
-                          ? 'bg-emerald-500/10 text-emerald-400'
-                          : 'bg-slate-800 text-slate-400'
+                          ? 'bg-positive-soft text-positive'
+                          : 'bg-raised text-fg-muted'
                       }`}
                     >
                       {condition.isTriggered
@@ -1720,13 +2285,13 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                         : 'WAITING'}
                     </span>
 
-                    <ChevronRight className="h-3.5 w-3.5 text-slate-500" />
+                    <ChevronRight className="h-3.5 w-3.5 text-fg-subtle" />
                   </div>
                 </button>
               ))}
 
               {!inspectedState?.trackers?.length && (
-                <div className="rounded-xl border border-dashed border-slate-800 py-8 text-center text-xs text-slate-600">
+                <div className="rounded-xl border border-dashed border-line py-8 text-center text-xs text-fg-subtle">
                   No tracked conditions yet.
                   <br />
                   They are created by the GOAT after market reasoning.
@@ -1751,28 +2316,28 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 <button
                   key={event.id}
                   onClick={() => setSelectedWakeEvent(event)}
-                  className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-left hover:bg-slate-900"
+                  className="flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-sunken/60 p-3 text-left hover:bg-sunken"
                 >
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-mono text-amber-400">
+                      <span className="text-[10px] font-mono text-accent-text">
                         {new Date(event.timestamp).toLocaleTimeString([], {
                           hour: '2-digit',
                           minute: '2-digit',
                         })}
                       </span>
 
-                      <span className="text-xs font-semibold text-slate-200">
+                      <span className="text-xs font-semibold text-fg">
                         {event.reason}
                       </span>
                     </div>
 
-                    <p className="mt-1 line-clamp-1 text-[10px] text-slate-500">
+                    <p className="mt-1 line-clamp-1 text-[10px] text-fg-subtle">
                       {event.details}
                     </p>
                   </div>
 
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-fg-subtle" />
                 </button>
               ))}
 
@@ -1794,15 +2359,15 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   <button
                     key={event.id}
                     onClick={() => setSelectedWakeEvent(event)}
-                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-left hover:bg-slate-900"
+                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-sunken/60 p-3 text-left hover:bg-sunken"
                   >
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-slate-200">
+                        <span className="text-xs font-bold text-fg">
                           Session Review
                         </span>
 
-                        <span className="rounded-md bg-slate-800 px-1.5 py-0.5 text-[9px] font-mono text-amber-400">
+                        <span className="rounded-md bg-raised px-1.5 py-0.5 text-[9px] font-mono text-accent-text">
                           {new Date(
                             event.timestamp
                           ).toLocaleTimeString([], {
@@ -1812,12 +2377,12 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                         </span>
                       </div>
 
-                      <p className="mt-1 line-clamp-1 text-[10px] text-slate-500">
+                      <p className="mt-1 line-clamp-1 text-[10px] text-fg-subtle">
                         {event.details}
                       </p>
                     </div>
 
-                    <ChevronRight className="h-3.5 w-3.5 text-slate-500" />
+                    <ChevronRight className="h-3.5 w-3.5 text-fg-subtle" />
                   </button>
                 ))}
 
@@ -1875,7 +2440,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       {selectedCondition && (
         <InspectorShell
           title="Tracked Condition"
-          icon={<Eye className="h-4 w-4 text-amber-400" />}
+          icon={<Eye className="h-4 w-4 text-accent-text" />}
           onClose={() => setSelectedCondition(null)}
         >
           <InspectorField
@@ -1921,7 +2486,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       {selectedWakeEvent && (
         <InspectorShell
           title="Wake Event"
-          icon={<Clock className="h-4 w-4 text-amber-400" />}
+          icon={<Clock className="h-4 w-4 text-accent-text" />}
           onClose={() => setSelectedWakeEvent(null)}
         >
           <InspectorField
@@ -1962,7 +2527,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       {selectedReview && (
         <InspectorShell
           title={selectedReview.session || 'Market Review'}
-          icon={<Calendar className="h-4 w-4 text-amber-400" />}
+          icon={<Calendar className="h-4 w-4 text-accent-text" />}
           onClose={() => setSelectedReview(null)}
         >
           <InspectorField
@@ -1998,20 +2563,20 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
       {isChatOpen && inspectedGoat && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 backdrop-blur-sm sm:items-center sm:p-4">
-          <div className="flex h-[92vh] w-full flex-col overflow-hidden rounded-t-3xl border border-slate-800 bg-[#0a0d14] shadow-2xl sm:h-[700px] sm:max-w-xl sm:rounded-3xl">
-            <div className="flex items-center justify-between border-b border-slate-800 bg-[#0e121b] p-4">
+          <div className="flex h-[92vh] w-full flex-col overflow-hidden rounded-t-3xl border border-line bg-raised shadow-2xl sm:h-[700px] sm:max-w-xl sm:rounded-3xl">
+            <div className="flex items-center justify-between border-b border-line bg-raised p-4">
               <div className="flex items-center gap-2.5">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-accent/40 bg-accent-soft">
                   🐐
                 </div>
 
                 <div>
-                  <h3 className="flex items-center gap-1.5 text-sm font-bold text-slate-100">
+                  <h3 className="flex items-center gap-1.5 text-sm font-bold text-fg">
                     {inspectedGoat.name}
-                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                    <span className="h-2 w-2 rounded-full bg-positive" />
                   </h3>
 
-                  <p className="text-[10px] text-slate-500">
+                  <p className="text-[10px] text-fg-subtle">
                     Grounded in live runtime state
                   </p>
                 </div>
@@ -2019,19 +2584,19 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
               <button
                 onClick={() => setIsChatOpen(false)}
-                className="rounded-lg p-1 text-slate-500 hover:text-slate-200"
+                className="rounded-lg p-1 text-fg-subtle hover:text-fg"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <div className="flex gap-1.5 overflow-x-auto border-b border-slate-800/80 bg-slate-900/50 px-4 py-2">
+            <div className="flex gap-1.5 overflow-x-auto border-b border-line bg-sunken/50 px-4 py-2">
               {QUICK_PROMPTS.map(prompt => (
                 <button
                   key={prompt}
                   type="button"
                   onClick={() => setChatQuestion(prompt)}
-                  className="whitespace-nowrap rounded-full bg-slate-800 px-2.5 py-1 text-[10px] text-slate-300 hover:text-amber-300"
+                  className="whitespace-nowrap rounded-full bg-raised px-2.5 py-1 text-[10px] text-fg-muted hover:text-accent-text"
                 >
                   {prompt}
                 </button>
@@ -2051,22 +2616,22 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   <div
                     className={`max-w-[88%] whitespace-pre-wrap rounded-2xl p-3.5 text-xs leading-relaxed ${
                       message.sender === 'user'
-                        ? 'rounded-tr-none bg-amber-500 font-medium text-slate-950'
-                        : 'rounded-tl-none border border-slate-800 bg-slate-900 text-slate-200'
+                        ? 'rounded-tr-none bg-accent font-medium text-accent-fg'
+                        : 'rounded-tl-none border border-line bg-sunken text-fg'
                     }`}
                   >
                     {message.text}
                   </div>
 
-                  <span className="mt-1 px-1 text-[9px] font-mono text-slate-600">
+                  <span className="mt-1 px-1 text-[9px] font-mono text-fg-subtle">
                     {message.time}
                   </span>
                 </div>
               ))}
 
               {isAsking && (
-                <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-[10px] text-slate-500">
-                  <span className="h-2 w-2 animate-ping rounded-full bg-amber-400" />
+                <div className="flex items-center gap-2 rounded-xl border border-line bg-sunken/60 p-3 text-[10px] text-fg-subtle">
+                  <span className="h-2 w-2 animate-ping rounded-full bg-accent" />
                   Consulting GOAT runtime...
                 </div>
               )}
@@ -2074,7 +2639,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
             <form
               onSubmit={handleSendMessage}
-              className="border-t border-slate-800 bg-[#0c0f17] p-3"
+              className="border-t border-line bg-surface p-3"
             >
               <div className="flex items-center gap-2">
                 <input
@@ -2083,7 +2648,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                     setChatQuestion(e.target.value)
                   }
                   placeholder={`Ask ${inspectedGoat.name}...`}
-                  className="flex-1 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-amber-500/50"
+                  className="flex-1 rounded-xl border border-line bg-sunken px-3.5 py-2.5 text-xs text-fg outline-none placeholder:text-fg-subtle focus:border-focus"
                 />
 
                 <button
@@ -2091,7 +2656,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   disabled={
                     isAsking || !chatQuestion.trim()
                   }
-                  className="rounded-xl bg-amber-500 p-2.5 text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+                  className="rounded-xl bg-accent p-2.5 text-accent-fg hover:bg-accent-hover disabled:opacity-40"
                 >
                   <Send className="h-4 w-4" />
                 </button>
@@ -2107,19 +2672,19 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
       {isOpenCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 backdrop-blur-sm sm:p-4">
-          <div className="max-h-[94vh] w-full max-w-xl overflow-y-auto rounded-3xl border border-slate-800 bg-[#0c0f17] shadow-2xl">
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-800 bg-[#0c0f17]/95 p-5 backdrop-blur">
+          <div className="max-h-[94vh] w-full max-w-xl overflow-y-auto rounded-3xl border border-line bg-surface shadow-2xl">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface/95 p-5 backdrop-blur">
               <div className="flex items-center gap-2.5">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10">
-                  <Sparkles className="h-4 w-4 text-amber-400" />
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-accent/40 bg-accent-soft">
+                  <Sparkles className="h-4 w-4 text-accent-text" />
                 </div>
 
                 <div>
-                  <h3 className="text-sm font-bold text-slate-100">
-                    Create Your SignalGOAT
+                  <h3 className="text-sm font-bold text-fg">
+                    Create Your FundAGoat
                   </h3>
 
-                  <p className="text-[10px] text-slate-500">
+                  <p className="text-[10px] text-fg-subtle">
                     Give it the objective. The GOAT handles the reasoning loop.
                   </p>
                 </div>
@@ -2127,7 +2692,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
               <button
                 onClick={onCloseCreateModal}
-                className="rounded-lg p-1 text-slate-500 hover:text-slate-200"
+                className="rounded-lg p-1 text-fg-subtle hover:text-fg"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -2135,7 +2700,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
             <div className="p-5 sm:p-6">
               {createError && (
-                <div className="mb-4 flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+                <div className="mb-4 flex items-start gap-2 rounded-xl border border-negative/40 bg-negative-soft p-3 text-xs text-negative">
                   <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span>{createError}</span>
                 </div>
@@ -2147,7 +2712,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               >
                 {/* Identity */}
                 <div>
-                  <label className="mb-1.5 block font-semibold text-slate-300">
+                  <label className="mb-1.5 block font-semibold text-fg-muted">
                     GOAT Name
                   </label>
 
@@ -2155,13 +2720,13 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                     value={name}
                     onChange={e => setName(e.target.value)}
                     placeholder="e.g. London Alpha Hunter"
-                    className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5 text-slate-100 outline-none placeholder:text-slate-600 focus:border-amber-500/50"
+                    className="w-full rounded-xl border border-line bg-sunken px-3 py-2.5 text-fg outline-none placeholder:text-fg-subtle focus:border-focus"
                   />
                 </div>
 
                 {/* Goal */}
                 <div>
-                  <label className="mb-1.5 block font-semibold text-slate-300">
+                  <label className="mb-1.5 block font-semibold text-fg-muted">
                     Strategic Objective
                   </label>
 
@@ -2170,10 +2735,10 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                     onChange={e => setGoal(e.target.value)}
                     rows={4}
                     placeholder="Describe what you want the GOAT to investigate and find."
-                    className="w-full resize-none rounded-xl border border-slate-800 bg-slate-900 p-3 text-slate-100 outline-none placeholder:text-slate-600 focus:border-amber-500/50"
+                    className="w-full resize-none rounded-xl border border-line bg-sunken p-3 text-fg outline-none placeholder:text-fg-subtle focus:border-focus"
                   />
 
-                  <p className="mt-1.5 text-[9px] leading-relaxed text-slate-600">
+                  <p className="mt-1.5 text-[9px] leading-relaxed text-fg-subtle">
                     Focus on the outcome. Avoid hard-coding triggers or
                     timeframes — the GOAT determines what evidence it needs.
                   </p>
@@ -2182,11 +2747,11 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 {/* Markets */}
                 <div>
                   <div className="mb-1.5 flex items-center justify-between">
-                    <label className="font-semibold text-slate-300">
+                    <label className="font-semibold text-fg-muted">
                       Assigned Markets
                     </label>
 
-                    <span className="text-[9px] font-mono text-slate-600">
+                    <span className="text-[9px] font-mono text-fg-subtle">
                       {selectedMarkets.length} selected
                     </span>
                   </div>
@@ -2206,8 +2771,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                           }
                           className={`rounded-lg px-2.5 py-1.5 text-[10px] font-mono transition-colors ${
                             selected
-                              ? 'bg-amber-500 font-bold text-slate-950'
-                              : 'border border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
+                              ? 'bg-accent font-bold text-accent-fg'
+                              : 'border border-line bg-sunken text-fg-muted hover:text-fg'
                           }`}
                         >
                           {symbol.symbol}
@@ -2219,7 +2784,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
                 {/* Skills */}
                 <div>
-                  <label className="mb-1.5 block font-semibold text-slate-300">
+                  <label className="mb-1.5 block font-semibold text-fg-muted">
                     Assigned Skills
                   </label>
 
@@ -2235,8 +2800,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                           onClick={() => toggleSkill(skill.id)}
                           className={`flex w-full items-center justify-between rounded-xl border p-2.5 text-left transition-colors ${
                             selected
-                              ? 'border-amber-500/40 bg-amber-500/10 text-slate-100'
-                              : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
+                              ? 'border-accent/40 bg-accent-soft text-fg'
+                              : 'border-line bg-sunken text-fg-muted hover:text-fg'
                           }`}
                         >
                           <span className="font-semibold">
@@ -2244,7 +2809,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                           </span>
 
                           {selected && (
-                            <CheckCircle2 className="h-3.5 w-3.5 text-amber-400" />
+                            <CheckCircle2 className="h-3.5 w-3.5 text-accent-text" />
                           )}
                         </button>
                       );
@@ -2253,14 +2818,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 </div>
 
                 {/* LIVE MODEL PICKER */}
-                <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-3.5">
+                <div className="rounded-2xl border border-line bg-sunken/40 p-3.5">
                   <div className="mb-3 flex items-start justify-between gap-3">
                     <div>
-                      <label className="block font-semibold text-slate-200">
+                      <label className="block font-semibold text-fg">
                         Reasoning Model
                       </label>
 
-                      <p className="mt-0.5 text-[9px] leading-relaxed text-slate-600">
+                      <p className="mt-0.5 text-[9px] leading-relaxed text-fg-subtle">
                         Live catalogue. Models removed upstream are never
                         silently substituted.
                       </p>
@@ -2270,7 +2835,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                       type="button"
                       onClick={() => void loadModels()}
                       disabled={modelState === 'loading'}
-                      className="rounded-lg border border-slate-800 bg-slate-900 p-1.5 text-slate-500 hover:text-slate-200 disabled:opacity-40"
+                      className="rounded-lg border border-line bg-sunken p-1.5 text-fg-subtle hover:text-fg disabled:opacity-40"
                       title="Refresh model catalogue"
                     >
                       <RefreshCw
@@ -2284,26 +2849,26 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   </div>
 
                   {modelState === 'loading' && (
-                    <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 p-3 text-[10px] text-slate-500">
-                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-amber-400" />
+                    <div className="flex items-center gap-2 rounded-xl border border-line bg-sunken p-3 text-[10px] text-fg-subtle">
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-accent-text" />
                       Loading live reasoning models...
                     </div>
                   )}
 
                   {modelState === 'error' && (
-                    <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-3">
+                    <div className="rounded-xl border border-negative/30 bg-negative-soft/40 p-3">
                       <div className="flex items-start gap-2">
-                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 text-rose-400" />
+                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 text-negative" />
 
                         <div className="flex-1">
-                          <p className="text-[10px] text-rose-300">
+                          <p className="text-[10px] text-negative">
                             {modelError}
                           </p>
 
                           <button
                             type="button"
                             onClick={() => void loadModels()}
-                            className="mt-2 text-[10px] font-semibold text-amber-400 hover:text-amber-300"
+                            className="mt-2 text-[10px] font-semibold text-accent-text hover:text-accent-text"
                           >
                             Retry catalogue
                           </button>
@@ -2321,7 +2886,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                             setModelSearch(e.target.value)
                           }
                           placeholder="Search models..."
-                          className="min-w-0 flex-1 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-[10px] text-slate-200 outline-none placeholder:text-slate-600 focus:border-amber-500/50"
+                          className="min-w-0 flex-1 rounded-xl border border-line bg-sunken px-3 py-2 text-[10px] text-fg outline-none placeholder:text-fg-subtle focus:border-focus"
                         />
 
                         <button
@@ -2331,8 +2896,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                           }
                           className={`rounded-xl border px-2.5 text-[10px] ${
                             showModelDetails
-                              ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
-                              : 'border-slate-800 bg-slate-900 text-slate-500'
+                              ? 'border-accent/40 bg-accent-soft text-accent-text'
+                              : 'border-line bg-sunken text-fg-subtle'
                           }`}
                         >
                           Info
@@ -2340,15 +2905,15 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                       </div>
 
                       {selectedModelIsUnavailable && (
-                        <div className="mb-2 flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3">
-                          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" />
+                        <div className="mb-2 flex items-start gap-2 rounded-xl border border-negative/40 bg-negative-soft p-3">
+                          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-negative" />
 
                           <div>
-                            <p className="text-[10px] font-bold text-rose-300">
+                            <p className="text-[10px] font-bold text-negative">
                               Selected model unavailable
                             </p>
 
-                            <p className="mt-0.5 text-[9px] leading-relaxed text-rose-300/70">
+                            <p className="mt-0.5 text-[9px] leading-relaxed text-negative/70">
                               {selectedModel} is no longer present in the
                               live catalogue. Select another model before
                               deploying.
@@ -2381,28 +2946,28 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                               }
                               className={`w-full rounded-xl border p-3 text-left transition-all ${
                                 selected
-                                  ? 'border-amber-500/50 bg-amber-500/10'
-                                  : 'border-slate-800 bg-slate-900/70 hover:border-slate-700'
+                                  ? 'border-accent/50 bg-accent-soft'
+                                  : 'border-line bg-sunken/70 hover:border-line-strong'
                               }`}
                             >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
                                   <div className="flex items-center gap-2">
                                     {selected && (
-                                      <Check className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                                      <Check className="h-3.5 w-3.5 shrink-0 text-accent-text" />
                                     )}
 
-                                    <span className="truncate text-[11px] font-bold text-slate-200">
+                                    <span className="truncate text-[11px] font-bold text-fg">
                                       {model.name}
                                     </span>
                                   </div>
 
-                                  <p className="mt-0.5 truncate pl-5 text-[9px] font-mono text-slate-600">
+                                  <p className="mt-0.5 truncate pl-5 text-[9px] font-mono text-fg-subtle">
                                     {model.id}
                                   </p>
                                 </div>
 
-                                <span className="shrink-0 rounded-md bg-slate-800 px-1.5 py-0.5 text-[8px] font-mono text-slate-500">
+                                <span className="shrink-0 rounded-md bg-raised px-1.5 py-0.5 text-[8px] font-mono text-fg-subtle">
                                   {formatContext(
                                     model.contextLength ||
                                       model.topProvider
@@ -2413,17 +2978,17 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                               </div>
 
                               {showModelDetails && (
-                                <div className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-800/70 pt-2 text-[9px] font-mono text-slate-500">
+                                <div className="mt-2 grid grid-cols-2 gap-2 border-t border-line/70 pt-2 text-[9px] font-mono text-fg-subtle">
                                   <span>
                                     Input:{' '}
-                                    <strong className="text-slate-400">
+                                    <strong className="text-fg-muted">
                                       {formatPrice(inputPrice)}
                                     </strong>
                                   </span>
 
                                   <span>
                                     Output:{' '}
-                                    <strong className="text-slate-400">
+                                    <strong className="text-fg-muted">
                                       {formatPrice(outputPrice)}
                                     </strong>
                                   </span>
@@ -2434,7 +2999,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                         })}
 
                         {!filteredModels.length && (
-                          <div className="py-6 text-center text-[10px] text-slate-600">
+                          <div className="py-6 text-center text-[10px] text-fg-subtle">
                             No live models match "{modelSearch}".
                           </div>
                         )}
@@ -2444,14 +3009,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 </div>
 
                 {/* Reasoning interval */}
-                <div className="space-y-3 border-t border-slate-800 pt-4">
+                <div className="space-y-3 border-t border-line pt-4">
                   <div>
-                    <label className="flex items-center gap-2 text-xs font-bold text-slate-100">
-                      <Clock className="h-4 w-4 text-amber-400" />
+                    <label className="flex items-center gap-2 text-xs font-bold text-fg">
+                      <Clock className="h-4 w-4 text-accent-text" />
                       Analysis Interval
                     </label>
 
-                    <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                    <p className="mt-1 text-[10px] leading-relaxed text-fg-muted">
                       How often the AI is allowed to re-analyse the market.
                       Deterministic trackers keep checking conditions on every
                       price tick regardless — this only controls AI spend.
@@ -2471,8 +3036,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                         className={`rounded-lg border px-2.5 py-1.5 text-[10px] font-semibold transition-colors cursor-pointer ${
                           schedulePreset ===
                           String(preset.minutes)
-                            ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
-                            : 'border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700'
+                            ? 'border-accent/50 bg-accent-soft text-accent-text'
+                            : 'border-line bg-sunken text-fg-muted hover:border-line-strong'
                         }`}
                       >
                         {preset.label}
@@ -2486,8 +3051,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                       }
                       className={`rounded-lg border px-2.5 py-1.5 text-[10px] font-semibold transition-colors cursor-pointer ${
                         schedulePreset === 'TIMES'
-                          ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
-                          : 'border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700'
+                          ? 'border-accent/50 bg-accent-soft text-accent-text'
+                          : 'border-line bg-sunken text-fg-muted hover:border-line-strong'
                       }`}
                     >
                       Specific times
@@ -2495,8 +3060,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   </div>
 
                   {schedulePreset === 'TIMES' && (
-                    <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-                      <p className="text-[10px] text-slate-400">
+                    <div className="space-y-2 rounded-xl border border-line bg-sunken/60 p-3">
+                      <p className="text-[10px] text-fg-muted">
                         Your local wall-clock times (24h). The AI analyses at
                         each one.
                       </p>
@@ -2518,7 +3083,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                                   event.target.value;
                                 setCustomTimes(next);
                               }}
-                              className="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-[11px] font-mono text-slate-100 focus:border-amber-500/50 focus:outline-none"
+                              className="rounded-lg border border-line bg-sunken px-2 py-1 text-[11px] font-mono text-fg focus:border-focus focus:outline-none"
                             />
 
                             {customTimes.length > 1 && (
@@ -2532,7 +3097,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                                     )
                                   )
                                 }
-                                className="rounded-md p-1 text-slate-500 hover:text-rose-300 cursor-pointer"
+                                className="rounded-md p-1 text-fg-subtle hover:text-negative cursor-pointer"
                               >
                                 <X className="h-3 w-3" />
                               </button>
@@ -2549,7 +3114,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                                 '12:00',
                               ])
                             }
-                            className="rounded-lg border border-dashed border-slate-700 px-2 py-1 text-[10px] font-semibold text-slate-400 hover:border-amber-500/40 hover:text-amber-300 cursor-pointer"
+                            className="rounded-lg border border-dashed border-line-strong px-2 py-1 text-[10px] font-semibold text-fg-muted hover:border-accent/40 hover:text-accent-text cursor-pointer"
                           >
                             + Add time
                           </button>
@@ -2558,14 +3123,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                     </div>
                   )}
 
-                  <p className="text-[10px] font-mono text-slate-500">
+                  <p className="text-[10px] font-mono text-fg-subtle">
                     Selected: {describeScheduleLabel(buildSchedule())}
                   </p>
                 </div>
 
                 {/* Footer */}
-                <div className="flex items-center justify-between gap-3 border-t border-slate-800 pt-4">
-                  <div className="hidden text-[9px] leading-relaxed text-slate-600 sm:block">
+                <div className="flex items-center justify-between gap-3 border-t border-line pt-4">
+                  <div className="hidden text-[9px] leading-relaxed text-fg-subtle sm:block">
                     The GOAT decides when conditions are sufficient.
                     You define the objective.
                   </div>
@@ -2574,7 +3139,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                     <button
                       type="button"
                       onClick={onCloseCreateModal}
-                      className="rounded-xl px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-200"
+                      className="rounded-xl px-4 py-2 text-xs font-semibold text-fg-subtle hover:text-fg"
                     >
                       Cancel
                     </button>
@@ -2587,7 +3152,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                         !selectedModel ||
                         selectedModelIsUnavailable
                       }
-                      className="flex items-center gap-2 rounded-xl bg-amber-500 px-5 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="flex items-center gap-2 rounded-xl bg-accent px-5 py-2 text-xs font-bold text-accent-fg hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {isCreating ? (
                         <>
@@ -2633,38 +3198,38 @@ const Disclosure: React.FC<DisclosureProps> = ({
   icon,
   children,
 }) => (
-  <section className="overflow-hidden rounded-2xl border border-slate-800 bg-[#0c0f17]">
+  <section className="overflow-hidden rounded-2xl border border-line bg-surface">
     <button
       onClick={onToggle}
-      className="flex w-full items-center justify-between gap-3 p-4 text-left hover:bg-slate-900/50"
+      className="flex w-full items-center justify-between gap-3 p-4 text-left hover:bg-sunken/50"
     >
       <div className="flex items-center gap-2.5">
         {open ? (
-          <ChevronUp className="h-4 w-4 text-amber-400" />
+          <ChevronUp className="h-4 w-4 text-accent-text" />
         ) : (
-          <ChevronDown className="h-4 w-4 text-slate-500" />
+          <ChevronDown className="h-4 w-4 text-fg-subtle" />
         )}
 
-        <span className="text-amber-400">{icon}</span>
+        <span className="text-accent-text">{icon}</span>
 
         <div>
-          <h4 className="text-xs font-bold text-slate-200">
+          <h4 className="text-xs font-bold text-fg">
             {title}
           </h4>
 
-          <p className="text-[9px] font-mono text-slate-600">
+          <p className="text-[9px] font-mono text-fg-subtle">
             {subtitle}
           </p>
         </div>
       </div>
 
-      <span className="text-[10px] text-slate-600">
+      <span className="text-[10px] text-fg-subtle">
         {open ? 'Hide' : 'Inspect'}
       </span>
     </button>
 
     {open && (
-      <div className="space-y-2 border-t border-slate-800/80 p-4">
+      <div className="space-y-2 border-t border-line p-4">
         {children}
       </div>
     )}
@@ -2674,7 +3239,7 @@ const Disclosure: React.FC<DisclosureProps> = ({
 const EmptyDisclosure: React.FC<{ text: string }> = ({
   text,
 }) => (
-  <div className="py-7 text-center text-[10px] text-slate-600">
+  <div className="py-7 text-center text-[10px] text-fg-subtle">
     {text}
   </div>
 );
@@ -2694,8 +3259,8 @@ const EvidenceList: React.FC<EvidenceListProps> = ({
     <span
       className={`mb-2 block text-[9px] font-bold uppercase tracking-wider ${
         tone === 'positive'
-          ? 'text-emerald-400'
-          : 'text-rose-400'
+          ? 'text-positive'
+          : 'text-negative'
       }`}
     >
       {title}
@@ -2706,14 +3271,14 @@ const EvidenceList: React.FC<EvidenceListProps> = ({
         {items.map((item, index) => (
           <li
             key={`${title}-${index}`}
-            className="rounded-lg border border-slate-800/70 bg-slate-900/50 px-3 py-2 text-[10px] leading-relaxed text-slate-400"
+            className="rounded-lg border border-line/70 bg-sunken/50 px-3 py-2 text-[10px] leading-relaxed text-fg-muted"
           >
             {item}
           </li>
         ))}
       </ul>
     ) : (
-      <p className="text-[10px] text-slate-600">
+      <p className="text-[10px] text-fg-subtle">
         Nothing recorded.
       </p>
     )}
@@ -2734,16 +3299,16 @@ const InspectorShell: React.FC<InspectorShellProps> = ({
   children,
 }) => (
   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-    <div className="w-full max-w-lg overflow-hidden rounded-3xl border border-slate-800 bg-[#0c0f17] shadow-2xl">
-      <div className="flex items-center justify-between border-b border-slate-800 p-4">
-        <h3 className="flex items-center gap-2 text-sm font-bold text-slate-100">
+    <div className="w-full max-w-lg overflow-hidden rounded-3xl border border-line bg-surface shadow-2xl">
+      <div className="flex items-center justify-between border-b border-line p-4">
+        <h3 className="flex items-center gap-2 text-sm font-bold text-fg">
           {icon}
           {title}
         </h3>
 
         <button
           onClick={onClose}
-          className="rounded-lg p-1 text-slate-500 hover:text-slate-200"
+          className="rounded-lg p-1 text-fg-subtle hover:text-fg"
         >
           <X className="h-4 w-4" />
         </button>
@@ -2753,10 +3318,10 @@ const InspectorShell: React.FC<InspectorShellProps> = ({
         {children}
       </div>
 
-      <div className="flex justify-end border-t border-slate-800 p-4">
+      <div className="flex justify-end border-t border-line p-4">
         <button
           onClick={onClose}
-          className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+          className="rounded-xl bg-sunken px-4 py-2 text-xs font-semibold text-fg-muted hover:bg-raised"
         >
           Close
         </button>
@@ -2777,12 +3342,12 @@ const InspectorField: React.FC<InspectorFieldProps> = ({
   mono = false,
 }) => (
   <div>
-    <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-600">
+    <span className="block text-[9px] font-bold uppercase tracking-wider text-fg-subtle">
       {label}
     </span>
 
     <p
-      className={`mt-1 text-xs leading-relaxed text-slate-300 ${
+      className={`mt-1 text-xs leading-relaxed text-fg-muted ${
         mono ? 'font-mono' : ''
       }`}
     >

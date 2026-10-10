@@ -365,13 +365,13 @@ export function priceBucket(
 /** Default display precision per instrument category. */
 function defaultDigitsFor(instrument: string): number {
   const key = instrument.trim().toUpperCase();
-  if (key === 'XAU/USD') return 2;
-  if (key === 'XAG/USD') return 3;
-  if (key === 'BTC/USD' || key === 'ETH/USD') return 1;
-  if (key === 'US30' || key === 'GER40') return 1;
-  if (key === 'US500' || key === 'US100' || key === 'SPX500') return 2;
-  if (key === 'WTI' || key === 'BRENT') return 2;
-  if (key.endsWith('JPY')) return 3;
+  if (key === 'XYZ:GOLD') return 2;
+  if (key === 'XYZ:SILVER') return 3;
+  if (key === 'BTC' || key === 'ETH' || key === 'SOL') return 1;
+  if (key === 'XYZ:JP225' || key === 'XYZ:KR200') return 2;
+  if (key === 'XYZ:CL') return 2;
+  if (key === 'XYZ:EUR' || key === 'XYZ:GBP') return 5;
+  if (key === 'XYZ:JPY') return 3;
   return 5;
 }
 

@@ -234,15 +234,15 @@ describe('shared market ingestion', () => {
     const src = source();
     const { ingestion } = service(src);
 
-    await ingestion.ingest(['EUR/USD', 'XAU/USD', 'US500', 'BTC/USD']);
+    await ingestion.ingest(['EUR/USD', 'XYZ:GOLD', 'XYZ:JP225', 'BTC']);
 
     const counts = ingestion.subscriptionCounts();
     void counts;
 
     expect(MarketIngestionService.partitionFor('EUR/USD')).toBe('FX');
-    expect(MarketIngestionService.partitionFor('XAU/USD')).toBe('METALS');
-    expect(MarketIngestionService.partitionFor('US500')).toBe('INDEX');
-    expect(MarketIngestionService.partitionFor('BTC/USD')).toBe('CRYPTO');
+    expect(MarketIngestionService.partitionFor('XYZ:GOLD')).toBe('METALS');
+    expect(MarketIngestionService.partitionFor('XYZ:JP225')).toBe('INDEX');
+    expect(MarketIngestionService.partitionFor('BTC')).toBe('CRYPTO');
   });
 
   test('duplicate subscription is idempotent', async () => {

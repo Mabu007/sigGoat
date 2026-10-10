@@ -67,7 +67,7 @@ export const GROQ_MODELS = [
   {
     id: 'llama-3.3-70b-versatile',
     name: 'Llama 3.3 70B Versatile',
-    description: 'General purpose. The default Groq model for SignalGOAT.',
+    description: 'General purpose. The default Groq model for FundAGoat.',
   },
   {
     id: 'llama-3.1-8b-instant',
@@ -432,7 +432,7 @@ export class GroqClient {
    * Real end-to-end probe.
    *
    * Asks for the contract's minimal shape rather than a free-text string, so a
-   * pass proves the model can actually produce what SignalGOAT needs.
+   * pass proves the model can actually produce what FundAGoat needs.
    */
   async testConnection(model?: string): Promise<{
     ok: boolean;

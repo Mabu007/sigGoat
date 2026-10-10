@@ -349,17 +349,19 @@ const SESSION_SPECS: Record<InstrumentClass, SessionSpec> = {
 
 /** Indexes whose cash session is not in America/New_York. */
 const INDEX_ZONE_OVERRIDES: Record<string, { timezone: string; openMinute: number; closeMinute: number }> = {
-  // Xetra: 09:00-17:30 Europe/Berlin.
-  GER40: { timezone: 'Europe/Berlin', openMinute: 9 * 60, closeMinute: 17 * 60 + 30 },
+  // Tokyo: 09:00-15:00 JST.
+  'XYZ:JP225': { timezone: 'Asia/Tokyo', openMinute: 9 * 60, closeMinute: 15 * 60 },
+  // Seoul: 09:00-15:30 KST.
+  'XYZ:KR200': { timezone: 'Asia/Seoul', openMinute: 9 * 60, closeMinute: 15 * 60 + 30 },
 };
 
-const CRYPTO_INSTRUMENTS = new Set(['BTC/USD', 'ETH/USD']);
+const CRYPTO_INSTRUMENTS = new Set(['BTC', 'ETH', 'SOL']);
 
-const INDEX_INSTRUMENTS = new Set(['US500', 'US100', 'SPX500', 'US30', 'GER40', 'NAS100', 'SPX']);
+const INDEX_INSTRUMENTS = new Set(['XYZ:JP225', 'XYZ:KR200']);
 
-const METALS_INSTRUMENTS = new Set(['XAU/USD', 'XAG/USD', 'XPT/USD', 'XPD/USD']);
+const METALS_INSTRUMENTS = new Set(['XYZ:GOLD', 'XYZ:SILVER']);
 
-const ENERGY_INSTRUMENTS = new Set(['WTI', 'BRENT', 'XTIUSD', 'NG', 'HO']);
+const ENERGY_INSTRUMENTS = new Set(['XYZ:CL']);
 
 /**
  * Classifies an instrument by its canonical symbol.

@@ -1,39 +1,431 @@
 @import "tailwindcss";
 
+/* ================================================================== */
+/* THEME BOOTSTRAP                                                     */
+/* Runs BEFORE the app's JavaScript.                                   */
+/*                                                                     */
+/* The alternative is setting `data-theme` in a React effect, which    */
+/* means the browser paints the DEFAULT theme for one frame and then   */
+/* repaints the saved one. On a dark-mode user that flash is very      */
+/* visible on every navigation. This block is synchronous CSS in the   */
+/* document head, so the correct theme is applied before first paint.   */
+/* ================================================================== */
+
 @layer base {
   :root {
-    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
+    color-scheme: light;
+  }
+
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+  }
+}
+
+/* ================================================================== */
+/* DESIGN TOKENS                                                       */
+/*                                                                     */
+/* ONE source of colour truth. Both themes are defined here as a full   */
+/* palette rather than one theme being derived by inversion — a        */
+/* light theme built by inverting a dark one produces muddy surfaces,   */
+/* insufficient contrast on the secondary text, and borders that       */
+/* disappear.                                                          */
+/*                                                                     */
+/* Every value is exposed to Tailwind through `@theme inline`, so a    */
+/* component writes `bg-surface` / `text-fg-muted` / `border-line`     */
+/* and gets the right colour in BOTH themes automatically. That is the */
+/* point: a hardcoded `bg-[#0c0f17]` in a component cannot be themed,  */
+/* and there are no longer any of them.                                */
+/* ================================================================== */
+
+/* ------------------------------------------------------------------
+ * WHY THIS BLOCK IS `@theme` AND NOT `@theme inline`
+ * ------------------------------------------------------------------
+ *
+ * `@theme inline` makes Tailwind INLINE the literal value into each utility:
+ *
+ *     .bg-surface { background-color: #fff }      <- from `@theme inline`
+ *
+ * The variables are still emitted (so `--color-canvas` exists twice), but no
+ * utility REFERENCES them. That is why the theme toggle appeared to do almost
+ * nothing: `data-theme="dark"` activated the dark variable block, and every
+ * component kept rendering the baked-in light hex.
+ *
+ * Plain `@theme` compiles to a variable REFERENCE instead:
+ *
+ *     .bg-surface { background-color: var(--color-surface) }
+ *
+ * so the per-theme overrides below actually reach the components. The dark
+ * block uses `:root[data-theme='dark']` (specificity 0,2,0) against Tailwind's
+ * `:root, :host` (0,1,0), so it wins without `!important`.
+ * ------------------------------------------------------------------ */
+
+@theme {
+  /* ---- typography ---- */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* ---- surfaces, from furthest back to nearest ---- */
+  --color-canvas: #f7f8fa;      /* page background */
+  --color-surface: #ffffff;     /* cards, panels */
+  --color-raised: #fbfcfd;      /* nested panels, table headers */
+  --color-sunken: #eef0f4;      /* wells, code blocks, chart backdrop */
+
+  /* ---- borders ---- */
+  --color-line: #e3e6ec;        /* default hairline */
+  --color-line-strong: #cdd2dc; /* inputs, emphasised dividers */
+
+  /* ---- text ---- */
+  --color-fg: #10131a;          /* primary */
+  --color-fg-muted: #5a6273;    /* secondary, labels */
+  --color-fg-subtle: #868e9e;   /* captions, placeholders */
+  --color-fg-inverse: #ffffff;  /* on an accent fill */
+
+  /* ---- brand + status ---- */
+  --color-accent: #b45309;      /* amber-700: AA on white, readable */
+  --color-accent-hover: #92400e;
+  --color-accent-soft: #fef3c7; /* tinted backgrounds */
+  --color-accent-fg: #ffffff;
+
+  --color-positive: #047857;    /* emerald-700 */
+  --color-positive-soft: #d1fae5;
+  --color-negative: #be123c;    /* rose-700 */
+  --color-negative-soft: #ffe4e6;
+  --color-warning: #b45309;     /* amber-700 */
+  --color-warning-soft: #fef3c7;
+  --color-info: #1d4ed8;        /* blue-700 */
+  --color-info-soft: #dbeafe;
+
+  /* ---- focus ---- */
+  --color-focus: #2563eb;
+}
+
+@layer base {
+  :root[data-theme='dark'] {
+    /* Surfaces step DOWN in luminance in dark mode, and are slightly
+       blue-shifted rather than neutral grey — a pure grey terminal reads
+       as unfinished next to a warm accent. */
+    --color-canvas: #0a0c11;
+    --color-surface: #12151c;
+    --color-raised: #171b24;
+    --color-sunken: #0d1015;
+
+    --color-line: #232833;
+    --color-line-strong: #333a48;
+
+    --color-fg: #eef1f6;
+    --color-fg-muted: #a1aabb;
+    --color-fg-subtle: #6d7688;
+    --color-fg-inverse: #0a0c11;
+
+    /* Darker amber for the accent FILL so white text on it clears AA;
+       the dark-theme accent used as TEXT is the lighter tone below. */
+    --color-accent: #d97706;
+    --color-accent-hover: #f59e0b;
+    --color-accent-soft: #2a1f0a;
+    --color-accent-fg: #10131a;
+
+    --color-positive: #34d399;
+    --color-positive-soft: #0d2b21;
+    --color-negative: #fb7185;
+    --color-negative-soft: #33121b;
+    --color-warning: #fbbf24;
+    --color-warning-soft: #2b2109;
+    --color-info: #60a5fa;
+    --color-info-soft: #12203f;
+
+    --color-focus: #60a5fa;
+  }
+}
+
+/* Accent used for TEXT on a light background must differ from the fill
+   colour, or a light-mode accent label fails contrast on `canvas`.
+   Declared per theme rather than reused. */
+@layer base {
+  :root {
+    --color-accent-text: #92400e;
+  }
+  :root[data-theme='dark'] {
+    --color-accent-text: #fbbf24;
+  }
+}
+
+/* ================================================================== */
+/* BASE                                                                */
+/* ================================================================== */
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #080a0f;
-    color: #f1f5f9;
+    background-color: var(--color-canvas);
+    color: var(--color-fg);
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     touch-action: manipulation;
+    /* Colour transitions are scoped to a class (below) so the theme switch
+       animates but ordinary hover states do not lag behind the cursor. */
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+
+  /* Every numeral in this product is a price, a percentage or a clock.
+     Tabular figures stop columns of numbers from shifting as they tick. */
+  .tabular-nums,
+  table,
+  input[type='number'] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  /* A visible, consistent focus ring in both themes. `outline` rather than
+     `box-shadow` so it survives forced-colors mode. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-soft);
+    color: var(--color-fg);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-fg-subtle);
+    background-clip: content-box;
   }
 }
 
-/* Custom scrollbars */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #1e293b;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+/* Respect the OS preference for reduced motion. This product animates
+   sparingly anyway, but a live "connected" pulse should stop for someone
+   who has asked for that. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
-.tabular-nums {
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum";
+/* ================================================================== */
+/* COMPONENT PRIMITIVES                                                 */
+/*                                                                     */
+/* The surface primitives that were previously re-typed inline ~50    */
+/* times. Centralising them is what makes the two themes consistent:   */
+/* there is exactly one definition of "card" and "input".             */
+/* ================================================================== */
+
+@layer components {
+  .card {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: 0.75rem;
+  }
+
+  .panel {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: 0.875rem;
+  }
+
+  /* ---- buttons ---- */
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.875rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    line-height: 1.25rem;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+    cursor: pointer;
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background-color: var(--color-accent);
+    color: var(--color-accent-fg);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background-color: var(--color-accent-hover);
+  }
+
+  .btn-secondary {
+    background-color: var(--color-surface);
+    border-color: var(--color-line-strong);
+    color: var(--color-fg);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background-color: var(--color-raised);
+    border-color: var(--color-fg-subtle);
+  }
+
+  .btn-ghost {
+    background-color: transparent;
+    color: var(--color-fg-muted);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background-color: var(--color-raised);
+    color: var(--color-fg);
+  }
+
+  .btn-danger {
+    background-color: transparent;
+    border-color: var(--color-negative);
+    color: var(--color-negative);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background-color: var(--color-negative-soft);
+  }
+
+  /* ---- form controls ---- */
+
+  .input {
+    width: 100%;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-line-strong);
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+    color: var(--color-fg);
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .input::placeholder {
+    color: var(--color-fg-subtle);
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--color-focus);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 18%, transparent);
+  }
+  .input:disabled {
+    background-color: var(--color-sunken);
+    color: var(--color-fg-subtle);
+    cursor: not-allowed;
+  }
+
+  select.input {
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 2rem;
+  }
+
+  .label {
+    display: block;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-fg-muted);
+    margin-bottom: 0.375rem;
+  }
+
+  /* ---- data display ---- */
+
+  .stat {
+    background-color: var(--color-raised);
+    border: 1px solid var(--color-line);
+    border-radius: 0.625rem;
+    padding: 0.625rem 0.75rem;
+  }
+
+  .stat-label {
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--color-fg-subtle);
+  }
+
+  .stat-value {
+    font-family: var(--font-mono);
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--color-fg);
+    margin-top: 0.125rem;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: 999px;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+
+  .badge-positive { background-color: var(--color-positive-soft); color: var(--color-positive); }
+  .badge-negative { background-color: var(--color-negative-soft); color: var(--color-negative); }
+  .badge-warning  { background-color: var(--color-warning-soft);  color: var(--color-warning); }
+  .badge-info     { background-color: var(--color-info-soft);     color: var(--color-info); }
+  .badge-neutral  { background-color: var(--color-sunken);        color: var(--color-fg-muted); }
+
+  .divider {
+    height: 1px;
+    background-color: var(--color-line);
+  }
+
+  /* Hairline used above a card to mark a live/actionable state. */
+  .edge-top {
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    height: 2px;
+    background-color: var(--color-positive);
+    border-start-start-radius: inherit;
+    border-start-end-radius: inherit;
+  }
+
+  .link {
+    color: var(--color-accent-text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  /* Scroll container without a visible bar until hovered. */
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
 }

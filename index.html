@@ -1,14 +1,53 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SignalGOAT - AI Market Analysis &amp; Signals</title>
-    <meta name="description" content="Personal AI market-analysis agent. Continuous evidence-based market reasoning, skills synthesis, backtesting, and actionable trade signals without automated execution." />
-    <meta property="og:title" content="SignalGOAT - AI Market Analysis &amp; Signals" />
-    <meta property="og:description" content="Personal AI market-analysis agent. Continuous evidence-based market reasoning, skills synthesis, backtesting, and actionable trade signals without automated execution." />
+    <title>FundAGoat - AI Prop Trading Assistant</title>
+    <meta
+      name="description"
+      content="AI-assisted trading for prop-firm challenge and funded accounts. Continuous market analysis across crypto, currencies, commodities and indices, with risk-checked trade proposals you approve."
+    />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0c11" media="(prefers-color-scheme: dark)" />
+    <meta property="og:title" content="FundAGoat - AI Prop Trading Assistant" />
+    <meta
+      property="og:description"
+      content="AI-assisted trading for prop-firm challenge and funded accounts. Risk-checked trade proposals you approve."
+    />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+
+    <!--
+      THEME, APPLIED BEFORE FIRST PAINT.
+
+      This runs synchronously in <head>, ahead of the app bundle, so the
+      document already carries the right `data-theme` when the first pixels
+      are painted. Doing it in a React effect instead costs one frame of the
+      wrong theme on every navigation, which is a white flash for anyone on
+      dark mode.
+
+      Three cases, in priority order:
+        1. an explicit stored preference  -> use it
+        2. no preference                 -> follow the OS
+        3. nothing at all                -> light, then corrected below
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('fundagoat.theme');
+          var theme =
+            stored === 'light' || stored === 'dark'
+              ? stored
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light';
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (error) {
+          /* Private mode, or storage disabled. The markup default stands. */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

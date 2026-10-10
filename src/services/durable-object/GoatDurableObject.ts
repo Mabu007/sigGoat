@@ -17,7 +17,7 @@
  */
 
 import {
-  SignalGoat,
+  FundGoat,
   GoatRuntimeState,
   GoatSchedule,
   MarketThesis,
@@ -29,7 +29,7 @@ import {
   MarketQuote,
   Candle,
 } from '../../types';
-import { MarketDataProvider } from '../market-data/MarketDataProvider';
+import { MarketDataProvider, MarketDataUnavailableError } from '../market-data/MarketDataProvider';
 import {
   MarketStateSnapshot,
   MarketStateStore,
@@ -73,13 +73,13 @@ export interface GoatDurableObjectOptions {
   theses?: ThesisRepository;
   wakeEvents?: WakeEventRepository;
   /** Called when the gate approves a signal (Telegram notifier, etc.). */
-  onSignal?: (goat: SignalGoat, signal: TradeSignal) => void;
+  onSignal?: (goat: FundGoat, signal: TradeSignal) => void;
   /**
    * Called when a deterministic tracker condition is satisfied. This is the
    * "your wait-for condition just hit" alert — distinct from a signal.
    */
   onTrackerTriggered?: (
-    goat: SignalGoat,
+    goat: FundGoat,
     report: TrackerEvaluationReport,
   ) => void;
   /** Start the routine scheduler automatically (default true; tests use false). */
@@ -298,10 +298,35 @@ function describeTrackerFormula(directive: TrackerDirective): string {
   return `${directive.type} ${directive.operator ?? 'CONDITION'} ${directive.targetValue ?? 'level'}`;
 }
 
+/**
+ * True when a market-data failure means "the provider does not list this
+ * instrument" - NOT "the provider is temporarily down".
+ *
+ * Two shapes reach here: the provider's own `MarketDataUnavailableError`
+ * (with its machine-readable reason), and the MarketStateStore's wrapped
+ * error, where the original message survives inside
+ * `market data is UNAVAILABLE: <original message>`. Matching both is what
+ * lets a stale persisted symbol be retired instead of retried forever.
+ */
+const UNLISTED_MARKET_PATTERNS = [
+  /is not a market/i,
+  /has been delisted/i,
+  /not listed/i,
+];
+
+export function isUnlistedMarketError(err: unknown, message: string): boolean {
+  if (err instanceof MarketDataUnavailableError) {
+    if (err.unavailableReason === 'NOT_LISTED' || err.unavailableReason === 'DELISTED') {
+      return true;
+    }
+  }
+  return UNLISTED_MARKET_PATTERNS.some((pattern) => pattern.test(message));
+}
+
 export class GoatDurableObject {
   readonly id: string;
 
-  private goatConfig: SignalGoat;
+  private goatConfig: FundGoat;
   private skills: TradingSkill[];
   private runtimeState: GoatRuntimeState;
 
@@ -312,14 +337,16 @@ export class GoatDurableObject {
   private readonly signalRepo?: SignalRepository;
   private readonly thesisRepo?: ThesisRepository;
   private readonly wakeEventRepo?: WakeEventRepository;
-  private readonly onSignalCallback?: (goat: SignalGoat, signal: TradeSignal) => void;
+  private readonly onSignalCallback?: (goat: FundGoat, signal: TradeSignal) => void;
   private readonly onTrackerTriggeredCallback?: (
-    goat: SignalGoat,
+    goat: FundGoat,
     report: TrackerEvaluationReport,
   ) => void;
 
   private unsubscribeMarketData: (() => void) | null = null;
   private scheduledAlarm: ReturnType<typeof setTimeout> | null = null;
+  /** Pending catalogue-warm retry; cleared on pause/destroy. See attachMarketListeners. */
+  private catalogueWarmTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSessionReviewTriggered: string = '';
   private stopped = false;
 
@@ -335,7 +362,18 @@ export class GoatDurableObject {
   private periodicReviewMs: number;
   private readonly now: () => number;
 
-  constructor(goat: SignalGoat, skills: TradingSkill[], options: GoatDurableObjectOptions) {
+  /**
+   * Timestamp of the last market-data failure, for the invalid-symbol gate.
+   *
+   * A wake that failed because the instrument is not listed degrades the
+   * shared market-state store every attempt. Retrying immediately and forever
+   * is a hot error loop against a market that will not appear. The failure is
+   * RECORDED (the user can see it), but repeated wakes are throttled to the
+   * slow routine cadence rather than the aggressive retry interval.
+   */
+  private lastInvalidMarketAtMs = 0;
+
+  constructor(goat: FundGoat, skills: TradingSkill[], options: GoatDurableObjectOptions) {
     this.id = goat.id;
     this.goatConfig = goat;
     this.skills = skills;
@@ -417,11 +455,11 @@ export class GoatDurableObject {
     return { ...this.runtimeState };
   }
 
-  getConfig(): SignalGoat {
+  getConfig(): FundGoat {
     return { ...this.goatConfig };
   }
 
-  updateConfig(goat: SignalGoat, skills: TradingSkill[]): void {
+  updateConfig(goat: FundGoat, skills: TradingSkill[]): void {
     this.goatConfig = goat;
     this.skills = skills;
 
@@ -453,6 +491,10 @@ export class GoatDurableObject {
     if (this.scheduledAlarm) {
       clearTimeout(this.scheduledAlarm);
       this.scheduledAlarm = null;
+    }
+    if (this.catalogueWarmTimer) {
+      clearTimeout(this.catalogueWarmTimer);
+      this.catalogueWarmTimer = null;
     }
 
     this.runtimeState.status = 'PAUSED';
@@ -519,6 +561,10 @@ export class GoatDurableObject {
       clearTimeout(this.scheduledAlarm);
       this.scheduledAlarm = null;
     }
+    if (this.catalogueWarmTimer) {
+      clearTimeout(this.catalogueWarmTimer);
+      this.catalogueWarmTimer = null;
+    }
   }
 
   /**
@@ -559,7 +605,10 @@ export class GoatDurableObject {
     this.runtimeState.status = 'INVESTIGATING';
     this.runtimeState.lastEvaluatedAt = this.now();
 
-    const market = targetMarket || this.goatConfig.markets[0] || 'EUR/USD';
+    const market = targetMarket || this.goatConfig.markets[0] || '';
+    if (!market) {
+      throw new Error('GOAT has no market configured.');
+    }
 
     try {
       // ---- Stage 1: market context ------------------------------------
@@ -605,8 +654,38 @@ export class GoatDurableObject {
           ]);
         }
       } catch (err) {
+        const message = err instanceof Error ? err.message : 'unknown error';
+
+        /**
+         * Distinguish "unlisted instrument" from "provider down".
+         *
+         * A market the provider never lists CANNOT recover by retrying: the
+         * honest responses are to say so in the state the user reads, and to
+         * stop rewriting the invalid selection, not to keep hammering the
+         * provider every few seconds. The invalid market is REMOVED from the
+         * GOAT's market list — the remaining markets stay intact, and the
+         * removal is logged and surfaced in dormancy state.
+         */
+        if (isUnlistedMarketError(err, message)) {
+          const remaining = this.goatConfig.markets.filter((m) => m !== market);
+          this.goatConfig = { ...this.goatConfig, markets: remaining.length > 0 ? remaining : [market] };
+          console.warn(
+            `[goat ${this.id}] market "${market}" is not available from the provider ` +
+              `(not listed/delisted). ` +
+              (remaining.length > 0
+                ? `Removed from this GOAT's watch list. Remaining markets: ${remaining.join(', ')}.`
+                : 'It is the only configured market; it stays configured but the GOAT cannot run until a valid market is set.'),
+          );
+          this.runtimeState.dormancyReason =
+            `Market "${market}" is not available from the data provider. ` +
+            (remaining.length > 0
+              ? 'The other configured markets continue to be watched.'
+              : 'Edit this GOAT to watch a listed market.');
+          return this.runtimeState;
+        }
+
         this.recordFailure(
-          `Market data unavailable: ${err instanceof Error ? err.message : 'unknown error'}`,
+          `Market data unavailable: ${message}`,
         );
         await this.recordWakeEvent(
           reason,
@@ -887,20 +966,85 @@ export class GoatDurableObject {
     if (!this.goatConfig.markets.length || this.stopped || this.paused) return;
 
     /**
+     * CATALOGUE NOT LOADED YET? WARM IT FIRST.
+     *
+     * The Hyperliquid provider's synchronous `getMarketMetadata` reads a
+     * module-level cache that is populated by the first `getSymbols()` call.
+     * On a cold process (boot, before any browser request) filtering against
+     * an empty cache would declare EVERY market unlisted and never subscribe.
+     * So the catalogue is warmed first and the listener re-attached when it
+     * is ready — with a delayed retry if warming fails, so a transient boot
+     * failure cannot leave the GOAT silently dormant forever.
+     */
+    const probe = this.marketProvider as {
+      catalogueLoaded?: () => boolean;
+    };
+    if (typeof probe.catalogueLoaded === 'function' && !probe.catalogueLoaded()) {
+      if (this.catalogueWarmTimer) return; // one warm attempt in flight
+      void this.marketProvider
+        .getSymbols()
+        .then(() => {
+          if (!this.stopped && !this.paused) this.attachMarketListeners();
+        })
+        .catch(() => {
+          // Provider unreachable at boot: retry once after a quiet interval.
+          // This retries the CATALOGUE, not an invalid instrument — a market
+          // the catalogue proves unlisted is never polled in the first place.
+          if (this.stopped || this.paused) return;
+          this.catalogueWarmTimer = setTimeout(() => {
+            this.catalogueWarmTimer = null;
+            if (!this.stopped && !this.paused) this.attachMarketListeners();
+          }, 30_000);
+          this.catalogueWarmTimer.unref?.();
+        });
+      return;
+    }
+
+    /**
+     * Never subscribe to a market the provider does not list.
+     *
+     * `getMarketMetadata` reads the provider's own discovered catalogue. An
+     * unknown instrument would open a poll loop whose every tick fails and
+     * logs — the repeated '<symbol> is not a market Hyperliquid lists' error —
+     * so the subscription is not opened at all and the state says why.
+     */
+    const listed = this.goatConfig.markets.filter((market) =>
+      Boolean(this.marketProvider.getMarketMetadata(market)),
+    );
+    if (listed.length === 0) {
+      this.runtimeState.dormancyReason =
+        'No market this GOAT watches is listed by the data provider. ' +
+        'Edit the GOAT and pick a market from the Markets screen. ' +
+        `Watched markets: ${this.goatConfig.markets.join(', ')}.`;
+      this.runtimeState.nextWatchingCondition =
+        'Not subscribed: markets unavailable from the provider.';
+      console.warn(
+        `[goat ${this.id}] not subscribing — markets not listed by provider: ` +
+          `${this.goatConfig.markets.join(', ')}`,
+      );
+      return;
+    }
+    if (listed.length !== this.goatConfig.markets.length) {
+      const unlisted = this.goatConfig.markets.filter((m) => !listed.includes(m));
+      console.warn(
+        `[goat ${this.id}] some markets are not listed and are skipped: ${unlisted.join(', ')}`,
+      );
+    }
+
+    /**
      * Preferred path: subscribe through the shared MarketStateStore.
      *
-     * The store keys its poll loop by SYMBOL, not by GOAT, so five GOATs
-     * watching EUR/USD share one fetch and one indicator computation per TTL
-     * instead of each running their own. It also computes the indicator
-     * snapshot once and hands it to the tracker evaluator, which used to
-     * recompute every indicator on every 5-second tick per GOAT.
+     * The store keys its poll loop by SYMBOL, not by GOAT, so several GOATs
+     * watching the same instrument share one fetch and one indicator
+     * computation per TTL instead of each running their own. It also computes
+     * the indicator snapshot once and hands it to the tracker evaluator, which
+     * used to recompute every indicator on every 5-second tick per GOAT.
      *
      * Fallback (unit tests, no store supplied): subscribe to the provider
      * directly and compute inline.
      */
-    if (!this.marketStateStore) {
-      this.unsubscribeMarketData = this.marketProvider.subscribeQuotes(
-        this.goatConfig.markets,
+    if (!this.marketStateStore) {        this.unsubscribeMarketData = this.marketProvider.subscribeQuotes(
+        listed,
         (quote: MarketQuote) => {
           // Fire-and-forget with full error isolation: subscriber errors must
           // never propagate into the provider's tick loop.
@@ -918,7 +1062,7 @@ export class GoatDurableObject {
     );
 
     this.unsubscribeMarketData = this.marketStateStore.subscribe(
-      this.goatConfig.markets[0],
+      listed[0],
       (snapshot) => {
         void this.onMarketState(snapshot).catch((err) => {
           console.error(`[goat ${this.id}] tracker evaluation error:`, err);

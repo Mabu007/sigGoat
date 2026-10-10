@@ -1,131 +1,175 @@
-import React from 'react';
-import { TrendingUp, Bot, Sparkles, History, Settings, ShieldCheck, Activity } from 'lucide-react';
-import { useGoat } from '../context/GoatContext';
-import { useAuth } from '../context/AuthContext';
+/**
+ * APPLICATION NAVIGATION
+ * ======================
+ * Sidebar on desktop, bottom bar on mobile. One array drives both so the two
+ * can never drift apart.
+ *
+ * NAVIGATION MODEL
+ *   Markets · GOATs · Proposals · Backtest · Settings
+ *
+ *   `Overview` was removed: it duplicated data available in Markets / GOATs /
+ *   Proposals and rendered little of its own. The `overview` hash still
+ *   redirects to Markets at the router level so old links do not 404.
+ *
+ *   `Skills` from the previous build is likewise not a top-level destination.
+ *   Skills are authored and read from inside a GOAT, which is where they are
+ *   used; a separate top-level screen made them look like a peer of Markets
+ *   when they are really configuration. The route is preserved as a view so
+ *   existing links keep working.
+ *
+ * ACTIVE INDICATION uses `aria-current="page"`, not only colour. A
+ * colour-only indicator is invisible to anyone who cannot distinguish the
+ * accent from the muted foreground.
+ */
 
-export type TabId = 'quotes' | 'goats' | 'skills' | 'backtest' | 'settings';
+import {
+  BarChart3,
+  Bot,
+  CandlestickChart,
+  ListChecks,
+  Settings,
+  type LucideIcon,
+} from 'lucide-react';
+
+export type TabId =
+  | 'markets'
+  | 'goats'
+  | 'proposals'
+  | 'skills'
+  | 'backtest'
+  | 'settings';
+
+export interface NavigationItem {
+  id: TabId;
+  label: string;
+  icon: LucideIcon;
+  /** Shown in the mobile bar. Long labels are abbreviated there. */
+  shortLabel?: string;
+}
+
+export const NAVIGATION_ITEMS: NavigationItem[] = [
+  { id: 'markets', label: 'Markets', icon: CandlestickChart },
+  { id: 'goats', label: 'Goats', icon: Bot },
+  { id: 'proposals', label: 'Proposals', icon: ListChecks },
+  { id: 'backtest', label: 'Backtest', shortLabel: 'Test', icon: BarChart3 },
+  { id: 'settings', label: 'Settings', icon: Settings },
+];
+
+/** The wordmark. Split so "AGoat" can carry the accent. */
+export function BrandMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <span className="flex items-center gap-2 select-none">
+      <span
+        aria-hidden="true"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg"
+      >
+        <svg viewBox="0 0 24 24" fill="none" className="h-[18px] w-[18px]">
+          <path
+            d="M4 17.5 9 11l3.5 3.5L20 6"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <circle cx="20" cy="6" r="2" fill="currentColor" />
+        </svg>
+      </span>
+      {!compact && (
+        <span className="text-[15px] font-semibold tracking-tight text-fg">
+          Fund<span className="text-accent-text">AGoat</span>
+        </span>
+      )}
+    </span>
+  );
+}
 
 interface NavigationProps {
   activeTab: TabId;
-  onTabChange: (tab: TabId) => void;
+  onSelect: (tab: TabId) => void;
 }
 
-export const Navigation: React.FC<NavigationProps> = ({ activeTab, onTabChange }) => {
-  const { activeGoat, activeGoatState } = useGoat();
-  const { currentUser, isFirebaseConnected } = useAuth();
-
-  const navItems = [
-    { id: 'quotes' as TabId, label: 'Quotes', icon: TrendingUp },
-    { id: 'goats' as TabId, label: 'GOATs', icon: Bot },
-    { id: 'skills' as TabId, label: 'Skills', icon: Sparkles },
-    { id: 'backtest' as TabId, label: 'Backtest', icon: History },
-    { id: 'settings' as TabId, label: 'Settings', icon: Settings },
-  ];
-
+export function Navigation({ activeTab, onSelect }: NavigationProps) {
   return (
     <>
-      {/* DESKTOP PERSISTENT LEFT SIDEBAR */}
-      <aside className="hidden md:flex flex-col w-64 bg-[#0a0d14] border-r border-slate-800/90 h-screen sticky top-0 shrink-0 select-none z-30">
-        {/* Brand / Logo */}
-        <div className="p-5 border-b border-slate-800/80">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 to-amber-300 flex items-center justify-center font-black text-slate-950 text-base shadow-lg shadow-amber-500/20">
-              🐐
-            </div>
-            <div>
-              <div className="font-extrabold tracking-tight text-slate-100 text-sm flex items-center gap-1.5">
-                <span>SignalGOAT</span>
-                <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 bg-amber-500/15 text-amber-300 rounded border border-amber-500/30">
-                  MVP
-                </span>
-              </div>
-              <p className="text-[10px] text-slate-400 font-medium">Personal AI Market Agent</p>
-            </div>
-          </div>
+      {/* Desktop sidebar */}
+      <nav
+        aria-label="Main"
+        className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line bg-surface md:flex"
+      >
+        <div className="flex h-14 items-center border-b border-line px-4">
+          <BrandMark />
         </div>
 
-        {/* Active GOAT Quick Status */}
-        {activeGoat && (
-          <div className="px-4 py-3 mx-3 my-3 bg-[#0e121b] border border-slate-800 rounded-xl space-y-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Active GOAT</span>
-              <span className="flex items-center gap-1 text-[10px] font-mono text-emerald-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                {activeGoatState?.status || 'WATCHING'}
-              </span>
-            </div>
-            <div className="text-xs font-bold text-slate-200 truncate">{activeGoat.name}</div>
-            <div className="text-[10px] text-slate-400 truncate">
-              {activeGoat.markets?.join(' · ')}
-            </div>
-          </div>
-        )}
-
-        {/* Navigation Links */}
-        <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto">
-          {navItems.map(item => {
+        <ul className="flex-1 space-y-0.5 overflow-y-auto p-3">
+          {NAVIGATION_ITEMS.map((item) => {
             const Icon = item.icon;
-            const isActive = activeTab === item.id;
+            const active = item.id === activeTab;
             return (
-              <button
-                key={item.id}
-                onClick={() => onTabChange(item.id)}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                  isActive
-                    ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/15'
-                    : 'text-slate-400 hover:text-slate-100 hover:bg-slate-900/60'
-                }`}
-              >
-                <Icon className={`w-4 h-4 ${isActive ? 'stroke-[2.4]' : 'stroke-[1.8]'}`} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* Footer info & connection */}
-        <div className="p-4 border-t border-slate-800/80 space-y-2 text-[11px] text-slate-400">
-          <div className="flex items-center justify-between font-mono text-[10px]">
-            <span className="flex items-center gap-1 text-slate-400">
-              <Activity className="w-3 h-3 text-sky-400" /> Market Data Feed
-            </span>
-            <span className="text-emerald-400">Live</span>
-          </div>
-          <div className="flex items-center justify-between font-mono text-[10px]">
-            <span className="text-slate-400">Cloud Sync</span>
-            <span className={isFirebaseConnected ? 'text-emerald-400' : 'text-amber-400'}>
-              {isFirebaseConnected ? 'Synced' : 'Local'}
-            </span>
-          </div>
-        </div>
-      </aside>
-
-      {/* MOBILE BOTTOM NAVIGATION BAR */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-[#080a0f]/95 backdrop-blur-xl border-t border-slate-800/90 pb-safe">
-        <div className="grid grid-cols-5 h-16 max-w-lg mx-auto">
-          {navItems.map(item => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => onTabChange(item.id)}
-                className={`flex flex-col items-center justify-center gap-1 transition-colors relative py-1 cursor-pointer ${
-                  isActive ? 'text-amber-400' : 'text-slate-400 hover:text-slate-300'
-                }`}
-              >
-                <Icon className={`w-5 h-5 ${isActive ? 'stroke-[2.2]' : 'stroke-[1.8]'}`} />
-                <span className={`text-[10px] ${isActive ? 'font-bold text-amber-300' : 'font-normal'}`}>
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(item.id)}
+                  aria-current={active ? 'page' : undefined}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors ${
+                    active
+                      ? 'bg-accent-soft text-accent-text'
+                      : 'text-fg-muted hover:bg-raised hover:text-fg'
+                  }`}
+                >
+                  <Icon size={16} strokeWidth={active ? 2.2 : 1.8} aria-hidden="true" />
                   {item.label}
-                </span>
-                {isActive && (
-                  <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-amber-400 rounded-full" />
-                )}
-              </button>
+                </button>
+              </li>
             );
           })}
+        </ul>
+
+        <div className="border-t border-line p-3">
+          <p className="text-[11px] leading-relaxed text-fg-subtle">
+            Research and proposals only.
+            <br />
+            FundAGoat does not place orders.
+          </p>
         </div>
+      </nav>
+
+      {/* Mobile bottom bar.
+          `env(safe-area-inset-bottom)` keeps the last row clear of the home
+          indicator on devices that have one — a hardcoded padding did not. */}
+      <nav
+        aria-label="Main"
+        className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-surface/95 backdrop-blur-lg md:hidden"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      >
+        <ul className="mx-auto grid max-w-lg grid-cols-5">
+          {NAVIGATION_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = item.id === activeTab;
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(item.id)}
+                  aria-current={active ? 'page' : undefined}
+                  className={`flex w-full flex-col items-center gap-0.5 px-1 py-2 text-[10px] font-medium transition-colors ${
+                    active ? 'text-accent-text' : 'text-fg-subtle'
+                  }`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`flex h-7 w-12 items-center justify-center rounded-md ${
+                      active ? 'bg-accent-soft' : ''
+                    }`}
+                  >
+                    <Icon size={16} strokeWidth={active ? 2.2 : 1.8} />
+                  </span>
+                  {item.shortLabel ?? item.label}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       </nav>
     </>
   );
-};
+}

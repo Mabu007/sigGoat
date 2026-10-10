@@ -81,17 +81,42 @@ const PARTITIONS = ['FX', 'METALS', 'ENERGY', 'INDEX', 'CRYPTO'] as const;
  *
  * This small floor keeps the canonical store warm for the liquid instruments
  * the product defaults to. A subscription adds to it; it never removes.
+ *
+ * THESE ARE HYPERLIQUID'S OWN COIN NAMES.
+ *   The previous build listed conventional symbols (`EUR/USD`, `XAU/USD`,
+ *   `US500`) for a different provider. On Hyperliquid:
+ *     - the DEFAULT perp dex is crypto-only — there is no EURUSD, no XAUUSD,
+ *       no SPX on it;
+ *     - the HIP-3 dex `xyz` is where the FX, commodity and index instruments
+ *       live, and its coin names carry the `dex:` prefix.
+ *   So `xyz:EUR`, not `EUR/USD`. A conventional name here would resolve to
+ *   nothing and the market would sit permanently empty.
+ *
+ * Every entry is checked against live provider metadata at startup and dropped
+ * if the venue does not list it, so this list can never pin a dead market.
  */
 const DEFAULT_INSTRUMENTS: Record<string, string[]> = {
-  FX: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'USD/CHF'],
-  METALS: ['XAU/USD', 'XAG/USD'],
-  ENERGY: ['WTI', 'BRENT'],
-  INDEX: ['US500', 'US100', 'US30'],
-  CRYPTO: ['BTC/USD', 'ETH/USD'],
+  // HIP-3 deployer market: currencies, commodities, indices.
+  FX: ['xyz:EUR', 'xyz:GBP', 'xyz:JPY'],
+  METALS: ['xyz:GOLD', 'xyz:SILVER'],
+  ENERGY: ['xyz:CL', 'xyz:BRENTOIL'],
+  // JP225 and KR200 replaced NIFTY and DXY, both of which the venue has since
+  // delisted (verified against live metadata on 2026-10-10).
+  INDEX: ['xyz:JP225', 'xyz:KR200'],
+  // Default perp dex: crypto.
+  CRYPTO: ['BTC', 'ETH', 'SOL', 'XRP'],
 };
 
 /** Hard ceiling on instruments per ingestion pass. */
 const MAX_INGEST_INSTRUMENTS = 20;
+
+/**
+ * How long the provider's instrument list is reused before re-reading it.
+ *
+ * One hour: the listing changes on the order of weeks, and this check runs on
+ * every 60-second ingestion pass.
+ */
+const UNIVERSE_TTL_MS = 60 * 60_000;
 
 /* ------------------------------------------------------------------ */
 /* Schema                                                              */
@@ -500,13 +525,56 @@ const job = this.dueJob();
       merged.add(row.instrument);
     }
 
+    /**
+     * RECONCILE AGAINST THE LIVE UNIVERSE.
+     *
+     * A default instrument that the venue no longer lists — delisted, renamed,
+     * or on a HIP-3 dex that was removed — returns no candles, forever. Left in
+     * the set it burns a provider call every minute and pins the object in a
+     * permanently "stale" state, which reads as a broken feed in the UI.
+     *
+     * Subscriptions are NOT filtered by this. A user who explicitly asked for
+     * an instrument gets an honest empty result rather than silent removal,
+     * and a HIP-3 dex that is merely unreachable during one reconciliation is
+     * not treated as proof the instrument is gone.
+     *
+     * The universe is cached for an hour: the listing changes weekly, and this
+     * runs every minute.
+     */
+    const available = await this.availableInstruments();
+    if (available) {
+      for (const instrument of DEFAULT_INSTRUMENTS[this.partition] ?? []) {
+        if (!available.has(instrument.trim().toUpperCase())) merged.delete(instrument);
+      }
+    }
+
     return [...merged].slice(0, 200);
+  }
+
+  /**
+   * The provider's current instrument list, or `null` when it could not be
+   * read (in which case nothing is filtered — a transient outage must not
+   * empty the tracked universe).
+   */
+  private async availableInstruments(): Promise<Set<string> | null> {
+    const now = Date.now();
+    const cached = await this.state.storage.get<{ at: number; names: string[] }>('universe');
+    if (cached && now - cached.at < UNIVERSE_TTL_MS) {
+      return new Set(cached.names);
+    }
+
+    const names = await listAvailableInstruments();
+    if (names) {
+      await this.state.storage.put('universe', { at: now, names: [...names] });
+    }
+    return names;
   }
 
   /**
    * Fetches and stores one-minute candles for a bounded set of instruments.
    *
-   * BiQuote needs no API key, so this is safe to run from the Worker — which is
+   * Hyperliquid's info endpoint needs no API key, so this is safe to run from
+   * the Worker — which is
    * the whole reason market ingestion can live here instead of on Vercel, where
    * a serverless function would be killed between requests.
    *
@@ -524,10 +592,10 @@ const job = this.dueJob();
 
     for (let i = 0; i < limit; i += 1) {
       const instrument = instruments[i];
-const before = await this.isStale(instrument, Date.now());
+      const before = await this.isStale(instrument, Date.now());
 
       try {
-        const bars = await fetchCandles(instrument, '1m', 180);
+        const bars = await fetchProviderCandles(instrument, '1m', 180);
         if (bars.length > 0) {
           const newestWritten = this.upsertCandles(instrument, bars);
           if (newestWritten !== null) updated.push(instrument);
@@ -1265,88 +1333,17 @@ const before = await this.isStale(instrument, Date.now());
 /* Provider                                                            */
 /* ------------------------------------------------------------------ */
 
-const BIQUOTE_BASE = 'https://biquote.io/api';
-const FETCH_TIMEOUT_MS = 8_000;
-
-const NATIVE_ALIASES: Record<string, string> = {
-  'EUR/USD': 'EURUSD', 'GBP/USD': 'GBPUSD', 'USD/JPY': 'USDJPY',
-  'AUD/USD': 'AUDUSD', 'USD/CAD': 'USDCAD', 'USD/CHF': 'USDCHF',
-  'NZD/USD': 'NZDUSD', 'EUR/GBP': 'EURGBP', 'EUR/JPY': 'EURJPY',
-  'GBP/JPY': 'GBPJPY', 'XAU/USD': 'XAUUSD', 'XAG/USD': 'XAGUSD',
-  WTI: 'XTIUSD', BRENT: 'BRENT', US500: 'US500', US100: 'USTEC',
-  US30: 'US30', GER40: 'DE30', 'BTC/USD': 'BTCUSD', 'ETH/USD': 'ETHUSD',
-};
-
-function nativeSymbol(symbol: string): string {
-  const key = symbol.trim().toUpperCase();
-  return NATIVE_ALIASES[key] ?? key.replace('/', '');
-}
-
-/**
- * Bounded provider fetch with a timeout.
- *
- * `AbortController` is available on the Workers runtime, so the timeout is real
- * rather than a promise that resolves eventually.
+/*
+ * Hyperliquid now supplies this object's candles. The previous BiQuote client
+ * and its alias table are removed: every call site was passing BiQuote's
+ * symbol dialect (`EUR/USD`, `BTC/USD`), and on this venue those names do not
+ * exist. See `worker/hyperliquid-provider.ts` for the wire format, the
+ * rate-limit budget, and why the symbols are the venue's own coin names.
  */
-async function fetchCandles(
-  symbol: string,
-  interval: string,
-  limit: number,
-): Promise<
-  Array<{
-    time: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume?: number;
-  }>
-> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(
-      `${BIQUOTE_BASE}/${nativeSymbol(symbol)}/ohlc?interval=${encodeURIComponent(interval)}&limit=${limit}`,
-      { signal: controller.signal, headers: { Accept: 'application/json' } },
-    );
-
-    if (!response.ok) {
-      throw new Error(`BiQuote HTTP ${response.status}`);
-    }
-
-    const payload = (await response.json()) as {
-      bars?: Array<{
-        openTime?: string;
-        open?: number;
-        high?: number;
-        low?: number;
-        close?: number;
-        volume?: number;
-        tickVolume?: number;
-      }>;
-    };
-
-    const bars = Array.isArray(payload.bars) ? payload.bars : [];
-
-    // Newest-first from the provider; this runtime stores and reads ascending.
-    return bars
-      .map((bar) => ({
-        time: Date.parse(bar.openTime ?? '') || 0,
-        open: bar.open ?? 0,
-        high: bar.high ?? 0,
-        low: bar.low ?? 0,
-        close: bar.close ?? 0,
-        // tickVolume is the real activity signal on this CFD feed; `volume` is
-        // always 0 and must not be mistaken for a measurement.
-        volume: bar.tickVolume ?? bar.volume,
-      }))
-      .filter((bar) => bar.time > 0 && bar.close > 0)
-      .reverse();
-  } finally {
-    clearTimeout(timer);
-  }
-}
+import {
+  fetchCandles as fetchProviderCandles,
+  listAvailableInstruments,
+} from './hyperliquid-provider';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */

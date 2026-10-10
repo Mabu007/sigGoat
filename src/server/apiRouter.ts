@@ -1,5 +1,5 @@
 /**
- * SIGNALGOAT API ROUTER
+ * FUNDAGOAT API ROUTER
  * ======================
  * Every protected route: authMiddleware -> ownership check -> handler.
  * Identity comes from the verified token, never from the request body.
@@ -11,7 +11,7 @@
  */
 
 import express, { Request, Response, NextFunction } from 'express';
-import { SignalGoat, GoatSchedule, GoatRuntimeState, TradeSignal } from '../types';
+import { FundGoat, GoatSchedule, GoatRuntimeState, TradeSignal } from '../types';
 import { authMiddleware, requireUser, resolveAuthMode } from './auth';
 import { getFirebaseAdminFailureReason } from './firebaseAdmin';
 import {
@@ -19,6 +19,7 @@ import {
   isPlausibleOpenRouterKey,
   normaliseGroqKey,
   normaliseOpenRouterKey,
+  normalisePropDaoKey,
   normaliseTelegramToken,
 } from './credentialValidation';
 import {
@@ -28,8 +29,17 @@ import {
 } from './repositories';
 import { UserScopedReasoningGateway, type AiProvider } from './reasoningGateway';
 import { buildGoatContext } from './goatContext';
+import { configureCredentialVault, credentialVault } from './security/instance';
+import { CredentialVaultError } from './security/CredentialVault';
+import { PropFundAccountProvider } from '../services/propdao/PropFundAccountProvider';
+import { DEFAULT_RISK_LIMITS, validateTradeIntent } from '../services/propdao/PropRiskValidator';
 import { durableObjectRegistry } from '../services/durable-object/DurableObjectRegistry';
-import { biQuoteProvider } from '../services/market-data/BiQuoteMarketDataProvider';
+import { hyperliquidProvider } from '../services/market-data/hyperliquid/HyperliquidMarketDataProvider';
+import {
+  DEFAULT_MARKET_UNIVERSE,
+  HYPERLIQUID_DEXES,
+  tradableMarkets,
+} from '../services/market-data/hyperliquid/MarketCatalog';
 import { paperProvider } from '../services/market-data/PaperMarketDataProvider';
 import { MarketDataProvider } from '../services/market-data/MarketDataProvider';
 import {
@@ -39,6 +49,8 @@ import {
 import { FileMarketStatePersistence } from '../services/market-data/FileMarketStatePersistence';
 import { BacktestEngine } from '../services/backtest/BacktestEngine';
 import { DEFAULT_SKILLS } from '../data/defaultSkills';
+import { SYSTEM_GOATS } from '../data/systemGoats';
+import { SYSTEM_SKILLS, isSystemOwnedSkillId } from '../data/systemSkills';
 import { telegramService } from '../services/telegram/TelegramService';
 import type {
   TelegramProcessSummary,
@@ -88,9 +100,29 @@ apiRouter.use(express.json({ limit: '1mb' }));
 const persistence: PersistenceLayer = createPersistence();
 export const appPersistence = persistence;
 
+/**
+ * Bind the credential vault to THIS persistence layer, before any route can
+ * use it. Without this the vault would open its own store over the same
+ * directory and the two writers would clobber each other.
+ */
+configureCredentialVault(persistence);
+
+/**
+ * ONE PropDAO adapter factory.
+ *
+ * The adapter resolves the caller's key from the vault on every operation, so
+ * there is no long-lived cached client holding a decrypted secret and no code
+ * path that can use one user's key for another user's request.
+ */
+function propDaoFor(userId: string): PropFundAccountProvider {
+  return new PropFundAccountProvider({
+    resolveApiKey: () => credentialVault.getCredential(userId, 'propdao'),
+  });
+}
+
 const reasoningGateway = new UserScopedReasoningGateway(persistence.keys);
 /**
- * Market data source: BiQuote live feed (free, no API key).
+ * Market data source: the Hyperliquid public info API (no API key required).
  *
  * There is deliberately NO automatic fallback to the PAPER provider. Silently
  * swapping in simulated prices would mean a feed outage quietly turns the app
@@ -107,7 +139,7 @@ const reasoningGateway = new UserScopedReasoningGateway(persistence.keys);
 const marketProvider: MarketDataProvider =
   process.env.MARKET_DATA_PROVIDER === 'paper'
     ? paperProvider
-    : biQuoteProvider;
+    : hyperliquidProvider;
 
 if (marketProvider.dataMode === 'PAPER') {
   console.warn(
@@ -345,7 +377,7 @@ const runtimeOptions = {
   scheduler,
 };
 
-function ensureGoatRuntime(goat: SignalGoat) {
+function ensureGoatRuntime(goat: FundGoat) {
   subscribeToMarkets(goat);
   const attached = allSkillsFor(goat.userId).then((skills) =>
     skills.filter((s) => goat.skillIds.includes(s.id)),
@@ -373,7 +405,7 @@ function ensureGoatRuntime(goat: SignalGoat) {
  * Registering here, at the single point every GOAT passes through, means a new
  * GOAT is watched whether or not anything else touched it.
  */
-function subscribeToMarkets(goat: SignalGoat): void {
+function subscribeToMarkets(goat: FundGoat): void {
   /**
    * A PAUSED GOAT IS UNSUBSCRIBED.
    *
@@ -417,13 +449,96 @@ async function allSkillsFor(userId: string) {
   return [...defaults, ...userSkills];
 }
 
+/**
+ * Stale-market migration.
+ *
+ * GOATs saved under the previous provider reference conventional symbols
+ * (`EUR/USD`, `GBP/USD`, `XAU/USD`, `US500`, `WTI`) that the current venue
+ * does not list. Left alone, each of those markets produces an endless
+ * "not a market Hyperliquid lists" degrade loop. This rewrites the persisted
+ * market list to the venue's actual instruments — deliberately a MIGRATION of
+ * the market identifiers, not a reset: names, goals, skills, schedules,
+ * theses and signals are untouched.
+ */
+const STALE_MARKET_REPLACEMENTS: Record<string, string> = {
+  'EUR/USD': 'xyz:EUR',
+  'GBP/USD': 'xyz:GBP',
+  'USD/JPY': 'xyz:JPY',
+  'XAU/USD': 'xyz:GOLD',
+  'XAG/USD': 'xyz:SILVER',
+  GOLD: 'xyz:GOLD',
+  SLV: 'xyz:SILVER',
+  WTI: 'xyz:CL',
+  CL: 'xyz:CL',
+};
+
+/** Markets that must exist on the venue before they can be substituted in. */
+const KNOWN_LISTED_MARKETS = new Set([
+  ...DEFAULT_MARKET_UNIVERSE.map((s) => s.toUpperCase()),
+  ...Object.values(STALE_MARKET_REPLACEMENTS).map((s) => s.toUpperCase()),
+]);
+
+/**
+ * Rewrites a GOAT's markets that reference retired symbols.
+ *
+ * Returns a NEW Goat record when anything changed; otherwise the original.
+ * A market is dropped entirely when there is no sensible venue equivalent
+ * (there is no fabricated alias), and the remaining markets are kept.
+ */
+export function migrateGoatMarkets(goat: FundGoat): FundGoat | null {
+  const migrated = goat.markets.map((market) => {
+    const replacement = STALE_MARKET_REPLACEMENTS[market.toUpperCase()];
+    if (!replacement) return market;
+    return KNOWN_LISTED_MARKETS.has(replacement.toUpperCase()) ? replacement : market;
+  });
+
+  const unique = [...new Set(migrated)];
+  if (unique.every((m) => goat.markets.includes(m)) && unique.length === goat.markets.length) {
+    return null;
+  }
+  if (unique.length === 0) return null;
+
+  return {
+    ...goat,
+    markets: unique,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 /** Restart recovery: rebuild runtime actors for every persisted GOAT. */
 export async function restoreRuntimes(): Promise<void> {
   try {
+    /**
+     * Warm the instrument catalogue BEFORE restoring GOATs.
+     *
+     * GOAT runtimes validate their markets against the catalogue synchronously
+     * on attach; warming it here means that validation is against the venue's
+     * real universe rather than an empty cold-start cache.
+     */
+    await marketProvider.getSymbols().catch(() => {
+      // A provider outage must not stop restart recovery; GOATs restore and
+      // their listeners retry the catalogue (see GoatDurableObject).
+    });
+
     const goats = await persistence.goats.listAll();
     for (const goat of goats) {
+      /**
+       * One-time in-memory migration pass.
+       *
+       * The rewrite is applied in memory AND persisted; migrating only in
+       * memory would re-add the dead symbol on the restart after next. The
+       * goat's other fields are untouched.
+       */
+      const migrated = migrateGoatMarkets(goat);
+      if (migrated) {
+        await persistence.goats.save(migrated);
+        console.log(
+          `[api] Migrated markets for goat ${goat.id}: ${goat.markets.join(', ')} -> ${migrated.markets.join(', ')}`,
+        );
+      }
+
       if (goat.status !== 'PAUSED') {
-        await ensureGoatRuntime(goat);
+        await ensureGoatRuntime(migrated ?? goat);
       }
     }
     console.log(`[api] Restored ${goats.length} GOAT runtime(s) from persistence.`);
@@ -757,31 +872,47 @@ function notFound(res: Response): void {
 function handle(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
     fn(req, res).catch((err) => {
-      if (err instanceof NotFoundError) {
-        return notFound(res);
-      }
-      console.error('[api] Unhandled route error:', err);
-      if (!res.headersSent) {
-        /**
-         * Caller-supplied bad input -> 400 with the real message.
-         * Upstream provider failure -> 502, not an opaque 500, so the UI can
-         * explain it (and distinguish it from the caller's own mistake).
-         */
-        if (err instanceof CredentialValidationError) {
-          return fail(res, 400, err.code, err.message);
-        }
+      /**
+       * ONCE A RESPONSE IS COMMITTED, THIS MIDDLEWARE CHAIN IS OVER.
+       *
+       * The previous version called `next()` unconditionally after writing a
+       * response. In development `server.ts` mounts Vite's middleware stack
+       * AFTER this router, so `next()` handed an already-sent response to
+       * Vite's `corsMiddleware` -> `applyHeaders`, which calls
+       * `res.setHeader()`. That throws `ERR_HTTP_HEADERS_SENT`, and Vite
+       * surfaces it as a full-screen overlay — which is why simply opening
+       * Backtest (whose route can fail, e.g. on an unknown market) covered
+       * the screen with a CORS error that had nothing to do with CORS.
+       *
+       * Every branch below therefore returns after responding, and an
+       * already-sent response short-circuits before anything else is touched.
+       */
+      if (res.headersSent) return;
 
-        const upstream = err instanceof ApiRequestError;
-        fail(
-          res,
-          upstream ? 502 : 500,
-          upstream ? 'UPSTREAM_ERROR' : 'INTERNAL_ERROR',
-          upstream
-            ? err.message
-            : 'An internal error occurred.',
-        );
+      if (err instanceof NotFoundError) {
+        notFound(res);
+        return;
       }
-      next();
+
+      console.error('[api] Unhandled route error:', err);
+
+      /**
+       * Caller-supplied bad input -> 400 with the real message.
+       * Upstream provider failure -> 502, not an opaque 500, so the UI can
+       * explain it (and distinguish it from the caller's own mistake).
+       */
+      if (err instanceof CredentialValidationError) {
+        fail(res, 400, err.code, err.message);
+        return;
+      }
+
+      const upstream = err instanceof ApiRequestError;
+      fail(
+        res,
+        upstream ? 502 : 500,
+        upstream ? 'UPSTREAM_ERROR' : 'INTERNAL_ERROR',
+        upstream ? err.message : 'An internal error occurred.',
+      );
     });
   };
 }
@@ -835,7 +966,7 @@ function validateGoatInput(body: unknown): { name: string; goal: string; markets
 /* ------------------------------------------------------------------ */
 
 /** Bumped whenever a GOAT's schedule changes, invalidating stale alarms. */
-function scheduleGeneration(goat: SignalGoat): string {
+function scheduleGeneration(goat: FundGoat): string {
   const schedule = normaliseSchedule(goat.schedule);
   return [
     goat.id,
@@ -862,7 +993,7 @@ function scheduleGeneration(goat: SignalGoat): string {
  * polled every 5 seconds.
  */
 function computeNextTrackerCheckAt(
-  goat: SignalGoat,
+  goat: FundGoat,
   from: number = Date.now(),
 ): number | null {
   if (goat.status === 'PAUSED') return null;
@@ -872,7 +1003,7 @@ function computeNextTrackerCheckAt(
 }
 
 function computeNextWakeAt(
-  goat: SignalGoat,
+  goat: FundGoat,
   from: number = Date.now(),
 ): number | null {
   if (goat.status === 'PAUSED') return null;
@@ -904,7 +1035,7 @@ function computeNextWakeAt(
  * Never throws: a GOAT must still be creatable and usable when the scheduler
  * Worker is unreachable. The failure is reported through health() instead.
  */
-async function syncSchedule(goat: SignalGoat): Promise<void> {
+async function syncSchedule(goat: FundGoat): Promise<void> {
   const nextWakeAt = computeNextWakeAt(goat);
   const nextTrackerCheck = computeNextTrackerCheckAt(goat);
 
@@ -1310,10 +1441,14 @@ apiRouter.get('/markets/ingestion', handle(async (_req, res) => {
  * than trusting the source.
  */
 apiRouter.get('/markets/session', handle(async (req, res) => {
-  const instrument = String(req.query.symbol ?? 'EUR/USD').trim().toUpperCase();
+  const instrument = String(req.query.symbol ?? '').trim().toUpperCase();
 
-  if (!/^[A-Z0-9/_-]{1,32}$/.test(instrument)) {
-    return fail(res, 400, 'INVALID_INPUT', 'symbol must be a known instrument id.');
+  if (!instrument) {
+    return fail(res, 400, 'INVALID_INPUT', 'symbol is required.');
+  }
+
+  if (!/^[A-Z0-9/_:-]{1,64}$/.test(instrument)) {
+    return fail(res, 400, 'INVALID_INPUT', 'symbol must be a known instrument id (HIP-3 symbols like xyz:GOLD are allowed).');
   }
 
   res.json({
@@ -1437,6 +1572,59 @@ apiRouter.get('/markets/symbols', handle(async (_req, res) => {
   res.json({ symbols, provider: marketProvider.name, dataMode: marketProvider.dataMode });
 }));
 
+/**
+ * MARKET DISCOVERY AND SEARCH
+ *
+ * The full instrument universe, from live provider metadata.
+ *
+ * This exists because the tracked default universe is deliberately small (one
+ * `candleSnapshot` per instrument per minute against a 1200-weight/minute
+ * budget). Search has to reach BEYOND it, or a user who wants an instrument
+ * we do not poll would simply never find it.
+ *
+ *   GET /markets/search          -> the whole discovered universe
+ *   GET /markets/search?q=BTC    -> filtered, ranked
+ *
+ * `?q` is matched case-insensitively against both the provider's coin name and
+ * the curated display name, so "gold" finds `xyz:GOLD` and "aapl" finds
+ * `xyz:AAPL`. Delisted instruments are excluded: they return no candles, so
+ * offering them would be a dead end.
+ *
+ * Returns only provider-derived data. No conventional symbol is synthesised:
+ * EURUSD, XAUUSD and SPX are absent from this list unless Hyperliquid actually
+ * lists them.
+ */
+apiRouter.get('/markets/search', handle(async (req, res) => {
+  const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+
+  try {
+    const markets =
+      query.length > 0
+        ? await hyperliquidProvider.searchInstruments(query, limit)
+        : tradableMarkets(await hyperliquidProvider.listMarketsCached(HYPERLIQUID_DEXES)).slice(0, limit);
+
+    res.json({
+      markets,
+      total: markets.length,
+      query,
+      provider: marketProvider.name,
+      dataMode: marketProvider.dataMode,
+    });
+  } catch (error) {
+    // Discovery is an ENRICHMENT of the app, not a prerequisite for it. A
+    // provider outage degrades search; it does not take down the product.
+    return fail(
+      res,
+      503,
+      'MARKET_DISCOVERY_UNAVAILABLE',
+      `Instrument search is temporarily unavailable: ${
+        error instanceof Error ? error.message : 'the provider could not be reached'
+      }`,
+    );
+  }
+}));
+
 apiRouter.get('/markets/quotes', handle(async (req, res) => {
   const symbolsParam = req.query.symbols as string | undefined;
   const requested = symbolsParam ? symbolsParam.split(',').slice(0, 50) : (await marketProvider.getSymbols()).map((s) => s.symbol);
@@ -1445,13 +1633,21 @@ apiRouter.get('/markets/quotes', handle(async (req, res) => {
 }));
 
 apiRouter.get('/markets/quote', handle(async (req, res) => {
-  const symbol = (req.query.symbol as string) || 'EUR/USD';
+  // No default symbol: an omitted symbol is a client bug and must be reported
+  // as one, rather than silently fetching an instrument the venue may not list.
+  const symbol = (req.query.symbol as string) || '';
+  if (!symbol) {
+    return fail(res, 400, 'INVALID_INPUT', 'symbol is required.');
+  }
   const quote = await marketProvider.getQuote(symbol);
   res.json({ quote, dataMode: marketProvider.dataMode });
 }));
 
 apiRouter.get('/markets/candles', handle(async (req, res) => {
-  const symbol = (req.query.symbol as string) || 'EUR/USD';
+  const symbol = (req.query.symbol as string) || '';
+  if (!symbol) {
+    return fail(res, 400, 'INVALID_INPUT', 'symbol is required.');
+  }
   const timeframe = (req.query.timeframe as string) || '1h';
   const count = Math.min(1000, Math.max(1, parseInt(req.query.count as string, 10) || 60));
   const candles = await marketProvider.getCandles(symbol, timeframe, count);
@@ -1540,7 +1736,7 @@ async function ownerForChat(
 async function resolveOwnedProcess(
   chatId: string,
   processId: string,
-): Promise<{ goat: SignalGoat; runtime: GoatRuntimeState } | null> {
+): Promise<{ goat: FundGoat; runtime: GoatRuntimeState } | null> {
   const owner = await ownerForChat(chatId);
   if (!owner) return null;
 
@@ -1577,7 +1773,7 @@ async function listOwnedProcesses(
  * process.
  */
 async function buildCommandResolution(
-  goat: SignalGoat,
+  goat: FundGoat,
   userId: string,
 ): Promise<{
   resolution: TelegramResolution;
@@ -1621,7 +1817,7 @@ async function buildCommandResolution(
  * Drawn entirely from the runtime state that was just produced, so it reports
  * what happened rather than what was hoped for.
  */
-function buildAnalysisSummary(state: GoatRuntimeState, goat: SignalGoat): string {
+function buildAnalysisSummary(state: GoatRuntimeState, goat: FundGoat): string {
   const thesis = state.currentThesis;
   const signal = state.latestSignal;
   const triggered = state.trackers.filter((t) => t.isTriggered).length;
@@ -1670,7 +1866,7 @@ async function createProcessFromTelegram(
 ): Promise<{ ok: boolean; message: string }> {
   const owner = await ownerForChat(chatId);
   if (!owner) {
-    return { ok: false, message: 'This chat is not linked to a SignalGOAT account.' };
+    return { ok: false, message: 'This chat is not linked to a FundAGoat account.' };
   }
 
   const trimmed = args.trim();
@@ -1679,7 +1875,7 @@ async function createProcessFromTelegram(
       ok: false,
       message:
         'Usage: `/create <goal> <market> [timeframe]`\n' +
-        'Example: `/create wait for a London sweep on EUR/USD 5m`',
+        'Example: `/create wait for a London sweep on BTC 5m`',
     };
   }
 
@@ -1720,7 +1916,7 @@ async function createProcessFromTelegram(
 
   const name = goal.length > 60 ? `${goal.slice(0, 57)}…` : goal;
 
-  const goat: SignalGoat = {
+  const goat: FundGoat = {
     id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     userId: owner.userId,
     name,
@@ -1858,7 +2054,7 @@ apiRouter.post('/telegram/webhook', handle(async (req, res) => {
         return { ok: false, message: `No process \`${processId}\` for your account.` };
       }
 
-      const updated: SignalGoat = { ...goat, status: 'PAUSED', updatedAt: new Date().toISOString() };
+      const updated: FundGoat = { ...goat, status: 'PAUSED', updatedAt: new Date().toISOString() };
       await persistence.goats.save(updated);
       await syncSchedule(updated);
       const runtime = await ensureGoatRuntime(updated);
@@ -1876,7 +2072,7 @@ apiRouter.post('/telegram/webhook', handle(async (req, res) => {
         return { ok: false, message: `No process \`${processId}\` for your account.` };
       }
 
-      const updated: SignalGoat = { ...goat, status: 'WATCHING', updatedAt: new Date().toISOString() };
+      const updated: FundGoat = { ...goat, status: 'WATCHING', updatedAt: new Date().toISOString() };
       await persistence.goats.save(updated);
       await syncSchedule(updated);
       const runtime = await ensureGoatRuntime(updated);
@@ -2026,27 +2222,105 @@ function timingSafeStringEqual(a: string, b: string): boolean {
 /* Protected routes                                                    */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* AUTHENTICATION BOUNDARY                                             */
+/* ------------------------------------------------------------------ */
+/**
+ * Everything ABOVE this line is public and must carry its OWN authentication:
+ *   - /internal/*  -> shared scheduler secret (DURABLE_SCHEDULER_SECRET)
+ *   - /telegram/webhook -> Telegram secret
+ *   - everything else -> carries no user data
+ *
+ * Everything BELOW it has a verified identity in `req.user`, supplied by
+ * authMiddleware. Ownership is derived from `req.user.uid` only.
+ *
+ * Public catalogue routes belong above the line; the copy routes that WRITE a
+ * user's own record belong below it. That split is the reason a template can be
+ * browsed signed-out while copying one requires an account.
+ */
+
+/**
+ * EXPLORE: system-owned GOAT templates.
+ *
+ * PUBLIC. Deliberately unauthenticated: a template is static content with no
+ * user data, and letting an unauthenticated visitor see what FundAGoat can do
+ * is the point of the section. Nothing here reveals a user id, a credential or
+ * a live GOAT.
+ *
+ * Templates are immutable to everyone. Copying is a POST (below) that creates a
+ * NEW record owned by the caller; there is no route that edits a template, so
+ * hiding an edit button in the UI is not what enforces that.
+ */
+apiRouter.get('/templates/goats', handle(async (_req, res) => {
+  res.json({
+    templates: SYSTEM_GOATS.map((goat) => ({
+      id: goat.id,
+      name: goat.name,
+      goal: goat.goal,
+      markets: goat.markets,
+      skillIds: goat.skillIds,
+      model: goat.model,
+      timeframe: goat.timeframe,
+      schedule: goat.schedule,
+      /**
+       * Explicit, so the UI never has to infer "these are examples" from the
+       * absence of a status field. These are unverified starting points, not
+       * performance claims.
+       */
+      isTemplate: true,
+      performsTrades: false,
+    })),
+  });
+}));
+
+/** EXPLORE: system-owned skills. Public for the same reason as above. */
+apiRouter.get('/templates/skills', handle(async (_req, res) => {
+  res.json({ templates: SYSTEM_SKILLS.map(publicTemplateSkill) });
+}));
+
 apiRouter.use(authMiddleware);
 
 // ---- Settings / keys (user-scoped) ----------------------------------
 
-/** Per-user credential status. Never returns the secret itself. */
+/**
+ * Per-user credential status. NEVER returns a secret.
+ *
+ * READS THROUGH THE VAULT, which is what makes this route safe to expose: the
+ * vault's status shape contains only `{configured, updatedAt, maskedHint,
+ * keyId}`. There is no code path from this response to a plaintext key, so
+ * there is nothing here that a future refactor could accidentally start
+ * returning.
+ */
 apiRouter.get('/settings/keys', handle(async (req, res) => {
   const user = requireUser(req);
-  const [openRouterKey, telegramToken] = await Promise.all([
-    persistence.keys.getOpenRouterKey(user.uid),
-    persistence.keys.getTelegramToken(user.uid),
+
+  const [openrouter, groq, propdao, telegram, vaultConfigured] = await Promise.all([
+    credentialVault.getCredentialStatus(user.uid, 'openrouter'),
+    credentialVault.getCredentialStatus(user.uid, 'groq'),
+    credentialVault.getCredentialStatus(user.uid, 'propdao'),
+    credentialVault.getCredentialStatus(user.uid, 'telegram'),
+    Promise.resolve(credentialVault.isConfigured()),
   ]);
 
   res.json({
     /**
-     * Reported false when a value is stored but is not a usable key shape, so
-     * the UI cannot claim "your key is saved" while every wake fails.
+     * False when a value is stored but is not a usable key shape, so the UI
+     * cannot claim "your key is saved" while every wake fails.
      */
-    openRouterKeyConfigured: isPlausibleOpenRouterKey(openRouterKey),
-    /** A key exists but is malformed and needs re-entering. */
-    openRouterKeyInvalid: Boolean(openRouterKey) && !isPlausibleOpenRouterKey(openRouterKey),
-    telegramTokenConfigured: Boolean(telegramToken),
+    openRouterKeyConfigured: openrouter.configured && !/unreadable/.test(openrouter.maskedHint ?? ''),
+    openRouterKeyInvalid: Boolean(openrouter.maskedHint?.includes('unreadable')),
+    openRouterKeyHint: openrouter.maskedHint,
+    groqKeyConfigured: groq.configured && !/unreadable/.test(groq.maskedHint ?? ''),
+    propDaoKeyConfigured: propdao.configured && !/unreadable/.test(propdao.maskedHint ?? ''),
+    propDaoKeyHint: propdao.maskedHint,
+    telegramTokenConfigured: telegram.configured,
+    telegramTokenHint: telegram.maskedHint,
+    /**
+     * False means the vault cannot encrypt. Saving any credential will fail
+     * with a clear error rather than silently storing plaintext — the UI
+     * surfaces this so a deployment mistake is visible before a user tries.
+     */
+    encryptionAvailable: vaultConfigured,
     serverKeyFallback: isPlausibleOpenRouterKey(
       process.env.OPENROUTER_API_KEY,
     ),
@@ -2088,19 +2362,45 @@ apiRouter.post('/settings/keys', handle(async (req, res) => {
     reasoningGateway.setProviderFor(user.uid, nextProvider);
   }
 
-  if (nextOpenRouterKey.key !== undefined) {
-    await persistence.keys.setOpenRouterKey(user.uid, nextOpenRouterKey.key);
-    // Drop the cached client so the next request uses the new credential.
-    reasoningGateway.invalidate(user.uid);
-  }
+  /**
+   * SECRETS GO THROUGH THE VAULT.
+   *
+   * `saveCredential` validates shape, encrypts with AES-256-GCM and stores
+   * only the envelope. An explicit `null` CLEARS a credential; an absent field
+   * means "leave unchanged", which is the long-standing settings semantics.
+   *
+   * When the master key is absent this THROWS rather than falling back to
+   * plaintext. The user gets a 503 with the remediation, which is strictly
+   * better than a key written in the clear that looks saved.
+   */
+  try {
+    if (nextOpenRouterKey.key !== undefined) {
+      await credentialVault.saveCredential(user.uid, 'openrouter', nextOpenRouterKey.key);
+      // Drop the cached client so the next request uses the new credential.
+      reasoningGateway.invalidate(user.uid);
+    }
 
-  if (nextGroqKey !== undefined) {
-    await persistence.keys.setGroqKey?.(user.uid, nextGroqKey);
-    reasoningGateway.invalidate(user.uid);
-  }
+    if (nextGroqKey !== undefined) {
+      await credentialVault.saveCredential(user.uid, 'groq', nextGroqKey);
+      reasoningGateway.invalidate(user.uid);
+    }
 
-  if (nextTelegramToken !== undefined) {
-    await persistence.keys.setTelegramToken(user.uid, nextTelegramToken);
+    if (nextTelegramToken !== undefined) {
+      await credentialVault.saveCredential(user.uid, 'telegram', nextTelegramToken);
+    }
+
+    if (req.body?.propDaoApiKey !== undefined) {
+      const propDaoKey = normalisePropDaoKey(req.body.propDaoApiKey);
+      await credentialVault.saveCredential(user.uid, 'propdao', propDaoKey);
+    }
+  } catch (error) {
+    if (error instanceof CredentialValidationError) {
+      return fail(res, 400, 'INVALID_KEY', error.message);
+    }
+    if (error instanceof CredentialVaultError) {
+      return fail(res, 503, error.code, error.message);
+    }
+    throw error;
   }
 
   if (telegramChatId !== undefined && telegramChatId !== null) {
@@ -2126,15 +2426,15 @@ apiRouter.post('/settings/keys', handle(async (req, res) => {
         res,
         409,
         'CHAT_ID_IN_USE',
-        'That Telegram chat is already linked to another SignalGOAT account. ' +
+        'That Telegram chat is already linked to another FundAGoat account. ' +
           'Unlink it there first, or use a different chat.',
       );
     }
 
     const profile = (await persistence.profiles.get(user.uid)) ?? {
       id: user.uid,
-      email: user.email ?? `${user.uid}@signalgoat.internal`,
-      displayName: 'SignalGOAT Trader',
+      email: user.email ?? `${user.uid}@fundagoat.internal`,
+      displayName: 'FundAGoat Trader',
       telegramNotificationsEnabled: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2149,15 +2449,223 @@ apiRouter.post('/settings/keys', handle(async (req, res) => {
 
   const activeProvider = await reasoningGateway.providerFor(user.uid);
 
+  // Status only. No secret is echoed, so a client that intercepts the response
+  // still learns nothing about the stored value.
+  const [openrouterStatus, groqStatus, propdaoStatus] = await Promise.all([
+    credentialVault.getCredentialStatus(user.uid, 'openrouter'),
+    credentialVault.getCredentialStatus(user.uid, 'groq'),
+    credentialVault.getCredentialStatus(user.uid, 'propdao'),
+  ]);
+
   res.json({
     success: true,
     provider: activeProvider,
-    openRouterKeyConfigured: isPlausibleOpenRouterKey(
-      await persistence.keys.getOpenRouterKey(user.uid),
-    ),
-    groqKeyConfigured: Boolean(await persistence.keys.getGroqKey?.(user.uid)),
+    openRouterKeyConfigured: openrouterStatus.configured,
+    openRouterKeyHint: openrouterStatus.maskedHint,
+    groqKeyConfigured: groqStatus.configured,
+    propDaoKeyConfigured: propdaoStatus.configured,
+    propDaoKeyHint: propdaoStatus.maskedHint,
   });
 }));
+
+/* ------------------------------------------------------------------ */
+/* PROPDAO                                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * WHY EVERY ROUTE BELOW RE-DERIVES THE USER
+ *
+ * Ownership comes from `req.user.uid`, set by `authMiddleware` from a verified
+ * Firebase token. No route here reads a user id, an account id for ownership,
+ * or an approval state from the request body. A body field naming another user
+ * has no effect because there is no code path that would consult it.
+ *
+ * NO ROUTE RETURNS A SECRET. `/propdao/status` returns the vault's masked
+ * status; the API key is decrypted inside the adapter, used for an outbound
+ * request, and discarded.
+ */
+
+/**
+ * Connection status: is a key saved, does it verify, what does the provider
+ * say, and is execution permitted.
+ *
+ * `execution` is a SERVER-SIDE capability statement, not a preference. It
+ * cannot be turned on from the client.
+ */
+apiRouter.get('/propdao/status', handle(async (req, res) => {
+  const user = requireUser(req);
+  const provider = propDaoFor(user.uid);
+
+  const [credential, verification] = await Promise.all([
+    credentialVault.getCredentialStatus(user.uid, 'propdao'),
+    provider.verifyConnection(),
+  ]);
+
+  res.json({
+    provider: 'propdao',
+    credential: {
+      configured: credential.configured,
+      /** e.g. "pd_l••••3f2a (27 chars)". Never the secret. */
+      maskedHint: credential.maskedHint,
+      updatedAt: credential.updatedAt,
+      keyId: credential.keyId,
+      needsRotation: credential.needsRotation,
+    },
+    /**
+     * `configured` and `verified` are different and the UI shows both. A saved
+     * key proves only that some text was stored; only a successful `GET /me`
+     * proves it works.
+     */
+    connected: verification.connected,
+    verification: verification.connected === true
+      ? { userId: verification.userId, accountCount: verification.accountCount }
+      : { code: verification.code, message: verification.message },
+    execution: provider.policyStatus(),
+  });
+}));
+
+/**
+ * Accounts this key can see, plus live risk for each.
+ *
+ * The list comes from PropDAO's own `/accounts` for the CALLER'S key, so it
+ * cannot contain someone else's account. Risk is fetched per account and any
+ * failure degrades that account to `available: false` rather than failing the
+ * whole request.
+ */
+apiRouter.get('/propdao/accounts', handle(async (req, res) => {
+  const user = requireUser(req);
+  const provider = propDaoFor(user.uid);
+
+  const accounts = await provider.listAccounts();
+  if (accounts.length === 0) {
+    res.json({
+      accounts: [],
+      configured: (await credentialVault.getCredentialStatus(user.uid, 'propdao')).configured,
+      message: 'No PropDAO accounts are available on this key.',
+    });
+    return;
+  }
+
+  const withRisk = await Promise.all(
+    accounts.map(async (account) => {
+      const risk = await provider.risk(account.accountId);
+      return {
+        ...account,
+        risk,
+        positions: await provider.positions(account.accountId),
+        orders: await provider.orders(account.accountId),
+        /** Everything above is real or null; nothing is defaulted to zero. */
+        available: !risk.incomplete || risk.equity !== null,
+      };
+    }),
+  );
+
+  res.json({
+    accounts: withRisk,
+    configured: true,
+    execution: provider.policyStatus(),
+  });
+}));
+
+/** Instruments PropDAO offers, with the LIVE leverage caps. */
+apiRouter.get('/propdao/markets', handle(async (req, res) => {
+  const user = requireUser(req);
+  const markets = await propDaoFor(user.uid).markets();
+  res.json({
+    markets,
+    total: markets.length,
+    /**
+     * The published examples disagree with the live API on leverage caps and
+     * market counts, so this response is explicitly labelled as live data and
+     * the client must not substitute documented values.
+     */
+    source: 'propdao-live',
+  });
+}));
+
+/**
+ * Deterministic pre-flight for a proposed trade.
+ *
+ * Computes the risk verdict WITHOUT placing anything. This is what the
+ * proposal screen shows before an approval is requested, so the user sees the
+ * verdict against live account state rather than discovering it after
+ * approving.
+ *
+ * Even here, nothing is executed: the route calls the pure validator, not the
+ * gated executor.
+ */
+apiRouter.post('/propdao/risk-check', handle(async (req, res) => {
+  const user = requireUser(req);
+  const provider = propDaoFor(user.uid);
+
+  const { accountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage } = req.body ?? {};
+
+  if (typeof accountId !== 'string' || !accountId) {
+    return fail(res, 400, 'INVALID_REQUEST', 'accountId is required.');
+  }
+  if (typeof symbol !== 'string' || !symbol) {
+    return fail(res, 400, 'INVALID_REQUEST', 'symbol is required.');
+  }
+  if (side !== 'BUY' && side !== 'SELL') {
+    return fail(res, 400, 'INVALID_REQUEST', 'side must be BUY or SELL.');
+  }
+  for (const [label, value] of [['qty', qty], ['entry', entry], ['stopLoss', stopLoss], ['takeProfit', takeProfit]] as const) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return fail(res, 400, 'INVALID_REQUEST', `${label} must be a finite number.`);
+    }
+  }
+
+  // Ownership is proven against the key's own account list, not the request.
+  const account = await provider.resolveAccount(accountId);
+  if (!account) {
+    return fail(res, 404, 'ACCOUNT_NOT_FOUND', 'That account is not available on your PropDAO key.');
+  }
+
+  const [risk, markets, positions] = await Promise.all([
+    provider.risk(accountId),
+    provider.markets(),
+    provider.positions(accountId),
+  ]);
+
+  const result = validateTradeIntent(
+    { symbol, side, qty, entry, stopLoss, takeProfit, leverage },
+    account,
+    risk,
+    markets,
+    positions,
+  );
+
+  res.json({
+    ok: result.ok,
+    violations: result.violations,
+    measured: result.measured,
+    limits: DEFAULT_RISK_LIMITS,
+    /** Always included, so the UI can explain a refusal rather than hide it. */
+    execution: provider.policyStatus(),
+  });
+}));
+
+/** Disconnects PropDAO: deletes the key and reports what was removed. */
+apiRouter.delete('/propdao/connect', handle(async (req, res) => {
+  const user = requireUser(req);
+  await credentialVault.deleteCredential(user.uid, 'propdao');
+  res.json({ success: true, connected: false });
+}));
+
+/**
+ * Capability + execution policy for this deployment.
+ *
+ * Registered AFTER `authMiddleware`, so it requires a signed-in user. That is
+ * deliberate: the "can this deployment trade?" answer is deployment policy,
+ * not public product information, and there is no reason to expose it
+ * anonymously. It returns no user data and no secret.
+ */
+apiRouter.get('/propdao/capabilities', handle(async (req, res) => {
+  requireUser(req);
+  const provider = propDaoFor(req.user!.uid);
+  res.json(provider.policyStatus());
+}));
+
 
 /**
  * TELEGRAM BOT CONNECTION
@@ -2290,8 +2798,8 @@ apiRouter.post('/telegram/connect', handle(async (req, res) => {
   if (chatId) {
     const profile = (await persistence.profiles.get(user.uid)) ?? {
       id: user.uid,
-      email: user.email ?? `${user.uid}@signalgoat.internal`,
-      displayName: 'SignalGOAT Trader',
+      email: user.email ?? `${user.uid}@fundagoat.internal`,
+      displayName: 'FundAGoat Trader',
       telegramNotificationsEnabled: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2303,7 +2811,7 @@ apiRouter.post('/telegram/connect', handle(async (req, res) => {
         res,
         409,
         'CHAT_ID_IN_USE',
-        'That Telegram chat is already linked to another SignalGOAT account.',
+        'That Telegram chat is already linked to another FundAGoat account.',
       );
     }
 
@@ -2501,6 +3009,18 @@ apiRouter.post('/skills', handle(async (req, res) => {
 
 apiRouter.delete('/skills/:id', handle(async (req, res) => {
   const user = requireUser(req);
+  /**
+   * Check the catalogue by ID FIRST.
+   *
+   * The built-in skills are served from the catalogue rather than from user
+   * storage, so a lookup in storage alone returns nothing and the caller would
+   * get a misleading 404. Immutability of a system skill must hold regardless of
+   * whether it happens to have a stored copy.
+   */
+  if (isSystemOwnedSkillId(req.params.id)) {
+    return fail(res, 400, 'DEFAULT_SKILL', 'Cannot delete system skills.');
+  }
+
   const skill = await persistence.skills.get(req.params.id);
   if (!skill) return notFound(res);
   if (skill.isDefault || skill.userId === 'system') {
@@ -2512,6 +3032,134 @@ apiRouter.delete('/skills/:id', handle(async (req, res) => {
   await persistence.skills.delete(skill.id);
   res.json({ success: true, deletedId: skill.id });
 }));
+
+/* ------------------------------------------------------------------ */
+/* System catalogues (Explore)                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Copies a GOAT template into the caller's workspace.
+ *
+ * The template is READ and a NEW record is written with a fresh id and the
+ * caller's uid. The template itself is never written to, so concurrent copies
+ * cannot interfere and one user's copy cannot affect another's.
+ */
+apiRouter.post('/templates/goats/:id/copy', handle(async (req, res) => {
+  const user = requireUser(req);
+  const template = SYSTEM_GOATS.find((g) => g.id === req.params.id);
+
+  if (!template) return notFound(res);
+
+  const now = new Date().toISOString();
+  const copy: FundGoat = {
+    ...template,
+    // New identity and a real owner. Spreading the template would otherwise
+    // copy `id: 'system'` and make the copy collide with the template itself.
+    id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    userId: user.uid,
+    name: `${template.name}`,
+    status: 'WATCHING',
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await persistence.goats.save(copy);
+
+  /**
+   * A copy of a SKILL must also be owned by the caller, otherwise the copy would
+   * reference a system record that must stay immutable.
+   */
+  await copyReferencedSkills(user.uid, copy.skillIds);
+
+  await syncSchedule(copy);
+  subscribeToMarkets(copy);
+
+  res.status(201).json({ goat: copy, copiedFrom: template.id });
+}));
+
+/**
+ * Ensures every skill id a GOAT references is usable by its owner.
+ *
+ * A system skill is referenced in place (it is immutable but readable); a user
+ * skill is COPIED, so the GOAT keeps working if the user later edits or deletes
+ * their own copy. Returns the ids that are actually usable.
+ */
+async function copyReferencedSkills(
+  userId: string,
+  skillIds: string[],
+): Promise<string[]> {
+  const resolved: string[] = [];
+
+  for (const skillId of skillIds) {
+    const system = SYSTEM_SKILLS.find((s) => s.id === skillId);
+
+    if (system) {
+      resolved.push(skillId);
+      continue;
+    }
+
+    const existing = await persistence.skills.get(skillId);
+    if (existing?.isDefault || existing?.userId === 'system' || isSystemOwnedSkillId(skillId)) {
+      resolved.push(skillId);
+      continue;
+    }
+
+    // Never copy another user's skill into this user's library.
+    if (existing && existing.userId !== userId) {
+      continue;
+    }
+
+    const now = new Date().toISOString();
+    await persistence.skills.save({
+      ...existing,
+      id: `skill_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      userId,
+      isDefault: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  return resolved;
+}
+
+/** Copies a skill template into the caller's library. */
+apiRouter.post('/templates/skills/:id/copy', handle(async (req, res) => {
+  const user = requireUser(req);
+  const template = SYSTEM_SKILLS.find((s) => s.id === req.params.id);
+
+  if (!template) return notFound(res);
+
+  const now = new Date().toISOString();
+  const copy = {
+    ...template,
+    id: `skill_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    userId: user.uid,
+    isDefault: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await persistence.skills.save(copy);
+  res.status(201).json({ skill: copy, copiedFrom: template.id });
+}));
+
+/** The public shape of a template skill: no owner, no timestamps. */
+function publicTemplateSkill(skill: (typeof SYSTEM_SKILLS)[number]) {
+  return {
+    id: skill.id,
+    name: skill.name,
+    description: skill.description,
+    methodology: skill.methodology,
+    constraints: skill.constraints,
+    preferredTimeframes: skill.preferredTimeframes,
+    requiredEvidence: skill.requiredEvidence,
+    invalidationRules: skill.invalidationRules,
+    isTemplate: true,
+    /** Stated so the UI need not guess whether a skill is a live artefact. */
+    executable: false,
+  };
+}
 
 // ---- GOATs ------------------------------------------------------------
 
@@ -2550,7 +3198,7 @@ apiRouter.post('/goats', handle(async (req, res) => {
 
   const goatId = `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const now = new Date().toISOString();
-  const newGoat: SignalGoat = {
+  const newGoat: FundGoat = {
     id: goatId,
     userId: user.uid,
     name: input.name,
@@ -2612,7 +3260,7 @@ apiRouter.post('/goats/:id/status', handle(async (req, res) => {
 
   const pausing = action === 'PAUSE';
   const now = new Date().toISOString();
-  const updated: SignalGoat = {
+  const updated: FundGoat = {
     ...goat,
     status: pausing ? 'PAUSED' : 'WATCHING',
     updatedAt: now,
@@ -2680,7 +3328,7 @@ apiRouter.patch('/goats/:id/schedule', handle(async (req, res) => {
     );
   }
 
-  const updated: SignalGoat = {
+  const updated: FundGoat = {
     ...goat,
     schedule,
     timeframe: normaliseTrackingTimeframe(timeframe),
@@ -2776,6 +3424,190 @@ apiRouter.get('/goats/:id/signals', handle(async (req, res) => {
   res.json({ signals });
 }));
 
+/** Loads one of a caller-owned GOAT's signals, or 404s without leaking existence. */
+async function ownedSignal(
+  req: Parameters<typeof requireUser>[0],
+  userId: string,
+): Promise<{ goat: FundGoat; signal: TradeSignal } | null> {
+  const goat = await persistence.goats.getForUser(String(req.params.id), userId);
+  if (!goat) return null;
+  const signals = await persistence.signals.listByGoat(goat.id, 500);
+  const signal = signals.find((s) => s.id === String(req.params.signalId));
+  if (!signal) return null;
+  return { goat, signal };
+}
+
+/**
+ * RECORD A PROPOSAL DECISION (accept / reject)
+ * --------------------------------------------
+ * The write path for the proposal screen's Accept and Reject buttons.
+ *
+ * THREE SAFETY PROPERTIES, all enforced here rather than in the UI:
+ *
+ *  1. WRITE-ONCE. A finalised proposal refuses a second decision with 409,
+ *     so a double-click or a retry cannot flip an ACCEPTED proposal to
+ *     REJECTED after the user (or Telegram) has already decided.
+ *
+ *  2. ACCEPTANCE IS GATED BY THE EXECUTION POLICY, NOT BY THE BUTTON. When
+ *     order placement is disabled — the default, and the only state this
+ *     deployment may run in until PropDAO grants written authorisation — an
+ *     ACCEPT returns EXECUTION_DISABLED and records NOTHING. The UI therefore
+ *     can never imply an order was placed, because no acceptance exists to
+ *     imply it. `evaluateExecution` reads the same three environment flags the
+ *     executor reads; there is no second, looser check.
+ *
+ *  3. REJECTION IS ALWAYS ALLOWED AND PERSISTS. Rejecting cannot place an
+ *     order, so it is never blocked by the policy — but it IS persisted, so
+ *     web and Telegram read the same finalised state.
+ */
+apiRouter.post('/goats/:id/signals/:signalId/decision', handle(async (req, res) => {
+  const user = requireUser(req);
+  const owned = await ownedSignal(req, user.uid);
+  if (!owned) return notFound(res);
+  const { goat, signal } = owned;
+
+  const decision = req.body?.decision;
+  if (decision !== 'ACCEPTED' && decision !== 'REJECTED') {
+    return fail(res, 400, 'INVALID_INPUT', 'decision must be ACCEPTED or REJECTED.');
+  }
+
+  // 1. Write-once, checked SERVER-side against the persisted record.
+  if (signal.decision) {
+    return fail(
+      res,
+      409,
+      'ALREADY_FINALIZED',
+      `This proposal was already ${signal.decision.toLowerCase()} at ${signal.decidedAt ?? 'an earlier time'} and cannot be decided again.`,
+    );
+  }
+
+  // An expired proposal can be rejected (closing it out) but not accepted.
+  const expired = signal.expiresAt
+    ? Date.parse(signal.expiresAt) < Date.now()
+    : false;
+
+  // 2. Acceptance passes through the SAME execution policy the executor uses.
+  if (decision === 'ACCEPTED') {
+    const execution = propDaoFor(user.uid).policyStatus();
+
+    if (!execution.enabled || !execution.authorised) {
+      return fail(
+        res,
+        409,
+        'EXECUTION_DISABLED',
+        `${execution.summary} ${execution.termsSummary}`,
+      );
+    }
+    if (expired) {
+      return fail(
+        res,
+        409,
+        'PROPOSAL_EXPIRED',
+        'This proposal has expired. Review the current market before approving a new one.',
+      );
+    }
+  }
+
+  const now = new Date().toISOString();
+  const updated: TradeSignal = {
+    ...signal,
+    decision,
+    decidedAt: now,
+    decisionNote:
+      typeof req.body?.note === 'string' && req.body.note.trim()
+        ? req.body.note.trim().slice(0, 500)
+        : undefined,
+    updatedAt: now,
+  };
+
+  const persisted = await persistence.signals.update(updated);
+  if (!persisted) {
+    return fail(res, 404, 'NOT_FOUND', 'That proposal no longer exists.');
+  }
+
+  res.json({
+    signal: updated,
+    decision,
+    /**
+     * Always returned so the UI can state the truth next to the decision:
+     * a recorded ACCEPTANCE is a user decision record, and whether an ORDER
+     * exists is governed by this object — never by the button press.
+     */
+    execution: propDaoFor(user.uid).policyStatus(),
+    dataMode: marketProvider.dataMode,
+  });
+}));
+
+/**
+ * PROPOSAL AI ASSISTANT
+ * ---------------------
+ * Contextual questions about ONE proposal, answered through the existing
+ * user-scoped reasoning gateway (same BYO OpenRouter/Groq key, same
+ * server-side credential resolution; no key ever reaches the browser).
+ *
+ * The proposal's persisted record — levels, evidence, decision state and the
+ * execution policy summary — is injected verbatim into the prompt as the
+ * factual record, so answers are grounded rather than improvised. The
+ * assistant is READ-ONLY by construction: there is no code path from this
+ * route to a proposal mutation or an order.
+ */
+apiRouter.post('/goats/:id/signals/:signalId/ask', handle(async (req, res) => {
+  const user = requireUser(req);
+  const owned = await ownedSignal(req, user.uid);
+  if (!owned) return notFound(res);
+  const { goat, signal } = owned;
+
+  const question = req.body?.question;
+  if (typeof question !== 'string' || !question.trim()) {
+    return fail(res, 400, 'INVALID_INPUT', 'Question is required.');
+  }
+  if (question.length > 2000) {
+    return fail(res, 400, 'INVALID_INPUT', 'Question too long.');
+  }
+
+  await ensureGoatRuntime(goat);
+  const { context, model } = await buildGoatContext(
+    { goats: persistence.goats, skills: persistence.skills, marketProvider },
+    goat.id,
+    user.uid,
+  );
+  const runtime = durableObjectRegistry.get(goat.id);
+
+  const expired = signal.expiresAt
+    ? Date.parse(signal.expiresAt) < Date.now()
+    : false;
+
+  const enriched = {
+    ...context,
+    activeThesis: runtime?.getState().currentThesis ?? null,
+    proposal: {
+      // The complete persisted proposal record — facts, not narration.
+      ...signal,
+      expired,
+      sourceGoat: {
+        id: goat.id,
+        name: goat.name,
+        goal: goat.goal,
+        markets: goat.markets,
+        timeframe: goat.timeframe,
+        schedule: goat.schedule,
+        skills: context.skills.map((s) => ({ id: s.id, name: s.name })),
+      },
+      // Execution restrictions travel WITH the proposal so the assistant can
+      // never imply an order is possible when the policy says otherwise.
+      execution: propDaoFor(user.uid).policyStatus(),
+      dataSource: marketProvider.dataMode,
+    },
+  };
+
+  const answer = await reasoningGateway.answerGoatQuestion(
+    question.trim(),
+    enriched,
+    model,
+  );
+  res.json({ answer, dataMode: marketProvider.dataMode });
+}));
+
 // ---- Daily market recap ------------------------------------------------
 
 apiRouter.get('/markets/recaps', handle(async (req, res) => {
@@ -2819,7 +3651,10 @@ apiRouter.post('/backtest/run', handle(async (req, res) => {
   const skills = (await allSkillsFor(user.uid)).filter((s) => goat.skillIds.includes(s.id));
   const selectedMarket = typeof market === 'string' && goat.markets.includes(market)
     ? market
-    : goat.markets[0] ?? 'EUR/USD';
+    : goat.markets[0];
+  if (!selectedMarket) {
+    return fail(res, 400, 'NO_MARKET', 'The GOAT has no market configured to backtest.');
+  }
   const validPeriods = ['24h', '7d', '30d', '90d'];
   const selectedPeriod = validPeriods.includes(period as string) ? (period as string) : '7d';
 

@@ -79,26 +79,26 @@ describe('session calendar — timezone correctness', () => {
     expect(zoneOffsetMs('Asia/Kolkata', Date.parse('2026-07-15T12:00:00Z')) / MINUTE_MS).toBe(330);
   });
 
-  test('BERLIN index hours are resolved in Europe/Berlin, not New York', () => {
-    const spec = sessionSpecFor('GER40');
-    expect(spec.timezone).toBe('Europe/Berlin');
+  test('TOKYO index hours are resolved in Asia/Tokyo, not New York', () => {
+    const spec = sessionSpecFor('XYZ:JP225');
+    expect(spec.timezone).toBe('Asia/Tokyo');
 
-    const session = resolveSession('GER40', Date.parse('2026-07-15T10:00:00Z'));
+    const session = resolveSession('XYZ:JP225', Date.parse('2026-07-15T03:00:00Z'));
     expect(session).not.toBeNull();
     if (!session) return;
 
-    // Xetra 09:00 Berlin = 07:00 UTC in summer.
-    expect(iso(session.opensAtMs)).toBe('2026-07-15T07:00:00.000Z');
+    // 09:00 JST = 00:00 UTC in summer.
+    expect(iso(session.opensAtMs)).toBe('2026-07-15T00:00:00.000Z');
   });
 });
 
 describe('session calendar — instrument-specific sessions', () => {
   test('classifies instruments into their own session geometry', () => {
     expect(classifyInstrument('EUR/USD')).toBe('FX');
-    expect(classifyInstrument('XAU/USD')).toBe('METALS');
-    expect(classifyInstrument('WTI')).toBe('ENERGY');
-    expect(classifyInstrument('US500')).toBe('INDEX');
-    expect(classifyInstrument('BTC/USD')).toBe('CRYPTO');
+    expect(classifyInstrument('XYZ:GOLD')).toBe('METALS');
+    expect(classifyInstrument('XYZ:CL')).toBe('ENERGY');
+    expect(classifyInstrument('XYZ:JP225')).toBe('INDEX');
+    expect(classifyInstrument('BTC')).toBe('CRYPTO');
   });
 
   test('FX sessions are labelled by their CLOSE date, the market convention', () => {
@@ -112,30 +112,30 @@ describe('session calendar — instrument-specific sessions', () => {
   });
 
   test('an index session is a plain intraday window in its own zone', () => {
-    const during = resolveSession('US500', Date.parse('2026-07-15T14:00:00Z'));
-    const after = resolveSession('US500', Date.parse('2026-07-15T21:00:00Z'));
+    const during = resolveSession('XYZ:JP225', Date.parse('2026-07-15T03:00:00Z'));
+    const after = resolveSession('XYZ:JP225', Date.parse('2026-07-15T08:00:00Z'));
 
     expect(during?.state).toBe('OPEN');
-    // 09:30-16:00 ET in July = 13:30-20:00 UTC.
-    expect(iso(during!.opensAtMs)).toBe('2026-07-15T13:30:00.000Z');
+    // 09:00 JST = 00:00 UTC.
+    expect(iso(during!.opensAtMs)).toBe('2026-07-15T00:00:00.000Z');
     expect(after?.state).toBe('CLOSED');
   });
 
   test('crypto trades continuously, including on a Saturday', () => {
-    const saturday = resolveSession('BTC/USD', Date.parse('2026-01-17T12:00:00Z'));
+    const saturday = resolveSession('BTC', Date.parse('2026-01-17T12:00:00Z'));
 
     expect(saturday).not.toBeNull();
     if (!saturday) return;
     expect(saturday.state).toBe('OPEN');
-    expect(isMarketOpen('BTC/USD', Date.parse('2026-01-17T12:00:00Z'))).toBe(true);
+    expect(isMarketOpen('BTC', Date.parse('2026-01-17T12:00:00Z'))).toBe(true);
   });
 
   test('the same wall-clock instant is open for crypto and closed for FX on a weekend', () => {
     const at = Date.parse('2026-01-17T12:00:00Z'); // Saturday
 
-    expect(isMarketOpen('BTC/USD', at)).toBe(true);
+    expect(isMarketOpen('BTC', at)).toBe(true);
     expect(isMarketOpen('EUR/USD', at)).toBe(false);
-    expect(isMarketOpen('US500', at)).toBe(false);
+    expect(isMarketOpen('XYZ:JP225', at)).toBe(false);
   });
 
   test('a weekend resolves to the PREVIOUS session rather than to nothing', () => {
@@ -150,7 +150,7 @@ describe('session calendar — instrument-specific sessions', () => {
   });
 
   test('the instant a session closes resolves to CLOSED, not to null', () => {
-    const exact = resolveSession('US500', Date.parse('2026-07-15T20:00:00Z'));
+    const exact = resolveSession('XYZ:JP225', Date.parse('2026-07-15T06:00:00Z'));
 
     expect(exact).not.toBeNull();
     expect(exact?.state).toBe('CLOSED');
@@ -238,7 +238,7 @@ describe('retention policy', () => {
 
   test('a 24/7 market gets a proportionally longer short-term window', () => {
     const fx = retentionPolicyForInstrument('EUR/USD');
-    const crypto = retentionPolicyForInstrument('BTC/USD');
+    const crypto = retentionPolicyForInstrument('BTC');
 
     expect(crypto.m5.sessions).toBeGreaterThan(fx.m5.sessions);
   });

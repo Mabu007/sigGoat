@@ -179,3 +179,67 @@ export function normaliseTelegramToken(value: unknown): string | undefined {
 export function isPlausibleOpenRouterKey(value: string | undefined): boolean {
   return typeof value === 'string' && OPENROUTER_KEY_PATTERN.test(value.trim());
 }
+
+/* ------------------------------------------------------------------ */
+/* PropDAO                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * PropDAO API keys, as documented at https://www.propdao.finance/docs.
+ *
+ * The live docs show the prefix `pd_live_` and state the key is shown once at
+ * generation. `pd_test_` is accepted so a sandbox key is not rejected as
+ * malformed — the API itself decides whether a key is live.
+ *
+ * This is a SHAPE check, not an authorisation check. A perfectly shaped key
+ * can still be revoked, expired, or belong to someone else; only a live call
+ * to `GET /me` proves it works.
+ */
+export const PROPDAO_KEY_PATTERN = /^pd_(?:live|test)_[A-Za-z0-9_-]{16,}$/;
+
+export const MAX_PROPDAO_KEY_LENGTH = 256;
+
+/** True when a stored PropDAO key has a plausible shape. */
+export function isPlausiblePropDaoKey(value: string | undefined): boolean {
+  return (
+    typeof value === 'string' &&
+    value.trim().length <= MAX_PROPDAO_KEY_LENGTH &&
+    PROPDAO_KEY_PATTERN.test(value.trim())
+  );
+}
+
+export function normalisePropDaoKey(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new CredentialValidationError('The PropDAO API key must be text.');
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+
+  if (trimmed.length > MAX_PROPDAO_KEY_LENGTH || !PROPDAO_KEY_PATTERN.test(trimmed)) {
+    throw new CredentialValidationError(
+      'That does not look like a PropDAO API key. Expected it to start with pd_live_ (or pd_test_) ' +
+        'followed by at least 16 letters, digits, dashes or underscores. ' +
+        'Generate one at app.propdao.finance → Avatar → Settings → Developers. ' +
+        'The key is shown only once.',
+    );
+  }
+
+  return trimmed;
+}
+
+/**
+ * True when a stored Telegram bot token has a plausible shape.
+ *
+ * Paired with `isPlausibleOpenRouterKey` and `isPlausibleGroqKey`: a stored
+ * credential that fails its shape check is almost certainly a bad paste, and
+ * reporting it as "configured" makes every send fail confusingly.
+ */
+export function isPlausibleTelegramToken(value: string | undefined): boolean {
+  return (
+    typeof value === 'string' &&
+    value.trim().length <= MAX_TELEGRAM_TOKEN_LENGTH &&
+    TELEGRAM_TOKEN_PATTERN.test(value.trim())
+  );
+}

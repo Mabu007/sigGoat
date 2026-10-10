@@ -19,7 +19,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { getFirebaseAdmin } from './firebaseAdmin';
+import { getFirebaseAdmin, getFirebaseAdminFailureReason } from './firebaseAdmin';
 
 export interface AuthenticatedUser {
   uid: string;
@@ -62,9 +62,52 @@ function getFirebaseVerifier(): TokenVerifier | null {
   }
 }
 
+/**
+ * Dev auth is opt-in AND must never be reachable in production.
+ *
+ * Previously this was a bare `=== '1'` check, so a stray value in a production
+ * environment would silently replace Firebase token verification with a plain
+ * `x-dev-user-id` header — anyone could then act as any user by choosing a
+ * header value.
+ *
+ * `FUNDAGOAT_ALLOW_DEV_AUTH` is the canonical name. `SIGNALGOAT_ALLOW_DEV_AUTH`
+ * is still accepted because it is already set in existing developer
+ * environments and deployments; removing it would silently disable dev auth
+ * for anyone who has it configured, which looks like a broken app rather than
+ * a renamed variable.
+ */
+function devAuthAllowed(): boolean {
+  const flag =
+    process.env.FUNDAGOAT_ALLOW_DEV_AUTH ?? process.env.SIGNALGOAT_ALLOW_DEV_AUTH;
+  if (flag !== '1') return false;
+
+  if (isProductionRuntime()) {
+    // Fail closed and say so, rather than trusting the variable in prod.
+    console.error(
+      '[auth] REFUSING dev auth: FUNDAGOAT_ALLOW_DEV_AUTH=1 is set in a ' +
+        'production runtime (VERCEL is set). Unset it there. Dev auth would ' +
+        'accept any caller-supplied identity.',
+    );
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Production detection.
+ *
+ * `VERCEL` is injected by the platform and is the authoritative signal.
+ * `NODE_ENV === 'production'` alone is not enough, because `npm start` runs a
+ * long-lived production build locally and must keep working.
+ */
+export function isProductionRuntime(): boolean {
+  return Boolean(process.env.VERCEL);
+}
+
 export function resolveAuthMode(): AuthMode {
   if (getFirebaseVerifier()) return 'firebase';
-  if (process.env.SIGNALGOAT_ALLOW_DEV_AUTH === '1') return 'dev';
+  if (devAuthAllowed()) return 'dev';
   return 'none';
 }
 
@@ -89,10 +132,21 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   }
 
   if (mode === 'none') {
+    /**
+     * FAIL CLOSED.
+     *
+     * 503 rather than 401: the request was not rejected on its merits, it was
+     * never evaluated, because this server cannot verify a token at all. The
+     * body says which of the two causes applies so an operator can act without
+     * reading logs, and deliberately contains no credential detail.
+     */
     res.status(503).json({
       error: {
         code: 'AUTH_NOT_CONFIGURED',
-        message: 'Authentication is not configured on this server. Set Firebase credentials or SIGNALGOAT_ALLOW_DEV_AUTH=1 for local mode.',
+        message:
+          'This server cannot verify Firebase tokens, so protected routes are disabled. ' +
+          (getFirebaseAdminFailureReason() ??
+            'Firebase Admin credentials are missing or could not be loaded.'),
       },
     });
     return;

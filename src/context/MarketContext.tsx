@@ -14,6 +14,20 @@ import {
   Candle,
 } from '../types';
 
+/**
+ * Fallback active symbol when the catalogue has not loaded yet.
+ *
+ * Deliberately a market the provider actually lists, NOT a conventional FX
+ * pair from a previous provider: requesting candles/quotes for an instrument
+ * the venue does not carry degrades every poll and logs a misleading error.
+ * The bootstrap effect replaces this with the first tracked symbol or the
+ * persisted selection as soon as symbols arrive.
+ */
+const FALLBACK_ACTIVE_SYMBOL = 'BTC';
+
+/** Persisted selection, so a refresh keeps the market the user was on. */
+const ACTIVE_SYMBOL_STORAGE_KEY = 'fundagoat.activeSymbol';
+
 interface MarketContextType {
   quotes: Record<string, MarketQuote>;
   symbols: MarketSymbol[];
@@ -142,7 +156,7 @@ export const MarketProvider: React.FC<{
   const [symbols, setSymbols] = useState<MarketSymbol[]>([]);
 
   const [activeSymbol, setActiveSymbolState] =
-    useState<string>('EUR/USD');
+    useState<string>(FALLBACK_ACTIVE_SYMBOL);
 
   const [loading, setLoading] = useState(true);
 
@@ -178,6 +192,12 @@ export const MarketProvider: React.FC<{
     }
 
     setActiveSymbolState(symbol);
+    try {
+      window.localStorage.setItem(ACTIVE_SYMBOL_STORAGE_KEY, symbol);
+    } catch {
+      // Storage unavailable (private browsing); the choice holds for this
+      // session only, which is the correct degradation.
+    }
   }, []);
 
   /**
@@ -473,13 +493,43 @@ export const MarketProvider: React.FC<{
   useEffect(() => {
     mountedRef.current = true;
 
-    const bootstrap = async () => {
+      const bootstrap = async () => {
       await Promise.allSettled([
         fetchSymbols(),
         refreshQuotes(),
       ]);
 
+      /**
+       * Resolve the user's market selection AFTER the catalogue is loaded.
+       *
+       * A selection saved from a previous provider (e.g. `EUR/USD`) may no
+       * longer be listed. Letting it stay active would fire candle/quote
+       * requests for a dead instrument every refresh cycle. Instead:
+       *   1. a persisted selection that is still listed wins;
+       *   2. otherwise the first tracked/default symbol in the catalogue;
+       *   3. otherwise the first listed symbol; the fallback stays otherwise.
+       */
       if (mountedRef.current) {
+        let stored: string | null = null;
+        try {
+          stored = window.localStorage.getItem(ACTIVE_SYMBOL_STORAGE_KEY);
+        } catch {
+          // No storage: fall through to the catalogue-based default.
+        }
+
+        const listed = new Set(symbols.map((s) => s.symbol));
+
+        if (stored && listed.has(stored)) {
+          setActiveSymbolState(stored);
+        } else if (listed.size > 0) {
+          /** Prefer a crypto major the venue tracks deeply; first listed otherwise. */
+          const preferred =
+            ['BTC', 'ETH', 'SOL'].map((sym) => symbols.find((s) => s.symbol === sym)).find(
+              (s): s is MarketSymbol => Boolean(s),
+            ) ?? symbols[0];
+          if (preferred) setActiveSymbolState(preferred.symbol);
+        }
+
         setLoading(false);
       }
     };

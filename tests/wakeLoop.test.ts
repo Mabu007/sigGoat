@@ -5,7 +5,7 @@ import { MarketStateStore } from '../src/services/market-data/MarketStateStore';
 import { InMemoryPersistence } from '../src/server/repositories';
 import { InProcessScheduler } from '../src/server/scheduler/InProcessScheduler';
 import type { ReasoningGateway } from '../src/server/reasoningGateway';
-import type { SignalGoat, TradeSignal, TradingSkill } from '../src/types';
+import type { FundGoat, TradeSignal, TradingSkill } from '../src/types';
 import type { MarketStateSnapshot } from '../src/services/market-data/MarketStateStore';
 
 /**
@@ -56,7 +56,7 @@ function makeGateway(): ReasoningGateway & { calls: number } {
   return gateway as unknown as ReasoningGateway & { calls: number };
 }
 
-function makeGoat(over: Partial<SignalGoat> = {}): SignalGoat {
+function makeGoat(over: Partial<FundGoat> = {}): FundGoat {
   return {
     id: 'goat_wake',
     userId: 'u',

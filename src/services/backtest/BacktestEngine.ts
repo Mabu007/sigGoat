@@ -1,5 +1,5 @@
 import {
-  SignalGoat,
+  FundGoat,
   TradingSkill,
   BacktestResult,
   BacktestTrade,
@@ -16,7 +16,7 @@ import {
 } from '../tracker-sdk/indicators';
 
 export interface BacktestParams {
-  goat: SignalGoat;
+  goat: FundGoat;
   skills: TradingSkill[];
   market: string;
   period: '24h' | '7d' | '30d' | '90d';
@@ -696,7 +696,7 @@ export class BacktestEngine {
 
   /** Compile metrics without fabricated fallbacks. */
   private static buildResult(args: {
-    goat: SignalGoat;
+    goat: FundGoat;
     market: string;
     period: BacktestParams['period'];
     dataMode: DataMode;

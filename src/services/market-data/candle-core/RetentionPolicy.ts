@@ -141,7 +141,7 @@ export function retentionPolicyForInstrument(
   const key = instrument.trim().toUpperCase();
 
   // 24/7 markets: a "session" is a calendar day, so scale the 5m window out.
-  if (key === 'BTC/USD' || key === 'ETH/USD') {
+  if (key === 'BTC' || key === 'ETH' || key === 'SOL') {
     return {
       ...policy,
       m5: { ...policy.m5, sessions: policy.m5.sessions * 2 },

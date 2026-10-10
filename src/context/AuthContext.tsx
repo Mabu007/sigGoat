@@ -138,8 +138,8 @@ function describeAuthError(error: unknown): Error {
 
 const buildFallbackProfile = (user: User): UserProfile => ({
   id: user.uid,
-  email: user.email || `${user.uid.slice(0, 8)}@signalgoat.internal`,
-  displayName: user.displayName || 'SignalGOAT Trader',
+  email: user.email || `${user.uid.slice(0, 8)}@fundagoat.internal`,
+  displayName: user.displayName || 'FundAGoat Trader',
   telegramNotificationsEnabled: true,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
@@ -319,17 +319,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   /**
    * Firebase sign-out.
    */
+  /**
+   * Firebase sign-out, followed by a FULL document navigation to /login.
+   *
+   * Three reasons the navigation is not a router push:
+   *
+   *   1. GoatContext and MarketContext hold fetched, user-specific data in
+   *      component state. A client-side transition leaves that mounted, so the
+   *      previous user's GOATs remain in memory and can flash if the user
+   *      presses Back.
+   *   2. Browser back-navigation must not re-enter protected content. Reloading
+   *      a clean document at /login guarantees there is no app state to restore.
+   *   3. It re-runs the auth listener from scratch, so the session cannot be
+   *      resurrected from a stale in-memory token.
+   *
+   * The error is re-thrown so the caller can report it. Reporting a successful
+   * sign-out that did not happen is the worst possible outcome here: the user
+   * would believe they are logged out while their session is still valid.
+   */
   const logout = useCallback(async () => {
     try {
       await firebaseSignOut(auth);
 
       /**
-       * Auth state listener will also clear these values.
-       * Clearing immediately makes the UI respond without waiting
-       * for another render cycle.
+       * Clear immediately as well as via the auth listener, so the gate swaps to
+       * the signed-out screen without waiting for another render cycle.
        */
       setCurrentUser(null);
       setProfile(null);
+
+      // Unreachable in a test environment; harmless there.
+      if (typeof window !== 'undefined' && window.location) {
+        window.location.assign('/login');
+      }
     } catch (error) {
       console.error('Logout error:', error);
       throw error;
@@ -421,8 +443,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return resolveApiAuthHeaders(firebaseToken);
   }, []);
 
-  const canQueryApi =
-    authMode === 'firebase' ? Boolean(currentUser) || !loading : authMode !== null && authMode !== 'none';
+  /**
+   * Whether API calls are permitted right now.
+   *
+   * The previous expression was `Boolean(currentUser) || !loading`, which was
+   * true during hydration — so a data provider could fetch before the session
+   * was known, and its result would land in a component that AuthGate then
+   * unmounted. It is now strictly: a user exists AND hydration is finished, or
+   * the server reports development mode.
+   */
+  const canQueryApi = React.useMemo(() => {
+    if (authMode === 'dev') return true;
+    if (authMode === null || loading) return false;
+    return authMode === 'none' ? false : Boolean(currentUser);
+  }, [authMode, loading, currentUser]);
 
   return (
     <AuthContext.Provider

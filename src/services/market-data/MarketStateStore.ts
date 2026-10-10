@@ -57,7 +57,7 @@ export type MarketStateStatus =
   | 'UNAVAILABLE';
 
 export interface MarketStateSnapshot {
-  /** Canonical market id used in the key, e.g. "EUR/USD". */
+  /** Canonical market id used in the key, e.g. `xyz:EUR`. */
   symbol: string;
   timeframe: string;
   /** Storage key: "<MARKET>:<timeframe>". */
@@ -180,8 +180,8 @@ export class MarketStateStore {
   /**
    * Storage key: "<MARKET>:<timeframe>".
    *
-   * Market-keyed, never GOAT-keyed — several GOATs watching EUR/USD at 5m
-   * share one entry, one fetch and one indicator computation.
+   * Market-keyed, never GOAT-keyed — several GOATs watching the same
+   * instrument share one entry, one fetch and one indicator computation.
    */
   private key(symbol: string, timeframe: string): string {
     return `${symbol.trim().toUpperCase()}:${timeframe}`;

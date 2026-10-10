@@ -7,16 +7,16 @@
  */
 
 import { GoatDurableObject, GoatDurableObjectOptions } from './GoatDurableObject';
-import { SignalGoat, TradingSkill, TradeSignal } from '../../types';
+import { FundGoat, TradingSkill, TradeSignal } from '../../types';
 import type { TrackerEvaluationReport } from '../tracker-sdk/TrackerEvaluator';
 
 class DurableObjectRegistry {
   private instances: Map<string, GoatDurableObject> = new Map();
 
-  private signalCallbacks: Set<(goat: SignalGoat, signal: TradeSignal) => void> = new Set();
+  private signalCallbacks: Set<(goat: FundGoat, signal: TradeSignal) => void> = new Set();
 
   private trackerCallbacks: Set<
-    (goat: SignalGoat, report: TrackerEvaluationReport) => void
+    (goat: FundGoat, report: TrackerEvaluationReport) => void
   > = new Set();
 
   get(goatId: string): GoatDurableObject | undefined {
@@ -24,7 +24,7 @@ class DurableObjectRegistry {
   }
 
   getOrCreate(
-    goat: SignalGoat,
+    goat: FundGoat,
     skills: TradingSkill[],
     options: GoatDurableObjectOptions,
   ): GoatDurableObject {
@@ -57,7 +57,7 @@ class DurableObjectRegistry {
     this.instances.delete(goatId);
   }
 
-  onGlobalSignal(callback: (goat: SignalGoat, signal: TradeSignal) => void): () => void {
+  onGlobalSignal(callback: (goat: FundGoat, signal: TradeSignal) => void): () => void {
     this.signalCallbacks.add(callback);
     return () => {
       this.signalCallbacks.delete(callback);
@@ -66,7 +66,7 @@ class DurableObjectRegistry {
 
   /** Fired when a deterministic tracker condition is satisfied. */
   onTrackerTriggered(
-    callback: (goat: SignalGoat, report: TrackerEvaluationReport) => void,
+    callback: (goat: FundGoat, report: TrackerEvaluationReport) => void,
   ): () => void {
     this.trackerCallbacks.add(callback);
     return () => {
@@ -74,7 +74,7 @@ class DurableObjectRegistry {
     };
   }
 
-  private notifySignal(goat: SignalGoat, signal: TradeSignal): void {
+  private notifySignal(goat: FundGoat, signal: TradeSignal): void {
     this.signalCallbacks.forEach((callback) => {
       try {
         callback(goat, signal);
@@ -85,7 +85,7 @@ class DurableObjectRegistry {
   }
 
   private notifyTrackerTriggered(
-    goat: SignalGoat,
+    goat: FundGoat,
     report: TrackerEvaluationReport,
   ): void {
     this.trackerCallbacks.forEach((callback) => {

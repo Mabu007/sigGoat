@@ -96,6 +96,6 @@ export async function resolveApiAuthHeaders(
   }
 
   throw new Error(
-    'This server has no authentication configured. Set SIGNALGOAT_ALLOW_DEV_AUTH=1 in .env.local (local) or FIREBASE_SERVICE_ACCOUNT_JSON (production), then restart.',
+    'This server has no authentication configured. Set FUNDAGOAT_ALLOW_DEV_AUTH=1 in .env.local (local) or FIREBASE_SERVICE_ACCOUNT_JSON (production), then restart.',
   );
 }
