@@ -320,7 +320,9 @@ describe('default universe', () => {
     expect(categories.has('crypto')).toBe(true);
     expect(categories.has('currencies')).toBe(true);
     expect(categories.has('commodities')).toBe(true);
-    expect(categories.has('indices')).toBe(true);
+    // JP225 and KR200 were flagged thin and removed from the default
+    // tracked universe (2026-10-10), so 'indices' is served via search only.
+    expect(categories.has('indices')).toBe(false);
   });
 
   test('does not assume a market exists — a delisted default is still listed as delisted', () => {

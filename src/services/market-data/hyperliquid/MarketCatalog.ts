@@ -43,14 +43,15 @@ import type { CanonicalMarketCategory, MarketCategory, MarketSymbol } from '../.
 /**
  * The four categories the Quotes interface exposes.
  *
- * `crypto` is listed first in the type because it is the only category whose
- * membership is verifiable without a curated mapping.
+ * Display order: currencies, commodities, indices, crypto. Currencies and
+ * commodities are venue-backed HIP-3 deployer markets; crypto is the native
+ * perp dex. The order mirrors the venue structure the interface presents.
  */
 export const MARKET_CATEGORIES: readonly CanonicalMarketCategory[] = [
-  'crypto',
   'currencies',
   'commodities',
   'indices',
+  'crypto',
 ];
 
 /**
@@ -171,7 +172,11 @@ export const INDEX_INSTRUMENTS: Record<string, string> = {
  *   This list is not aspirational. Every entry was confirmed present and
  *   non-delisted, and two entries that had been delisted (`xyz:NIFTY`,
  *   `xyz:DXY`) were replaced with live alternatives (`xyz:JP225`,
- *   `xyz:KR200`). Indices on this venue turn over quickly, so:
+ *   `xyz:KR200`). JP225 and KR200 were later removed here: Hyperliquid flags
+ *   both as thin, so they are reachable through `/api/markets/search` but are
+ *   never a default tracked market, a default selection, a category-card
+ *   default, or a new-user default. Indices on this venue turn over quickly,
+ *   so:
  *
  *     - the list is validated at runtime and any entry the venue stops
  *       listing is dropped rather than polled forever (see the Worker's
@@ -199,9 +204,8 @@ export const DEFAULT_MARKET_UNIVERSE: readonly string[] = [
   'xyz:CL',
   'xyz:BRENTOIL',
 
-  // Indices (HIP-3). JP225 and KR200 replaced the delisted NIFTY and DXY.
-  'xyz:JP225',
-  'xyz:KR200',
+  // Indices (HIP-3). JP225 and KR200 were flagged thin and removed from the
+  // default tracked universe; they remain discoverable via search only.
 ];
 
 /**

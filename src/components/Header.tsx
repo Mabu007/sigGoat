@@ -11,7 +11,7 @@
  *   real state indicator rather than a decorative pill.
  */
 
-import { RefreshCw, TrendingUp } from 'lucide-react';
+import { RefreshCw, Sparkles, TrendingUp } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { BrandMark } from './Navigation';
 import { useMarket } from '../context/MarketContext';
@@ -97,6 +97,21 @@ export function Header({
           </button>
 
           <ThemeToggle />
+
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('fundagoat-chatbot-open'))}
+            className="group relative flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-raised md:px-4"
+            aria-label="Open AI assistant"
+            title="AI assistant"
+          >
+            <Sparkles
+              size={15}
+              aria-hidden="true"
+              className="text-accent-text transition-transform group-hover:scale-110"
+            />
+            <span className="hidden sm:inline">AI assistant</span>
+          </button>
 
           <button
             type="button"

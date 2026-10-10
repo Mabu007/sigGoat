@@ -56,10 +56,10 @@ interface DiscoveredMarket {
 /** The four product categories, in display order. */
 const CATEGORY_LABELS: Array<{ id: string; label: string }> = [
   { id: 'all', label: 'All' },
-  { id: 'crypto', label: 'Crypto' },
   { id: 'currencies', label: 'Currencies' },
   { id: 'commodities', label: 'Commodities' },
   { id: 'indices', label: 'Indices' },
+  { id: 'crypto', label: 'Crypto' },
 ];
 
 const UI_TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D'] as const;
@@ -172,10 +172,25 @@ export function QuotesView() {
     });
   }, [discovered, searchResults, category]);
 
-  const availableCategories = useMemo(() => {
-    const present = new Set(discovered.filter((m) => !m.delisted).map((m) => m.category));
-    return CATEGORY_LABELS.filter((c) => c.id === 'all' || present.has(c.id));
+  /** Tracked (default universe) instruments per category, excluding thin /
+   * delisted instruments so they never populate a category card. */
+  const categoryCardData = useMemo(() => {
+    const tracked = discovered.filter((m) => !m.delisted && m.tracked);
+    const counts = new Map<string, number>();
+    for (const m of tracked) {
+      counts.set(m.category, (counts.get(m.category) ?? 0) + 1);
+    }
+    return CATEGORY_LABELS.filter((c) => c.id !== 'all').map((c) => ({
+      ...c,
+      count: counts.get(c.id) ?? 0,
+    }));
   }, [discovered]);
+
+  const availableCategories = useMemo(() => {
+    return CATEGORY_LABELS.filter((c) =>
+      c.id === 'all' || categoryCardData.some((cc) => cc.id === c.id && cc.count > 0),
+    );
+  }, [CATEGORY_LABELS, categoryCardData]);
 
   /* ---- Detail ---- */
 
@@ -240,25 +255,59 @@ export function QuotesView() {
         )}
       </div>
 
-      {/* Category filters */}
-      <div className="flex flex-wrap gap-1.5">
-        {availableCategories.map((item) => (
+      {/* Category cards — count of tracked (default) instruments per category */}
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-5">
+        <button
+          type="button"
+          onClick={() => setCategory('all')}
+          aria-pressed={category === 'all'}
+          className={`panel text-left transition-colors ${
+            category === 'all'
+              ? 'border-accent'
+              : 'hover:border-line-strong'
+          }`}
+        >
+          <p className="text-[13px] font-semibold text-fg">All</p>
+          <p className={`mt-0.5 text-[24px] font-semibold tracking-tight ${
+            category === 'all' ? 'text-accent' : 'text-fg'
+          }`}>
+            {list.length}
+          </p>
+          <p className="mt-0.5 text-[11px] text-fg-subtle">shown</p>
+        </button>
+        {categoryCardData.map((item) => (
           <button
             key={item.id}
             type="button"
             onClick={() => setCategory(item.id)}
             aria-pressed={category === item.id}
-            className={`rounded-full border px-3 py-1 text-[12px] font-medium transition-colors ${
+            className={`panel text-left transition-colors ${
               category === item.id
-                ? 'border-accent bg-accent text-accent-fg'
-                : 'border-line bg-surface text-fg-muted hover:border-line-strong hover:text-fg'
+                ? 'border-accent'
+                : 'hover:border-line-strong'
             }`}
           >
-            {item.label}
+            <p className="text-[13px] font-semibold text-fg">{item.label}</p>
+            <p className={`mt-0.5 text-[24px] font-semibold tracking-tight ${
+              category === item.id ? 'text-accent' : 'text-fg'
+            }`}>
+              {item.count}
+            </p>
+            <p className="mt-0.5 text-[11px] text-fg-subtle">
+              {category === item.id
+                ? `${list.length} shown`
+                : 'tracked instruments'}
+            </p>
           </button>
         ))}
-        {searching && <Loader2 size={13} className="ml-1 animate-spin self-center text-fg-subtle" aria-hidden="true" />}
       </div>
+
+      {searching && (
+        <div className="flex items-center gap-2 text-[12px] text-fg-subtle">
+          <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+          <span>Refreshing</span>
+        </div>
+      )}
 
       {(quotesError || discoveryError) && (
         <div className="panel border-warning/40 p-3 text-[12px] text-fg-muted">

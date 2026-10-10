@@ -11,7 +11,7 @@
  */
 
 import express, { Request, Response, NextFunction } from 'express';
-import { FundGoat, GoatSchedule, GoatRuntimeState, TradeSignal } from '../types';
+import { FundGoat, GoatSchedule, GoatRuntimeState, TradeSignal, Chat, ChatMessage } from '../types';
 import { authMiddleware, requireUser, resolveAuthMode } from './auth';
 import { getFirebaseAdminFailureReason } from './firebaseAdmin';
 import {
@@ -58,7 +58,7 @@ import type {
 } from '../services/telegram/TelegramService';
 import { TelegramRateLimiter } from '../services/telegram/TelegramCommands';
 import { TelegramBotClient } from '../services/telegram/TelegramBotClient';
-import { ApiRequestError } from '../services/ai/OpenRouterClient';
+import { ApiRequestError, OpenRouterClient } from '../services/ai/OpenRouterClient';
 import { durableObjectSchedulerFromEnv } from './scheduler/DurableObjectScheduler';
 import type { WakeScheduler, FiredWake } from './scheduler/types';
 import { InProcessScheduler } from './scheduler/InProcessScheduler';
@@ -3668,3 +3668,164 @@ apiRouter.post('/backtest/run', handle(async (req, res) => {
 
   res.json({ result });
 }));
+
+/* ============================================================================
+ * APP-WIDE AI CHATBOT
+ * ============================================================================
+ * A conversational assistant available across the app. It answers questions
+ * about markets, trading, and the user's GOATs. It is deliberately general:
+ * it does NOT run GOAT reasoning or emit signals — it is a Q&A interface that
+ * speaks plainly about what it knows and says nothing when it does not.
+ *
+ * CREDENTIALS
+ *   Same resolution as GOAT reasoning: a per-user OpenRouter key from the
+ *   vault takes precedence; otherwise the server-wide OPENROUTER_API_KEY
+ *   fallback is used. The configured model is
+ *   `apodex/apodex-1.1-mini:free`. A stale stored key is ignored (the same
+ *   shape check as the rest of the reasoning stack) rather than failing
+ *   loudly on every request.
+ *
+ * PERSISTENCE
+ *   Sessions and messages are stored under Firestore `chats/{chatId}` and
+ *   `chats/{chatId}/messages/{messageId}`.
+ */
+
+const CHAT_MODEL = 'apodex/apodex-1.1-mini:free';
+
+/** A concise, honest system persona for the assistant. */
+const CHAT_SYSTEM_PROMPT =
+  'You are a helpful, concise trading assistant for the FundAGoat platform. ' +
+  'Speak plainly: describe ideas, definitions and mechanics clearly and briefly. ' +
+  'Never invent live price quotes, funding rates, volumes or news; if the user ' +
+  'asks for a current number you cannot compute, say you do not have live market ' +
+  'data and point them at the Markets tab instead. Do not run GOAT reasoning or ' +
+  'generate trading signals or proposals; answer questions instead.';
+
+/** Resolve the chatbot credential: user OpenRouter key from the vault, else the server fallback. */
+async function resolveChatbotCredential(uid: string): Promise<{
+  provider: AiProvider;
+  key: string | undefined;
+}> {
+  const userKey = await persistence.keys.getOpenRouterKey(uid);
+  if (userKey && isPlausibleOpenRouterKey(userKey)) {
+    return { provider: await reasoningGateway.providerFor(uid), key: userKey.trim() };
+  }
+  if (userKey) {
+    console.warn(
+      `[chat] Ignoring malformed stored OpenRouter key for user ${uid}. Re-save the key in Settings.`,
+    );
+  }
+  const serverKey = process.env.OPENROUTER_API_KEY?.trim();
+  return { provider: await reasoningGateway.providerFor(uid), key: serverKey };
+}
+
+async function sendToModel(key: string, messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<{
+  content: string;
+  model: string;
+  usage?: unknown;
+}> {
+  const client = new OpenRouterClient({ apiKey: key, headers: { 'X-Title': 'FundAGoat' } });
+  return client.complete({ model: CHAT_MODEL, messages, temperature: 0.3, maxTokens: 2000, responseFormat: false });
+}
+
+apiRouter.get('/chats', authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  try {
+    const chats = await persistence.chats.listByUser(user.uid);
+    res.json({ chats: chats.map((c) => ({ id: c.id, title: c.title, lastMessageAt: c.lastMessageAt, updatedAt: c.updatedAt })) });
+  } catch (error) {
+    return fail(res, 500, 'CHATS_UNAVAILABLE', 'Could not load your chat sessions.');
+  }
+});
+
+apiRouter.post('/chat', authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  const { message, chatId } = req.body ?? {};
+
+  if (typeof message !== 'string' || message.trim().length === 0) {
+    return fail(res, 400, 'EMPTY_MESSAGE', 'Message is required.');
+  }
+
+  let chat: Chat | null;
+  if (chatId) {
+    chat = await persistence.chats.getForUser(String(chatId), user.uid);
+    if (!chat) {
+      return fail(res, 404, 'CHAT_NOT_FOUND', 'This chat does not exist or is not yours.');
+    }
+  } else {
+    const firstWord = message.trim().split(/\s+/)[0].slice(0, 40);
+    const newChat: Chat = {
+      id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      userId: user.uid,
+      title: firstWord,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastMessageAt: new Date().toISOString(),
+    };
+    chat = await persistence.chats.create(newChat);
+  }
+
+  try {
+    const { provider, key } = await resolveChatbotCredential(user.uid);
+    if (!key) {
+      return fail(res, 503, 'NO_MODEL_KEY', 'No AI model key is configured for this account. ' + 'Add a key in Settings to start a chat.');
+    }
+
+    const messages = [...(await persistence.messages.listByChat(chat.id, 40)), { role: 'user' as const, content: message.trim() }];
+    const completion = await sendToModel(key, messages);
+
+    const assistantMessage: ChatMessage = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      chatId: chat.id,
+      userId: user.uid,
+      role: 'assistant',
+      content: completion.content,
+      model: completion.model,
+      createdAt: new Date().toISOString(),
+    };
+
+    await Promise.all([
+      persistence.messages.create(chat.id, assistantMessage),
+      persistence.chats.update(chat.id, { updatedAt: new Date().toISOString(), lastMessageAt: assistantMessage.createdAt }),
+    ]);
+
+    res.json({ chat: { id: chat.id, title: chat.title }, message: assistantMessage, model: CHAT_MODEL });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+    return fail(res, 502, 'CHAT_FAILED', `The assistant could not respond: ${code}`);
+  }
+});
+
+apiRouter.get('/chat', authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  const chatId = typeof req.query.chatId === 'string' ? req.query.chatId : null;
+
+  if (!chatId) {
+    return fail(res, 400, 'CHAT_ID_REQUIRED', 'chatId query parameter is required.');
+  }
+
+  const chat = await persistence.chats.getForUser(chatId, user.uid);
+  if (!chat) {
+    return fail(res, 404, 'CHAT_NOT_FOUND', 'This chat does not exist or is not yours.');
+  }
+
+  const messages = await persistence.messages.listByChat(chatId);
+  res.json({ chat: { id: chat.id, title: chat.title }, messages });
+});
+
+apiRouter.delete('/chat/:id', authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  const chatId = req.params.id;
+
+  const chat = await persistence.chats.getForUser(chatId, user.uid);
+  if (!chat) {
+    return fail(res, 404, 'CHAT_NOT_FOUND', 'This chat does not exist or is not yours.');
+  }
+
+  try {
+    await Promise.all([persistence.chats.delete(chatId), persistence.messages.deleteByChat(chatId)]);
+    res.json({ ok: true });
+  } catch {
+    return fail(res, 500, 'DELETE_FAILED', 'Could not delete the chat.');
+  }
+});

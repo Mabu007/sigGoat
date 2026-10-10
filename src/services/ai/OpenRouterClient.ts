@@ -2110,7 +2110,14 @@ export class OpenRouterClient {
    * Completion transport
    * ======================================================================== */
 
-  private async complete(
+  /**
+   * Send a chat completion request to OpenRouter.
+   *
+   * Credentials are resolved upstream (by the gateway or the caller) and only
+   * already-resolved keys are passed here, so this method never exposes a
+   * credential it did not receive.
+   */
+  async complete(
     options: {
       model: string;
 

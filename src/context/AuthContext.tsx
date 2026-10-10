@@ -3,11 +3,12 @@ import {
   auth,
   db,
   signInWithPopup,
-  signInAnonymously,
   firebaseSignOut,
   googleProvider,
   testConnection,
   onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
   type User,
   doc,
   getDoc,
@@ -49,7 +50,8 @@ interface AuthContextType {
   authMode: 'firebase' | 'dev' | 'none' | null;
 
   loginWithGoogle: () => Promise<void>;
-  loginAnonymously: () => Promise<void>;
+  signupWithEmail: (email: string, password: string) => Promise<void>;
+  loginWithEmail: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 
   /** Last sign-in failure as an actionable message, or null. */
@@ -300,14 +302,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   /**
-   * Anonymous authentication.
+   * Email/password account creation.
    *
-   * The error is deliberately re-thrown so the UI can display the actual
-   * authentication failure instead of silently pretending login succeeded.
+   * The error is re-thrown so the UI can surface the actual failure rather
+   * than silently pretending the account exists.
    */
-  const loginAnonymouslyHandler = useCallback(async () => {
+  const signupWithEmailHandler = useCallback(async (email: string, password: string) => {
     try {
-      await signInAnonymously(auth);
+      await createUserWithEmailAndPassword(auth, email, password);
+      setAuthError(null);
+    } catch (error) {
+      const described = describeAuthError(error);
+      setAuthError(described.message);
+      throw described;
+    }
+  }, []);
+
+  /**
+   * Email/password sign-in.
+   *
+   * The error is re-thrown so the UI can surface the actual failure rather
+   * than silently pretending the session exists.
+   */
+  const loginWithEmailHandler = useCallback(async (email: string, password: string) => {
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
       setAuthError(null);
     } catch (error) {
       const described = describeAuthError(error);
@@ -469,7 +488,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         authMode,
         authError,
         loginWithGoogle,
-        loginAnonymously: loginAnonymouslyHandler,
+        signupWithEmail: signupWithEmailHandler,
+        loginWithEmail: loginWithEmailHandler,
         logout,
         updateProfileData,
         getApiAuthHeaders,

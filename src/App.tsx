@@ -13,6 +13,7 @@ import { SkillsView } from './components/views/SkillsView';
 import { BacktestView } from './components/views/BacktestView';
 import { SettingsView } from './components/views/SettingsView';
 import { AuthGate } from './components/AuthGate';
+import { Chatbot } from './components/Chatbot/Chatbot';
 
 /**
  * Deep-link support without a router dependency.
@@ -138,11 +139,12 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <AuthGate>
-          <MarketProvider>
-            <GoatProvider>
-              <MainApp />
-            </GoatProvider>
-          </MarketProvider>
+            <MarketProvider>
+              <GoatProvider>
+                <MainApp />
+              </GoatProvider>
+            </MarketProvider>
+            <Chatbot />
         </AuthGate>
       </AuthProvider>
     </ThemeProvider>

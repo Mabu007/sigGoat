@@ -191,11 +191,35 @@ service cloud.firestore {
         allow delete: if isOwner(userId) && isValidId(signalId);
       }
 
-      match /backtests/{backtestId} {
-        allow get, list: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidId(backtestId) && isValidBacktest(incoming());
-        allow delete: if isOwner(userId) && isValidId(backtestId);
-      }
-    }
-  }
+       match /backtests/{backtestId} {
+         allow get, list: if isOwner(userId);
+         allow create: if isOwner(userId) && isValidId(backtestId) && isValidBacktest(incoming());
+         allow delete: if isOwner(userId) && isValidId(backtestId);
+       }
+
+       // ------------------------------------------------------------------
+       // CHATS (app-wide AI assistant)
+       // ------------------------------------------------------------------
+       // Chats and their messages are owned by a single user. Chat documents
+       // sit at the top level under the user collection so each chat can be
+       // addressed directly; messages live in a subcollection for cheap
+       // pagination over long conversations. Both paths are enforced with the
+       // same ownership model as the other user collections.
+       match /chats/{chatId} {
+         allow get, list: if isOwner(userId) && isValidId(chatId);
+         allow create: if isOwner(userId) && isValidId(chatId)
+                        && incoming().userId == request.auth.uid;
+         allow update: if isOwner(userId) && isValidId(chatId)
+                        && incoming().userId == request.auth.uid;
+         allow delete: if isOwner(userId) && isValidId(chatId);
+
+         match /messages/{messageId} {
+           allow read: if isOwner(userId) && isValidId(messageId);
+           allow create: if isOwner(userId) && isValidId(messageId)
+                         && incoming().userId == request.auth.uid;
+           allow delete: if isOwner(userId) && isValidId(messageId);
+         }
+       }
+     }
+   }
 }

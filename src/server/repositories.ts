@@ -17,7 +17,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { FundGoat, TradingSkill, TradeSignal, MarketThesis, WakeEvent, UserProfile } from '../types';
+import { FundGoat, TradingSkill, TradeSignal, MarketThesis, WakeEvent, UserProfile, Chat, ChatMessage } from '../types';
 import type { DailyMarketRecap } from '../services/daily-rolling/DailyMarketRecap';
 import { getFirebaseAdmin, getFirebaseAdminFailureReason } from './firebaseAdmin';
 import { isProductionRuntime } from './auth';
@@ -147,6 +147,22 @@ export interface CredentialRecordRepository {
   listEncrypted(userId: string): Promise<Array<{ provider: string; envelope: string; updatedAt: string }>>;
 }
 
+export interface ChatRepository {
+  listByUser(userId: string): Promise<Chat[]>;
+  get(chatId: string): Promise<Chat | null>;
+  getForUser(chatId: string, userId: string): Promise<Chat | null>;
+  create(chat: Chat): Promise<Chat>;
+  update(chatId: string, updates: Partial<Chat>): Promise<void>;
+  delete(chatId: string): Promise<void>;
+}
+
+export interface MessageRepository {
+  listByChat(chatId: string, limit?: number): Promise<ChatMessage[]>;
+  create(chatId: string, message: ChatMessage): Promise<ChatMessage>;
+  deleteByChat(chatId: string): Promise<void>;
+  delete(messageId: string): Promise<void>;
+}
+
 export interface PersistenceLayer {
   mode: 'firestore' | 'file' | 'memory';
   goats: GoatRepository;
@@ -159,6 +175,8 @@ export interface PersistenceLayer {
   recaps: MarketRecapRepository;
   /** AES-256-GCM envelopes. Never plaintext. */
   credentials: CredentialRecordRepository;
+  chats: ChatRepository;
+  messages: MessageRepository;
 }
 
 /* ------------------------------------------------------------------ */
@@ -187,6 +205,8 @@ export class InMemoryPersistence implements PersistenceLayer {
   profiles = new MemoryProfileRepository();
   keys = new MemoryKeyStore();
   credentials = new MemoryCredentialRecordRepository();
+  chats = new MemoryChatRepository();
+  messages = new MemoryMessageRepository();
 }
 
 class MemoryGoatRepository implements GoatRepository {
@@ -398,6 +418,9 @@ interface FileDbShape {
     bots: Record<string, TelegramBotRecord>;
   };
   recaps: Record<string, DailyMarketRecap>;
+  credentials: Record<string, Record<string, { envelope: string; updatedAt: string }>>;
+  chats: Record<string, Chat>;
+  messages: Record<string, Record<string, ChatMessage>>;
 }
 
 function emptyDb(): FileDbShape {
@@ -410,7 +433,58 @@ function emptyDb(): FileDbShape {
     profiles: {},
     keys: { openRouter: {}, groq: {}, telegram: {}, providers: {}, bots: {} },
     recaps: {},
+    credentials: {},
+    chats: {},
+    messages: {},
   };
+}
+
+class MemoryChatRepository implements ChatRepository {
+  private store = new Map<string, Chat>();
+  async listByUser(userId: string) {
+    return [...this.store.values()].filter((c) => c.userId === userId);
+  }
+  async get(chatId: string) {
+    return this.store.get(chatId) ?? null;
+  }
+  async getForUser(chatId: string, userId: string) {
+    const chat = this.store.get(chatId);
+    return chat && chat.userId === userId ? chat : null;
+  }
+  async create(chat: Chat) {
+    this.store.set(chat.id, chat);
+    return chat;
+  }
+  async update(chatId: string, updates: Partial<Chat>) {
+    const chat = this.store.get(chatId);
+    if (!chat) throw new NotFoundError();
+    Object.assign(chat, updates);
+  }
+  async delete(chatId: string) {
+    this.store.delete(chatId);
+  }
+}
+
+class MemoryMessageRepository implements MessageRepository {
+  private store = new Map<string, ChatMessage>();
+  async listByChat(chatId: string, limit = 50) {
+    const msgs = [...this.store.values()].filter((m) => m.chatId === chatId).sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+    return msgs.slice(-limit);
+  }
+  async create(chatId: string, message: ChatMessage) {
+    this.store.set(message.id, message);
+    return message;
+  }
+  async deleteByChat(chatId: string) {
+    for (const msg of this.store.values()) {
+      if (msg.chatId === chatId) this.store.delete(msg.id);
+    }
+  }
+  async delete(messageId: string) {
+    this.store.delete(messageId);
+  }
 }
 
 export class FilePersistence implements PersistenceLayer {
@@ -424,6 +498,8 @@ export class FilePersistence implements PersistenceLayer {
   keys: FileKeyStore;
   recaps: FileMarketRecapRepository;
   credentials: FileCredentialRecordRepository;
+  chats: FileChatRepository;
+  messages: FileMessageRepository;
 
   private db: FileDbShape = emptyDb();
   private filePath: string;
@@ -443,6 +519,8 @@ export class FilePersistence implements PersistenceLayer {
     this.keys = new FileKeyStore(this);
     this.recaps = new FileMarketRecapRepository(this);
     this.credentials = new FileCredentialRecordRepository(this);
+    this.chats = new FileChatRepository(this);
+    this.messages = new FileMessageRepository(this);
   }
 
   private load(): void {
@@ -702,6 +780,73 @@ class FileCredentialRecordRepository implements CredentialRecordRepository {
   }
 }
 
+class FileChatRepository implements ChatRepository {
+  constructor(private parent: FilePersistence) {}
+
+  private collection(): Record<string, Chat> {
+    const db = this.parent.data as unknown as { chats?: Record<string, Chat> };
+    if (!db.chats || typeof db.chats !== 'object') db.chats = {};
+    return db.chats;
+  }
+
+  async listByUser(userId: string) {
+    return Object.values(this.collection()).filter((c) => c.userId === userId);
+  }
+  async get(chatId: string) {
+    return this.collection()[chatId] ?? null;
+  }
+  async getForUser(chatId: string, userId: string) {
+    const chat = this.collection()[chatId];
+    return chat && chat.userId === userId ? chat : null;
+  }
+  async create(chat: Chat) {
+    this.collection()[chat.id] = chat;
+    this.parent.persist();
+    return chat;
+  }
+  async update(chatId: string, updates: Partial<Chat>) {
+    const chat = this.collection()[chatId];
+    if (!chat) throw new NotFoundError();
+    Object.assign(chat, updates);
+    this.parent.persist();
+  }
+  async delete(chatId: string) {
+    delete this.collection()[chatId];
+    this.parent.persist();
+  }
+}
+
+class FileMessageRepository implements MessageRepository {
+  constructor(private parent: FilePersistence) {}
+
+  private collection(chatId: string): Record<string, ChatMessage> {
+    const db = this.parent.data as unknown as { messages?: Record<string, Record<string, ChatMessage>> };
+    if (!db.messages || typeof db.messages !== 'object') db.messages = {};
+    if (!db.messages[chatId] || typeof db.messages[chatId] !== 'object') db.messages[chatId] = {};
+    return db.messages[chatId];
+  }
+
+  async listByChat(chatId: string, limit = 50) {
+    const msgs = Object.values(this.collection(chatId)).slice();
+    return msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-limit);
+  }
+  async create(chatId: string, message: ChatMessage) {
+    this.collection(chatId)[message.id] = message;
+    this.parent.persist();
+    return message;
+  }
+  async deleteByChat(chatId: string) {
+    const db = this.parent.data as unknown as { messages?: Record<string, Record<string, ChatMessage>> };
+    delete db.messages?.[chatId];
+    this.parent.persist();
+  }
+  async delete(messageId: string) {
+    const collection = this.collection(messageId);
+    delete collection[messageId];
+    this.parent.persist();
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Firestore implementation (production)                               */
 /* ------------------------------------------------------------------ */
@@ -717,6 +862,8 @@ export class FirestorePersistence implements PersistenceLayer {
   keys: FirestoreKeyStore;
   recaps: FirestoreMarketRecapRepository;
   credentials: FirestoreCredentialRecordRepository;
+  chats: FirestoreChatRepository;
+  messages: FirestoreMessageRepository;
 
   constructor(private db: Firestore) {
     this.goats = new FirestoreGoatRepository(db);
@@ -728,6 +875,8 @@ export class FirestorePersistence implements PersistenceLayer {
     this.keys = new FirestoreKeyStore(db);
     this.recaps = new FirestoreMarketRecapRepository(db);
     this.credentials = new FirestoreCredentialRecordRepository(db);
+    this.chats = new FirestoreChatRepository(db);
+    this.messages = new FirestoreMessageRepository(db);
   }
 }
 
@@ -738,6 +887,9 @@ const THESES = 'theses';
 const WAKE_EVENTS = 'wakeEvents';
 const PROFILES = 'users';
 const KEYS = 'integrationKeys';
+const CREDENTIALS = 'credentials';
+const CHATS = 'chats';
+const MESSAGES = 'messages';
 
 class FirestoreGoatRepository implements GoatRepository {
   constructor(private db: Firestore) {}
@@ -860,9 +1012,6 @@ class FirestoreProfileRepository implements UserProfileRepository {
 }
 
 const RECAPS = 'dailyMarketRecaps';
-
-/** Encrypted credential envelopes. See FirestoreCredentialRecordRepository. */
-const CREDENTIALS = 'credentials';
 
 class FirestoreMarketRecapRepository implements MarketRecapRepository {
   constructor(private db: Firestore) {}
@@ -1019,6 +1168,73 @@ class FirestoreCredentialRecordRepository implements CredentialRecordRepository 
       });
     }
     return out;
+  }
+}
+
+class FirestoreChatRepository implements ChatRepository {
+  constructor(private db: Firestore) {}
+
+  private col() {
+    return this.db.collection(CHATS);
+  }
+  async listByUser(userId: string) {
+    const snap = await this.col().where('userId', '==', userId).orderBy('updatedAt', 'desc').get();
+    return snap.docs.map((d) => d.data() as Chat);
+  }
+  async get(chatId: string) {
+    const doc = await this.col().doc(chatId).get();
+    return doc.exists ? (doc.data() as Chat) : null;
+  }
+  async getForUser(chatId: string, userId: string) {
+    const chat = await this.get(chatId);
+    return chat && chat.userId === userId ? chat : null;
+  }
+  async create(chat: Chat) {
+    await this.col().doc(chat.id).set(chat);
+    return chat;
+  }
+  async update(chatId: string, updates: Partial<Chat>) {
+    await this.col().doc(chatId).update(updates);
+  }
+  async delete(chatId: string) {
+    await this.col().doc(chatId).delete();
+  }
+}
+
+class FirestoreMessageRepository implements MessageRepository {
+  constructor(private db: Firestore) {}
+
+  async listByChat(chatId: string, limit = 50) {
+    const snap = await this.db
+      .collection(CHATS)
+      .doc(chatId)
+      .collection(MESSAGES)
+      .orderBy('createdAt', 'asc')
+      .limit(limit)
+      .get();
+    return snap.docs.map((d) => d.data() as ChatMessage);
+  }
+  async create(chatId: string, message: ChatMessage) {
+    await this.db.collection(CHATS).doc(chatId).collection(MESSAGES).doc(message.id).set(message);
+    return message;
+  }
+  async deleteByChat(chatId: string) {
+    const snapshot = await this.db.collection(CHATS).doc(chatId).collection(MESSAGES).get();
+    const batch = this.db.batch();
+    snapshot.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+  }
+  async delete(messageId: string) {
+    // Message id is not globally unique across chats; search the user's chats.
+    // In practice the caller deletes whole chats, so a full scan is the safe
+    // and cheap option at this scale.
+    const snapshot = await this.db.collection(CHATS).get();
+    const batch = this.db.batch();
+    for (const chatDoc of snapshot.docs) {
+      const msgSnap = await chatDoc.ref.collection(MESSAGES).where('id', '==', messageId).get();
+      msgSnap.docs.forEach((doc) => batch.delete(doc.ref));
+    }
+    await batch.commit();
   }
 }
 

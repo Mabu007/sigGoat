@@ -430,9 +430,10 @@ describe('navigation', () => {
 describe('markets screen truthfulness', () => {
   test('does not offer categories the provider does not populate', () => {
     const quotes = read('src/components/views/QuotesView.tsx');
-    // Category buttons are rendered from what discovery returned.
-    expect(quotes).toContain('availableCategories');
-    expect(quotes).toContain('present.has');
+    // Category cards are rendered from what discovery returned, excluding
+    // thin / delisted instruments so their counts stay honest.
+    expect(quotes).toContain('categoryCardData');
+    expect(quotes).toContain('delisted && m.tracked');
   });
 
   test('search reaches beyond the default tracked universe', () => {

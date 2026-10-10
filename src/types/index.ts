@@ -682,3 +682,25 @@ export interface UserProfile {
   createdAt: string;
   updatedAt: string;
 }
+
+/** A session of the application-wide AI assistant. */
+export interface Chat {
+  id: string;
+  userId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt?: string;
+}
+
+/** A single message inside a chat session. */
+export interface ChatMessage {
+  id: string;
+  chatId: string;
+  userId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  model?: string;
+  createdAt: string;
+  tokenUsage?: { promptTokens: number; completionTokens: number };
+}

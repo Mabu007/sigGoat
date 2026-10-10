@@ -128,6 +128,44 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "userId", "goatId", "market", "period", "totalSignals", "winningSignals", "losingSignals", "winRate", "createdAt"]
+    },
+
+    "Chat": {
+      "title": "Chat",
+      "description": "A chat session in the app-wide AI assistant",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "lastMessageAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "createdAt", "updatedAt"]
+    },
+
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "A single message inside a chat session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "chatId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "content": { "type": "string", "maxLength": 20000 },
+        "model": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "tokenUsage": {
+          "type": "object",
+          "properties": {
+            "promptTokens": { "type": "number" },
+            "completionTokens": { "type": "number" }
+          }
+        }
+      },
+      "required": ["id", "chatId", "userId", "role", "content", "createdAt"]
     }
   },
   "firestore": {
@@ -154,6 +192,14 @@
     "/users/{userId}/backtests/{backtestId}": {
       "schema": { "$ref": "BacktestRecord" },
       "description": "Backtest simulation run records"
+    },
+    "/chats/{chatId}": {
+      "schema": { "$ref": "Chat" },
+      "description": "A chat session in the app-wide AI assistant"
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "ChatMessage" },
+      "description": "A single message inside a chat session"
     }
   }
 }

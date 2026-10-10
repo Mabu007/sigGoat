@@ -51,7 +51,7 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
   { id: 'markets', label: 'Markets', icon: CandlestickChart },
   { id: 'goats', label: 'Goats', icon: Bot },
   { id: 'proposals', label: 'Proposals', icon: ListChecks },
-  { id: 'backtest', label: 'Backtest', shortLabel: 'Test', icon: BarChart3 },
+  { id: 'backtest', label: 'Backtest', shortLabel: 'Backtest', icon: BarChart3 },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
