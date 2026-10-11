@@ -50,6 +50,13 @@ import {
   createHash,
 } from 'node:crypto';
 
+/** Reads a boolean-ish environment flag. Shared with the vault's policy flags. */
+function envFlag(value: string | undefined): boolean {
+  const normalised = value?.trim().toLowerCase();
+  return normalised === '1' || normalised === 'true' || normalised === 'yes';
+}
+
+
 /** Current envelope version. Bumping this requires a new decrypt branch. */
 export const ENVELOPE_VERSION = 'v1';
 
@@ -170,14 +177,47 @@ export function fingerprintKey(key: Buffer): string {
  *                                      written under them still decrypt; new
  *                                      records never use them.
  *
- * Returns `null` (rather than throwing) when nothing is configured, so the
- * CALL SITE decides whether "no vault configured" is fatal. It usually is.
+ * Returns a runtime-generated key when nothing is configured: this lets the
+ * app operate in a no-config mode (testing, local dev) — the key is random per
+ * process restart, so stored credentials are LOST on restart. When a real key
+ * is configured it is always preferred over the runtime fallback.
  */
 export function loadMasterKeyringFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): MasterKeyring | null {
   const activeSpec = env.CREDENTIAL_ENCRYPTION_KEY?.trim();
-  if (!activeSpec) return null;
+  if (!activeSpec) {
+    /**
+     * Fail closed — UNLESS the deployment explicitly opted into the
+     * ephemeral mode, which exists so `npm run dev` works on a fresh checkout.
+     *
+     * The opt-in has to be explicit because the failure mode of guessing is
+     * silent and catastrophic. A random key generated per process means every
+     * credential written before a restart is unreadable after it. On Vercel
+     * that is EVERY request: the user's OpenRouter key, their PropDAO key and
+     * their Telegram token all decrypt to garbage, while `/api/settings/keys`
+     * still answers `configured: true` because the vault itself works fine —
+     * it just no longer holds the key the data was encrypted with. The user is
+     * told their integration is configured while it can never work again.
+     *
+     * Returning `null` makes the call site (and the UI, via
+     * `encryptionAvailable`) say so out loud, which is the only outcome the
+     * user can act on.
+     */
+    if (envFlag(env.CREDENTIAL_ENCRYPTION_ALLOW_EPHEMERAL)) {      const runtimeKey = randomBytes(KEY_BYTES);
+      console.warn(
+        '[secretCrypto] CREDENTIAL_ENCRYPTION_ALLOW_EPHEMERAL is set — using a ' +
+          'random per-process key. Stored credentials will be LOST on restart. ' +
+          'Never enable this in production.',
+      );
+      return {
+        active: { key: runtimeKey, id: 'runtime' },
+        all: [{ key: runtimeKey, id: 'runtime' }],
+      };
+    }
+
+    return null;
+  }
 
   const active = parseMasterKey(
     activeSpec,

@@ -205,6 +205,9 @@ export interface PropDaoChallengeRules {
   minTradingDays: number | null;
   minTradeSize: number | null;
   drawdownType: string | null;
+  /** A free trial has no payout, whatever the profit split says. */
+  isTrial?: boolean;
+  payoutEligible?: boolean;
 }
 
 export interface PropDaoOrderRequest {
@@ -421,13 +424,52 @@ export function parseMarkets(body: unknown): PropDaoMarket[] {
  * null daily limit is indistinguishable from "no daily limit", which is
  * exactly the kind of gap a risk check must not have.
  */
+/**
+ * Coerces a `rules` payload into a record.
+ *
+ * PropDAO returns rules in THREE shapes depending on the endpoint, verified
+ * against the live API on 2026-10-11:
+ *
+ *   - `/challenges`      -> a real object, snake_case keys
+ *   - `/accounts`        -> nested under `challenge.rules`, and there it is a
+ *                           JSON **STRING**, not an object
+ *   - `/accounts/:id`    -> the account detail has no rules block at all
+ *
+ * The string case is the one that matters: reading it as an object yields a
+ * set of all-null rules, which `PropRiskValidator` then treats as "no limits
+ * known" — so the drawdown checks that are supposed to protect the trader's
+ * account quietly stop protecting anything. A non-JSON string is ignored
+ * rather than thrown on, because a rules block is informative, not required.
+ */
+function rulesRecord(body: unknown): Record<string, unknown> {
+  if (!isRecord(body)) return {};
+
+  // Already an object: `/challenges`, or a caller passing rules directly.
+  if (isRecord(body.rules)) return body.rules;
+
+  /**
+   * Nested string: an account record's `challenge.rules`. Tried on both the
+   * account and its embedded challenge so either nesting level works.
+   */
+  for (const holder of [body, body.challenge]) {
+    if (!isRecord(holder)) continue;
+    const raw = holder.rules;
+    if (typeof raw !== 'string' || raw.trim().length === 0) continue;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (isRecord(parsed)) return parsed;
+    } catch {
+      // Not JSON after all — fall through and report the rules as unknown.
+    }
+  }
+
+  // A bare challenge object with its fields inline.
+  if (isRecord(body.challenge)) return body.challenge;
+  return body;
+}
+
 export function parseChallengeRules(body: unknown): PropDaoChallengeRules {
-  // The rules object appears at the top level of a `/challenges` entry and
-  // nested under `rules` or `challenge` on an account record. All three are
-  // read so no caller has to know which shape it holds.
-  const rules = isRecord(body)
-    ? (isRecord(body.rules) ? body.rules : isRecord(body.challenge) ? body.challenge : body)
-    : {};
+  const rules = rulesRecord(body);
   return {
     accountSize: num(rules.account_size) ?? num(rules.accountSize),
     profitTargetPct: num(rules.profit_target) ?? num(rules.profitTarget),
@@ -437,6 +479,9 @@ export function parseChallengeRules(body: unknown): PropDaoChallengeRules {
     minTradingDays: num(rules.min_trading_days) ?? num(rules.minTradingDays),
     minTradeSize: num(rules.min_trade_size) ?? num(rules.minTradeSize),
     drawdownType: str(rules.drawdown_type) ?? str(rules.drawdownType),
+    /** Not a limit, but the UI needs it to stop implying a payout exists. */
+    isTrial: rules.is_trial === true || rules.isTrial === true,
+    payoutEligible: rules.payout_eligible === true || rules.payoutEligible === true,
   };
 }
 

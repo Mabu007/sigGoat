@@ -268,9 +268,36 @@ describe('market categorisation', () => {
   test('maps the verified HIP-3 universe to the four categories', () => {
     expect(classifyMarket('xyz:EUR')).toBe('currencies');
     expect(classifyMarket('xyz:GOLD')).toBe('commodities');
-    expect(classifyMarket('xyz:NIFTY')).toBe('indices');
+    expect(classifyMarket('xyz:SP500')).toBe('indices');
     expect(classifyMarket('BTC')).toBe('crypto');
+    // A single-company equity has no category of its own and falls through to
+    // the catch-all, but it still gets a curated display name below.
     expect(classifyMarket('xyz:AAPL')).toBe('crypto');
+  });
+
+  test('drops venues delisted markets instead of offering dead instruments', () => {
+    /**
+     * The `xyz` dex delisted all of these between 2026-10-10 and 2026-10-11.
+     * Leaving them in a curated table produces a Markets screen that offers a
+     * currency or index card which then cannot open — so they must be gone.
+     */
+    for (const delisted of [
+      'xyz:NIFTY',
+      'xyz:DXY',
+      'xyz:VIX',
+      'xyz:IBOV',
+      'xyz:KRW',
+      'xyz:CORN',
+      'xyz:WHEAT',
+      'xyz:ALUMINIUM',
+      'xyz:TTF',
+      'xyz:URANIUM',
+    ]) {
+      expect(INDEX_INSTRUMENTS[delisted]).toBeUndefined();
+      expect(CURRENCY_INSTRUMENTS[delisted]).toBeUndefined();
+      expect(COMMODITY_INSTRUMENTS[delisted]).toBeUndefined();
+      expect(DEFAULT_MARKET_UNIVERSE).not.toContain(delisted);
+    }
   });
 
   test('falls back to crypto rather than inventing a category', () => {
@@ -289,7 +316,8 @@ describe('market categorisation', () => {
 
   test('provides human labels from the curated tables', () => {
     expect(displayNameFor('xyz:GOLD')).toBe('Gold');
-    expect(displayNameFor('xyz:JP225')).toBe('Nikkei 225');
+    expect(displayNameFor('xyz:SP500')).toBe('S&P 500');
+    expect(displayNameFor('xyz:NVDA')).toBe('NVIDIA');
     // No curated label falls back to the provider's own symbol.
     expect(displayNameFor('BTC')).toBe('BTC');
   });
@@ -298,6 +326,9 @@ describe('market categorisation', () => {
     expect(priceDigitsFor('xyz:EUR')).toBe(5);
     expect(priceDigitsFor('xyz:GOLD')).toBe(2);
     expect(priceDigitsFor('BTC', 5)).toBeGreaterThanOrEqual(2);
+    // JPY quotes at ~158 with 3dp; a blanket 5 would pad a real value with
+    // zeros the venue does not publish.
+    expect(priceDigitsFor('xyz:JPY')).toBe(3);
   });
 });
 
@@ -320,9 +351,15 @@ describe('default universe', () => {
     expect(categories.has('crypto')).toBe(true);
     expect(categories.has('currencies')).toBe(true);
     expect(categories.has('commodities')).toBe(true);
-    // JP225 and KR200 were flagged thin and removed from the default
-    // tracked universe (2026-10-10), so 'indices' is served via search only.
-    expect(categories.has('indices')).toBe(false);
+    /**
+     * Indices are tracked again as of 2026-10-11.
+     *
+     * The category existed in the UI but had ZERO tracked members, so the
+     * "Indices" card on the Markets screen counted zero forever and the whole
+     * category looked broken. `xyz:SP500` and `xyz:XYZ100` are the venue's two
+     * deepest index books (18.9M and 25.9M 24h notional) and are live.
+     */
+    expect(categories.has('indices')).toBe(true);
   });
 
   test('does not assume a market exists — a delisted default is still listed as delisted', () => {

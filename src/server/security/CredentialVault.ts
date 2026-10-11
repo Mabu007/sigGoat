@@ -170,6 +170,18 @@ export class CredentialVault {
     }
   }
 
+  /** Whether the vault is using the configured master key (secure) or a
+   * per-process runtime key. The runtime mode works for testing and local dev
+   * but stored credentials are lost when the process restarts. */
+  isUsingEphemeralKey(): boolean {
+    try {
+      const ring = this.keyring();
+      return ring.active.id === 'runtime';
+    } catch {
+      return false;
+    }
+  }
+
   private assertProvider(provider: CredentialProviderId): CredentialProviderDescriptor {
     const descriptor = PROVIDERS.get(provider);
     if (!descriptor) {

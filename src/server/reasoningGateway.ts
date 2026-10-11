@@ -278,6 +278,75 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     return key !== undefined;
   }
 
+  /**
+   * Picks a usable model from the caller's OWN live catalogue.
+   *
+   * Used when no model was chosen — a new GOAT with no saved preference. The
+   * ordering is deliberate:
+   *
+   *   1. a model on OpenRouter's explicit `:free` tier;
+   *   2. any model the catalogue prices at zero;
+   *   3. a model that supports structured outputs, because the reasoning
+   *      contract is JSON and a model that cannot emit it reliably returns
+   *      unparseable output on every run;
+   *   4. anything at all.
+   *
+   * WHY `:free` IS CHECKED BEFORE "PRICED AT ZERO"
+   *
+   *   The catalogue reports some models with `pricing: {prompt: "0",
+   *   completion: "0"}` that a zero-credit account still cannot call — the
+   *   request comes back `402 Insufficient credits`. Verified against the live
+   *   API on 2026-10-11 with `inclusionai/ling-3.1-flash`. OpenRouter's
+   *   `:free` suffix is its documented free tier and is the only signal that
+   *   survives contact with the API, so it is trusted first and zero pricing
+   *   is the fallback.
+   *
+   * Returns null rather than throwing when there is no key or the catalogue
+   * is unreachable: the caller has a fallback and a catalogue outage should
+   * not be the reason a GOAT cannot be created.
+   */
+  async pickAnyModel(userId: string): Promise<string | null> {
+    const resolved = await this.clientFor(userId);
+    if (!resolved) return null;
+
+    const { provider, client } = resolved;
+
+    if (provider === 'groq') {
+      return DEFAULT_GROQ_MODEL;
+    }
+
+    const catalogue = await (client as OpenRouterClient).fetchModels();
+    const models = catalogue.models;
+    if (models.length === 0) return null;
+
+    const pool = models.filter((m) => m.id.endsWith(':free'));
+    const candidates = pool.length > 0 ? pool : models.filter((m) => m.free);
+    const usable = candidates.length > 0 ? candidates : models;
+
+    const structured = usable.filter((m) => m.supportsStructuredOutputs);
+    const chosen = structured[0] ?? usable[0];
+
+    return chosen?.id ?? null;
+  }
+
+  /**
+   * True when `modelId` is currently served by the caller's own provider.
+   *
+   * Used to validate a SAVED preference. A model OpenRouter retired must not
+   * be silently reused as a default — that is exactly the failure this
+   * app already shipped once with a hardcoded slug.
+   */
+  async isModelAvailable(userId: string, modelId: string): Promise<boolean> {
+    const resolved = await this.clientFor(userId);
+    if (!resolved) return false;
+
+    const { provider, client } = resolved;
+    if (provider === 'groq') return true;
+
+    const catalogue = await (client as OpenRouterClient).fetchModels();
+    return catalogue.models.some((model) => model.id === modelId);
+  }
+
   async listModels(
     userId: string,
   ): Promise<{

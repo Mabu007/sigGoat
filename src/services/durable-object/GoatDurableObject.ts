@@ -774,13 +774,29 @@ export class GoatDurableObject {
             { issues: err.issues.slice(0, 10) },
           );
         } else {
-          this.recordFailure(`Reasoning model unavailable: ${err instanceof Error ? err.message : 'unknown error'}`);
+          /**
+           * A credits error is not a transient outage — retrying with backoff
+           * will fail identically forever, and "model could not be reached"
+           * sends the user looking at the network when the real cause is an
+           * unfunded OpenRouter account. Say which it is, and point at the fix.
+           */
+          const raw = err instanceof Error ? err.message : 'unknown error';
+          const outOfCredits = /insufficient credit|402|payment required|add more credits/i.test(raw);
+          const modelRetired = /not listed|no endpoints found|MODEL_NOT_LISTED/i.test(raw);
+
+          const guidance = outOfCredits
+            ? 'The provider reports this account has no credits. Add credit at openrouter.ai/settings/credits, or pick a free model in Settings → AI Reasoning Engine.'
+            : modelRetired
+              ? 'The configured model is no longer offered by OpenRouter. Pick a current model in Settings → AI Reasoning Engine.'
+              : 'Will retry with backoff.';
+
+          this.recordFailure(`Reasoning model unavailable: ${raw}`);
           await this.recordWakeEvent(
             reason,
             triggerType,
             market,
             'ERROR',
-            `MODEL_UNAVAILABLE: reasoning model could not be reached. Will retry with backoff.`,
+            `MODEL_UNAVAILABLE: reasoning model could not be reached. ${guidance}`,
             'ERROR',
             generationId,
           );

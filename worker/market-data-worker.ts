@@ -100,9 +100,11 @@ const DEFAULT_INSTRUMENTS: Record<string, string[]> = {
   FX: ['xyz:EUR', 'xyz:GBP', 'xyz:JPY'],
   METALS: ['xyz:GOLD', 'xyz:SILVER'],
   ENERGY: ['xyz:CL', 'xyz:BRENTOIL'],
-  // JP225 and KR200 replaced NIFTY and DXY, both of which the venue has since
-  // delisted (verified against live metadata on 2026-10-10).
-  INDEX: ['xyz:JP225', 'xyz:KR200'],
+  // SP500 and XYZ100 are the venue's deepest index books (18.9M / 25.9M 24h
+  // notional). They replaced JP225/KR200, which the venue still lists but which
+  // are thin enough that polling them is wasted weight. Re-verified against
+  // live metadata on 2026-10-11.
+  INDEX: ['xyz:SP500', 'xyz:XYZ100'],
   // Default perp dex: crypto.
   CRYPTO: ['BTC', 'ETH', 'SOL', 'XRP'],
 };

@@ -258,13 +258,17 @@ export class HyperliquidClient {
   private readonly inflight = new InflightRegistry();
 
   /**
-   * Cached universe + context.
+   * Cached universe + context, keyed by the dexes list.
    *
    * Holding CONTEXT here (not just the market list) is what makes the refresh
    * free: `metaAndAssetCtxs` returns both halves, so a cache hit needs no
    * request at all, and prices stay fresh for as long as the TTL allows.
+   *
+   * Multi-keyed so a default-dex-only call can never poison a multi-dex
+   * search with stale crypto-only data.
    */
-  private metadataCache: { at: number; markets: HyperliquidMarketSnapshot[] } | null = null;
+  private metadataCache: Map<string, { at: number; markets: HyperliquidMarketSnapshot[] }> =
+    new Map();
 
   private static readonly METADATA_TTL_MS = 10 * 60_000;
 
@@ -358,7 +362,8 @@ export class HyperliquidClient {
     dexes: readonly HyperliquidDex[] = HYPERLIQUID_DEXES,
   ): Promise<HyperliquidMarketSnapshot[]> {
     return this.inflight.run(`meta:${dexes.join(',')}`, async () => {
-      const cached = this.metadataCache;
+      const key = `meta:${dexes.join(',')}`;
+      const cached = this.metadataCache.get(key);
       if (cached && Date.now() - cached.at < HyperliquidClient.METADATA_TTL_MS) {
         return cached.markets;
       }
@@ -400,7 +405,7 @@ export class HyperliquidClient {
         }
       }
 
-      this.metadataCache = { at: Date.now(), markets: collected };
+      this.metadataCache.set(key, { at: Date.now(), markets: collected });
       return collected;
     });
   }
@@ -413,7 +418,7 @@ export class HyperliquidClient {
 
   /** Forces the next `listMarkets` to re-read the provider. */
   invalidateMetadata(): void {
-    this.metadataCache = null;
+    this.metadataCache.clear();
   }
 
   /**

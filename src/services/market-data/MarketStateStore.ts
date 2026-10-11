@@ -32,6 +32,26 @@
  * - A provider outage does NOT evict a good snapshot. It degrades to the last
  *   known values with `degraded: true`, so a transient network blip cannot
  *   blank out every GOAT's view of the market.
+ *
+ * FAILURES BACK OFF — THIS IS NOT OPTIONAL
+ *
+ * A failure keeps the ORIGINAL `fetchedAt`, so a failed snapshot is by
+ * definition already older than `ttlMs`. Combined with the freshness test
+ * above (which reads `fetchedAt` and nothing else), that made every read after
+ * a failure a permanent cache MISS: a real provider round trip, plus a fresh
+ * log line, once per poll — forever.
+ *
+ * For a market the venue does not list that is an unbounded hot loop. A
+ * GOAT persisted with `EUR/USD` produced exactly this: the same
+ * `[market-state] EUR/USD 15m degraded: ...` line twenty times a minute,
+ * indefinitely, and every attempt spent real weight against Hyperliquid's
+ * 1200/min budget.
+ *
+ * `failureBackoffMs` fixes it at the level where the bug lives: consecutive
+ * failures on a key extend the next attempt's delay exponentially (capped),
+ * and while a key is backing off `getState` returns the last degraded snapshot
+ * WITHOUT calling the provider and WITHOUT re-logging. A market that recovers
+ * is picked up as soon as the backoff window expires.
  */
 
 import { MarketQuote, Candle } from '../../types';
@@ -106,12 +126,38 @@ export interface MarketStateStoreOptions {
   now?: () => number;
   /** Structured log sink; defaults to console. */
   log?: (message: string, error?: unknown) => void;
+  /**
+   * First delay applied after a single failure, doubled per consecutive
+   * failure up to `maxFailureBackoffMs`. Defaults to one full TTL.
+   */
+  failureBackoffMs?: number;
+  /** Ceiling for the exponential failure backoff. */
+  maxFailureBackoffMs?: number;
 }
 
 const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_CANDLE_COUNT = 120;
 const DEFAULT_TIMEFRAME = '15m';
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
+/** ~8 minutes. A dead market costs one attempt every 8 minutes, not 60/sec. */
+const DEFAULT_MAX_FAILURE_BACKOFF_MS = 480_000;
+
+/**
+ * Per-key failure accounting that drives the backoff.
+ *
+ * Kept SEPARATE from the snapshot rather than as a field on it: a snapshot is
+ * the market's view (and is persisted, fanned out and compared by callers),
+ * while this is local retry bookkeeping that must never leak into a snapshot
+ * or get written to disk.
+ */
+interface FailureRecord {
+  consecutive: number;
+  /** Epoch ms before which no provider call is attempted. */
+  nextAttemptAt: number;
+  /** The message last logged, so a repeat is suppressed rather than re-logged. */
+  lastLoggedMessage: string;
+  lastLoggedAt: number;
+}
 
 /** In-memory persistence: correct for a single process, gone on restart. */
 export class MemoryMarketStatePersistence
@@ -138,11 +184,19 @@ export class MarketStateStore {
   private readonly subscribers = new Map<string, Set<(s: MarketStateSnapshot) => void>>();
   private readonly pollers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly observers = new Set<(s: MarketStateSnapshot) => void>();
+  /**
+   * Consecutive-failure bookkeeping, keyed the same way as snapshots. This is
+   * what stops a dead market from producing a provider call and a log line on
+   * every single read — see the FAILURES BACK OFF section in the header.
+   */
+  private readonly failures = new Map<string, FailureRecord>();
 
   private readonly ttlMs: number;
   private readonly candleCount: number;
   private readonly timeframe: string;
   private readonly pollIntervalMs: number;
+  private readonly failureBackoffMs: number;
+  private readonly maxFailureBackoffMs: number;
   private readonly persist?: MarketStatePersistence;
   private readonly now: () => number;
   private readonly log: (message: string, error?: unknown) => void;
@@ -154,6 +208,8 @@ export class MarketStateStore {
     inflightCollapses: 0,
     computeMsTotal: 0,
     degraded: 0,
+    /** Reads served from a failed snapshot without touching the provider. */
+    backoffServes: 0,
   };
 
   constructor(
@@ -167,6 +223,10 @@ export class MarketStateStore {
       options.timeframe ?? DEFAULT_TIMEFRAME;
     this.pollIntervalMs =
       options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.failureBackoffMs =
+      options.failureBackoffMs ?? this.ttlMs;
+    this.maxFailureBackoffMs =
+      options.maxFailureBackoffMs ?? DEFAULT_MAX_FAILURE_BACKOFF_MS;
     this.persist = options.persist;
     this.now = options.now ?? (() => Date.now());
     this.log =
@@ -190,6 +250,12 @@ export class MarketStateStore {
   /**
    * Current state for a market, fetching only when the cached snapshot has
    * expired. Never throws: a provider failure returns a degraded snapshot.
+   *
+   * A key inside its failure backoff window is served from the last degraded
+   * snapshot WITHOUT calling the provider. Without this the failure path —
+   * which deliberately preserves the stale `fetchedAt` — is a permanent cache
+   * miss, and a market the venue does not list becomes an unbounded loop of
+   * provider calls and log lines.
    */
   async getState(
     symbol: string,
@@ -203,6 +269,17 @@ export class MarketStateStore {
     if (cached && now - cached.fetchedAt < this.ttlMs) {
       this.stats.cacheHits += 1;
       return { ...cached, expired: false };
+    }
+
+    const failure = this.failures.get(key);
+    if (failure && now < failure.nextAttemptAt) {
+      // Still inside the cooldown. Serve what we have and do not re-log.
+      const degraded =
+        cached ??
+        this.unavailableSnapshot(symbol, tf, key, failure.lastLoggedMessage);
+      this.snapshots.set(key, degraded);
+      this.stats.backoffServes += 1;
+      return degraded;
     }
 
     // Collapse concurrent misses onto one request.
@@ -340,10 +417,18 @@ export class MarketStateStore {
     return this.snapshots.get(key) ?? null;
   }
 
-  /** Drops cached snapshots so the next read refetches immediately. */
+  /**
+   * Drops cached snapshots so the next read refetches immediately.
+   *
+   * The failure backoff is cleared alongside them. `invalidate` exists to say
+   * "trust me, ask again now" — leaving a live cooldown in place would make it
+   * a silent no-op on exactly the dead markets a caller is most likely to be
+   * trying to recover (a market newly listed by the venue, for instance).
+   */
   invalidate(symbol?: string): void {
     if (!symbol) {
       this.snapshots.clear();
+      this.failures.clear();
       return;
     }
 
@@ -351,6 +436,11 @@ export class MarketStateStore {
     for (const key of [...this.snapshots.keys()]) {
       if (key.startsWith(prefix)) {
         this.snapshots.delete(key);
+      }
+    }
+    for (const key of [...this.failures.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.failures.delete(key);
       }
     }
   }
@@ -425,6 +515,14 @@ export class MarketStateStore {
       this.snapshots.set(key, snapshot);
       this.fanOut(key, snapshot);
 
+      /**
+       * A success clears the backoff completely. Without this, a market that
+       * failed twice and then recovered would keep carrying a stale
+       * `consecutive` count and re-enter a shorter-than-expected cooldown on
+       * its next blip.
+       */
+      this.failures.delete(key);
+
       for (const listener of [...this.observers]) {
         try {
           listener(snapshot);
@@ -458,6 +556,26 @@ export class MarketStateStore {
         previous?.quote !== null &&
         previous?.quote !== undefined;
 
+      /**
+       * Extend the cooldown for this key. Doubling per consecutive failure
+       * (capped) means a market that is permanently absent costs one attempt
+       * every few minutes instead of one per poll interval, while a market
+       * recovering from a brief blip is retried on the very next tick.
+       */
+      const prior = this.failures.get(key);
+      const consecutive = (prior?.consecutive ?? 0) + 1;
+      const delay = Math.min(
+        this.failureBackoffMs * 2 ** (consecutive - 1),
+        this.maxFailureBackoffMs,
+      );
+      const now = this.now();
+      this.failures.set(key, {
+        consecutive,
+        nextAttemptAt: now + delay,
+        lastLoggedMessage: message,
+        lastLoggedAt: now,
+      });
+
       const snapshot: MarketStateSnapshot = {
         symbol,
         timeframe,
@@ -480,11 +598,56 @@ export class MarketStateStore {
       };
 
       this.snapshots.set(key, snapshot);
-      this.log(
-        `[market-state] ${symbol} ${timeframe} degraded: ${message}`,
-      );
+
+      /**
+       * Log the first failure immediately, then at most once per backoff
+       * window. Re-logging an identical message every poll is what turned one
+       * bad symbol into a wall of identical console output.
+       */
+      const suppress =
+        prior !== undefined &&
+        prior.lastLoggedMessage === message &&
+        now - prior.lastLoggedAt < this.maxFailureBackoffMs;
+
+      if (!suppress) {
+        this.log(
+          `[market-state] ${symbol} ${timeframe} degraded: ${message}` +
+            (consecutive > 1 ? ` (failure ${consecutive}, retrying in ${Math.round(delay / 1000)}s)` : ''),
+        );
+      }
 
       return snapshot;
     }
+  }
+
+  /**
+   * An UNAVAILABLE snapshot for a key that has never once succeeded.
+   *
+   * Constructed rather than cached-updated so the backoff path can produce a
+   * usable value for a key whose failure record exists but whose snapshot does
+   * not (a restart, or a `stop()`/`clear()` between the two).
+   */
+  private unavailableSnapshot(
+    symbol: string,
+    timeframe: string,
+    key: string,
+    message: string,
+  ): MarketStateSnapshot {
+    return {
+      symbol,
+      timeframe,
+      key,
+      fetchedAt: 0,
+      lastUpdatedAt: 0,
+      status: 'UNAVAILABLE',
+      expired: false,
+      degraded: true,
+      latestPrice: null,
+      quote: null,
+      candles: [],
+      indicators: null,
+      computeMs: 0,
+      error: message,
+    };
   }
 }

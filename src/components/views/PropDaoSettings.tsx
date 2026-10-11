@@ -63,6 +63,7 @@ export function PropDaoSettings() {
   const [verification, setVerification] = useState<PropDaoVerification | null>(null);
   const [policy, setPolicy] = useState<PropDaoPolicy | null>(null);
   const [encryptionAvailable, setEncryptionAvailable] = useState(true);
+  const [ephemeralVaultKey, setEphemeralVaultKey] = useState(false);
 
   const [apiKey, setApiKey] = useState('');
   const [reveal, setReveal] = useState(false);
@@ -87,6 +88,7 @@ export function PropDaoSettings() {
       if (settingsRes.ok) {
         const body = await settingsRes.json();
         setEncryptionAvailable(body.encryptionAvailable !== false);
+        setEphemeralVaultKey(Boolean(body.ephemeralVaultKey));
       }
     } catch {
       setMessage({ tone: 'error', text: 'Could not reach the FundAGoat API.' });
@@ -183,7 +185,7 @@ export function PropDaoSettings() {
       </div>
 
       <div className="space-y-4 p-4">
-        {/* Encryption warning — surfaced before the user types a key. */}
+        {/* Encryption status */}
         {!encryptionAvailable && (
           <div className="flex items-start gap-2.5 rounded-lg border border-negative/40 bg-negative-soft/40 p-3">
             <ShieldAlert size={15} className="mt-0.5 shrink-0 text-negative" aria-hidden="true" />
@@ -192,6 +194,21 @@ export function PropDaoSettings() {
               <p className="mt-0.5 text-[12px] leading-relaxed text-fg-muted">
                 This deployment has no credential encryption key configured, so a PropDAO key cannot be saved
                 safely. Set <code className="font-mono">CREDENTIAL_ENCRYPTION_KEY</code> on the server.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {encryptionAvailable && ephemeralVaultKey && (
+          <div className="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning-soft/40 p-3">
+            <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+            <div>
+              <p className="text-[12px] font-semibold text-fg">Ephemeral credential storage</p>
+              <p className="mt-0.5 text-[12px] leading-relaxed text-fg-muted">
+                No persistent encryption key is configured, so keys are stored encrypted but only for the
+                lifetime of this process — they are lost on restart. For production use, set
+                <code className="font-mono">CREDENTIAL_ENCRYPTION_KEY</code> (32 bytes, base64/base64url/hex)
+                on the server.
               </p>
             </div>
           </div>

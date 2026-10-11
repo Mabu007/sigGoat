@@ -679,8 +679,49 @@ export interface UserProfile {
   telegramUsername?: string;
   telegramNotificationsEnabled?: boolean;
 
+  /**
+   * Whether this user's GOATs ask before they trade.
+   *
+   * `PROPOSAL` (the default) is the safe mode: every signal becomes a
+   * proposal and waits for an explicit accept or reject. `AUTONOMOUS` means
+   * the system evaluates its own risk gate and executes without asking.
+   *
+   * Stored per user rather than per GOAT because it is a statement about how
+   * the user wants to be involved, and because it must survive a restart and
+   * cannot be flipped by a request field on an unrelated route.
+   */
+  autonomyMode?: AutonomyMode;
+
+  /**
+   * The OpenRouter model this user picked in Settings.
+   *
+   * Used as the default for newly created GOATs so "add your key, then pick a
+   * model" is a once-per-user decision rather than a per-GOAT chore. A stored
+   * value is validated against the live catalogue before use — see
+   * `resolveModelForNewGoat`.
+   */
+  aiModel?: string;
+
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * How much authority a user's GOATs have over their own orders.
+ *
+ * `PROPOSAL` is the default and the reason the word "proposal" is in the
+ * product: nothing reaches a venue without a human decision. `AUTONOMOUS`
+ * removes that step but NOT the risk gate — every order still passes
+ * `PropRiskValidator` and the PropDAO execution policy, and the execution
+ * feature flag still has to be on server-side.
+ */
+export type AutonomyMode = 'PROPOSAL' | 'AUTONOMOUS';
+
+export const AUTONOMY_MODES: readonly AutonomyMode[] = ['PROPOSAL', 'AUTONOMOUS'];
+
+/** Coerces arbitrary input to a known mode. Unknown values fall back to PROPOSAL. */
+export function normaliseAutonomyMode(value: unknown): AutonomyMode {
+  return value === 'AUTONOMOUS' ? 'AUTONOMOUS' : 'PROPOSAL';
 }
 
 /** A session of the application-wide AI assistant. */

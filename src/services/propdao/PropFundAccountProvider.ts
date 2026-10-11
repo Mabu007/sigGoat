@@ -247,6 +247,14 @@ export class PropFundAccountProvider {
       provider: 'propdao' as const,
       status: account.status,
       challengeId: account.challengeId,
+      /**
+       * The whole challenge record is passed, not a pre-extracted block: on
+       * an account record PropDAO nests the rules under `challenge.rules` as a
+       * JSON STRING, and the parser owns every shape it accepts. Passing
+       * `challenge.rules` directly would hand it a string and yield all-null
+       * limits — the exact failure where the drawdown checks silently stop
+       * protecting the account.
+       */
       rules: account.challenge ? parseChallengeRules(account.challenge) : null,
     }));
   }

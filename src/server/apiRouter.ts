@@ -11,7 +11,17 @@
  */
 
 import express, { Request, Response, NextFunction } from 'express';
-import { FundGoat, GoatSchedule, GoatRuntimeState, TradeSignal, Chat, ChatMessage } from '../types';
+import {
+  FundGoat,
+  GoatSchedule,
+  GoatRuntimeState,
+  TradeSignal,
+  Chat,
+  ChatMessage,
+  UserProfile,
+  AutonomyMode,
+  normaliseAutonomyMode,
+} from '../types';
 import { authMiddleware, requireUser, resolveAuthMode } from './auth';
 import { getFirebaseAdminFailureReason } from './firebaseAdmin';
 import {
@@ -31,17 +41,22 @@ import { UserScopedReasoningGateway, type AiProvider } from './reasoningGateway'
 import { buildGoatContext } from './goatContext';
 import { configureCredentialVault, credentialVault } from './security/instance';
 import { CredentialVaultError } from './security/CredentialVault';
+import { createVaultBackedKeyStore } from './security/vaultKeyStore';
+import { autoAcceptSignal } from './autonomy';
+import type { CanonicalMarketCategory } from '../types';
 import { PropFundAccountProvider } from '../services/propdao/PropFundAccountProvider';
+import { executionPolicyStatus } from '../services/propdao/executionPolicy';
 import { DEFAULT_RISK_LIMITS, validateTradeIntent } from '../services/propdao/PropRiskValidator';
 import { durableObjectRegistry } from '../services/durable-object/DurableObjectRegistry';
 import { hyperliquidProvider } from '../services/market-data/hyperliquid/HyperliquidMarketDataProvider';
 import {
   DEFAULT_MARKET_UNIVERSE,
   HYPERLIQUID_DEXES,
+  MARKET_CATEGORIES,
   tradableMarkets,
 } from '../services/market-data/hyperliquid/MarketCatalog';
 import { paperProvider } from '../services/market-data/PaperMarketDataProvider';
-import { MarketDataProvider } from '../services/market-data/MarketDataProvider';
+import { MarketDataProvider, MarketDataUnavailableError } from '../services/market-data/MarketDataProvider';
 import {
   MarketStateStore,
   isUsableMarketState,
@@ -108,6 +123,18 @@ export const appPersistence = persistence;
 configureCredentialVault(persistence);
 
 /**
+ * The reasoning gateway reads `persistence.keys`; make that see the VAULT.
+ *
+ * Until this, Settings wrote credentials through the vault while every reader
+ * still went to the legacy plaintext store, so a saved key was accepted,
+ * reported as "configured", and then never used. Routing the key store itself
+ * through the vault fixes every current and future reader at once — see
+ * `vaultKeyStore.ts` for why the alternative (dual-writing plaintext) was
+ * rejected.
+ */
+const keyStore = createVaultBackedKeyStore(persistence.keys, credentialVault);
+
+/**
  * ONE PropDAO adapter factory.
  *
  * The adapter resolves the caller's key from the vault on every operation, so
@@ -120,7 +147,7 @@ function propDaoFor(userId: string): PropFundAccountProvider {
   });
 }
 
-const reasoningGateway = new UserScopedReasoningGateway(persistence.keys);
+const reasoningGateway = new UserScopedReasoningGateway(keyStore);
 /**
  * Market data source: the Hyperliquid public info API (no API key required).
  *
@@ -245,7 +272,7 @@ export const notificationOutbox = new NotificationOutbox({
   deliverer: {
     deliver: async (record) => {
       const token =
-        (await persistence.keys.getTelegramToken(record.userId)) ||
+        (await keyStore.getTelegramToken(record.userId)) ||
         process.env.TELEGRAM_BOT_TOKEN;
 
       if (!token) {
@@ -505,6 +532,195 @@ export function migrateGoatMarkets(goat: FundGoat): FundGoat | null {
   };
 }
 
+/**
+ * Returns the GOAT's first market the venue actually lists, migrating the
+ * GOAT's market list when a retired symbol is found.
+ *
+ * This is the runtime counterpart to `migrateGoatMarkets`, and it exists
+ * because the boot-time migration is not enough on its own:
+ *
+ *   - a GOAT created or edited AFTER boot never passes through it;
+ *   - a GOAT imported from Telegram never passes through it;
+ *   - on Vercel the process restarts between requests, so "boot" is
+ *     effectively "every request" and the migration never converges before
+ *     the scheduler has already fired.
+ *
+ * A vendor that delists an instrument creates a GOAT that can never work
+ * again. Left alone it is also a permanent source of failed provider calls,
+ * so the rewrite happens here — at the point of use — rather than only at
+ * startup.
+ *
+ * Returns `null` when NO configured market is listed, which callers treat as
+ * "skip this GOAT entirely" rather than substituting a market the user never
+ * chose.
+ */
+async function resolveGoatMarket(goat: FundGoat): Promise<string | null> {
+  const migrated = migrateGoatMarkets(goat);
+  const candidate = migrated ?? goat;
+
+  const listed = candidate.markets.find((market) =>
+    Boolean(marketProvider.getMarketMetadata(market)),
+  );
+
+  if (listed && migrated) {
+    await persistence.goats.save(migrated).catch((err) => {
+      console.error('[api] failed to persist migrated goat markets:', err);
+    });
+    console.warn(
+      `[api] Migrated markets for goat ${goat.id}: ` +
+        `${goat.markets.join(', ')} -> ${migrated.markets.join(', ')}`,
+    );
+  }
+
+  return listed ?? null;
+}
+
+/**
+ * Validates a requested market list against the venue's LIVE catalogue.
+ *
+ * Three outcomes, in order of preference for the user:
+ *
+ *   1. the symbol is listed            -> used verbatim
+ *   2. the symbol is a retired alias   -> replaced with the live equivalent
+ *   3. otherwise                       -> the whole request is refused, and
+ *                                         the live list is named so the user
+ *                                         can pick a real one
+ *
+ * The catalogue is warmed first. `getMarketMetadata` reads an in-memory index
+ * that is empty on a cold start, so without the warm-up EVERY market would
+ * look unlisted and the first GOAT after a deploy would be rejected.
+ */
+async function resolveMarketsForGoat(
+  requested: readonly string[],
+): Promise<
+  | { resolved: string[]; substituted: Array<{ from: string; to: string }> }
+  | { error: string }
+> {
+  await marketProvider.getSymbols().catch(() => {
+    // A catalogue outage must not block GOAT creation. `getMarketMetadata`
+    // will simply report nothing listed and the request is refused, which is
+    // the honest outcome — better than accepting a market we cannot verify.
+  });
+
+  const resolved: string[] = [];
+  const substituted: Array<{ from: string; to: string }> = [];
+  const rejected: string[] = [];
+
+  for (const raw of requested) {
+    const symbol = raw.trim();
+    if (!symbol) continue;
+
+    if (marketProvider.getMarketMetadata(symbol)) {
+      resolved.push(symbol);
+      continue;
+    }
+
+    const replacement = STALE_MARKET_REPLACEMENTS[symbol.toUpperCase()];
+    if (
+      replacement &&
+      marketProvider.getMarketMetadata(replacement) &&
+      !resolved.includes(replacement)
+    ) {
+      resolved.push(replacement);
+      substituted.push({ from: symbol, to: replacement });
+      continue;
+    }
+
+    rejected.push(symbol);
+  }
+
+  if (rejected.length > 0) {
+    const suggestions = suggestMarkets(rejected);
+    return {
+      error:
+        `Hyperliquid does not list ${rejected.map((s) => `"${s}"`).join(', ')}.` +
+        (suggestions.length > 0
+          ? ` Did you mean ${suggestions.map((s) => `"${s}"`).join(', ')}?`
+          : ' Search for it under Markets, or pick another instrument.'),
+    };
+  }
+
+  return { resolved: [...new Set(resolved)], substituted };
+}
+
+/**
+ * Best-effort suggestions for a rejected market.
+ *
+ * Purely local: trims separators and matches on substring, so `EURUSD`,
+ * `eur/usd` and `EUR/USD` all point at `xyz:EUR`. Never a network call — this
+ * runs on the error path of a route that has already failed once.
+ */
+function suggestMarkets(rejected: readonly string[]): string[] {
+  const tracked = DEFAULT_MARKET_UNIVERSE;
+  const out: string[] = [];
+
+  for (const raw of rejected) {
+    const cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    if (cleaned.length < 2) continue;
+
+    for (const candidate of tracked) {
+      const candidateBare = candidate.replace(/^xyz:/, '').toUpperCase();
+      if (candidateBare === cleaned || candidateBare.includes(cleaned)) {
+        if (!out.includes(candidate)) out.push(candidate);
+      }
+      if (out.length >= 4) return out;
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Picks the model a newly created GOAT runs on.
+ *
+ * `validateGoatInput` defaults the field to `anthropic/claude-3.5-sonnet`, a
+ * hardcoded guess that OpenRouter no longer serves — so a client that did not
+ * pick a model produced a GOAT that failed every single wake with "No
+ * endpoints found". The resolution order is:
+ *
+ *   1. the model the client explicitly asked for, when it is well-formed AND
+ *      is not the legacy hardcoded default (that value is a placeholder, not
+ *      a user choice);
+ *   2. the user's saved preferred model from Settings;
+ *   3. any free model from that user's own live catalogue.
+ *
+ * No catalogue call is made on the happy path — an explicitly chosen model is
+ * taken at face value, because the only way the client learned it was from the
+ * live catalogue in the first place. If the catalogue cannot be reached the
+ * requested value is kept: refusing to create a GOAT because a model list
+ * timed out would be a worse failure than letting the first wake report it.
+ */
+async function resolveModelForNewGoat(
+  userId: string,
+  requested: string,
+  provided: boolean,
+): Promise<string> {
+  /**
+   * An explicitly sent model is honoured verbatim and WITHOUT a catalogue
+   * call. The only way a client learned that id was from the live catalogue in
+   * the first place, so re-verifying it here would add a network round trip
+   * to every single GOAT creation and buy nothing.
+   */
+  if (provided && isValidModel(requested)) return requested;
+
+  try {
+    const profile = await persistence.profiles.get(userId);
+    const preferred = profile?.aiModel?.trim();
+    if (preferred && isValidModel(preferred)) return preferred;
+  } catch (err) {
+    console.warn('[api] could not read preferred model:', err);
+  }
+
+  try {
+    const fallback = await reasoningGateway.pickAnyModel(userId);
+    if (fallback) return fallback;
+  } catch (err) {
+    console.warn('[api] model catalogue unavailable, using requested model:', err);
+  }
+
+  return requested;
+}
+
 /** Restart recovery: rebuild runtime actors for every persisted GOAT. */
 export async function restoreRuntimes(): Promise<void> {
   try {
@@ -599,6 +815,42 @@ export async function seedDefaultSkills(): Promise<void> {
 // Signal -> Telegram fan-out (only when the owner configured Telegram).
 durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
   if (signal.direction === 'NO_TRADE' || signal.status !== 'ACTIONABLE') return;
+
+  /**
+   * AUTONOMY MODE RUNS FIRST, before any notification.
+   *
+   * The order matters: a user in AUTONOMOUS mode must never receive a
+   * "your proposal needs approval" message for a proposal the system has
+   * already accepted. Telegram then reports what actually happened.
+   */
+  try {
+    const outcome = await autoAcceptSignal(
+      {
+        persistence,
+        policyStatus: () => propDaoFor(goat.userId).policyStatus(),
+      },
+      goat,
+      signal,
+    );
+
+    if (outcome.action === 'AUTO_ACCEPTED') {
+      console.log(
+        `[autonomy] ${goat.name}: auto-accepted ${signal.id} ` +
+          `(${signal.direction} ${signal.market}) — venue execution ` +
+          `${outcome.execution.enabled && outcome.execution.authorised ? 'authorised' : 'disabled'}`,
+      );
+      return;
+    }
+    if (outcome.action === 'FAILED') {
+      console.error(`[autonomy] ${goat.name}: auto-accept failed — ${outcome.reason}`);
+    }
+  } catch (err) {
+    /**
+     * NEVER let autonomy break the notification path. A failure here must
+     * still produce the user's Telegram alert.
+     */
+    console.error('[autonomy] auto-accept threw:', err);
+  }
 
   /**
    * Persist the notification intent BEFORE any send.
@@ -739,6 +991,18 @@ export async function routeMarketEvent(
       );
 
       if (event.type !== 'DATA_STALE' && event.type !== 'DATA_RECOVERED' && !hasRelevantTracker) {
+        irrelevant += 1;
+        continue;
+      }
+
+      /**
+       * Never read the store for a market the venue does not list. Same
+       * rationale as `runTrackerCheck`: this path iterates EVERY subscriber
+       * GOAT, so one GOAT on a dead symbol multiplied its provider call and
+       * log line by the number of GOATs subscribed to the same instrument.
+       */
+      const listed = resolveGoatMarket(goat);
+      if (!listed) {
         irrelevant += 1;
         continue;
       }
@@ -894,6 +1158,24 @@ function handle(fn: (req: Request, res: Response) => Promise<void>) {
         return;
       }
 
+      /**
+       * A market the venue does not list is the CALLER's bad input, not an
+       * internal fault. Returning 500 for it made the Backtest screen report
+       * an opaque server error for what is really "pick a different
+       * instrument", and — in dev — tripped the double-response path that
+       * surfaced as a full-screen Vite CORS overlay. 400 carries the real
+       * message so the UI can name the market and offer the live list.
+       *
+       * Logged at `warn` with no stack: this is an expected outcome of a
+       * stale symbol, and a full `console.error` trace per attempt is exactly
+       * the log noise this path was reported for in the first place.
+       */
+      if (err instanceof MarketDataUnavailableError) {
+        console.warn(`[api] ${req.method} ${req.originalUrl ?? req.url} — ${err.message}`);
+        fail(res, 400, 'MARKET_UNAVAILABLE', err.message);
+        return;
+      }
+
       console.error('[api] Unhandled route error:', err);
 
       /**
@@ -921,9 +1203,37 @@ function handle(fn: (req: Request, res: Response) => Promise<void>) {
  * Model ids come from the LIVE OpenRouter catalogue served by
  * GET /api/ai/models — there is no hardcoded allow-list, so validation is
  * limited to "well-formed OpenRouter model slug" (vendor/model, optional
- * variant suffix).
+ * variant suffixes).
+ *
+ * THE COLON IS LOAD-BEARING.
+ *
+ *   The pattern used to forbid `:`, which silently rejected every one of
+ *   OpenRouter's free-tier models — `apodex/apodex-1.1-mini:free`,
+ *   `nvidia/nemotron-3.5-lightning:free`, `poolside/laguna-s-2.1:free` and the
+ *   rest. On a brand-new account with no credits, the `:free` tier is the
+ *   ONLY tier that answers, so the effect was that a user could not select a
+ *   single model that would actually work: GOAT creation rejected the request
+ *   outright with `INVALID_INPUT`. A paid model slug passes the old pattern
+ *   and a free one does not, which is precisely backwards for an unfunded
+ *   account.
+ *
+ *   The suffix is now `(?::[a-zA-Z0-9._-]+)*`, which covers `:free`,
+ *   `:thinking`, `:extended` and friends while still refusing a trailing or
+ *   empty variant and any path traversal.
  */
-const MODEL_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._\-]*(?:\/[a-zA-Z0-9][a-zA-Z0-9._\-]*)*$/;
+const MODEL_ID_PATTERN =
+  /^[a-zA-Z0-9][a-zA-Z0-9._-]*(?:\/[a-zA-Z0-9][a-zA-Z0-9._-]*)*(?::[a-zA-Z0-9._-]+)*$/;
+
+/**
+ * The model id this app used to hardcode.
+ *
+ * OpenRouter no longer serves `anthropic/claude-3.5-sonnet` at all — it
+ * answers "No endpoints found". Kept only as a sentinel so a request that did
+ * not choose a model can be told apart from one that deliberately did, and
+ * routed to the user's real preference instead. See
+ * `resolveModelForNewGoat`.
+ */
+const LEGACY_DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
 
 function isValidModel(model: unknown): boolean {
   return (
@@ -933,7 +1243,26 @@ function isValidModel(model: unknown): boolean {
   );
 }
 
-function validateGoatInput(body: unknown): { name: string; goal: string; markets: string[]; skillIds: string[]; model: string; schedule: GoatSchedule; timeframe: ReturnType<typeof normaliseTrackingTimeframe> } | null {
+interface ValidatedGoatInput {
+  name: string;
+  goal: string;
+  markets: string[];
+  skillIds: string[];
+  model: string;
+  schedule: GoatSchedule;
+  timeframe: ReturnType<typeof normaliseTrackingTimeframe>;
+  /**
+   * True when the client actually sent a model.
+   *
+   * The distinction matters: an absent model means "resolve one for me", which
+   * needs the live catalogue, while an explicit one is a deliberate choice
+   * that must be honoured verbatim. Conflating the two made every GOAT
+   * creation perform a network round trip.
+   */
+  modelProvided: boolean;
+}
+
+function validateGoatInput(body: unknown): ValidatedGoatInput | null {
   if (typeof body !== 'object' || body === null) return null;
   const b = body as Record<string, unknown>;
   if (typeof b.name !== 'string' || !b.name.trim() || b.name.length > 100) return null;
@@ -942,14 +1271,16 @@ function validateGoatInput(body: unknown): { name: string; goal: string; markets
   if (!b.markets.every((m) => typeof m === 'string' && m.length <= 32)) return null;
   if (!Array.isArray(b.skillIds) || b.skillIds.length > 20) return null;
   if (!b.skillIds.every((s) => typeof s === 'string' && s.length <= 128)) return null;
-  const model = b.model ?? 'anthropic/claude-3.5-sonnet';
+  const modelProvided = typeof b.model === 'string' && b.model.trim().length > 0;
+  const model = modelProvided ? (b.model as string) : LEGACY_DEFAULT_MODEL;
   if (!isValidModel(model)) return null;
   return {
     name: b.name.trim(),
     goal: b.goal.trim(),
     markets: b.markets as string[],
     skillIds: b.skillIds as string[],
-    model: model as string,
+    model,
+    modelProvided,
     schedule: normaliseSchedule(b.schedule as GoatSchedule | undefined),
     /**
      * Tracking timeframe is validated server-side. An unrecognised value falls
@@ -1155,8 +1486,31 @@ async function runTrackerCheck(
     };
   }
 
+  /**
+   * NEVER ASK THE STORE FOR A MARKET THE VENUE DOES NOT LIST.
+   *
+   * `GoatDurableObject.attachMarketListeners` has this guard, but it only runs
+   * when a runtime attaches — and this function reads the store DIRECTLY,
+   * bypassing that path entirely. Without the guard a GOAT persisted against
+   * a retired symbol (the `EUR/USD` case) makes every scheduled tracker check
+   * a real provider round trip that can only fail, on a 60-second timer,
+   * forever.
+   *
+   * The GOAT is migrated rather than merely skipped, so the fix survives the
+   * next boot instead of re-arming itself on restart.
+   */
+  const market = await resolveGoatMarket(goat);
+  if (!market) {
+    return {
+      handled: false,
+      reason: 'market not listed by provider',
+      trackerFired: false,
+      nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+    };
+  }
+
   const state = await marketStateStore.getState(
-    goat.markets[0],
+    market,
     normaliseTrackingTimeframe(goat.timeframe),
   );
 
@@ -1573,6 +1927,21 @@ apiRouter.get('/markets/symbols', handle(async (_req, res) => {
 }));
 
 /**
+ * Tracked majors first, then alphabetical.
+ *
+ * The Markets screen opens on this list, so the liquid instruments a user is
+ * most likely to pick lead. Everything else is still one scroll away — this is
+ * ordering, never truncation.
+ */
+function byTrackedThenSymbol(
+  a: { symbol: string; tracked: boolean },
+  b: { symbol: string; tracked: boolean },
+): number {
+  if (a.tracked !== b.tracked) return a.tracked ? -1 : 1;
+  return a.symbol.localeCompare(b.symbol);
+}
+
+/**
  * MARKET DISCOVERY AND SEARCH
  *
  * The full instrument universe, from live provider metadata.
@@ -1593,21 +1962,61 @@ apiRouter.get('/markets/symbols', handle(async (_req, res) => {
  * Returns only provider-derived data. No conventional symbol is synthesised:
  * EURUSD, XAUUSD and SPX are absent from this list unless Hyperliquid actually
  * lists them.
+ *
+ *   GET /markets/search                    -> the whole discovered universe
+ *   GET /markets/search?q=gold             -> filtered, ranked
+ *   GET /markets/search?category=indices   -> one category
+ *
+ * WHY THE UNFILTERED CALL IS NOT CAPPED AT 100
+ *
+ *   `listMarkets` walks `['', 'xyz']` in order, and the default perp dex alone
+ *   contributes ~230 instruments — every one of them crypto. With a 100-item
+ *   cap the HIP-3 deployer markets (EUR, GBP, GOLD, SP500…) were sliced off
+ *   the END of the list and never rendered at all, which is why the Currencies,
+ *   Commodities and Indices cards showed nothing despite the venue listing all
+ *   three. The read costs one cached `metaAndAssetCtxs` per dex regardless of
+ *   how many rows come back, so truncating a cached array bought nothing and
+ *   hid an entire product surface.
+ *
+ *   Tracked majors are sorted first so the default view leads with the liquid
+ *   instruments rather than with whatever the venue happens to list first.
  */
 apiRouter.get('/markets/search', handle(async (req, res) => {
   const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+  const rawLimit = Number(req.query.limit);
+  const limit = Math.min(
+    Math.max(Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 1000, 1),
+    2000,
+  );
+
+  const categoryParam = typeof req.query.category === 'string' ? req.query.category.trim() : '';
+  const category = MARKET_CATEGORIES.includes(categoryParam as CanonicalMarketCategory)
+    ? (categoryParam as CanonicalMarketCategory)
+    : null;
 
   try {
     const markets =
       query.length > 0
         ? await hyperliquidProvider.searchInstruments(query, limit)
-        : tradableMarkets(await hyperliquidProvider.listMarketsCached(HYPERLIQUID_DEXES)).slice(0, limit);
+        : tradableMarkets(await hyperliquidProvider.listMarketsCached(HYPERLIQUID_DEXES));
+
+    const filtered = category
+      ? markets.filter((market) => market.category === category)
+      : markets;
+
+    const ordered = query.length > 0
+      ? filtered
+      : [...filtered].sort(byTrackedThenSymbol);
+
+    const limited = ordered.slice(0, limit);
 
     res.json({
-      markets,
-      total: markets.length,
+      markets: limited,
+      total: limited.length,
+      /** How many matched BEFORE the cap, so a client can say "showing 500 of 900". */
+      matched: ordered.length,
       query,
+      category: category ?? null,
       provider: marketProvider.name,
       dataMode: marketProvider.dataMode,
     });
@@ -2035,7 +2444,7 @@ apiRouter.post('/telegram/webhook', handle(async (req, res) => {
      * therefore no reply, rather than being served by a platform-wide bot.
      */
     getBotTokenForUser: async (userId) =>
-      (await persistence.keys.getTelegramToken(userId)) ?? undefined,
+      (await keyStore.getTelegramToken(userId)) ?? undefined,
 
     listProcessesForChat: listOwnedProcesses,
     createProcessForChat: createProcessFromTelegram,
@@ -2321,6 +2730,9 @@ apiRouter.get('/settings/keys', handle(async (req, res) => {
      * surfaces this so a deployment mistake is visible before a user tries.
      */
     encryptionAvailable: vaultConfigured,
+    /** True when the vault is running with a per-process ephemeral key:
+     * storage works for testing, but credentials are lost on restart. */
+    ephemeralVaultKey: vaultConfigured && credentialVault.isUsingEphemeralKey(),
     serverKeyFallback: isPlausibleOpenRouterKey(
       process.env.OPENROUTER_API_KEY,
     ),
@@ -2358,7 +2770,7 @@ apiRouter.post('/settings/keys', handle(async (req, res) => {
   const nextTelegramToken = normaliseTelegramToken(telegramToken);
 
   if (nextProvider) {
-    await persistence.keys.setProvider?.(user.uid, nextProvider);
+    await keyStore.setProvider?.(user.uid, nextProvider);
     reasoningGateway.setProviderFor(user.uid, nextProvider);
   }
 
@@ -2465,7 +2877,130 @@ apiRouter.post('/settings/keys', handle(async (req, res) => {
     groqKeyConfigured: groqStatus.configured,
     propDaoKeyConfigured: propdaoStatus.configured,
     propDaoKeyHint: propdaoStatus.maskedHint,
+    ...(await readUserPreferences(user.uid)),
   });
+}));
+
+/* ------------------------------------------------------------------ */
+/* USER PREFERENCES (autonomy mode + preferred model)                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Reads this user's non-secret preferences, always returning a full shape.
+ *
+ * `autonomyMode` defaults to `PROPOSAL` for a user who has never chosen. That
+ * default is the safe one and is not negotiable: a missing record must never
+ * be read as "autonomous", because that would turn an absent row into silent
+ * live trading.
+ */
+async function readUserPreferences(userId: string): Promise<{
+  autonomyMode: AutonomyMode;
+  aiModel: string | null;
+  aiModelAvailable: boolean | null;
+  /** False when execution is impossible no matter the user's choice. */
+  autonomyExecutable: boolean;
+  autonomyBlockedReason: string;
+}> {
+  const profile = await persistence.profiles.get(userId).catch(() => null);
+  const autonomyMode = normaliseAutonomyMode(profile?.autonomyMode);
+  const execution = executionPolicyStatus(process.env);
+
+  return {
+    autonomyMode,
+    aiModel: profile?.aiModel ?? null,
+    /**
+     * Null when it cannot be checked (no key configured, or the catalogue is
+     * unreachable) — which is different from `false`, meaning "checked and it
+     * is gone". The UI only nags the user on an actual false.
+     */
+    aiModelAvailable: profile?.aiModel
+      ? await reasoningGateway
+          .isModelAvailable(userId, profile.aiModel)
+          .catch(() => null)
+      : null,
+    autonomyExecutable: autonomyMode === 'PROPOSAL' || execution.enabled && execution.authorised,
+    autonomyBlockedReason:
+      autonomyMode === 'PROPOSAL'
+        ? ''
+        : execution.enabled && execution.authorised
+          ? ''
+          : 'Server-side order execution is disabled. Your GOATs will still produce proposals, but nothing is sent to a venue until the deployment enables execution.',
+  };
+}
+
+apiRouter.get('/settings/preferences', handle(async (req, res) => {
+  const user = requireUser(req);
+  res.json(await readUserPreferences(user.uid));
+}));
+
+/**
+ * Writes autonomy mode and/or the preferred model.
+ *
+ * Both fields are validated against reality before being stored, not after:
+ *
+ *   - `AUTONOMOUS` is accepted as a PREFERENCE even when the server cannot
+ *     execute yet, because the user is describing intent and the deployment
+ *     may enable execution later. The response says plainly that nothing will
+ *     be sent until it does — silently accepting the toggle and saying
+ *     nothing is how a user comes to believe orders are flowing.
+ *   - `aiModel` is checked against the caller's OWN live catalogue. Storing a
+ *     model OpenRouter no longer serves is exactly the failure this app
+ *     already shipped once, as a hardcoded default.
+ */
+apiRouter.post('/settings/preferences', handle(async (req, res) => {
+  const user = requireUser(req);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+
+  const existing = await persistence.profiles.get(user.uid);
+  const profile: UserProfile = existing ?? {
+    id: user.uid,
+    email: user.email ?? `${user.uid}@fundagoat.internal`,
+    displayName: 'FundAGoat Trader',
+    telegramNotificationsEnabled: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (body.autonomyMode !== undefined) {
+    if (body.autonomyMode !== 'PROPOSAL' && body.autonomyMode !== 'AUTONOMOUS') {
+      return fail(
+        res,
+        400,
+        'INVALID_AUTONOMY_MODE',
+        'autonomyMode must be PROPOSAL or AUTONOMOUS.',
+      );
+    }
+    profile.autonomyMode = body.autonomyMode;
+  }
+
+  if (body.aiModel !== undefined) {
+    if (body.aiModel === null || body.aiModel === '') {
+      delete profile.aiModel;
+    } else {
+      if (!isValidModel(body.aiModel)) {
+        return fail(res, 400, 'INVALID_MODEL', 'That is not a valid model id.');
+      }
+      const model = body.aiModel as string;
+      const available = await reasoningGateway
+        .isModelAvailable(user.uid, model)
+        .catch(() => null);
+
+      if (available === false) {
+        return fail(
+          res,
+          400,
+          'MODEL_NOT_LISTED',
+          `OpenRouter no longer lists "${model}". Pick another model from the list.`,
+        );
+      }
+      profile.aiModel = model;
+    }
+  }
+
+  profile.updatedAt = new Date().toISOString();
+  await persistence.profiles.save(profile);
+
+  res.json({ success: true, ...(await readUserPreferences(user.uid)) });
 }));
 
 /* ------------------------------------------------------------------ */
@@ -2787,7 +3322,7 @@ apiRouter.post('/telegram/connect', handle(async (req, res) => {
   }
 
   // Only now is any state persisted.
-  await persistence.keys.setTelegramToken(user.uid, token);
+  await keyStore.setTelegramToken(user.uid, token);
   await persistence.keys.setTelegramBot?.(user.uid, {
     id: identity.id,
     username: identity.username,
@@ -2845,8 +3380,8 @@ apiRouter.get('/telegram/status', handle(async (req, res) => {
   const user = requireUser(req);
 
   const [token, bot, chatId] = await Promise.all([
-    persistence.keys.getTelegramToken(user.uid),
-    persistence.keys.getTelegramBot?.(user.uid),
+    keyStore.getTelegramToken(user.uid),
+    keyStore.getTelegramBot?.(user.uid),
     persistence.profiles.get(user.uid),
   ]);
 
@@ -2892,7 +3427,7 @@ apiRouter.get('/telegram/status', handle(async (req, res) => {
 /** Disconnects the bot: removes the webhook from Telegram and clears state. */
 apiRouter.delete('/telegram/connect', handle(async (req, res) => {
   const user = requireUser(req);
-  const token = await persistence.keys.getTelegramToken(user.uid);
+  const token = await keyStore.getTelegramToken(user.uid);
 
   if (token) {
     try {
@@ -2907,8 +3442,8 @@ apiRouter.delete('/telegram/connect', handle(async (req, res) => {
     }
   }
 
-  await persistence.keys.setTelegramToken(user.uid, undefined);
-  await persistence.keys.setTelegramBot?.(user.uid, undefined);
+  await keyStore.setTelegramToken(user.uid, undefined);
+  await keyStore.setTelegramBot?.(user.uid, undefined);
 
   const profile = await persistence.profiles.get(user.uid);
   if (profile?.telegramChatId) {
@@ -2957,7 +3492,7 @@ apiRouter.post('/telegram/test', handle(async (req, res) => {
   if (typeof chatId !== 'string' || !/^-?\d{1,20}$/.test(chatId.trim())) {
     return fail(res, 400, 'INVALID_CHAT_ID', 'chatId must be a numeric Telegram chat id.');
   }
-  const token = (await persistence.keys.getTelegramToken(user.uid)) || process.env.TELEGRAM_BOT_TOKEN;
+  const token = (await keyStore.getTelegramToken(user.uid)) || process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     return fail(res, 400, 'TELEGRAM_NOT_CONFIGURED', 'No Telegram bot token configured.');
   }
@@ -3196,6 +3731,31 @@ apiRouter.post('/goats', handle(async (req, res) => {
     return fail(res, 400, 'UNKNOWN_SKILL', `Unknown skill ids: ${unknownSkills.join(', ')}`);
   }
 
+  /**
+   * VALIDATE MARKETS AT CREATION, NOT AT FIRST USE.
+   *
+   * A GOAT is only as good as its market list, and the cost of accepting a
+   * dead one is paid forever: every scheduler tick, every tracker check and
+   * every market event re-requests it, fails, and logs. This route was the
+   * only place that could have prevented that, and it accepted any string.
+   *
+   * Known retired symbols (`EUR/USD` and friends) are MIGRATED rather than
+   * rejected, because refusing outright would break every client that still
+   * holds one from an older build — the user gets a working GOAT instead of
+   * an error they cannot act on. Anything with no equivalent is rejected with
+   * the live list named, so the correction is obvious.
+   */
+  const markets = await resolveMarketsForGoat(input.markets);
+  if ('error' in markets) {
+    return fail(res, 400, 'UNKNOWN_MARKET', markets.error);
+  }
+  if (markets.substituted.length > 0) {
+    console.warn(
+      `[api] GOAT create: substituted retired markets ` +
+        `${markets.substituted.map((s) => `${s.from} -> ${s.to}`).join(', ')}`,
+    );
+  }
+
   const goatId = `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const now = new Date().toISOString();
   const newGoat: FundGoat = {
@@ -3203,9 +3763,9 @@ apiRouter.post('/goats', handle(async (req, res) => {
     userId: user.uid,
     name: input.name,
     goal: input.goal,
-    markets: input.markets,
+    markets: markets.resolved,
     skillIds: input.skillIds.length > 0 ? input.skillIds : ['skill_price_action'],
-    model: input.model,
+    model: await resolveModelForNewGoat(user.uid, input.model, input.modelProvided),
     status: 'WATCHING',
     schedule: input.schedule,
     timeframe: input.timeframe,
@@ -3233,7 +3793,7 @@ apiRouter.post('/goats', handle(async (req, res) => {
     firstRun = await runtime.wake(
       'Initial analysis on deployment',
       'MANUAL_REEVALUATE',
-      input.markets[0],
+      markets.resolved[0],
     );
   } catch (err) {
     console.error('[api] Initial GOAT analysis failed:', err);
@@ -3649,11 +4209,51 @@ apiRouter.post('/backtest/run', handle(async (req, res) => {
   }
 
   const skills = (await allSkillsFor(user.uid)).filter((s) => goat.skillIds.includes(s.id));
-  const selectedMarket = typeof market === 'string' && goat.markets.includes(market)
-    ? market
-    : goat.markets[0];
+
+  /**
+   * AN EXPLICIT MARKET MUST BE HONOURED OR REFUSED — NEVER SUBSTITUTED.
+   *
+   * The previous code fell back to `goat.markets[0]` whenever the requested
+   * market was not in the GOAT's list, so a request for a retired symbol
+   * (`EUR/USD`) silently backtested a completely different market and
+   * returned a confident, meaningless result. A wrong backtest is worse than
+   * no backtest: it is a number the user will act on.
+   */
+  let selectedMarket: string;
+  if (market !== undefined && market !== null && market !== '') {
+    if (typeof market !== 'string') {
+      return fail(res, 400, 'INVALID_MARKET', 'market must be a string.');
+    }
+    if (!goat.markets.includes(market)) {
+      return fail(
+        res,
+        400,
+        'INVALID_MARKET',
+        `This GOAT does not watch "${market}". Its markets are: ${goat.markets.join(', ')}.`,
+      );
+    }
+    selectedMarket = market;
+  } else {
+    selectedMarket = goat.markets[0];
+  }
+
   if (!selectedMarket) {
     return fail(res, 400, 'NO_MARKET', 'The GOAT has no market configured to backtest.');
+  }
+
+  /**
+   * Reject an unlisted market here rather than deep in the engine, so the
+   * user gets the real reason and a suggestion instead of a 500 carrying an
+   * engine stack message.
+   */
+  await resolveMarketsForGoat([selectedMarket]).catch(() => undefined);
+  if (!marketProvider.getMarketMetadata(selectedMarket)) {
+    return fail(
+      res,
+      400,
+      'MARKET_UNAVAILABLE',
+      `Historical data is unavailable for "${selectedMarket}". Search for it under Markets, or pick another instrument.`,
+    );
   }
   const validPeriods = ['24h', '7d', '30d', '90d'];
   const selectedPeriod = validPeriods.includes(period as string) ? (period as string) : '7d';
@@ -3706,7 +4306,7 @@ async function resolveChatbotCredential(uid: string): Promise<{
   provider: AiProvider;
   key: string | undefined;
 }> {
-  const userKey = await persistence.keys.getOpenRouterKey(uid);
+  const userKey = await keyStore.getOpenRouterKey(uid);
   if (userKey && isPlausibleOpenRouterKey(userKey)) {
     return { provider: await reasoningGateway.providerFor(uid), key: userKey.trim() };
   }
@@ -3753,17 +4353,38 @@ apiRouter.post('/chat', authMiddleware, async (req, res) => {
       return fail(res, 404, 'CHAT_NOT_FOUND', 'This chat does not exist or is not yours.');
     }
   } else {
-    const firstWord = message.trim().split(/\s+/)[0].slice(0, 40);
     const newChat: Chat = {
       id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       userId: user.uid,
-      title: firstWord,
+      title: message.trim().slice(0, 60),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       lastMessageAt: new Date().toISOString(),
     };
     chat = await persistence.chats.create(newChat);
   }
+
+  /**
+   * PERSIST THE USER'S TURN TOO.
+   *
+   * Only the assistant's reply was being written. The user's message went into
+   * the in-memory model context and was then dropped, so every saved chat held
+   * exactly half of each exchange: reloading showed a run of unexplained
+   * assistant replies, and the assistant lost the user's own questions from
+   * its own history on every subsequent turn.
+   *
+   * Written BEFORE the model call so a provider failure still leaves the
+   * question on the record rather than discarding what the user typed.
+   */
+  const userMessage: ChatMessage = {
+    id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    chatId: chat.id,
+    userId: user.uid,
+    role: 'user',
+    content: message.trim(),
+    createdAt: new Date().toISOString(),
+  };
+  await persistence.messages.create(chat.id, userMessage);
 
   try {
     const { provider, key } = await resolveChatbotCredential(user.uid);
@@ -3786,10 +4407,18 @@ apiRouter.post('/chat', authMiddleware, async (req, res) => {
 
     await Promise.all([
       persistence.messages.create(chat.id, assistantMessage),
-      persistence.chats.update(chat.id, { updatedAt: new Date().toISOString(), lastMessageAt: assistantMessage.createdAt }),
+      persistence.chats.update(chat.id, {
+        updatedAt: new Date().toISOString(),
+        lastMessageAt: assistantMessage.createdAt,
+      }),
     ]);
 
-    res.json({ chat: { id: chat.id, title: chat.title }, message: assistantMessage, model: CHAT_MODEL });
+    res.json({
+      chat: { id: chat.id, title: chat.title },
+      message: assistantMessage,
+      userMessage,
+      model: completion.model ?? CHAT_MODEL,
+    });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
     return fail(res, 502, 'CHAT_FAILED', `The assistant could not respond: ${code}`);

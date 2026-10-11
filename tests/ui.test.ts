@@ -428,12 +428,32 @@ describe('navigation', () => {
 /* ------------------------------------------------------------------ */
 
 describe('markets screen truthfulness', () => {
-  test('does not offer categories the provider does not populate', () => {
+  test('category cards count every tradable instrument, not just tracked ones', () => {
     const quotes = read('src/components/views/QuotesView.tsx');
-    // Category cards are rendered from what discovery returned, excluding
-    // thin / delisted instruments so their counts stay honest.
     expect(quotes).toContain('categoryCardData');
-    expect(quotes).toContain('delisted && m.tracked');
+
+    /**
+     * Regression guard.
+     *
+     * The cards used to count only TRACKED instruments, so any category whose
+     * members were searchable but not polled displayed "0" while the list
+     * behind it was populated — which is precisely the "currencies,
+     * commodities and indices show nothing" report. Counts must come from
+     * everything the venue lists, minus delisted instruments.
+     */
+    expect(quotes).toContain('if (market.delisted) continue');
+    expect(quotes).not.toContain('delisted && m.tracked');
+  });
+
+  test('the server returns the whole universe, not a truncated slice', () => {
+    const router = read('src/server/apiRouter.ts');
+    /**
+     * The default cap was 100 while the default perp dex alone lists ~230
+     * crypto instruments, so every HIP-3 market (EUR, GOLD, SP500...) was
+     * sliced off the end of the list and never rendered.
+     */
+    expect(router).toContain('matched: ordered.length');
+    expect(router).toContain('byTrackedThenSymbol');
   });
 
   test('search reaches beyond the default tracked universe', () => {

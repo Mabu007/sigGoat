@@ -126,9 +126,9 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
 
         <div className="border-t border-line p-3">
           <p className="text-[11px] leading-relaxed text-fg-subtle">
-            Research and proposals only.
-            <br />
-            FundAGoat does not place orders.
+            FundAGoat runs research, analysis and backtests for prop-firm funded
+            accounts. Trades are submitted for approval — execution is driven by
+            your PropDAO API key and prop-firm rules.
           </p>
         </div>
       </nav>

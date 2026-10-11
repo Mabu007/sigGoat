@@ -3,6 +3,8 @@ import { Check, Moon, Palette as PaletteIcon, Sun } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { PropDaoSettings } from './PropDaoSettings';
+import { ModelPicker } from '../ModelPicker';
+import type { AutonomyMode } from '../../types';
 import {
   Settings,
   Send,
@@ -15,6 +17,9 @@ import {
   Save,
   Zap,
   Activity,
+  Bot,
+  Hand,
+  Loader2,
 } from 'lucide-react';
 
 interface KeyStatus {
@@ -24,6 +29,18 @@ interface KeyStatus {
   provider?: 'openrouter' | 'groq';
   telegramTokenConfigured: boolean;
   serverKeyFallback: boolean;
+  /** False when the vault cannot encrypt at all — see the warning below. */
+  encryptionAvailable?: boolean;
+}
+
+/** The `/api/settings/preferences` response shape. */
+interface UserPreferences {
+  autonomyMode: AutonomyMode;
+  aiModel: string | null;
+  /** null = not checked, false = checked and no longer offered. */
+  aiModelAvailable: boolean | null;
+  autonomyExecutable: boolean;
+  autonomyBlockedReason: string;
 }
 
 type AiProvider = 'openrouter' | 'groq';
@@ -103,6 +120,69 @@ export const SettingsView: React.FC = () => {
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
   const [serverStatus, setServerStatus] = useState<any>(null);
 
+  // Preferences: autonomy mode + preferred reasoning model.
+  const [preferences, setPreferences] = useState<UserPreferences>({
+    autonomyMode: 'PROPOSAL',
+    aiModel: null,
+    aiModelAvailable: null,
+    autonomyExecutable: false,
+    autonomyBlockedReason: '',
+  });
+  const [isSavingPreferences, setIsSavingPreferences] = useState(false);
+  const [preferencesError, setPreferencesError] = useState<string | null>(null);
+  const [isSavingAutonomy, setIsSavingAutonomy] = useState(false);
+
+  const savePreferences = useCallback(
+    async (patch: Partial<Pick<UserPreferences, 'autonomyMode' | 'aiModel'>>) => {
+      setPreferencesError(null);
+      const previous = preferences;
+      // Optimistic: the toggle must feel instant. Reverted on failure below.
+      setPreferences((prev) => ({ ...prev, ...patch }));
+      try {
+        const res = await fetch('/api/settings/preferences', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
+          body: JSON.stringify(patch),
+        });
+        const body = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(body?.error?.message ?? 'Could not save that preference.');
+        // Trust the server's normalised copy, not the optimistic guess.
+        setPreferences((prev) => ({ ...prev, ...body }));
+      } catch (err) {
+        setPreferences(previous);
+        setPreferencesError(err instanceof Error ? err.message : 'Could not save that preference.');
+      }
+    },
+    [getApiAuthHeaders, preferences],
+  );
+
+  const handleModelChange = useCallback(
+    (modelId: string) => {
+      void savePreferences({ aiModel: modelId });
+    },
+    [savePreferences],
+  );
+
+  const handleAutonomyChange = useCallback(
+    (mode: AutonomyMode) => {
+      setIsSavingAutonomy(true);
+      void savePreferences({ autonomyMode: mode }).finally(() => setIsSavingAutonomy(false));
+    },
+    [savePreferences],
+  );
+
+  const loadPreferences = useCallback(async () => {
+    try {
+      const res = await fetch('/api/settings/preferences', {
+        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
+      });
+      if (!res.ok) return;
+      setPreferences((await res.json()) as UserPreferences);
+    } catch (err) {
+      console.warn('Unable to read preferences:', err);
+    }
+  }, [getApiAuthHeaders]);
+
   const loadKeyStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/settings/keys', {
@@ -137,7 +217,8 @@ export const SettingsView: React.FC = () => {
   useEffect(() => {
     void loadKeyStatus();
     void loadTelegramStatus();
-  }, [loadKeyStatus, loadTelegramStatus]);
+    void loadPreferences();
+  }, [loadKeyStatus, loadTelegramStatus, loadPreferences]);
 
   const platform = serverStatus?.platform;
   const marketData = serverStatus?.marketData;
@@ -212,6 +293,14 @@ export const SettingsView: React.FC = () => {
       setGroqKey('');
       setTelegramToken('');
       setTestResult({ ok: true, message: 'Saved. Your GOATs will use these credentials on the next reasoning run.' });
+      /**
+       * Reload status after a save so the model picker can immediately load a
+       * catalogue with the NEW key. Without this the picker stays on its
+       * "add a key first" error until a manual page reload, which reads as the
+       * save having not worked.
+       */
+      void loadKeyStatus();
+      void loadPreferences();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Failed to save settings.');
     } finally {
@@ -441,6 +530,102 @@ export const SettingsView: React.FC = () => {
 
       {/* ---- PROPDAO ---- */}
       <PropDaoSettings />
+
+      {/* AUTONOMY MODE */}
+      <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
+        <div className="border-b border-line pb-3">
+          <h2 className="text-sm font-bold text-fg flex items-center gap-2">
+            <Bot className="w-4 h-4 text-accent-text" />
+            <span>Autonomy Mode</span>
+          </h2>
+          <p className="text-xs text-fg-muted mt-0.5">
+            Choose whether your GOATs ask before they trade.
+          </p>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Autonomy mode">
+          {(
+            [
+              {
+                id: 'PROPOSAL' as const,
+                label: 'Ask me first',
+                icon: Hand,
+                blurb: 'Every setup becomes a proposal. You approve or reject each one.',
+              },
+              {
+                id: 'AUTONOMOUS' as const,
+                label: 'Full autonomy',
+                icon: Bot,
+                blurb: 'The system accepts its own setups and executes them without asking.',
+              },
+            ] as const
+          ).map((option) => {
+            const selected = preferences.autonomyMode === option.id;
+            const Icon = option.icon;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                disabled={isSavingAutonomy}
+                onClick={() => handleAutonomyChange(option.id)}
+                className={`flex items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-colors disabled:opacity-60 ${
+                  selected
+                    ? 'border-accent/60 bg-accent-soft'
+                    : 'border-line bg-sunken hover:border-line-strong'
+                }`}
+              >
+                <Icon
+                  size={15}
+                  aria-hidden="true"
+                  className={`mt-0.5 shrink-0 ${selected ? 'text-accent-text' : 'text-fg-subtle'}`}
+                />
+                <span className="min-w-0">
+                  <span className={`block text-xs font-bold ${selected ? 'text-accent-text' : 'text-fg'}`}>
+                    {option.label}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] leading-relaxed text-fg-muted">
+                    {option.blurb}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {isSavingAutonomy && (
+          <p className="flex items-center gap-1.5 text-[10px] text-fg-subtle">
+            <Loader2 size={11} className="animate-spin" /> Saving…
+          </p>
+        )}
+
+        {preferences.autonomyMode === 'AUTONOMOUS' && !preferences.autonomyExecutable && (
+          <div className="rounded-xl border border-warning/40 bg-warning-soft p-3">
+            <p className="flex items-start gap-2 text-[11px] font-semibold text-fg">
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              <span>Autonomy is on, but this deployment cannot send orders</span>
+            </p>
+            <p className="mt-1 pl-6 text-[10px] leading-relaxed text-fg-muted">
+              {preferences.autonomyBlockedReason ||
+                'Server-side order execution is disabled on this deployment.'}
+            </p>
+          </div>
+        )}
+
+        <p className="text-[10px] leading-relaxed text-fg-muted">
+          Autonomy changes <strong>who accepts a proposal</strong> — nothing else.
+          Every setup still passes the same signal gate, the same risk validator and
+          the same account drawdown limits, and every decision is recorded so you can
+          review it afterwards.
+        </p>
+
+        {preferencesError && (
+          <p className="rounded-lg border border-negative/40 bg-negative-soft p-2 text-[10px] text-negative">
+            {preferencesError}
+          </p>
+        )}
+      </div>
 
       {/* 1. SOLE MARKET DATA STATUS (AUTOMATIC - NO USER KEY NEEDED) */}
       <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
@@ -723,7 +908,8 @@ export const SettingsView: React.FC = () => {
             <span>AI Reasoning Engine</span>
           </h2>
           <p className="text-xs text-fg-muted mt-0.5">
-            Configure optional model credentials allowing your FundAGoat to reason via Claude 3.5 Sonnet, DeepSeek, or Llama.
+            Add your OpenRouter key, then pick the model your GOATs reason with. Every
+            model in the live catalogue is available — nothing is hardcoded.
           </p>
         </div>
 
@@ -820,6 +1006,45 @@ export const SettingsView: React.FC = () => {
                 replace it.
               </p>
             )}
+
+            {/**
+             * The vault is the only thing standing between a pasted key and a
+             * plaintext file on disk. Without a master key the save below fails
+             * with a 503, so this is surfaced BEFORE the user pastes anything
+             * rather than as a surprise after.
+             */}
+            {keyStatus && !keyStatus.encryptionAvailable && (
+              <p className="mt-2 rounded-lg border border-warning/40 bg-warning-soft p-2 text-[10px] leading-relaxed text-fg-muted">
+                This server has no <code className="font-mono">CREDENTIAL_ENCRYPTION_KEY</code>,
+                so credentials cannot be saved at all. Set one (32 bytes, base64) in the
+                deployment environment, then reload this page.
+              </p>
+            )}
+
+            {/**
+             * THE MODEL PICKER — the step that was missing.
+             *
+             * Saving a key used to leave the model hardcoded to a slug
+             * OpenRouter no longer serves, so every GOAT created afterwards
+             * failed on its first wake. Picking a model here is now the way a
+             * user states which one they want, and it becomes the default for
+             * every GOAT created afterwards.
+             */}
+            <div className="mt-3 border-t border-line pt-3">
+              <ModelPicker
+                getApiAuthHeaders={getApiAuthHeaders}
+                value={preferences.aiModel}
+                onChange={handleModelChange}
+                disabled={isSavingPreferences}
+                label="Reasoning model"
+                error={preferencesError}
+                reloadKey={
+                  provider === 'openrouter'
+                    ? keyStatus?.openRouterKeyConfigured
+                    : keyStatus?.groqKeyConfigured
+                }
+              />
+            </div>
           </div>
           ) : (
           <div>

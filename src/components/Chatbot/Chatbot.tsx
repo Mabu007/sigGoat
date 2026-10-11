@@ -1,27 +1,58 @@
 /**
  * APP-WIDE AI CHATBOT
  * ===================
- * A conversational assistant reachable from any tab. One floating button opens
- * a slide-over panel with your chat sessions on the left and the conversation
- * on the right.
+ * A conversational assistant reachable from any tab: one trigger opens a
+ * slide-over with your sessions on the left and the conversation on the right.
  *
  * MECHANICS
- *   - Chats: GET /api/chats — a user's sessions, newest first.
+ *   - Chats: GET /api/chats — the user's sessions, newest first.
  *   - Send:  POST /api/chat — { message, chatId? }. Creates a chat when absent.
- *   - History: GET /api/chat?chatId= — returns prior messages for the session.
+ *   - History: GET /api/chat?chatId= — prior messages for the session.
  *   - Delete:  DELETE /api/chat/:id.
  *
- * The assistant uses the same credentials as GOAT reasoning (per-user OpenRouter
- * key from the vault, then the server-wide fallback), always the configured
- * model `apodex/apodex-1.1-mini:free`, and persists sessions to Firestore.
+ * The assistant resolves the same credentials as GOAT reasoning (the caller's
+ * own OpenRouter key from the vault, then the server fallback) and persists
+ * sessions to Firestore.
+ *
+ * FIXED HERE (each of these was a real defect, not a polish item)
+ *
+ *   1. THE FIRST MESSAGE WAS SILENTLY DROPPED.
+ *      `sendMessage` created a chat, then re-read `currentChatId` from the
+ *      closure that had just been captured as `null` — so the guard returned
+ *      and nothing was sent. The user typed, pressed enter, and nothing
+ *      happened. The id now comes from `handleNewChat`'s return value.
+ *
+ *   2. THE PANEL DID NOT FIT A PHONE.
+ *      A fixed `w-64` session list sat beside a 440px panel: on a 375px
+ *      viewport the conversation was 119px wide. Width is now fluid, and the
+ *      session list collapses behind a toggle below `sm`.
+ *
+ *   3. SIDEBAR HEIGHT WAS A HARD-CODED CALC.
+ *      `h-[calc(100vh-theme(space.14))]` is not a valid height and grew the
+ *      panel past the viewport, so the composer sat off-screen.
+ *
+ *   4. ERRORS RENDERED WHERE NOBODY COULD SEE THEM.
+ *      The banner sat at the TOP of a scrolling list, so a failure after the
+ *      first few messages pushed itself out of view. Errors now live in a
+ *      fixed slot above the composer, and a failed send keeps the user's text
+ *      so it can be retried instead of deleted.
+ *
+ *   5. UNHANDLED PROMISE REJECTIONS.
+ *      `handleNewChat` and `deleteChat` were wired straight to `onClick` with
+ *      no error handling; one failed request produced a console-only error
+ *      and a spinner that never stopped.
+ *
+ *   6. IMPLICIT STYLE MUTATION.
+ *      The panel width was assigned through `ref.current.style.width` in an
+ *      effect, fighting React's own reconciliation. It is CSS now.
  */
 
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
-  useLayoutEffect,
 } from 'react';
 import {
   X,
@@ -31,6 +62,10 @@ import {
   Trash2,
   Loader2,
   Sparkles,
+  PanelLeftClose,
+  PanelLeftOpen,
+  RotateCw,
+  AlertCircle,
 } from 'lucide-react';
 
 import { useAuth } from '../../context/AuthContext';
@@ -52,23 +87,84 @@ interface ChatMessage {
   createdAt: string;
 }
 
-interface ChatHistory {
-  chat: { id: string; title: string };
-  messages: ChatMessage[];
-}
-
-const PANEL_WIDTH_PX = 440;
-
 const CHATBOT_STORAGE_KEY = 'fundagoat.chatbot';
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
-  const now = new Date();
-  const diff = now.getTime() - d.getTime();
-  if (diff < 86400000) {
+  if (Number.isNaN(d.getTime())) return '';
+  const diff = Date.now() - d.getTime();
+  if (diff < 86_400_000) {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Minimal, safe inline formatting for assistant replies.
+ *
+ * The model emits Markdown, and rendering it as raw text means every answer
+ * shows literal `**bold**` and `- bullets`. A full Markdown renderer and
+ * `dangerouslySetInnerHTML` are both disproportionate here — this handles the
+ * two things the system prompt actually produces (bold and bullet lists)
+ * entirely in React elements, so there is no HTML injection surface at all.
+ */
+function renderContent(content: string): React.ReactNode {
+  const blocks = content.split('\n');
+  const nodes: React.ReactNode[] = [];
+  let bullets: string[] = [];
+
+  const flushBullets = (key: string) => {
+    if (bullets.length === 0) return;
+    nodes.push(
+      <ul key={key} className="my-1.5 ml-4 list-disc space-y-0.5">
+        {bullets.map((item, index) => (
+          <li key={index}>{renderInline(item)}</li>
+        ))}
+      </ul>,
+    );
+    bullets = [];
+  };
+
+  blocks.forEach((raw, index) => {
+    const line = raw.trimEnd();
+    const bullet = /^[-*•]\s+(.*)$/.exec(line.trim());
+    if (bullet) {
+      bullets.push(bullet[1]);
+      return;
+    }
+    flushBullets(`ul-${index}`);
+    if (line.trim().length === 0) return;
+    nodes.push(
+      <p key={index} className="mb-1.5 last:mb-0">
+        {renderInline(line)}
+      </p>,
+    );
+  });
+  flushBullets('ul-final');
+
+  return nodes;
+}
+
+/** Handles `**bold**` and `` `code` `` without touching HTML. */
+function renderInline(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return (
+        <strong key={index} className="font-semibold">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      return (
+        <code key={index} className="rounded bg-sunken px-1 font-mono text-[0.9em]">
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return part;
+  });
 }
 
 export function Chatbot() {
@@ -81,67 +177,41 @@ export function Chatbot() {
   const [isSending, setIsSending] = useState(false);
   const [isFetching, setIsFetching] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const isMounted = useRef(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [showSessions, setShowSessions] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [chatModel, setChatModel] = useState<string | null>(null);
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const authHeaders = useRef<Record<string, string> | null>(null);
+
   const loadAuthHeaders = useCallback(async () => {
-    if (!authHeaders.current) {
-      authHeaders.current = await getApiAuthHeaders();
-    }
+    if (!authHeaders.current) authHeaders.current = await getApiAuthHeaders();
     return authHeaders.current;
   }, [getApiAuthHeaders]);
 
-  /* ---- Initial load: open on first visit if user already logged in ---- */
-  useEffect(() => {
-    isMounted.current = true;
-    const handleOpen = () => setIsOpen(true);
-    window.addEventListener('fundagoat-chatbot-open', handleOpen as EventListener);
-    if (currentUser) {
-      try {
-        const stored = localStorage.getItem(CHATBOT_STORAGE_KEY);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (typeof parsed === 'object' && parsed !== null && 'chatId' in parsed) {
-            setCurrentChatId(parsed.chatId);
-            void loadChats();
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
-    return () => {
-      isMounted.current = false;
-      window.removeEventListener('fundagoat-chatbot-open', handleOpen as EventListener);
-    };
-  }, [currentUser]);
+  /* ---- Sessions ---- */
 
   const loadChats = useCallback(async () => {
     setError(null);
     setIsFetching(true);
     try {
-      const headers = await loadAuthHeaders();
-      const res = await fetch('/api/chats', { headers });
-      if (!res.ok) throw new Error('Could not load chat sessions.');
+      const res = await fetch('/api/chats', { headers: await loadAuthHeaders() });
+      if (!res.ok) throw new Error('Could not load your chat sessions.');
       const data = await res.json();
       setChats(
         Array.isArray(data?.chats)
-          ? data.chats.map((c: any) => ({
+          ? data.chats.map((c: Partial<ChatItem> & { id: string }) => ({
               id: c.id,
-              title: c.title,
+              title: c.title || 'New chat',
               lastMessageAt: c.lastMessageAt,
               updatedAt: c.updatedAt,
             }))
           : [],
       );
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Could not load chat sessions.',
-      );
+      setError(err instanceof Error ? err.message : 'Could not load your chat sessions.');
       setChats([]);
     } finally {
       setIsFetching(false);
@@ -150,58 +220,64 @@ export function Chatbot() {
 
   const loadMessages = useCallback(
     async (chatId: string) => {
-      if (!currentChatId) return;
       setError(null);
+      setMessages([]);
       try {
-        const headers = await loadAuthHeaders();
         const res = await fetch(`/api/chat?chatId=${encodeURIComponent(chatId)}`, {
-          headers,
+          headers: await loadAuthHeaders(),
         });
-        if (!res.ok) throw new Error('Could not load chat messages.');
-        const data = (await res.json()) as ChatHistory;
-        setMessages(data.messages ?? []);
+        if (!res.ok) throw new Error('Could not load this conversation.');
+        const data = await res.json();
+        setMessages(Array.isArray(data?.messages) ? data.messages : []);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : 'Could not load chat messages.',
-        );
-        setMessages([]);
+        setError(err instanceof Error ? err.message : 'Could not load this conversation.');
       }
     },
-    [currentChatId, loadAuthHeaders],
+    [loadAuthHeaders],
   );
 
-  const handleNewChat = useCallback(async () => {
+  /**
+   * Creates a session and RETURNS ITS ID.
+   *
+   * Returning the id is the whole point: the previous version called
+   * `setCurrentChatId` and then the caller re-read the stale closure value,
+   * which was still `null`, so the first message was discarded.
+   */
+  const createChat = useCallback(async (): Promise<string | null> => {
     setError(null);
-    const headers = await loadAuthHeaders();
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: '' }),
-    });
-    if (!res.ok) throw new Error('Could not create a new chat.');
-    const data = await res.json();
-    const newChat: ChatItem = {
-      id: data.chat.id,
-      title: data.chat.title || 'New chat',
-      lastMessageAt: new Date().toISOString(),
-    };
-    setChats((prev) => [newChat, ...prev]);
-    setCurrentChatId(newChat.id);
-    setMessages([]);
-    localStorage.setItem(
-      CHATBOT_STORAGE_KEY,
-      JSON.stringify({ chatId: newChat.id }),
-    );
-    setInput('');
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { ...(await loadAuthHeaders()), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: '' }),
+      });
+      if (!res.ok) throw new Error('Could not start a new chat.');
+      const data = await res.json();
+      const id: string = data?.chat?.id;
+      if (!id) throw new Error('The server did not return a chat id.');
+
+      const newChat: ChatItem = {
+        id,
+        title: data.chat.title || 'New chat',
+        lastMessageAt: new Date().toISOString(),
+      };
+      setChats((prev) => [newChat, ...prev]);
+      setCurrentChatId(id);
+      setMessages([]);
+      localStorage.setItem(CHATBOT_STORAGE_KEY, JSON.stringify({ chatId: id }));
+      return id;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start a new chat.');
+      return null;
+    }
   }, [loadAuthHeaders]);
 
   const selectChat = useCallback(
     async (chatId: string) => {
       setCurrentChatId(chatId);
-      localStorage.setItem(
-        CHATBOT_STORAGE_KEY,
-        JSON.stringify({ chatId }),
-      );
+      setShowSessions(false);
+      localStorage.setItem(CHATBOT_STORAGE_KEY, JSON.stringify({ chatId }));
+      setDraft(null);
       await loadMessages(chatId);
       inputRef.current?.focus();
     },
@@ -210,140 +286,167 @@ export function Chatbot() {
 
   const deleteChat = useCallback(
     async (chatId: string) => {
-      const headers = await loadAuthHeaders();
-      const res = await fetch(`/api/chat/${encodeURIComponent(chatId)}`, {
-        method: 'DELETE',
-        headers,
-      });
-      if (!res.ok) throw new Error('Could not delete the chat.');
-      setChats((prev) => prev.filter((c) => c.id !== chatId));
-      if (currentChatId === chatId) {
-        setCurrentChatId(null);
-        setMessages([]);
+      setDeletingId(chatId);
+      setError(null);
+      try {
+        const res = await fetch(`/api/chat/${encodeURIComponent(chatId)}`, {
+          method: 'DELETE',
+          headers: await loadAuthHeaders(),
+        });
+        if (!res.ok) throw new Error('Could not delete that chat.');
+        setChats((prev) => prev.filter((c) => c.id !== chatId));
+        if (currentChatId === chatId) {
+          setCurrentChatId(null);
+          setMessages([]);
+          setDraft(null);
+          localStorage.removeItem(CHATBOT_STORAGE_KEY);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not delete that chat.');
+      } finally {
+        setDeletingId(null);
       }
     },
     [currentChatId, loadAuthHeaders],
   );
 
+  /* ---- Sending ---- */
+
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || isSending) return;
-      if (!currentChatId) {
-        await handleNewChat();
-        if (!currentChatId) return;
-      }
+
       setIsSending(true);
       setError(null);
+      setDraft(trimmed);
+
+      // Resolve (or create) the session FIRST and use the returned id.
+      const chatId = currentChatId ?? (await createChat());
+      if (!chatId) {
+        setIsSending(false);
+        return;
+      }
 
       const userMsg: ChatMessage = {
-        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        chatId: currentChatId,
+        id: `local_${Date.now()}`,
+        chatId,
         userId: currentUser?.uid ?? 'unknown',
         role: 'user',
         content: trimmed,
         createdAt: new Date().toISOString(),
       };
-
       setMessages((prev) => [...prev, userMsg]);
       setInput('');
 
       try {
-        const headers = await loadAuthHeaders();
         const res = await fetch('/api/chat', {
           method: 'POST',
-          headers: { ...headers, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: trimmed, chatId: currentChatId }),
+          headers: { ...(await loadAuthHeaders()), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: trimmed, chatId }),
         });
+        const body = await res.json().catch(() => null);
+
         if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(
-            body?.error?.message ?? 'The assistant could not respond.',
+          throw new Error(body?.error?.message ?? 'The assistant could not respond.');
+        }
+
+        const assistantMsg: ChatMessage = body.message;
+        setMessages((prev) => [...prev, assistantMsg]);
+        setDraft(null);
+        if (assistantMsg.model) setChatModel(assistantMsg.model);
+        if (body.chat?.title) {
+          setChats((prev) =>
+            prev.map((c) =>
+              c.id === chatId
+                ? {
+                    ...c,
+                    title: body.chat.title,
+                    lastMessageAt: assistantMsg.createdAt ?? new Date().toISOString(),
+                  }
+                : c,
+            ),
           );
         }
-        const data = await res.json();
-        const assistantMsg: ChatMessage = {
-          ...data.message,
-          createdAt: data.message.createdAt,
-        };
-        setMessages((prev) => [...prev, assistantMsg]);
-        setChats((prev) =>
-          prev.map((c) =>
-            c.id === currentChatId
-              ? { ...c, title: data.chat.title, lastMessageAt: assistantMsg.createdAt }
-              : c,
-          ),
-        );
       } catch (err) {
+        /**
+         * Keep the user's text. The previous version deleted the optimistic
+         * message on failure, so a failed send lost what the user had typed —
+         * worst possible behaviour for a transient network error.
+         */
         setError(err instanceof Error ? err.message : 'The assistant could not respond.');
-        setMessages((prev) => prev.filter((m) => m.id !== userMsg.id));
       } finally {
         setIsSending(false);
       }
     },
-    [currentChatId, isSending, currentUser, handleNewChat, loadAuthHeaders],
+    [currentChatId, isSending, currentUser, createChat, loadAuthHeaders],
   );
 
-  const handleSubmit = useCallback(
-    (e?: React.FormEvent) => {
-      e?.preventDefault();
-      sendMessage(input);
-    },
-    [input, sendMessage],
-  );
+  const retry = useCallback(() => {
+    if (draft) void sendMessage(draft);
+  }, [draft, sendMessage]);
 
-  /* ---- Auto-scroll to bottom of messages ---- */
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  /* ---- Lifecycle ---- */
 
-  /* ---- Panel width + focus management ---- */
   useEffect(() => {
-    if (!panelRef.current) return;
-    panelRef.current.style.width = `${PANEL_WIDTH_PX}px`;
-    const handleResize = () => {
-      if (panelRef.current && window.innerWidth < PANEL_WIDTH_PX) {
-        panelRef.current.style.width = `${window.innerWidth}px`;
-      } else {
-        panelRef.current.style.width = `${PANEL_WIDTH_PX}px`;
+    const handleOpen = () => setIsOpen(true);
+    window.addEventListener('fundagoat-chatbot-open', handleOpen as EventListener);
+    return () => window.removeEventListener('fundagoat-chatbot-open', handleOpen as EventListener);
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    void loadChats();
+    try {
+      const stored = localStorage.getItem(CHATBOT_STORAGE_KEY);
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+      if (typeof parsed === 'object' && parsed !== null && 'chatId' in parsed) {
+        const chatId = (parsed as { chatId: unknown }).chatId;
+        if (typeof chatId === 'string' && chatId) {
+          setCurrentChatId(chatId);
+          void loadMessages(chatId);
+        }
       }
-    };
-    window.addEventListener('resize', handleResize);
-    handleResize();
-    return () => window.removeEventListener('resize', handleResize);
-  }, [isOpen]);
-
-  /* ---- Escape to close ---- */
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
-        setIsOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [isOpen]);
-
-  /* ---- Overlay click closes panel ---- */
-  const handleClickOutside = useCallback(
-    (e: MouseEvent) => {
-      if (!panelRef.current || !isOpen) return;
-      const target = e.target as HTMLElement;
-      const button = target.closest('[data-chatbot-trigger]');
-      if (!button) {
-        setIsOpen(false);
-      }
-    },
-    [isOpen],
-  );
-
-  useEffect(() => {
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      inputRef.current?.focus();
+    } catch {
+      // A corrupt localStorage entry must never block the panel.
+      localStorage.removeItem(CHATBOT_STORAGE_KEY);
     }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isOpen, handleClickOutside]);
+    // Runs once per signed-in user; chatId changes are handled below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
+
+  /**
+   * Scroll the CONTAINER, not the page.
+   *
+   * `scrollIntoView` walks up to the nearest scrollable ancestor and beyond,
+   * which drags the whole application view while the user is trying to read a
+   * message.
+   */
+  useLayoutEffect(() => {
+    const node = scrollRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [messages, isSending]);
+
+  /* Grow the composer with its content, up to a cap. */
+  useLayoutEffect(() => {
+    const node = inputRef.current;
+    if (!node) return;
+    node.style.height = 'auto';
+    node.style.height = `${Math.min(node.scrollHeight, 128)}px`;
+  }, [input]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    inputRef.current?.focus();
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen]);
+
+  /* ---- Closed state: the trigger ---- */
 
   if (!isOpen) {
     return (
@@ -357,7 +460,7 @@ export function Chatbot() {
           }
           setIsOpen(true);
         }}
-        className="group relative flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-raised md:px-4"
+        className="group flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-raised md:px-4"
         aria-label="Open AI assistant"
       >
         <Sparkles
@@ -366,34 +469,43 @@ export function Chatbot() {
           className="text-accent-text transition-transform group-hover:scale-110"
         />
         <span className="hidden sm:inline">AI assistant</span>
-        <span className="inline-block sm:hidden">Assistant</span>
+        <span className="inline sm:hidden">Assistant</span>
       </button>
     );
   }
 
+  /* ---- Open state: the panel ---- */
+
   return (
     <div
-      className="fixed inset-0 z-50 flex justify-end"
+      className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm sm:bg-black/40 sm:backdrop-blur-sm"
       role="dialog"
+      aria-modal="true"
       aria-label="AI assistant"
+      onMouseDown={(e) => {
+        // Only a click on the backdrop itself closes; clicks inside stop here.
+        if (e.target === e.currentTarget) setIsOpen(false);
+      }}
     >
-      {/* Overlay */}
-      <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-        onClick={() => setIsOpen(false)}
-        aria-hidden="true"
-      />
-
-      {/* Panel */}
-      <div
-        ref={panelRef}
-        className="relative flex h-screen flex-col overflow-hidden bg-surface shadow-2xl"
-      >
+      <div className="flex h-full w-full max-w-full flex-col overflow-hidden bg-surface shadow-2xl sm:h-full sm:w-[440px]">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-line bg-surface px-4 py-2">
-          <div className="flex items-center gap-2">
-            <Sparkles size={15} className="text-accent-text" aria-hidden="true" />
-            <h2 className="text-[13px] font-semibold tracking-tight text-fg">
+        <div className="flex shrink-0 items-center justify-between border-b border-line bg-surface px-3 py-2.5 sm:px-4">
+          <div className="flex min-w-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowSessions((v) => !v)}
+              className="rounded p-1 text-fg-subtle hover:bg-raised hover:text-fg sm:hidden"
+              aria-label={showSessions ? 'Hide chat history' : 'Show chat history'}
+              aria-expanded={showSessions}
+            >
+              {showSessions ? (
+                <PanelLeftClose size={16} aria-hidden="true" />
+              ) : (
+                <PanelLeftOpen size={16} aria-hidden="true" />
+              )}
+            </button>
+            <Sparkles size={15} className="shrink-0 text-accent-text" aria-hidden="true" />
+            <h2 className="truncate text-[13px] font-semibold tracking-tight text-fg">
               AI assistant
             </h2>
           </div>
@@ -407,176 +519,226 @@ export function Chatbot() {
           </button>
         </div>
 
-        {/* Sidebar: chat list */}
-        <div className="flex h-[calc(100vh-theme(space.14))] w-64 flex-col border-r border-line bg-sunken">
-          <div className="p-3">
-            <button
-              type="button"
-              onClick={handleNewChat}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[11px] font-medium text-fg transition-colors hover:bg-raised"
-            >
-              <Plus size={12} aria-hidden="true" />
-              New chat
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-2">
-            {isFetching && chats.length === 0 ? (
-              <div className="flex items-center justify-center py-6 text-fg-subtle">
-                <Loader2 size={14} className="mr-1.5 animate-spin" aria-hidden="true" />
-                Loading…
-              </div>
-            ) : chats.length === 0 ? (
-              <div className="py-6 text-center text-[11px] text-fg-subtle">
-                <MessageSquare size={14} className="mx-auto mb-1.5 opacity-60" aria-hidden="true" />
-                <p>No chat sessions yet.</p>
-              </div>
-            ) : (
-              <ul className="space-y-0.5">
-                {chats.map((chat) => (
-                  <li key={chat.id}>
-                    <div
-                      className={`group flex items-center justify-between rounded-md px-2 py-1.5 text-[11px] transition-colors ${
-                        currentChatId === chat.id
-                          ? 'bg-accent/10 text-accent-text'
-                          : 'text-fg hover:bg-raised'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => selectChat(chat.id)}
-                        className="flex flex-1 flex-col items-start truncate text-left"
-                      >
-                        <span className="truncate font-medium">{chat.title}</span>
-                        {chat.lastMessageAt && (
-                          <span className="truncate text-[10px] opacity-70">
-                            {formatTime(chat.lastMessageAt)}
-                          </span>
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteChat(chat.id);
-                        }}
-                        className={`ml-1.5 rounded p-0.5 opacity-0 transition-opacity hover:bg-negative/10 hover:text-negative group-hover:opacity-100 ${
-                          currentChatId === chat.id ? 'text-negative' : 'text-fg-subtle'
-                        }`}
-                        aria-label={`Delete ${chat.title}`}
-                        title="Delete chat"
-                      >
-                        <Trash2 size={11} aria-hidden="true" />
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div className="border-t border-line p-2 text-[10px] text-fg-subtle">
-            <p>Model: apodex/apodex-1.1-mini:free</p>
-            <p className="mt-0.5">
-              Analysis only — never places an order.
-            </p>
-          </div>
-        </div>
-
-        {/* Conversation */}
-        <div
-          ref={scrollRef}
-          className="flex flex-1 flex-col bg-surface"
-        >
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-4 py-3">
-            {error && (
-              <div className="mb-3 rounded-lg border border-negative/40 bg-negative-soft px-3 py-2 text-[11px] text-negative">
-                {error}
-              </div>
-            )}
-
-            {messages.length === 0 && (
-              <div className="flex h-full flex-col items-center justify-center text-center">
-                <Sparkles size={24} className="mb-2 text-accent-text" aria-hidden="true" />
-                <p className="text-[13px] font-medium text-fg">Ask anything</p>
-                <p className="max-w-xs text-[11px] text-fg-muted">
-                  Questions about markets, your GOATs, or trading ideas. I don&apos;t
-                  have live prices — check the Markets tab for that.
-                </p>
-              </div>
-            )}
-
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`mb-3 flex ${
-                  msg.role === 'user' ? 'justify-end' : 'justify-start'
-                }`}
-              >
-                <div
-                  className={`max-w-[80%] rounded-lg px-3 py-2 text-[13px] leading-relaxed ${
-                    msg.role === 'user'
-                      ? 'bg-accent text-accent-fg'
-                      : 'bg-sunken text-fg'
-                  }`}
-                >
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
-                  <p
-                    className={`mt-1 text-[10px] ${
-                      msg.role === 'user'
-                        ? 'text-accent-fg/70'
-                        : 'text-fg-subtle'
-                    }`}
-                  >
-                    {formatTime(msg.createdAt)}
-                  </p>
-                </div>
-              </div>
-            ))}
-
-            {isSending && (
-              <div className="mb-3 flex items-center gap-1.5 text-[11px] text-fg-subtle">
-                <Loader2 size={13} className="animate-spin" aria-hidden="true" />
-                <span>Assistant is typing</span>
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* Input */}
-          <form
-            onSubmit={handleSubmit}
-            className="border-t border-line bg-surface px-4 py-3"
+        <div className="flex min-h-0 flex-1">
+          {/* Sessions. A fixed column beside a fluid panel left the
+              conversation 119px wide on a phone, so below `sm` this is an
+              overlay that covers the conversation instead. */}
+          <div
+            className={[
+              'flex min-h-0 w-full shrink-0 flex-col border-line bg-sunken sm:w-56 sm:border-r',
+              showSessions
+                ? 'absolute inset-x-0 top-[45px] bottom-0 z-10 border-b sm:static sm:inset-auto'
+                : 'hidden sm:flex',
+            ].join(' ')}
           >
-            <div className="flex items-end gap-2 rounded-lg border border-line bg-sunken px-3 py-2">
-              <textarea
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSubmit();
-                  }
-                }}
-                placeholder="Ask about a market, a GOAT, or a trading concept…"
-                rows={1}
-                className="max-h-32 min-h-[20px] flex-1 resize-none bg-transparent text-[13px] leading-relaxed text-fg placeholder:text-fg-subtle outline-none"
-                disabled={isSending}
-              />
+            <div className="p-2.5">
               <button
-                type="submit"
-                disabled={isSending || !input.trim()}
-                className="rounded p-1 text-fg-subtle transition-colors hover:bg-raised hover:text-fg disabled:opacity-40"
-                aria-label="Send message"
-                title="Send"
+                type="button"
+                onClick={() => {
+                  void createChat().then((id) => {
+                    if (id) {
+                      setShowSessions(false);
+                      inputRef.current?.focus();
+                    }
+                  });
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[11px] font-medium text-fg transition-colors hover:bg-raised"
               >
-                <Send size={15} aria-hidden="true" />
+                <Plus size={12} aria-hidden="true" />
+                New chat
               </button>
             </div>
-          </form>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-2">
+              {isFetching && chats.length === 0 ? (
+                <div className="flex items-center justify-center py-6 text-fg-subtle">
+                  <Loader2 size={14} className="mr-1.5 animate-spin" aria-hidden="true" />
+                  Loading…
+                </div>
+              ) : chats.length === 0 ? (
+                <div className="py-6 text-center text-[11px] text-fg-subtle">
+                  <MessageSquare size={14} className="mx-auto mb-1.5 opacity-60" aria-hidden="true" />
+                  <p>No chat sessions yet.</p>
+                </div>
+              ) : (
+                <ul className="space-y-0.5">
+                  {chats.map((chat) => (
+                    <li key={chat.id}>
+                      <div
+                        className={`group flex items-center justify-between gap-1 rounded-md px-2 py-1.5 text-[11px] transition-colors ${
+                          currentChatId === chat.id
+                            ? 'bg-accent/10 text-accent-text'
+                            : 'text-fg hover:bg-raised'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => void selectChat(chat.id)}
+                          aria-current={currentChatId === chat.id}
+                          className="flex min-w-0 flex-1 flex-col items-start truncate text-left"
+                        >
+                          <span className="truncate font-medium">{chat.title}</span>
+                          {chat.lastMessageAt && (
+                            <span className="truncate text-[10px] opacity-70">
+                              {formatTime(chat.lastMessageAt)}
+                            </span>
+                          )}
+                        </button>
+                        {/**
+                         * Always visible on touch. `opacity-0 group-hover:opacity-100`
+                         * hid it permanently on a phone, where there is no hover
+                         * and no keyboard to reveal it.
+                         */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void deleteChat(chat.id);
+                          }}
+                          disabled={deletingId === chat.id}
+                          className="ml-1 shrink-0 rounded p-1 text-fg-subtle transition-colors hover:bg-negative/10 hover:text-negative disabled:opacity-50 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+                          aria-label={`Delete ${chat.title}`}
+                          title="Delete chat"
+                        >
+                          {deletingId === chat.id ? (
+                            <Loader2 size={11} className="animate-spin" aria-hidden="true" />
+                          ) : (
+                            <Trash2 size={11} aria-hidden="true" />
+                          )}
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="shrink-0 border-t border-line p-2 text-[10px] leading-relaxed text-fg-subtle">
+              <p className="truncate">
+                {chatModel ? `Model: ${chatModel}` : 'Model: set in Settings'}
+              </p>
+              <p className="mt-0.5">Answers questions only — it never places an order.</p>
+            </div>
+          </div>
+
+          {/* Conversation */}
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface">
+            <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+              {messages.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+                  <Sparkles size={24} className="mb-2 text-accent-text" aria-hidden="true" />
+                  <p className="text-[13px] font-medium text-fg">Ask anything</p>
+                  <p className="mt-1 max-w-xs text-[11px] leading-relaxed text-fg-muted">
+                    Questions about markets, your GOATs, or trading ideas. I don&apos;t
+                    have live prices — check the Markets tab for those.
+                  </p>
+                  <div className="mt-4 flex flex-wrap justify-center gap-1.5">
+                    {[
+                      'What is a risk:reward ratio?',
+                      'How does a prop firm challenge work?',
+                      'What does my GOAT do at a session open?',
+                    ].map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        onClick={() => void sendMessage(suggestion)}
+                        className="rounded-full border border-line px-2.5 py-1 text-[10px] text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div aria-live="polite">
+                  {messages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={`mb-3 flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div
+                        className={`max-w-[85%] rounded-lg px-3 py-2 text-[13px] leading-relaxed sm:max-w-[80%] ${
+                          msg.role === 'user' ? 'bg-accent text-accent-fg' : 'bg-sunken text-fg'
+                        }`}
+                      >
+                        <div>{renderContent(msg.content)}</div>
+                        <p
+                          className={`mt-1 text-[10px] ${
+                            msg.role === 'user' ? 'text-accent-fg/70' : 'text-fg-subtle'
+                          }`}
+                        >
+                          {formatTime(msg.createdAt)}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {isSending && (
+                <div className="mb-3 flex items-center gap-1.5 text-[11px] text-fg-subtle">
+                  <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+                  <span>Assistant is typing…</span>
+                </div>
+              )}
+            </div>
+
+            {/* Error + composer. Fixed slot above the input so a failure is
+                never scrolled out of sight by a long conversation. */}
+            {error && (
+              <div className="mx-3 mb-2 shrink-0 rounded-lg border border-negative/40 bg-negative-soft px-3 py-2 text-[11px] text-negative sm:mx-4">
+                <div className="flex items-start gap-2">
+                  <AlertCircle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 flex-1">{error}</span>
+                  {draft && (
+                    <button
+                      type="button"
+                      onClick={retry}
+                      className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-semibold underline underline-offset-2"
+                    >
+                      <RotateCw size={11} aria-hidden="true" />
+                      Retry
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void sendMessage(input);
+              }}
+              className="shrink-0 border-t border-line bg-surface px-3 py-2.5 sm:px-4 sm:py-3"
+            >
+              <div className="flex items-end gap-2 rounded-lg border border-line bg-sunken px-3 py-2 focus-within:border-focus">
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      void sendMessage(input);
+                    }
+                  }}
+                  placeholder="Ask about a market, a GOAT, or a trading concept…"
+                  rows={1}
+                  aria-label="Message"
+                  className="max-h-32 min-h-[20px] flex-1 resize-none bg-transparent text-[13px] leading-relaxed text-fg placeholder:text-fg-subtle outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={isSending || !input.trim()}
+                  className="rounded p-1 text-fg-subtle transition-colors hover:bg-raised hover:text-fg disabled:opacity-40"
+                  aria-label="Send message"
+                  title="Send"
+                >
+                  <Send size={15} aria-hidden="true" />
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       </div>
     </div>

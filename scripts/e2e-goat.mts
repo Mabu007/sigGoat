@@ -1,0 +1,314 @@
+/**
+ * END-TO-END GOAT LIFECYCLE, AGAINST THE LIVE PROVIDERS
+ * =====================================================
+ * Drives the real Express app over HTTP with the real Hyperliquid market data
+ * and the real OpenRouter key, exercising exactly the journey a user takes:
+ *
+ *   save key -> pick model -> create GOAT -> watch it reason -> read the
+ *   proposal -> switch autonomy -> pause -> resume -> delete
+ *
+ * This is a SCRIPT, not a unit test: it makes billable network calls and is
+ * not part of `bun test`. Run with:
+ *
+ *   npx tsx scripts/e2e-goat.mts
+ *
+ * It exits non-zero on the first failure so it can gate a deploy.
+ */
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import express from 'express';
+import type { Server } from 'node:http';
+import { randomBytes } from 'node:crypto';
+
+const OPENROUTER_KEY = process.env.E2E_OPENROUTER_KEY;
+const PROPDAO_KEY = process.env.E2E_PROPDAO_KEY;
+
+let passed = 0;
+let failed = 0;
+
+function check(label: string, condition: boolean, detail = '') {
+  if (condition) {
+    passed += 1;
+    console.log(`  PASS  ${label}`);
+  } else {
+    failed += 1;
+    console.log(`  FAIL  ${label}${detail ? ` — ${detail}` : ''}`);
+  }
+}
+
+function section(title: string) {
+  console.log(`\n=== ${title} ===`);
+}
+
+async function main() {
+  if (!OPENROUTER_KEY) {
+    console.error('E2E_OPENROUTER_KEY is required.');
+    process.exit(2);
+  }
+
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'signalgoat-e2e-'));
+
+  process.env.NODE_ENV = 'test';
+  process.env.SIGNALGOAT_ALLOW_DEV_AUTH = '1';
+  process.env.MARKET_DATA_PROVIDER = 'hyperliquid';
+  process.env.DATA_DIR = dataDir;
+  process.env.OPENROUTER_API_KEY = OPENROUTER_KEY;
+  // A fixed master key so the vault actually encrypts rather than failing
+  // closed — this is the bug that silently orphaned credentials on Vercel.
+  process.env.CREDENTIAL_ENCRYPTION_KEY = randomBytes(32).toString('base64');
+  process.env.CREDENTIAL_ENCRYPTION_KEY_ID = 'e2e';
+  delete process.env.FIREBASE_PROJECT_ID;
+  delete process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+  const router = await import('../src/server/apiRouter');
+  const app = express();
+  app.use(express.json({ limit: '1mb' }));
+  app.use('/api', router.apiRouter);
+
+  const server: Server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const UID = 'e2e-user';
+
+  async function call(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; json: any }> {
+    const res = await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-dev-user-id': UID,
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: res.status, json: await res.json().catch(() => null) };
+  }
+
+  try {
+    /* ---------- Markets ---------- */
+    section('Markets (live Hyperliquid)');
+    const search = await call('GET', '/api/markets/search?limit=1000');
+    check('search returns 200', search.status === 200, `status ${search.status}`);
+    const markets: any[] = search.json?.markets ?? [];
+    check('universe is not truncated', markets.length > 200, `got ${markets.length}`);
+
+    for (const category of ['currencies', 'commodities', 'indices', 'crypto']) {
+      const n = markets.filter((m) => m.category === category).length;
+      check(`${category} present (${n})`, n > 0);
+    }
+    for (const sym of ['xyz:EUR', 'xyz:GOLD', 'xyz:SP500', 'BTC']) {
+      check(`${sym} listed`, markets.some((m) => m.symbol === sym));
+    }
+    check(
+      'no delisted instrument is offered',
+      markets.every((m) => m.delisted !== true),
+    );
+
+    const candles = await call('GET', '/api/markets/candles?symbol=xyz%3AEUR&timeframe=15m&count=50');
+    check('xyz:EUR candles load', candles.status === 200 && candles.json?.candles?.length > 0,
+      `status ${candles.status}`);
+
+    const badCandles = await call('GET', '/api/markets/candles?symbol=EUR%2FUSD&timeframe=15m&count=50');
+    check('unlisted market is a 400, not a 500', badCandles.status === 400,
+      `status ${badCandles.status}`);
+
+    /* ---------- Credential round trip ---------- */
+    section('Credentials');
+    const saved = await call('POST', '/api/settings/keys', {
+      provider: 'openrouter',
+      openRouterKey: OPENROUTER_KEY,
+      ...(PROPDAO_KEY ? { propDaoApiKey: PROPDAO_KEY } : {}),
+    });
+    check('key saved', saved.status === 200, `status ${saved.status}`);
+    check('reported as configured', saved.json?.openRouterKeyConfigured === true);
+
+    const keyStatus = await call('GET', '/api/settings/keys');
+    check('vault reports available', keyStatus.json?.encryptionAvailable === true);
+    check('no secret echoed', !JSON.stringify(keyStatus.json).includes(OPENROUTER_KEY.slice(-12)));
+
+    const models = await call('GET', '/api/ai/models');
+    check('model catalogue loads', models.status === 200 && Array.isArray(models.json?.models),
+      `status ${models.status}`);
+    const all: any[] = models.json?.models ?? [];
+    const freeTier = all.filter((m) => m.id.endsWith(':free'));
+    const zeroPriced = all.filter((m) => m.free);
+    check('OpenRouter free tier is offered', freeTier.length > 0, `freeTier=${freeTier.length}`);
+    check('catalogue is not empty', all.length > 0, `total=${all.length}`);
+
+    /**
+     * Prefer the `:free` tier, exactly as `pickAnyModel` and the Settings
+     * picker do. Some models the catalogue prices at zero still answer
+     * `402 Insufficient credits` on a zero-credit account, so "priced free"
+     * is not the same as "callable free" — which is itself worth asserting.
+     */
+    const chosen = freeTier[0]?.id ?? zeroPriced[0]?.id ?? all[0]?.id;
+    check('a model can be chosen', Boolean(chosen), String(chosen));
+    console.log(`  ....  using model: ${chosen}`);
+
+    const prefSaved = await call('POST', '/api/settings/preferences', { aiModel: chosen });
+    check('preferred model saved', prefSaved.status === 200 && prefSaved.json?.aiModel === chosen,
+      `status ${prefSaved.status}`);
+
+    const badModel = await call('POST', '/api/settings/preferences', { aiModel: 'vendor/not-a-real-model-xyz' });
+    check('a model OpenRouter does not list is refused', badModel.status === 400,
+      `status ${badModel.status}`);
+
+    /* ---------- PropDAO ---------- */
+    if (PROPDAO_KEY) {
+      section('PropDAO (live)');
+      const pdStatus = await call('GET', '/api/propdao/status');
+      check('propdao status 200', pdStatus.status === 200);
+      const accounts = await call('GET', '/api/propdao/accounts');
+      check('accounts load', accounts.status === 200 && Array.isArray(accounts.json?.accounts),
+        `status ${accounts.status}`);
+      const first = accounts.json?.accounts?.[0];
+      check('an account is connected', Boolean(first?.accountId), JSON.stringify(first)?.slice(0, 120));
+      if (first?.accountId) {
+        // Risk is embedded on the account record rather than exposed as its
+        // own route, so a single call answers both.
+        check('risk snapshot loads', first?.risk?.equity > 0, JSON.stringify(first?.risk));
+        check('risk is complete, not all-null', first?.risk?.incomplete === false,
+          JSON.stringify(first?.risk));
+        check('challenge rules parsed', first?.rules?.maxDrawdownPct > 0,
+          JSON.stringify(first?.rules));
+        check('drawdown headroom is positive', (first?.risk?.roomUsd ?? 0) > 0,
+          `roomUsd=${first?.risk?.roomUsd}`);
+      }
+      const pdMarkets = await call('GET', '/api/propdao/markets');
+      check('propdao markets load', pdMarkets.status === 200 && pdMarkets.json?.total > 0,
+        `status ${pdMarkets.status}`);
+    }
+
+    /* ---------- GOAT lifecycle ---------- */
+    section('GOAT lifecycle (live model)');
+    const created = await call('POST', '/api/goats', {
+      name: 'E2E Gold Scout',
+      goal: 'Track gold for a confirmed breakout.',
+      markets: ['xyz:GOLD'],
+      skillIds: [],
+      model: chosen,
+      schedule: { mode: 'INTERVAL', intervalMinutes: 60 },
+      timeframe: '15m',
+    });
+    check('GOAT created', created.status === 200, `status ${created.status} ${JSON.stringify(created.json)?.slice(0,200)}`);
+    const goat = created.json?.goat;
+    check('market accepted verbatim', goat?.markets?.[0] === 'xyz:GOLD');
+    check('chosen model persisted', goat?.model === chosen, `${goat?.model} vs ${chosen}`);
+
+    const state = created.json?.runtimeState;
+    check('GOAT produced a first analysis', Boolean(state), JSON.stringify(state)?.slice(0, 200));
+    const reasoningReached = state?.lastError === undefined
+      && state?.lastWakeEvent?.details !== undefined;
+    check('model was actually reached', reasoningReached,
+      state?.lastError ?? state?.lastWakeEvent?.details ?? 'no wake event');
+
+    const listed = await call('GET', '/api/goats');
+    check('GOAT appears in the list', (listed.json?.goats ?? []).some((g: any) => g.id === goat?.id));
+
+    const signals = await call('GET', `/api/goats/${goat?.id}/signals`);
+    check('signals endpoint works', signals.status === 200, `status ${signals.status}`);
+
+    const retried = await call('POST', '/api/goats', {
+      name: 'E2E Legacy Symbol',
+      goal: 'Uses a retired symbol.',
+      markets: ['EUR/USD'],
+      skillIds: [],
+      model: chosen,
+    });
+    check('retired symbol is migrated, not rejected', retried.status === 200,
+      `status ${retried.status}`);
+    check('migrated to the live instrument',
+      retried.json?.goat?.markets?.[0] === 'xyz:EUR',
+      JSON.stringify(retried.json?.goat?.markets));
+
+    const bogus = await call('POST', '/api/goats', {
+      name: 'E2E Bogus',
+      goal: 'Uses a nonsense symbol.',
+      markets: ['NOT_A_MARKET_XYZZY'],
+      skillIds: [],
+      model: chosen,
+    });
+    check('unknown market is refused with 400', bogus.status === 400, `status ${bogus.status}`);
+    if (retried.json?.goat?.id) {
+      await call('DELETE', `/api/goats/${retried.json.goat.id}`);
+    }
+
+    /* ---------- Pause / resume ---------- */
+    section('Pause and resume');
+    const paused = await call('POST', `/api/goats/${goat?.id}/status`, { action: 'PAUSE' });
+    check('pause works', paused.status === 200 && paused.json?.goat?.status === 'PAUSED',
+      JSON.stringify(paused.json)?.slice(0, 160));
+    const played = await call('POST', `/api/goats/${goat?.id}/status`, { action: 'PLAY' });
+    check('play works', played.status === 200 && played.json?.goat?.status !== 'PAUSED',
+      JSON.stringify(played.json)?.slice(0, 160));
+
+    /* ---------- Autonomy ---------- */
+    section('Autonomy mode');
+    const setAuto = await call('POST', '/api/settings/preferences', { autonomyMode: 'AUTONOMOUS' });
+    check('autonomy can be enabled', setAuto.status === 200 && setAuto.json?.autonomyMode === 'AUTONOMOUS');
+    check('server reports whether execution is possible',
+      typeof setAuto.json?.autonomyExecutable === 'boolean');
+
+    const badMode = await call('POST', '/api/settings/preferences', { autonomyMode: 'YOLO' });
+    check('an unknown mode is refused', badMode.status === 400, `status ${badMode.status}`);
+
+    await call('POST', '/api/settings/preferences', { autonomyMode: 'PROPOSAL' });
+
+    /* ---------- Backtest ---------- */
+    section('Backtest');
+    const bt = await call('POST', '/api/backtest/run', { goatId: goat?.id, period: '7d' });
+    check('backtest runs', bt.status === 200, `status ${bt.status} ${JSON.stringify(bt.json)?.slice(0,160)}`);
+    check('backtest returns a result', Boolean(bt.json?.result), JSON.stringify(bt.json)?.slice(0, 200));
+
+    const btBad = await call('POST', '/api/backtest/run', { goatId: goat?.id, market: 'EUR/USD', period: '7d' });
+    check('backtest on a retired symbol is a 400', btBad.status === 400, `status ${btBad.status}`);
+
+    /* ---------- Chatbot ---------- */
+    section('Chatbot');
+    const chat = await call('POST', '/api/chat', { message: 'In one sentence, what is a stop-loss?' });
+    check('chat creates a session', chat.status === 200 && Boolean(chat.json?.chat?.id),
+      `status ${chat.status}`);
+    check('chat answers', Boolean(chat.json?.message?.content),
+      JSON.stringify(chat.json)?.slice(0, 200));
+    const chatId = chat.json?.chat?.id;
+    if (chatId) {
+      const history = await call('GET', `/api/chat?chatId=${encodeURIComponent(chatId)}`);
+      check('chat history round-trips', history.status === 200 && history.json?.messages?.length >= 2,
+        `messages=${history.json?.messages?.length}`);
+      const del = await call('DELETE', `/api/chat/${encodeURIComponent(chatId)}`);
+      check('chat can be deleted', del.status === 200, `status ${del.status}`);
+    }
+
+    /* ---------- Delete ---------- */
+    section('Delete');
+    const deleted = await call('DELETE', `/api/goats/${goat?.id}`);
+    check('GOAT deleted', deleted.status === 200, `status ${deleted.status}`);
+    const after = await call('GET', `/api/goats/${goat?.id}`);
+    check('deleted GOAT is gone', after.status === 404, `status ${after.status}`);
+
+    const delAgain = await call('DELETE', `/api/goats/${goat?.id}`);
+    check('deleting twice is a clean 404', delAgain.status === 404, `status ${delAgain.status}`);
+  } finally {
+    server.close();
+    const { durableObjectRegistry } = await import('../src/services/durable-object/DurableObjectRegistry');
+    const { hyperliquidProvider } = await import('../src/services/market-data/hyperliquid/HyperliquidMarketDataProvider');
+    for (const goat of durableObjectRegistry.getAll()) goat.destroy();
+    hyperliquidProvider.stopTicks();
+    router.marketStateStore.stop();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed === 0 ? 0 : 1);
+}
+
+main().catch((err) => {
+  console.error('\nE2E crashed:', err);
+  process.exit(1);
+});

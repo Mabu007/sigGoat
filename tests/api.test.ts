@@ -38,6 +38,8 @@ beforeAll(async () => {
     FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID,
     FIREBASE_SERVICE_ACCOUNT_JSON: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
     GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
+    GROQ_API_KEY: process.env.GROQ_API_KEY,
   };
   process.env.NODE_ENV = 'test';
   // The vault fails closed without a master key; tests must supply one.
@@ -51,6 +53,21 @@ beforeAll(async () => {
   delete process.env.FIREBASE_PROJECT_ID;
   delete process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+  /**
+   * Strip the developer's REAL provider keys.
+   *
+   * `.env` is loaded by `src/server/env` before any module under test is
+   * imported, so without this every suite made live OpenRouter calls on the
+   * machine's own key — burning real quota, making the suite's pass/fail
+   * depend on that account's credit balance and network access, and failing
+   * with `Insufficient credits` the moment the key runs dry.
+   *
+   * With no credential the reasoning stack takes its documented DEMO path,
+   * which is what these tests were written against.
+   */
+  delete process.env.OPENROUTER_API_KEY;
+  delete process.env.GROQ_API_KEY;
 
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'signalgoat-api-test-'));
   process.env.DATA_DIR = dataDir;

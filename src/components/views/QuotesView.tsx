@@ -172,13 +172,21 @@ export function QuotesView() {
     });
   }, [discovered, searchResults, category]);
 
-  /** Tracked (default universe) instruments per category, excluding thin /
-   * delisted instruments so they never populate a category card. */
+  /**
+   * Category counts over EVERY tradable instrument the venue lists.
+   *
+   * These used to count only TRACKED instruments, so a category whose members
+   * were searchable but not polled read as "0" on its card while clicking
+   * through to a populated list. That mismatch is exactly the
+   * "currencies/commodities/indices show nothing" report: the number said zero
+   * and the list behind it said otherwise. Counting what is actually available
+   * makes the card honest; tracked-ness is still visible per row.
+   */
   const categoryCardData = useMemo(() => {
-    const tracked = discovered.filter((m) => !m.delisted && m.tracked);
     const counts = new Map<string, number>();
-    for (const m of tracked) {
-      counts.set(m.category, (counts.get(m.category) ?? 0) + 1);
+    for (const market of discovered) {
+      if (market.delisted) continue;
+      counts.set(market.category, (counts.get(market.category) ?? 0) + 1);
     }
     return CATEGORY_LABELS.filter((c) => c.id !== 'all').map((c) => ({
       ...c,
@@ -186,11 +194,11 @@ export function QuotesView() {
     }));
   }, [discovered]);
 
-  const availableCategories = useMemo(() => {
-    return CATEGORY_LABELS.filter((c) =>
-      c.id === 'all' || categoryCardData.some((cc) => cc.id === c.id && cc.count > 0),
-    );
-  }, [CATEGORY_LABELS, categoryCardData]);
+  /** How many rows the current category selection actually renders. */
+  const shownForCategory = useMemo(() => {
+    if (category === 'all') return discovered.filter((m) => !m.delisted).length;
+    return discovered.filter((m) => !m.delisted && m.category === category).length;
+  }, [discovered, category]);
 
   /* ---- Detail ---- */
 
@@ -295,8 +303,10 @@ export function QuotesView() {
             </p>
             <p className="mt-0.5 text-[11px] text-fg-subtle">
               {category === item.id
-                ? `${list.length} shown`
-                : 'tracked instruments'}
+                ? `${shownForCategory} shown`
+                : item.count === 1
+                  ? 'instrument'
+                  : 'instruments'}
             </p>
           </button>
         ))}

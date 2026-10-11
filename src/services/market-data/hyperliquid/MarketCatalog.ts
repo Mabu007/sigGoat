@@ -6,15 +6,15 @@
  *
  * THE CENTRAL CONSTRAINT
  *   Hyperliquid's universe is NOT the conventional forex/commodity/index
- *   market. Verified against the live API on 2026-10-10:
+ *   market. Verified against live `metaAndAssetCtxs` metadata on 2026-10-11:
  *
- *     - The default perp dex ("") lists 234 instruments. Every one is crypto.
+ *     - The default perp dex ("") lists ~230 instruments. Every one is crypto.
  *       There is no EURUSD, no XAUUSD, no SPX on it.
  *     - The HIP-3 dex "xyz" lists 133 instruments and is where the FX,
  *       commodity, index and equity coverage actually lives: EUR, GBP, JPY,
- *       GOLD, SILVER, BRENTOIL, CL, NATGAS, COPPER, CORN, ALUMINIUM,
- *       PLATINUM, PALLADIUM, NIFTY, JP225, KR200, DXY, and per-company
- *       equities (AAPL, NVDA, TSLA…).
+ *       GOLD, SILVER, BRENTOIL, CL, NATGAS, COPPER, PLATINUM, PALLADIUM,
+ *       SP500, XYZ100, JP225, KR200, and per-company equities (AAPL, NVDA,
+ *       TSLA…).
  *     - Spot lists 330 pairs, also crypto.
  *
  *   So "Currencies", "Commodities" and "Indices" are REAL categories here —
@@ -23,6 +23,13 @@
  *   startup and DROPPED if the provider does not list it. The alternative —
  *   hardcoding "EUR/USD is always available" — is how a product ends up
  *   rendering a chart of a market that does not exist.
+ *
+ *   The HIP-3 venue turns over: between 2026-10-10 and 2026-10-11 it delisted
+ *   `xyz:NIFTY`, `xyz:DXY`, `xyz:VIX`, `xyz:IBOV`, `xyz:KRW`, `xyz:CORN`,
+ *   `xyz:WHEAT`, `xyz:ALUMINIUM`, `xyz:TTF` and `xyz:URANIUM`. Every curated
+ *   table below was re-derived from live metadata rather than patched by hand,
+ *   because a table entry the venue no longer lists is a UI that promises a
+ *   market and then cannot open it.
  *
  * SYMBOL NAMING
  *   A market's `symbol` IS the provider's coin name, verbatim: `BTC`,
@@ -126,15 +133,16 @@ export const UI_TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D'] as const;
  * behaves like EUR/USD with a 1.1205-style price. We report the provider's
  * name and do NOT invent a conventional "EUR/USD" label the user would then
  * expect to resolve elsewhere.
+ *
+ * Only instruments CONFIRMED live in `metaAndAssetCtxs` on 2026-10-11 appear
+ * here. The venue has since delisted `xyz:CHF`/`CAD`/`AUD`/`NZD`/`KRW`, so
+ * those are gone from this table: a curated entry the venue does not list is
+ * a category card that promises a market and then cannot open it.
  */
 export const CURRENCY_INSTRUMENTS: Record<string, string> = {
   'xyz:EUR': 'Euro',
   'xyz:GBP': 'British Pound',
   'xyz:JPY': 'Japanese Yen',
-  'xyz:CHF': 'Swiss Franc',
-  'xyz:CAD': 'Canadian Dollar',
-  'xyz:AUD': 'Australian Dollar',
-  'xyz:NZD': 'New Zealand Dollar',
 };
 
 /** HIP-3 instruments that represent a commodity. */
@@ -143,20 +151,65 @@ export const COMMODITY_INSTRUMENTS: Record<string, string> = {
   'xyz:SILVER': 'Silver',
   'xyz:PLATINUM': 'Platinum',
   'xyz:PALLADIUM': 'Palladium',
-  'xyz:ALUMINIUM': 'Aluminium',
   'xyz:COPPER': 'Copper',
-  'xyz:CORN': 'Corn',
   'xyz:BRENTOIL': 'Brent Crude Oil',
   'xyz:CL': 'Crude Oil (WTI)',
   'xyz:NATGAS': 'Natural Gas',
 };
 
-/** HIP-3 instruments that represent a market index. */
+/**
+ * HIP-3 instruments that represent a market index.
+ *
+ * `xyz:SP500` and `xyz:XYZ100` are the venue's deepest index books (18.9M and
+ * 25.9M 24h notional at verification) and lead this category. `xyz:JP225` and
+ * `xyz:KR200` are listed but thin, so they stay searchable rather than
+ * tracked. `xyz:NIFTY`, `xyz:DXY`, `xyz:VIX` and `xyz:IBOV` are all delisted
+ * by the venue and are therefore absent.
+ */
 export const INDEX_INSTRUMENTS: Record<string, string> = {
-  'xyz:NIFTY': 'Nifty 50',
+  'xyz:SP500': 'S&P 500',
+  'xyz:XYZ100': 'Nasdaq-100 (XYZ)',
   'xyz:JP225': 'Nikkei 225',
   'xyz:KR200': 'KOSPI 200',
-  'xyz:DXY': 'US Dollar Index',
+};
+
+/**
+ * Country/regional equity index ETFs the venue lists alongside the cash
+ * indices. Grouped with indices because that is how a trader reads them —
+ * `EWJ` is the Nikkei expressed as a US-listed ETF, not a Japanese equity.
+ */
+export const INDEX_ETF_INSTRUMENTS: Record<string, string> = {
+  'xyz:EWJ': 'MSCI Japan ETF',
+  'xyz:EWY': 'MSCI South Korea ETF',
+  'xyz:EWT': 'MSCI Taiwan ETF',
+  'xyz:EWZ': 'MSCI Brazil ETF',
+  'xyz:SOXL': 'Leveraged S&P 500 ETF',
+  'xyz:MAGS': 'Magnificent 7 ETF',
+  'xyz:TLT': '20+ Year Treasury ETF',
+  'xyz:STRC': 'Short Treasury ETF',
+};
+
+/** HIP-3 instruments that represent a single company's equity. */
+export const EQUITY_INSTRUMENTS: Record<string, string> = {
+  'xyz:AAPL': 'Apple',
+  'xyz:AMD': 'AMD',
+  'xyz:AMZN': 'Amazon',
+  'xyz:AVGO': 'Broadcom',
+  'xyz:COIN': 'Coinbase',
+  'xyz:COST': 'Costco',
+  'xyz:CRWD': 'CrowdStrike',
+  'xyz:GOOGL': 'Alphabet',
+  'xyz:HOOD': 'Robinhood',
+  'xyz:INTC': 'Intel',
+  'xyz:META': 'Meta',
+  'xyz:MSFT': 'Microsoft',
+  'xyz:MU': 'Micron',
+  'xyz:NFLX': 'Netflix',
+  'xyz:NVDA': 'NVIDIA',
+  'xyz:PLTR': 'Palantir',
+  'xyz:QQQ': 'Nasdaq-100 ETF',
+  'xyz:SNDK': 'SanDisk',
+  'xyz:TSLA': 'Tesla',
 };
 
 /**
@@ -168,15 +221,16 @@ export const INDEX_INSTRUMENTS: Record<string, string> = {
  * per 60 candles returned against a 1200/minute budget. Twenty instruments at
  * one call a minute is comfortably inside that; three hundred would not be.
  *
- * VERIFIED AGAINST THE LIVE API on 2026-10-10.
- *   This list is not aspirational. Every entry was confirmed present and
- *   non-delisted, and two entries that had been delisted (`xyz:NIFTY`,
- *   `xyz:DXY`) were replaced with live alternatives (`xyz:JP225`,
- *   `xyz:KR200`). JP225 and KR200 were later removed here: Hyperliquid flags
- *   both as thin, so they are reachable through `/api/markets/search` but are
- *   never a default tracked market, a default selection, a category-card
- *   default, or a new-user default. Indices on this venue turn over quickly,
- *   so:
+ * VERIFIED AGAINST LIVE METADATA on 2026-10-11 (`metaAndAssetCtxs` for `xyz`).
+ *   Every entry below was confirmed present with `isDelisted !== true` AND a
+ *   non-zero mid price. Indices are included deliberately — before this pass
+ *   the category existed in the UI but had zero tracked members, so the
+ *   "Indices" card on the Markets screen counted zero forever.
+ *
+ *   Instruments the venue has delisted since the previous pass (`xyz:NIFTY`,
+ *   `xyz:DXY`, `xyz:VIX`, `xyz:IBOV`, `xyz:KRW`, `xyz:CORN`, `xyz:WHEAT`,
+ *   `xyz:ALUMINIUM`, `xyz:TTF`, `xyz:URANIUM`) were REMOVED rather than left
+ *   to fail at runtime. Two further checks keep this honest:
  *
  *     - the list is validated at runtime and any entry the venue stops
  *       listing is dropped rather than polled forever (see the Worker's
@@ -204,8 +258,9 @@ export const DEFAULT_MARKET_UNIVERSE: readonly string[] = [
   'xyz:CL',
   'xyz:BRENTOIL',
 
-  // Indices (HIP-3). JP225 and KR200 were flagged thin and removed from the
-  // default tracked universe; they remain discoverable via search only.
+  // Indices (HIP-3). SP500 and XYZ100 are the venue's deepest index books.
+  'xyz:SP500',
+  'xyz:XYZ100',
 ];
 
 /**
@@ -238,7 +293,7 @@ export function classifyMarket(symbol: string): MarketCategory {
   const key = symbol.trim();
   if (CURRENCY_INSTRUMENTS[key]) return 'currencies';
   if (COMMODITY_INSTRUMENTS[key]) return 'commodities';
-  if (INDEX_INSTRUMENTS[key]) return 'indices';
+  if (INDEX_INSTRUMENTS[key] || INDEX_ETF_INSTRUMENTS[key]) return 'indices';
   return 'crypto';
 }
 
@@ -249,6 +304,8 @@ export function displayNameFor(symbol: string): string {
     CURRENCY_INSTRUMENTS[key] ??
     COMMODITY_INSTRUMENTS[key] ??
     INDEX_INSTRUMENTS[key] ??
+    INDEX_ETF_INSTRUMENTS[key] ??
+    EQUITY_INSTRUMENTS[key] ??
     key
   );
 }
@@ -260,10 +317,14 @@ export function displayNameFor(symbol: string): string {
  * observed price magnitude. Hyperliquid does not publish a tick size for FX
  * or HIP-3 instruments, so a fixed per-class rule is used instead of
  * pretending to a precision the venue does not state.
+ *
+ * `xyz:JPY` is the exception that matters: the venue quotes it at ~158 (yen
+ * per dollar) with 3dp, so the currency default of 5 would render a stream of
+ * trailing zeros over a genuinely 3-decimal instrument.
  */
 export function decimalsFor(symbol: string, szDecimals?: number): number {
   const key = symbol.trim();
-  if (CURRENCY_INSTRUMENTS[key]) return 5; // e.g. 1.12050
+  if (CURRENCY_INSTRUMENTS[key]) return key === 'xyz:JPY' ? 3 : 5; // 158.265 vs 1.12080
   if (INDEX_INSTRUMENTS[key]) return 2;
   if (COMMODITY_INSTRUMENTS[key]) {
     // CL trades near 90, gold near 4000; 2dp is right for both.
@@ -279,7 +340,7 @@ export function decimalsFor(symbol: string, szDecimals?: number): number {
 /** Price granularity used for display and for rounding order prices. */
 export function priceDigitsFor(symbol: string, szDecimals?: number): number {
   const key = symbol.trim();
-  if (CURRENCY_INSTRUMENTS[key]) return 5;
+  if (CURRENCY_INSTRUMENTS[key]) return key === 'xyz:JPY' ? 3 : 5;
   if (COMMODITY_INSTRUMENTS[key] || INDEX_INSTRUMENTS[key]) return 2;
   return Math.min(Math.max(decimalsFor(key, szDecimals), 2), 8);
 }
