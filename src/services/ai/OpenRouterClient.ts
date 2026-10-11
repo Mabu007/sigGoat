@@ -222,6 +222,28 @@ const MAX_CHAT_CANDLES = 60;
  */
 const REASONING_RUN_MAX_TOKENS = 4_096;
 
+/**
+ * Ceiling for the retry that runs with reasoning EXCLUDED.
+ *
+ * Higher than the normal run, and deliberately so. The normal attempt caps
+ * hidden reasoning at `REASONING_BUDGET_CAP_TOKENS`, but many providers ignore
+ * that cap — observed live on `apodex/apodex-1.1-mini:free`, a
+ * reasoning-first model, which spent the entire 4,096-token budget thinking
+ * and returned no answer at all.
+ *
+ * The retry is the point at which we KNOW the budget was being eaten by
+ * reasoning, because that is the failure being recovered from, and we have
+ * just switched reasoning off. Reusing the same ceiling therefore fails for
+ * exactly the same reason on providers that ignore `exclude` too, and the
+ * wake dies having produced nothing.
+ *
+ * Raising a ceiling is not the same as spending more: the provider bills
+ * ACTUAL usage, and the overwhelming majority of replies are a few hundred
+ * tokens. The extra headroom is only ever consumed by a model that would
+ * otherwise have returned nothing at all.
+ */
+const REASONING_DISABLED_RETRY_MAX_TOKENS = 8_192;
+
 /** Floor after credit-limit adaptation; below this a run is pointless. */
 const MIN_ADAPTED_TOKENS = 1_536;
 
@@ -2523,6 +2545,12 @@ export class OpenRouterClient {
     const attemptWithinBudget = async (
       options: Parameters<typeof attempt>[0] = {},
     ) => {
+      // See REASONING_DISABLED_RETRY_MAX_TOKENS: the reasoning-off retry gets
+      // a larger ceiling because we already know reasoning ate the last one.
+      if (options.reasoningDisabled && options.maxTokens === undefined) {
+        budget = REASONING_DISABLED_RETRY_MAX_TOKENS;
+      }
+
       try {
         return await attempt(options);
       } catch (err) {
