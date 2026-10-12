@@ -100,7 +100,7 @@ export class DurableObjectScheduler implements WakeScheduler {
 
     this.generations.set(request.goatId, request.generationId);
 
-    await this.post('/schedule', {
+    await this.postFor(request.goatId, '/schedule', {
       goatId: request.goatId,
       nextWakeAt: request.nextWakeAt,
       nextTrackerCheckAt: request.nextTrackerCheckAt,
@@ -113,7 +113,7 @@ export class DurableObjectScheduler implements WakeScheduler {
   async cancel(goatId: string): Promise<void> {
     this.generations.delete(goatId);
     this.paused.delete(goatId);
-    await this.post('/cancel', { goatId });
+    await this.postFor(goatId, '/cancel', { goatId });
   }
 
   decide(
@@ -172,6 +172,26 @@ export class DurableObjectScheduler implements WakeScheduler {
       const oldest = this.processedOrder.shift();
       if (oldest) this.processedEvents.delete(oldest);
     }
+  }
+
+  /**
+   * Addresses the Worker on the path it actually serves.
+   *
+   * THE 404 THIS FIXES
+   *
+   *   The Worker's router matches `^/do/goats/([^/]+)(/[a-z]+)?$` and forwards
+   *   to the Durable Object. Posting to a ROOT `/schedule` fell through to
+   *   `{"error":"not_found"}`, so every scheduled arm and cancel failed. That
+   *   is why `/api/settings/status` reported
+   *   `scheduler worker returned HTTP 404` and, more importantly, why the
+   *   durable alarm never fired: no GOAT was ever durably scheduled, so on a
+   *   serverless host nothing woke them.
+   *
+   *   The body still carries `goatId` because the DO reads it there, but the
+   *   ADDRESS is what routes the request, so it has to be in the path too.
+   */
+  private async postFor(goatId: string, action: string, body: unknown): Promise<void> {
+    return this.post(`/do/goats/${encodeURIComponent(goatId)}${action}`, body);
   }
 
   private async post(path: string, body: unknown): Promise<void> {

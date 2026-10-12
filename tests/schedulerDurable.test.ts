@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, test, expect } from 'bun:test';
 import { DurableObjectScheduler } from '../src/server/scheduler/DurableObjectScheduler';
 import { InProcessScheduler } from '../src/server/scheduler/InProcessScheduler';
@@ -46,7 +48,13 @@ describe('DurableObjectScheduler — publish lifecycle', () => {
     await scheduler.sync({ goatId: 'g1', ...BASE });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].path).toBe('/schedule');
+    /**
+     * The address is ROUTING. The Worker's router matches
+     * `^/do/goats/([^/]+)(/[a-z]+)?$`; a root `/schedule` matched nothing
+     * and returned `{"error":"not_found"}`, so no GOAT was ever durably
+     * scheduled and the alarm never fired.
+     */
+    expect(calls[0].path).toBe('/do/goats/g1/schedule');
     expect(calls[0].body).toMatchObject({
       goatId: 'g1',
       timeframe: '15m',
@@ -99,7 +107,11 @@ describe('DurableObjectScheduler — publish lifecycle', () => {
     await scheduler.sync({ goatId: 'g1', ...BASE });
     await scheduler.cancel('g1');
 
-    expect(calls.map((c) => c.path)).toEqual(['/schedule', '/cancel']);
+    // Both actions are addressed under the GOAT's Durable Object route.
+    expect(calls.map((c) => c.path)).toEqual([
+      '/do/goats/g1/schedule',
+      '/do/goats/g1/cancel',
+    ]);
   });
 
   test('a paused GOAT publishes paused=true and no wake time', async () => {
@@ -297,5 +309,57 @@ describe('InProcessScheduler — local fallback', () => {
 
     expect(scheduler.decide('g1', event).allowed).toBe(true);
     expect(scheduler.decide('g1', event).allowed).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The Worker's HTTP surface is a CONTRACT, not a guess                */
+/* ------------------------------------------------------------------ */
+
+describe('app-to-Worker addressing matches the routes the Worker serves', () => {
+  /**
+   * BOTH of these were broken in production at the same time, and both
+   * presented as a silent 404:
+   *
+   *   - `DURABLE_SCHEDULER_URL` pointed at `sig-goat-scheduler...`, a
+   *     hostname that does not exist; the real Worker is `siggoat-scheduler`.
+   *   - the app then addressed the Worker at paths it does not serve.
+   *
+   * The net effect was that nothing was durably scheduled and the market-data
+   * store was never written, while the app reported itself as healthy.
+   */
+  const workerPath = path.join(import.meta.dir, '..', 'worker', 'market-data-worker.ts');
+  const worker = fs.readFileSync(workerPath, 'utf8');
+  const client = fs.readFileSync(
+    path.join(import.meta.dir, '..', 'src', 'services', 'market-data', 'DurableMarketDataClient.ts'),
+    'utf8',
+  );
+  const scheduler = fs.readFileSync(
+    path.join(import.meta.dir, '..', 'src', 'server', 'scheduler', 'DurableObjectScheduler.ts'),
+    'utf8',
+  );
+  // The per-GOAT router lives in the scheduler Worker, not the market-data one.
+  const schedulerWorker = fs.readFileSync(
+    path.join(import.meta.dir, '..', 'worker', 'scheduler-worker.ts'),
+    'utf8',
+  );
+
+  test('the market-data client prefixes every call with market/', () => {
+    // Worker route: /^market\/(fx|metals|energy|index|crypto)(\/[a-z]+)?$/i
+    expect(worker).toContain('/market\\/(fx|metals|energy|index|crypto)');
+    expect(client).toContain('${this.baseUrl}/market/${path}');
+  });
+
+  test('the scheduler addresses the GOAT durable object route', () => {
+    // Worker route: /^\/do\/goats\/([^/]+)(\/[a-z]+)?$/
+    expect(schedulerWorker).toContain('/^\\/do\\/goats\\/([^/]+)(\\/[a-z]+)?$/');
+    expect(scheduler).toContain('/do/goats/${encodeURIComponent(goatId)}${action}');
+  });
+
+  test('neither client addresses the Worker root any more', () => {
+    // A root post is what produced `{"error":"not_found"}` on every call.
+    expect(client).not.toContain('`${this.baseUrl}/${path}`');
+    expect(scheduler).not.toContain("this.post('/schedule'");
+    expect(scheduler).not.toContain("this.post('/cancel'");
   });
 });

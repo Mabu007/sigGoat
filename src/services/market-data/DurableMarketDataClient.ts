@@ -341,7 +341,21 @@ export class DurableMarketDataClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const response = await fetch(`${this.baseUrl}/${path}`, {
+      /**
+       * The `market/` PREFIX IS ROUTING, NOT COSMETIC.
+       *
+       * The Worker's default export matches `^/market\/(fx|metals|energy|
+       * index|crypto)(\/[a-z]+)?$` and forwards the remainder to the Durable
+       * Object for that partition. Every call here was being issued at the
+       * ROOT (e.g. `fx/subscribe`), which matched nothing and returned
+       * `{"error":"not_found"}`.
+       *
+       * That is why `/api/settings/status` reported
+       * `durableMarketData … HTTP 404` with `lastSuccessAtMs: null`: the
+       * Worker was never reached, so the canonical candle store was never
+       * written and the Durable Object's ingestion never ran.
+       */
+      const response = await fetch(`${this.baseUrl}/market/${path}`, {
         method: init.method ?? 'GET',
         headers: {
           'Content-Type': 'application/json',
