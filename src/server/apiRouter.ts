@@ -1,5 +1,5 @@
 /**
- * FUNDAGOAT API ROUTER
+ * SIRGOAT API ROUTER
  * ======================
  * Every protected route: authMiddleware -> ownership check -> handler.
  * Identity comes from the verified token, never from the request body.
