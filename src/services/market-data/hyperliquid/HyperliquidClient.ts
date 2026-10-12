@@ -44,7 +44,26 @@ import {
 const MAINNET_INFO_URL = 'https://api.hyperliquid.xyz/info';
 const TESTNET_INFO_URL = 'https://api.hyperliquid-testnet.xyz/info';
 
-const REQUEST_TIMEOUT_MS = 10_000;
+/**
+ * Per-request timeout.
+ *
+ * RAISED from 10s to 25s, deliberately.
+ *
+ * Hyperliquid's info endpoint answers in well under a second when reached
+ * directly (measured: 0.74s for a 401-bar snapshot). The 10s ceiling only
+ * ever expired on a serverless host, where the FIRST outbound request of a
+ * cold function pays DNS plus TLS setup to a host it has never contacted —
+ * easily several seconds before a byte of payload moves.
+ *
+ * The failure mode that produced was the worst kind: `Market data
+ * unavailable … Hyperliquid did not respond within 10000ms`, recorded on a
+ * GOAT's very first analysis, which reads to the user as "FundAGoat cannot
+ * see this market" when the market is listed and healthy.
+ *
+ * 25s is still a tight bound, and leaves the function well inside its 240s
+ * budget even when a wake makes several sequential provider calls.
+ */
+const REQUEST_TIMEOUT_MS = 25_000;
 
 /**
  * Documented REST weight budget, per IP per minute.
@@ -295,55 +314,85 @@ export class HyperliquidClient {
    * echo the request. Only the status and the provider's own short error
    * string are propagated, never the raw body.
    */
+  /**
+   * One `POST /info`, with a single retry for transient failures.
+   *
+   * All `info` calls are reads, so retrying is safe and idempotent. The retry
+   * covers exactly the failures that a second try can fix — a cold-start
+   * timeout, a dropped connection, a 5xx — and never the ones it cannot: a
+   * 4xx is a definite rejection, and re-sending it just burns weight on the
+   * 1200/min budget and delays the error the caller needs to see.
+   *
+   * The backoff is short and fixed because the caller is usually a GOAT wake
+   * already holding a request open; a long backoff here would turn a blip
+   * into a timeout at the layer above.
+   */
   private async info<T>(body: Record<string, unknown>, weight: number): Promise<T> {
-    this.limiter.reserve(weight);
+    const attempt = async (): Promise<T> => {
+      this.limiter.reserve(weight);
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-
-    try {
-      const response = await this.fetchImpl(this.baseUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      if (response.status === 429) {
-        throw new HyperliquidError(
-          'RATE_LIMITED',
-          'Hyperliquid rate limit reached. Back off for a few seconds.',
-          429,
-        );
-      }
-
-      if (!response.ok) {
-        throw new HyperliquidError(
-          'PROVIDER_ERROR',
-          `Hyperliquid responded ${response.status} for "${String(body.type)}".`,
-          response.status,
-        );
-      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
       try {
-        return (await response.json()) as T;
-      } catch {
-        throw new HyperliquidError(
-          'INVALID_RESPONSE',
-          `Hyperliquid returned a body that is not valid JSON for "${String(body.type)}".`,
-        );
+        const response = await this.fetchImpl(this.baseUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+
+        if (response.status === 429) {
+          throw new HyperliquidError(
+            'RATE_LIMITED',
+            'Hyperliquid rate limit reached. Back off for a few seconds.',
+            429,
+          );
+        }
+
+        if (!response.ok) {
+          throw new HyperliquidError(
+            'PROVIDER_ERROR',
+            `Hyperliquid responded ${response.status} for "${String(body.type)}".`,
+            response.status,
+          );
+        }
+
+        try {
+          return (await response.json()) as T;
+        } catch {
+          throw new HyperliquidError(
+            'INVALID_RESPONSE',
+            `Hyperliquid returned a body that is not valid JSON for "${String(body.type)}".`,
+          );
+        }
+      } catch (error) {
+        if (error instanceof HyperliquidError) throw error;
+        if (isAbortError(error)) {
+          throw new HyperliquidError(
+            'TIMEOUT',
+            `Hyperliquid did not respond within ${this.timeoutMs}ms.`,
+          );
+        }
+        throw new HyperliquidError('NETWORK', 'Hyperliquid could not be reached.');
+      } finally {
+        clearTimeout(timer);
       }
+    };
+
+    try {
+      return await attempt();
     } catch (error) {
-      if (error instanceof HyperliquidError) throw error;
-      if (isAbortError(error)) {
-        throw new HyperliquidError(
-          'TIMEOUT',
-          `Hyperliquid did not respond within ${this.timeoutMs}ms.`,
-        );
-      }
-      throw new HyperliquidError('NETWORK', 'Hyperliquid could not be reached.');
-    } finally {
-      clearTimeout(timer);
+      const retryable =
+        error instanceof HyperliquidError &&
+        (error.code === 'TIMEOUT' ||
+          error.code === 'NETWORK' ||
+          (error.code === 'PROVIDER_ERROR' && (error.status ?? 0) >= 500));
+
+      if (!retryable) throw error;
+
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      return attempt();
     }
   }
 
