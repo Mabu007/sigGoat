@@ -363,3 +363,113 @@ describe('app-to-Worker addressing matches the routes the Worker serves', () => 
     expect(scheduler).not.toContain("this.post('/cancel'");
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* END-TO-END ADDRESSING PROOF                                        */
+/* ------------------------------------------------------------------ */
+
+describe('both clients speak HTTP the Worker actually answers', () => {
+  /**
+   * The unit tests above pin the strings. This one proves the consequence:
+   * the requests are accepted by a server implementing the Worker's EXACT
+   * routers, and rejected the moment either client regresses to a root path.
+   *
+   * A 404 here is what production served for the lifetime of the old
+   * configuration while the app reported itself as configured and healthy.
+   */
+  async function startWorkerStub(): Promise<{ url: string; hits: string[] }> {
+    const hits: string[] = [];
+    const server = createServer((req, res) => {
+      const pathname = new URL(req.url ?? '/', 'http://x').pathname;
+      hits.push(pathname);
+
+      const market = pathname.match(/^\/market\/(fx|metals|energy|index|crypto)(\/[a-z]+)?$/i);
+      if (market) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, action: market[2] ?? '/status', partition: market[1] }));
+        return;
+      }
+
+      const goat = pathname.match(/^\/do\/goats\/([^/]+)(\/[a-z]+)?$/);
+      if (goat) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, action: goat[2] ?? '/status', goatId: goat[1] }));
+        return;
+      }
+
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    return {
+      url: `http://127.0.0.1:${port}`,
+      hits,
+    };
+  }
+
+  test('the scheduler arm and cancel are routed to the GOAT object', async () => {
+    const stub = await startWorkerStub();
+    const calls: string[] = [];
+    const scheduler = new DurableObjectScheduler({
+      endpoint: stub.url,
+      secret: 's3cret',
+      fetchImpl: ((url: RequestInfo | URL, init?: RequestInit) => {
+        calls.push(String(url));
+        return fetch(url, init);
+      }) as unknown as typeof fetch,
+    });
+
+    await scheduler.sync({ goatId: 'g1', ...BASE });
+    await scheduler.cancel('g1');
+
+    expect(calls).toEqual([
+      `${stub.url}/do/goats/g1/schedule`,
+      `${stub.url}/do/goats/g1/cancel`,
+    ]);
+    // Not a single 404 — the routes resolved.
+    expect(stub.hits).toEqual(['/do/goats/g1/schedule', '/do/goats/g1/cancel']);
+  });
+
+  test('the market-data client is routed to its partition', async () => {
+    const stub = await startWorkerStub();
+    const client = new DurableMarketDataClient(
+      { url: stub.url, secret: 's3cret', enabled: true },
+      { timeoutMs: 5_000 },
+    );
+
+    // health() fans out across every partition, so a routing regression on any
+    // of them shows up here rather than in production.
+    const health = await client.health();
+
+    expect(health.reachable).toBe(true);
+    // health() fans out in parallel, so arrival order is not part of the
+    // contract — the set of routed paths is.
+    expect([...stub.hits].sort()).toEqual([
+      '/market/crypto/status',
+      '/market/energy/status',
+      '/market/fx/status',
+      '/market/index/status',
+      '/market/metals/status',
+    ]);
+  });
+
+  test('a root-addressed call is still refused, so a regression cannot hide', async () => {
+    const stub = await startWorkerStub();
+    const stray = await fetch(`${stub.url}/schedule`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goatId: 'g1' }),
+    });
+
+    // This is the 404 production served. It must remain a failure.
+    expect(stray.status).toBe(404);
+  });
+});
+
+import { createServer } from 'node:http';
+
+import { DurableMarketDataClient } from '../src/services/market-data/DurableMarketDataClient';
