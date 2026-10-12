@@ -57,7 +57,7 @@ const TESTNET_INFO_URL = 'https://api.hyperliquid-testnet.xyz/info';
  *
  * The failure mode that produced was the worst kind: `Market data
  * unavailable … Hyperliquid did not respond within 10000ms`, recorded on a
- * GOAT's very first analysis, which reads to the user as "FundAGoat cannot
+ * GOAT's very first analysis, which reads to the user as "SIRGOAT cannot
  * see this market" when the market is listed and healthy.
  *
  * 25s is still a tight bound, and leaves the function well inside its 240s

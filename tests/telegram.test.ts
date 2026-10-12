@@ -139,7 +139,7 @@ describe('TelegramService.processUpdate', () => {
       getBotTokenForUser: async () => 'token',
     });
     expect(resolvedChat).toBe('42');
-    expect(svc.sent[0].text).toContain('FundAGoat Connected');
+    expect(svc.sent[0].text).toContain('SIRGOAT Connected');
 
     svc.sent.length = 0;
     await svc.processUpdate(makeUpdate('What are you watching?'), {

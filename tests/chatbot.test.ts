@@ -129,3 +129,87 @@ describe('chatbot UI/UX defects', () => {
     expect(source).not.toContain('dangerouslySetInnerHTML');
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* Collapsible Chat Sessions panel                                     */
+/* ------------------------------------------------------------------ */
+
+describe('the Chat Sessions panel can be collapsed and expanded', () => {
+  const source = readCode(chatbotPath);
+
+  test('the toggle is available at EVERY breakpoint, not just mobile', () => {
+    /**
+     * Regression. The toggle carried `sm:hidden`, which meant desktop users
+     * had NO way to collapse the list: the conversation was permanently
+     * squeezed to roughly half the panel, which is the reported bug.
+     */
+    const toggle = source.slice(
+      source.indexOf('aria-controls="chatbot-sessions-panel"') - 700,
+      source.indexOf('aria-controls="chatbot-sessions-panel"') + 120,
+    );
+    expect(toggle).not.toContain('sm:hidden');
+  });
+
+  test('collapsing removes the panel entirely so the conversation reclaims the width', () => {
+    /**
+     * The old class list was `'hidden sm:flex'` when collapsed, which pinned
+     * the panel open on desktop regardless of state. Collapsed must be `hidden`
+     * at every breakpoint.
+     */
+    expect(source).not.toContain("'hidden sm:flex'");
+    const panel = source.slice(
+      source.indexOf('id="chatbot-sessions-panel"'),
+      source.indexOf('id="chatbot-sessions-panel"') + 520,
+    );
+    expect(panel).toMatch(/showSessions[\s\S]*?:\s*'hidden'/);
+  });
+
+  test('the toggle exposes expanded state and controls the panel', () => {
+    expect(source).toContain('aria-expanded={showSessions}');
+    expect(source).toContain('aria-controls="chatbot-sessions-panel"');
+    expect(source).toContain('id="chatbot-sessions-panel"');
+    // The label must describe the ACTION, not the current state.
+    expect(source).toContain(
+      "aria-label={showSessions ? 'Hide chat sessions' : 'Show chat sessions'}",
+    );
+  });
+
+  test('collapsed sessions stay discoverable via a count badge', () => {
+    // Hiding the list must not hide the fact that there is a list.
+    expect(source).toMatch(/!showSessions && chats\.length > 0/);
+  });
+
+  test('the preference is persisted independently of the active conversation', () => {
+    /**
+     * Collapsing the list must never disturb WHICH chat is open, so the two
+     * use separate storage keys.
+     */
+    expect(source).toContain('SESSIONS_PANEL_STORAGE_KEY');
+    expect(source).toContain('readSessionsPreference');
+    expect(source).toContain('persistSessionsPreference');
+    expect(source).not.toContain("CHATBOT_STORAGE_KEY = SESSIONS_PANEL_STORAGE_KEY");
+  });
+
+  test('Escape closes the sessions overlay before the whole assistant', () => {
+    // On mobile the panel covers the conversation; one Escape must not skip it.
+    expect(source).toContain('matchMedia(\'(min-width: 640px)\')');
+  });
+
+  test('toggling never clears the conversation', () => {
+    const toggle = source.slice(
+      source.indexOf('aria-controls="chatbot-sessions-panel"') - 400,
+      source.indexOf('aria-controls="chatbot-sessions-panel"') + 120,
+    );
+    // The only state it touches is the panel's own visibility.
+    expect(toggle).not.toContain('setMessages');
+    expect(toggle).not.toContain('setCurrentChatId');
+  });
+
+  test('message persistence assertions still hold', () => {
+    // Priority: a UI change must not have broken the two data bugs.
+    expect(source).toContain('const chatId = currentChatId ?? (await createChat())');
+    expect(readCode(routerPath)).toContain(
+      'persistence.messages.create(chat.id, userMessage)',
+    );
+  });
+});

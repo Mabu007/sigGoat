@@ -296,13 +296,40 @@ export const BacktestView: React.FC = () => {
               </p>
 
               <h2 className="text-base font-bold text-fg mt-1">
-                {currentGoat?.name || 'GOAT'} · {selectedMarket}
+                {currentGoat?.name || 'GOAT'} · {result.market}
               </h2>
 
+              {/**
+               * PROVENANCE — what actually ran.
+               *
+               * `selectedMarket` is the CONTROL's value; `result.market` is the
+               * market the engine was actually given. They are the same only
+               * because the API refuses to substitute. Showing `result.market`
+               * means the heading can never claim a backtest of one instrument
+               * was actually a backtest of another.
+               */}
               <p className="text-[11px] text-fg-subtle mt-0.5">
-                {selectedPeriod} historical replay · Starting balance{' '}
+                {result.provenance?.timeframe ?? '—'} candles ·{' '}
+                {result.provenance
+                  ? `${new Date(result.provenance.firstCandleTime).toISOString().slice(0, 10)} → ${new Date(
+                      result.provenance.lastCandleTime,
+                    ).toISOString().slice(0, 10)}`
+                  : '—'}{' '}
+                · {result.provenance?.candlesUsed ?? 0} candles used · Starting balance{' '}
                 {formatMoney(startingBalance)}
               </p>
+
+              {result.provenance && result.provenance.actualWindowMs < result.provenance.requestedWindowMs * 0.9 && (
+                <p className="mt-1.5 text-[10px] leading-relaxed text-warning">
+                  The provider returned{' '}
+                  {Math.round(result.provenance.actualWindowMs / 86_400_000)} days of
+                  history for the requested {result.period} window
+                  {result.provenance.rejectedCandles > 0 && (
+                    <> ({result.provenance.rejectedCandles} malformed or duplicate candles were discarded)</>
+                  )}
+                  . The results below cover only the data that was actually available.
+                </p>
+              )}
             </div>
           </div>
 
@@ -340,7 +367,12 @@ export const BacktestView: React.FC = () => {
 
             <MetricCard
               label="Profit Factor"
-              value={String(result.profitFactor)}
+              /**
+               * `null` means the ratio is genuinely undefined — wins with no
+               * losses. Rendering "Infinity" would present a division by zero
+               * as a measurement.
+               */
+              value={result.profitFactor === null ? 'n/a' : String(result.profitFactor)}
               valueClass="text-accent-text"
             />
 
@@ -350,6 +382,39 @@ export const BacktestView: React.FC = () => {
               valueClass="text-negative"
             />
           </div>
+
+          {/**
+           * ASSUMPTIONS AND LIMITS.
+           *
+           * A backtest is a simulation over historical bars. It is not evidence
+           * of future performance, and the costs below are modelled rather than
+           * measured. Both are stated here rather than buried, because a
+           * headline win rate without them reads as a performance claim.
+           */}
+          <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-2">
+            <h3 className="text-xs font-bold text-fg">How this was computed</h3>
+            <ul className="text-[11px] leading-relaxed text-fg-muted space-y-1 list-disc ml-4">
+              <li>
+                Historical replay of the GOAT's own rules over{' '}
+                {result.provenance?.candlesUsed ?? 0} real {result.provenance?.timeframe ?? '—'} candles.
+                Decisions are made only from data available at that point in time —
+                no future bar is used to decide a past trade.
+              </li>
+              <li>{result.ambiguityPolicy}</li>
+              {result.costModel && (
+                <li>
+                  {result.costModel.summary}{' '}
+                  Modelled costs this run: {formatMoney(result.costModel.totalCosts)}.
+                </li>
+              )}
+              <li>
+                <strong className="text-fg">This is a simulation, not live trading and not a performance claim.</strong>{' '}
+                Results use only the history the venue returned, exclude funding and do not
+                model liquidity or slippage beyond the stated assumption. Past behaviour does
+                not indicate future results.
+              </li>
+            </ul>
+          </section>
 
           {/* SIGNAL RESULTS */}
           <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5">

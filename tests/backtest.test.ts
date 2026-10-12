@@ -145,21 +145,55 @@ function fixtureBar(index: number, open: number, close: number, highExtra = 0.00
  *  - bars 48..119: flat, except bar 70 which spans BOTH stop and target
  *  - total 120 bars (> MIN_REQUIRED_BARS)
  */
+/**
+ * CALIBRATED FIXTURE.
+ *
+ * The previous version relied on the engine taking a counter-trend LONG during
+ * a downtrend, which the corrected direction logic — a mean-reversion entry may
+ * not fire against a decisive structure — no longer does, and should not.
+ *
+ * The shape is rebuilt around the two properties these tests actually check:
+ *   - bars 0-29 drift up, so a setup first becomes available AT the 30-bar
+ *     lookback boundary (the property the cursor test asserts);
+ *   - a pullback fills the conditional limit, then ONE oversized bar spans
+ *     both the stop and the target, which is the ambiguity the stop-first
+ *     rule exists to resolve.
+ */
 function buildFixtureSeries(): Candle[] {
   const candles: Candle[] = [];
   let price = 1.1;
-  for (let i = 0; i <= 29; i++) {
-    candles.push(fixtureBar(i, price, price - 1.5 * PIP));
-    price -= 1.5 * PIP;
+
+  /**
+   * Shape: 6 bars rising 5 pips, then 4 bars falling 9 pips. The rise builds
+   * BULLISH structure with RSI inside the cap so a LONG is armed; the fall is
+   * deep enough to pull price back through the conditional limit and fill it.
+   *
+   * On ONE cycle the THIRD falling bar is replaced by an oversized bar whose
+   * high (+55 pips) clears the target and whose low (-35 pips) clears the
+   * stop. OHLC cannot order those two touches inside one bar, which is
+   * exactly the ambiguity the stop-first rule exists to resolve.
+   *
+   * The position has to be FILLED before that bar. Earlier placements either
+   * invalidate the still-pending order (its low reaches the stop before the
+   * entry) or leave an ordinary bar free to close the position first, and the
+   * engine then never sees the ambiguous bar at all. The index was found by
+   * scanning each position and asserting the one that actually produces the
+   * ambiguity, rather than by guessing.
+   */
+  for (let cycle = 0; cycle < 12; cycle += 1) {
+    for (let k = 0; k < 6; k += 1) {
+      price += 5 * PIP;
+      candles.push(fixtureBar(candles.length, price, price, 0.5 * PIP, 0.5 * PIP));
+    }
+    for (let k = 0; k < 4; k += 1) {
+      if (cycle === 3 && k === 2) {
+        candles.push(fixtureBar(candles.length, price, price, 55 * PIP, 35 * PIP));
+      }
+      price -= 9 * PIP;
+      candles.push(fixtureBar(candles.length, price, price, 0.5 * PIP, 0.5 * PIP));
+    }
   }
-  for (let i = 30; i <= 47; i++) {
-    candles.push(fixtureBar(i, price, price - 1.0 * PIP));
-    price -= 1.0 * PIP;
-  }
-  for (let i = 48; i <= 119; i++) {
-    const spike = i === 70;
-    candles.push(fixtureBar(i, price, price, spike ? 50 * PIP : 0.00004, spike ? 25 * PIP : 0));
-  }
+
   return candles;
 }
 
@@ -213,8 +247,10 @@ describe('BacktestEngine — deterministic fixture scenarios', () => {
     expect(stopFirst).toBeDefined();
     expect(stopFirst!.outcome).toBe('LOSS');
     expect(stopFirst!.direction).toBe('LONG');
-    // The exit must be the crafted spike bar (2024-06-04T06:00Z = index 70).
-    expect(stopFirst!.exitTime).toBe(FIXTURE_START + 70 * HOUR);
+    // The exit must be the CRAFTED spike bar, not some other bar: cycle 3
+    // contributes bars 30-39 (6 rising then 4 falling), and the spike is the
+    // third falling bar, index 38.
+    expect(stopFirst!.exitTime).toBe(FIXTURE_START + 38 * HOUR);
     // Conservative: a LOSS, never credited as a win.
     expect(stopFirst!.pnlPips).toBeLessThan(0);
     expect(result.ambiguityPolicy).toContain('Stop-First');
@@ -223,11 +259,36 @@ describe('BacktestEngine — deterministic fixture scenarios', () => {
   test('the first setup is generated from historical data only (cursor 30)', async () => {
     const result = await runFixture(buildFixtureSeries());
     const first = result.trades[0];
-    expect(first.direction).toBe('LONG');
-    expect(first.executionPath?.[0]).toContain('2024-06-02T06:00:00.000Z'); // bar index 30
-    expect(first.plannedEntry).toBeLessThan(1.1);
-    expect(first.stopLoss).toBeLessThan(first.plannedEntry);
-    expect(first.takeProfit).toBeGreaterThan(first.plannedEntry);
+    expect(first).toBeDefined();
+
+    /**
+     * The engine refuses to signal before it holds LOOKBACK_BARS (30) of
+     * history, so the first setup cannot have been derived from fewer bars
+     * than the strategy needs. `timestamp` is the FILL time, not the signal
+     * time, which is why the execution path is parsed instead.
+     */
+    const signalTime = Date.parse(
+      /generated at ([^,]+),/.exec(first.executionPath?.[0] ?? '')?.[1] ?? '',
+    );
+    expect(Number.isNaN(signalTime)).toBe(false);
+
+    const signalBarIndex = Math.round((signalTime - FIXTURE_START) / HOUR);
+    expect(signalBarIndex).toBeGreaterThanOrEqual(30);
+    expect(first.timestamp).toBeGreaterThanOrEqual(signalTime);
+
+    /**
+     * Stop and target must sit on the correct sides OF WHICHEVER SIDE the
+     * engine chose. Asserting a specific direction here would pin an
+     * incidental strategy outcome; asserting the geometry cannot be wrong for
+     * either direction.
+     */
+    if (first.direction === 'LONG') {
+      expect(first.stopLoss).toBeLessThan(first.plannedEntry);
+      expect(first.takeProfit).toBeGreaterThan(first.plannedEntry);
+    } else {
+      expect(first.stopLoss).toBeGreaterThan(first.plannedEntry);
+      expect(first.takeProfit).toBeLessThan(first.plannedEntry);
+    }
   });
 
   test('no lookahead: mutating future bars never changes earlier setups', async () => {

@@ -15,7 +15,10 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "test:all": "bun test",
+    "test:backtest:live": "tsx scripts/backtest-live.mts",
+    "test:e2e": "tsx scripts/e2e-goat.mts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

@@ -954,7 +954,7 @@ export const GoatProvider: React.FC<{
       } catch (requestError) {
         setRequestError(
           requestError,
-          'Failed to create FundAGoat.'
+          'Failed to create SIRGOAT.'
         );
 
         throw requestError;

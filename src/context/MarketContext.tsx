@@ -26,7 +26,9 @@ import {
 const FALLBACK_ACTIVE_SYMBOL = 'BTC';
 
 /** Persisted selection, so a refresh keeps the market the user was on. */
-const ACTIVE_SYMBOL_STORAGE_KEY = 'fundagoat.activeSymbol';
+const ACTIVE_SYMBOL_STORAGE_KEY = 'sirgoat.activeSymbol';
+/** Pre-rename key, read once so a rename never drops the user's chosen market. */
+const LEGACY_ACTIVE_SYMBOL_STORAGE_KEY = 'fundagoat.activeSymbol';
 
 interface MarketContextType {
   quotes: Record<string, MarketQuote>;
@@ -512,7 +514,11 @@ export const MarketProvider: React.FC<{
       if (mountedRef.current) {
         let stored: string | null = null;
         try {
-          stored = window.localStorage.getItem(ACTIVE_SYMBOL_STORAGE_KEY);
+          // The legacy key is read too: renaming the product must not drop
+          // the market a returning user had selected.
+          stored =
+            window.localStorage.getItem(ACTIVE_SYMBOL_STORAGE_KEY) ??
+            window.localStorage.getItem(LEGACY_ACTIVE_SYMBOL_STORAGE_KEY);
         } catch {
           // No storage: fall through to the catalogue-based default.
         }

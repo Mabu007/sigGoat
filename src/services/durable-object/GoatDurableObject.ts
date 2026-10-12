@@ -418,6 +418,15 @@ export class GoatDurableObject {
     this.attachMarketListeners();
 
     /**
+     * HYDRATE FROM PERSISTENCE — see `hydrateFromPersistence`.
+     *
+     * The constructor cannot await, so this runs immediately and fills the
+     * state in when it resolves. `runtimeState` is valid (and honest about
+     * being un-hydrated) immediately, and becomes accurate a tick later.
+     */
+    void this.hydrateFromPersistence();
+
+    /**
      * Warm the research cache up front so the first wake does not pay for it.
      * Fire-and-forget: this must never delay startup.
      *
@@ -1442,6 +1451,115 @@ export class GoatDurableObject {
       await this.wakeEventRepo?.save(event);
     } catch (err) {
       console.error(`[goat ${this.id}] failed to persist wake event:`, err);
+    }
+  }
+
+  /**
+   * RESTORES THE LAST PERSISTED REVIEW INTO RUNTIME STATE.
+   *
+   * WHY THIS IS NECESSARY, NOT A NICETY
+   *
+   *   Runtime state lives in memory. On Vercel a function instance is
+   *   recycled constantly, so `restoreRuntimes()` rebuilds every actor from
+   *   the persisted GOAT record — which contains no thesis, no trackers and
+   *   no wake event. The constructor therefore produced a GOAT that looked
+   *   like it had never been reviewed, even though its thesis was sitting in
+   *   Firestore the whole time.
+   *
+   *   Combined with a durable scheduler that was unreachable (the Worker URL
+   *   pointed at a hostname that does not exist), nothing ever ran a wake to
+   *   repopulate it. The user's Initial Market Review simply disappeared the
+   *   first time their instance recycled — which, on a serverless host with a
+   *   short idle window, is seconds.
+   *
+   * WHAT IT RESTORES
+   *
+   *   The most recent thesis, the trackers derived from it, the most recent
+   *   signal, and the recent wake events — i.e. everything the user is shown
+   *   as "the review". It never invents state: if nothing is persisted, the
+   *   GOAT stays visibly unreviewed, which is the honest outcome.
+   *
+   * WHY IT DOES NOT RE-RUN THE MODEL
+   *
+   *   Hydration must never spend a token or fail a request. A GOAT with no
+   *   persisted thesis is left pending, and the resume-on-read path in
+   *   `apiRouter` decides whether to schedule real work for it.
+   *
+   * GUARDS
+   *
+   *   Never overwrites newer in-memory state (a wake may already be running),
+   *   never runs after `destroy()`, and never throws into the constructor.
+   */
+  private async hydrateFromPersistence(): Promise<void> {
+    if (this.stopped) return;
+
+    try {
+      const [theses, signals, events] = await Promise.all([
+        this.thesisRepo?.listByGoat(this.id, 1) ?? Promise.resolve([]),
+        this.signalRepo?.listByGoat(this.id, 1) ?? Promise.resolve([]),
+        this.wakeEventRepo?.listByGoat(this.id, 10) ?? Promise.resolve([]),
+      ]);
+
+      // A wake that started while we were reading has newer state than the
+      // rows we just loaded. Never clobber it.
+      if (this.stopped || this.runtimeState.currentThesis) return;
+
+      const thesis = theses[0] ?? null;
+      const signal = signals[0] ?? null;
+      const wakeEvents = events ?? [];
+
+      if (thesis) {
+        this.runtimeState.currentThesis = thesis;
+        this.runtimeState.lastEvaluatedAt = Date.parse(thesis.createdAt) || this.now();
+
+        /**
+         * Trackers are persisted ON the thesis (`MarketThesis.trackers`),
+         * written by the wake path, so they are restored verbatim rather than
+         * re-derived. Rebuilding them from the prose plan would silently
+         * downgrade every alert to a placeholder PRICE condition — the user
+         * would see their GOAT "watching" something it is not actually
+         * evaluating.
+         */
+        if (Array.isArray(thesis.trackers) && thesis.trackers.length > 0) {
+          this.runtimeState.trackers = thesis.trackers;
+        }
+
+        this.runtimeState.dormancyReason = thesis.tradePlan?.length
+          ? `Restored from the last review: waiting for ${thesis.tradePlan[0]}`
+          : 'Restored from the last review. No further condition recorded.';
+      }
+
+      if (signal) this.runtimeState.latestSignal = signal;
+
+      const lastEvent = wakeEvents[0] ?? null;
+      if (lastEvent) {
+        this.runtimeState.lastWakeEvent = lastEvent;
+        this.runtimeState.recentWakeEvents = wakeEvents;
+      }
+
+      /**
+       * The review is only marked complete when something was actually
+       * restored. A GOAT with no persisted thesis stays visibly pending so
+       * the resume path can schedule real work for it, rather than looking
+       * reviewed because an empty list hydrated successfully.
+       *
+       * The existing `dormancyReason` is PRESERVED when it is more specific
+       * than the generic initialisation text. `attachMarketListeners` writes a
+       * precise explanation when a GOAT watches only unlisted markets, and
+       * overwriting it with "awaiting initial market review" would hide the
+       * only thing the user can actually act on.
+       */
+      if (
+        !thesis &&
+        !this.paused &&
+        this.runtimeState.dormancyReason.startsWith('Initialized.')
+      ) {
+        this.runtimeState.dormancyReason =
+          'Awaiting initial market review. Analysis is scheduled to run.';
+      }
+    } catch (err) {
+      // Hydration is an enrichment. Never let it break construction.
+      console.error(`[goat ${this.id}] failed to hydrate from persistence:`, err);
     }
   }
 

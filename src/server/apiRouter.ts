@@ -2275,7 +2275,7 @@ async function createProcessFromTelegram(
 ): Promise<{ ok: boolean; message: string }> {
   const owner = await ownerForChat(chatId);
   if (!owner) {
-    return { ok: false, message: 'This chat is not linked to a FundAGoat account.' };
+    return { ok: false, message: 'This chat is not linked to a SIRGOAT account.' };
   }
 
   const trimmed = args.trim();
@@ -2652,7 +2652,7 @@ function timingSafeStringEqual(a: string, b: string): boolean {
  * EXPLORE: system-owned GOAT templates.
  *
  * PUBLIC. Deliberately unauthenticated: a template is static content with no
- * user data, and letting an unauthenticated visitor see what FundAGoat can do
+ * user data, and letting an unauthenticated visitor see what SIRGOAT can do
  * is the point of the section. Nothing here reveals a user id, a credential or
  * a live GOAT.
  *
@@ -2838,15 +2838,15 @@ apiRouter.post('/settings/keys', handle(async (req, res) => {
         res,
         409,
         'CHAT_ID_IN_USE',
-        'That Telegram chat is already linked to another FundAGoat account. ' +
+        'That Telegram chat is already linked to another SIRGOAT account. ' +
           'Unlink it there first, or use a different chat.',
       );
     }
 
     const profile = (await persistence.profiles.get(user.uid)) ?? {
       id: user.uid,
-      email: user.email ?? `${user.uid}@fundagoat.internal`,
-      displayName: 'FundAGoat Trader',
+      email: user.email ?? `${user.uid}@sirgoat.internal`,
+      displayName: 'SIRGOAT Trader',
       telegramNotificationsEnabled: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2954,8 +2954,8 @@ apiRouter.post('/settings/preferences', handle(async (req, res) => {
   const existing = await persistence.profiles.get(user.uid);
   const profile: UserProfile = existing ?? {
     id: user.uid,
-    email: user.email ?? `${user.uid}@fundagoat.internal`,
-    displayName: 'FundAGoat Trader',
+    email: user.email ?? `${user.uid}@sirgoat.internal`,
+    displayName: 'SIRGOAT Trader',
     telegramNotificationsEnabled: true,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -3333,8 +3333,8 @@ apiRouter.post('/telegram/connect', handle(async (req, res) => {
   if (chatId) {
     const profile = (await persistence.profiles.get(user.uid)) ?? {
       id: user.uid,
-      email: user.email ?? `${user.uid}@fundagoat.internal`,
-      displayName: 'FundAGoat Trader',
+      email: user.email ?? `${user.uid}@sirgoat.internal`,
+      displayName: 'SIRGOAT Trader',
       telegramNotificationsEnabled: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -3346,7 +3346,7 @@ apiRouter.post('/telegram/connect', handle(async (req, res) => {
         res,
         409,
         'CHAT_ID_IN_USE',
-        'That Telegram chat is already linked to another FundAGoat account.',
+        'That Telegram chat is already linked to another SIRGOAT account.',
       );
     }
 
@@ -3698,13 +3698,72 @@ function publicTemplateSkill(skill: (typeof SYSTEM_SKILLS)[number]) {
 
 // ---- GOATs ------------------------------------------------------------
 
+/**
+ * Ensures a GOAT's runtime actor exists AND that an unreviewed GOAT gets
+ * working on its review, then returns its state.
+ *
+ * WHY THE RESUME STEP EXISTS
+ *
+ *   On a serverless host there is no long-lived process to do background
+ *   work. The GOAT's first analysis is dispatched (not awaited — see
+ *   `POST /goats`, which used to time out at 60s), and the durable alarm is
+ *   the intended safety net. That net has to work, but it is external
+ *   infrastructure: if it is unreachable, the analysis simply never runs and
+ *   the user's GOAT sits unreviewed forever with no indication why.
+ *
+ *   So the user reading their own GOATs is the trigger. This is safe because
+ *   it is:
+ *
+ *     - IDEMPOTENT: keyed on "no persisted thesis", so a second call while
+ *       one is running finds `isEvaluating` set and returns immediately. It
+ *       never creates a second GOAT and never double-charges the model.
+ *     - BOUNDED: at most one in-flight wake per GOAT, guarded by the same
+ *       mutex the scheduler uses.
+ *     - NON-BLOCKING: dispatched, never awaited, so a slow model call cannot
+ *       delay or fail the list request.
+ *     - OWNERSHIP-SAFE: only ever called with a GOAT already fetched for the
+ *       verified uid.
+ *
+ *   A GOAT is only resumed when it has NO persisted review at all, so an
+ *   established GOAT is never re-run on every page load.
+ */
+async function runtimeFor(goat: FundGoat): Promise<ReturnType<typeof ensureGoatRuntime>> {
+  const runtime = await ensureGoatRuntime(goat);
+  const state = runtime.getState();
+
+  const needsReview = !state.currentThesis && !state.isEvaluating && goat.status !== 'PAUSED';
+  if (needsReview) {
+    void runtime
+      .wake('Initial market review', 'MANUAL_REEVALUATE', goat.markets[0])
+      .catch((err) => {
+        console.error(`[api] resume of initial review failed for ${goat.id}:`, err);
+      });
+  }
+
+  return runtime;
+}
+
 apiRouter.get('/goats', handle(async (req, res) => {
   const user = requireUser(req);
   const goats = await persistence.goats.listByUser(user.uid);
-  const withState = goats.map((goat) => ({
-    ...goat,
-    runtimeState: durableObjectRegistry.get(goat.id)?.getState() ?? null,
-  }));
+
+  /**
+   * Await the actor for each GOAT (so hydration lands) but NOT the wake it
+   * may dispatch. A GOAT that was never reviewed starts working here; one
+   * that has is returned with its persisted review intact.
+   */
+  const withState = await Promise.all(
+    goats.map(async (goat) => {
+      try {
+        const runtime = await runtimeFor(goat);
+        return { ...goat, runtimeState: runtime.getState() };
+      } catch (err) {
+        console.error(`[api] failed to load runtime for ${goat.id}:`, err);
+        return { ...goat, runtimeState: null };
+      }
+    }),
+  );
+
   res.json({ goats: withState, dataMode: marketProvider.dataMode });
 }));
 
@@ -3712,7 +3771,7 @@ apiRouter.get('/goats/:id', handle(async (req, res) => {
   const user = requireUser(req);
   const goat = await persistence.goats.getForUser(req.params.id, user.uid);
   if (!goat) return notFound(res);
-  const runtime = await ensureGoatRuntime(goat);
+  const runtime = await runtimeFor(goat);
   res.json({ goat, runtimeState: runtime.getState(), dataMode: marketProvider.dataMode });
 }));
 
@@ -4311,7 +4370,7 @@ const CHAT_MODEL = 'apodex/apodex-1.1-mini:free';
 
 /** A concise, honest system persona for the assistant. */
 const CHAT_SYSTEM_PROMPT =
-  'You are a helpful, concise trading assistant for the FundAGoat platform. ' +
+  'You are a helpful, concise trading assistant for the SIRGOAT platform. ' +
   'Speak plainly: describe ideas, definitions and mechanics clearly and briefly. ' +
   'Never invent live price quotes, funding rates, volumes or news; if the user ' +
   'asks for a current number you cannot compute, say you do not have live market ' +
@@ -4341,7 +4400,7 @@ async function sendToModel(key: string, messages: Array<{ role: 'system' | 'user
   model: string;
   usage?: unknown;
 }> {
-  const client = new OpenRouterClient({ apiKey: key, headers: { 'X-Title': 'FundAGoat' } });
+  const client = new OpenRouterClient({ apiKey: key, headers: { 'X-Title': 'SIRGOAT' } });
   return client.complete({ model: CHAT_MODEL, messages, temperature: 0.3, maxTokens: 2000, responseFormat: false });
 }
 

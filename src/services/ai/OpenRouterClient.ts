@@ -1038,7 +1038,7 @@ export function buildReasoningUserPrompt(
 
 export function buildReasoningSystemPrompt(): string {
   return `
-You are the reasoning engine for FundAGoat.
+You are the reasoning engine for SIRGOAT.
 
 You analyze the supplied state of an existing GOAT and return a disciplined,
 conditional market assessment.
@@ -1291,7 +1291,7 @@ export function buildChatSystemPrompt(
   context: GoatReasoningContext,
 ): string {
   return `
-You are the assistant interface for an existing FundAGoat GOAT.
+You are the assistant interface for an existing SIRGOAT GOAT.
 
 You explain the supplied GOAT state.
 

@@ -158,7 +158,7 @@ export function ProposalsView() {
       collected.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
       setProposals(collected.slice(0, 100));
     } catch {
-      setError('Could not reach the FundAGoat API.');
+      setError('Could not reach the SIRGOAT API.');
     } finally {
       setLoading(false);
     }
@@ -270,7 +270,7 @@ export function ProposalsView() {
       } catch {
         setProposals((current) =>
           (current ?? []).map((p) =>
-            p.id === proposal.id ? { ...p, error: 'Could not reach the FundAGoat API.' } : p,
+            p.id === proposal.id ? { ...p, error: 'Could not reach the SIRGOAT API.' } : p,
           ),
         );
       } finally {
@@ -329,7 +329,7 @@ export function ProposalsView() {
         setDecisionNote('');
         if (body?.execution) setExecutionStatus(body.execution as ExecutionStatus);
       } catch {
-        setDecisionError('Could not reach the FundAGoat API. Nothing was recorded.');
+        setDecisionError('Could not reach the SIRGOAT API. Nothing was recorded.');
       } finally {
         setDecisionBusy(false);
       }

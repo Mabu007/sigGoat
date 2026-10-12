@@ -87,7 +87,51 @@ interface ChatMessage {
   createdAt: string;
 }
 
-const CHATBOT_STORAGE_KEY = 'fundagoat.chatbot';
+const CHATBOT_STORAGE_KEY = 'sirgoat.chatbot';
+
+/**
+ * The pre-rename key, still read once so an existing user does not silently
+ * lose the chat they had open when the product was renamed.
+ */
+const LEGACY_CHATBOT_STORAGE_KEY = 'fundagoat.chatbot';
+
+/**
+ * Persisted Chat Sessions visibility.
+ *
+ * Stored separately from the active conversation so collapsing the list can
+ * never disturb which chat is open — the two are independent decisions.
+ */
+const SESSIONS_PANEL_STORAGE_KEY = 'sirgoat.chatbot.sessionsExpanded';
+
+/** Sessions column width at `sm` and above. */
+const SESSIONS_PANEL_WIDTH = 'w-60';
+
+/**
+ * Reads the persisted panel state.
+ *
+ * Defaults to expanded on desktop (where it is a useful sidebar) and
+ * collapsed on small screens (where it would otherwise cover the whole
+ * conversation). A stored preference always wins, because the user made it
+ * deliberately.
+ */
+function readSessionsPreference(): boolean {
+  try {
+    const stored = localStorage.getItem(SESSIONS_PANEL_STORAGE_KEY);
+    if (stored === 'true') return true;
+    if (stored === 'false') return false;
+  } catch {
+    // Private mode / disabled storage: fall through to the default.
+  }
+  return typeof window !== 'undefined' && window.matchMedia('(min-width: 640px)').matches;
+}
+
+function persistSessionsPreference(expanded: boolean): void {
+  try {
+    localStorage.setItem(SESSIONS_PANEL_STORAGE_KEY, String(expanded));
+  } catch {
+    // Non-fatal: the panel still toggles for this session.
+  }
+}
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -178,7 +222,7 @@ export function Chatbot() {
   const [isFetching, setIsFetching] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
-  const [showSessions, setShowSessions] = useState(false);
+  const [showSessions, setShowSessions] = useState(readSessionsPreference);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [chatModel, setChatModel] = useState<string | null>(null);
 
@@ -390,8 +434,8 @@ export function Chatbot() {
 
   useEffect(() => {
     const handleOpen = () => setIsOpen(true);
-    window.addEventListener('fundagoat-chatbot-open', handleOpen as EventListener);
-    return () => window.removeEventListener('fundagoat-chatbot-open', handleOpen as EventListener);
+    window.addEventListener('sirgoat-chatbot-open', handleOpen as EventListener);
+    return () => window.removeEventListener('sirgoat-chatbot-open', handleOpen as EventListener);
   }, []);
 
   useEffect(() => {
@@ -411,6 +455,7 @@ export function Chatbot() {
     } catch {
       // A corrupt localStorage entry must never block the panel.
       localStorage.removeItem(CHATBOT_STORAGE_KEY);
+      localStorage.removeItem(LEGACY_CHATBOT_STORAGE_KEY);
     }
     // Runs once per signed-in user; chatId changes are handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -439,12 +484,25 @@ export function Chatbot() {
   useEffect(() => {
     if (!isOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIsOpen(false);
+      if (e.key !== 'Escape') return;
+      /**
+       * Escape closes the INNERMOST dismissible layer first.
+       *
+       * With the sessions panel expanded on a small screen it covers the
+       * conversation, so a single Escape that closed the whole assistant would
+       * skip a step the user can see in front of them.
+       */
+      if (showSessions && typeof window !== 'undefined' && !window.matchMedia('(min-width: 640px)').matches) {
+        setShowSessions(false);
+        persistSessionsPreference(false);
+        return;
+      }
+      setIsOpen(false);
     };
     window.addEventListener('keydown', onKey);
     inputRef.current?.focus();
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen]);
+  }, [isOpen, showSessions]);
 
   /* ---- Closed state: the trigger ---- */
 
@@ -491,17 +549,40 @@ export function Chatbot() {
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-line bg-surface px-3 py-2.5 sm:px-4">
           <div className="flex min-w-0 items-center gap-2">
+            {/**
+             * Sessions toggle — VISIBLE AT EVERY BREAKPOINT.
+             *
+             * It used to carry `sm:hidden`, which meant desktop users had no
+             * way to collapse the list at all: the conversation was permanently
+             * squeezed to roughly half the panel. The collapsed count badge
+             * keeps the sessions discoverable when the panel is hidden.
+             */}
             <button
               type="button"
-              onClick={() => setShowSessions((v) => !v)}
-              className="rounded p-1 text-fg-subtle hover:bg-raised hover:text-fg sm:hidden"
-              aria-label={showSessions ? 'Hide chat history' : 'Show chat history'}
+              onClick={() =>
+                setShowSessions((v) => {
+                  persistSessionsPreference(!v);
+                  return !v;
+                })
+              }
+              className="flex items-center gap-1 rounded px-1 py-0.5 text-fg-subtle transition-colors hover:bg-raised hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              aria-label={showSessions ? 'Hide chat sessions' : 'Show chat sessions'}
               aria-expanded={showSessions}
+              aria-controls="chatbot-sessions-panel"
+              title={showSessions ? 'Hide chat sessions' : 'Show chat sessions'}
             >
               {showSessions ? (
                 <PanelLeftClose size={16} aria-hidden="true" />
               ) : (
                 <PanelLeftOpen size={16} aria-hidden="true" />
+              )}
+              {!showSessions && chats.length > 0 && (
+                <span
+                  className="rounded bg-sunken px-1 text-[10px] font-semibold tabular-nums text-fg-muted"
+                  aria-hidden="true"
+                >
+                  {chats.length}
+                </span>
               )}
             </button>
             <Sparkles size={15} className="shrink-0 text-accent-text" aria-hidden="true" />
@@ -512,7 +593,7 @@ export function Chatbot() {
           <button
             type="button"
             onClick={() => setIsOpen(false)}
-            className="rounded p-1 text-fg-subtle hover:bg-raised hover:text-fg"
+            className="rounded p-1 text-fg-subtle hover:bg-raised hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
             aria-label="Close assistant"
           >
             <X size={16} aria-hidden="true" />
@@ -520,15 +601,27 @@ export function Chatbot() {
         </div>
 
         <div className="flex min-h-0 flex-1">
-          {/* Sessions. A fixed column beside a fluid panel left the
-              conversation 119px wide on a phone, so below `sm` this is an
-              overlay that covers the conversation instead. */}
+          {/**
+           * SESSIONS PANEL.
+           *
+           * Desktop (`sm`+): a collapsible column. Collapsed it takes NO width,
+           * so the conversation reclaims the full 440px.
+           *
+           * Mobile: an overlay covering the conversation, because a fixed
+           * 224px column beside a fluid panel left the conversation 119px wide
+           * on a 375px screen.
+           *
+           * `hidden` (not `visibility`) is deliberate so a collapsed panel is
+           * removed from the accessibility tree and the tab order entirely.
+           */}
           <div
+            id="chatbot-sessions-panel"
             className={[
-              'flex min-h-0 w-full shrink-0 flex-col border-line bg-sunken sm:w-56 sm:border-r',
+              'flex min-h-0 w-full shrink-0 flex-col border-line bg-sunken sm:border-r',
+              SESSIONS_PANEL_WIDTH,
               showSessions
                 ? 'absolute inset-x-0 top-[45px] bottom-0 z-10 border-b sm:static sm:inset-auto'
-                : 'hidden sm:flex',
+                : 'hidden',
             ].join(' ')}
           >
             <div className="p-2.5">

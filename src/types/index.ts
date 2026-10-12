@@ -1,5 +1,5 @@
 /**
- * The four market categories FundAGoat presents.
+ * The four market categories SIRGOAT presents.
  *
  * `currencies` and `crypto` are separate on purpose. A conventional
  * "forex" bucket only makes sense if the provider actually lists FX pairs;
@@ -17,7 +17,7 @@ export type MarketCategory =
   /** @deprecated Use 'currencies'. Retained so pre-existing records and tests compile. */
   | 'forex';
 
-/** The four categories FundAGoat presents; `forex` is a legacy input alias. */
+/** The four categories SIRGOAT presents; `forex` is a legacy input alias. */
 export type CanonicalMarketCategory = Exclude<MarketCategory, 'forex'>;
 
 /** `forex` -> `currencies`. Idempotent; unknown values pass through. */
@@ -632,6 +632,31 @@ export interface BacktestTrade {
   executionPath?: string[];
 }
 
+/**
+ * Exactly what data a backtest ran on.
+ *
+ * Present so a result can be checked rather than trusted. A backtest is only
+ * meaningful if you know the instrument, the timeframe, the actual window and
+ * how many candles stood behind it — "90 days" that silently covered 12 is a
+ * materially different experiment from one that covered 90.
+ */
+export interface BacktestProvenance {
+  /** Candle interval actually requested from the provider. */
+  timeframe: string;
+  /** Bars the engine asked for. */
+  requestedBars: number;
+  /** Bars the venue actually returned and the engine used. */
+  candlesUsed: number;
+  firstCandleTime: number;
+  lastCandleTime: number;
+  /** Window the selected period represents, in ms. */
+  requestedWindowMs: number;
+  /** Window the returned candles actually span, in ms. */
+  actualWindowMs: number;
+  /** Bars dropped as malformed or duplicate, so silent truncation is visible. */
+  rejectedCandles: number;
+}
+
 export interface BacktestResult {
   id: string;
   goatId: string;
@@ -639,6 +664,23 @@ export interface BacktestResult {
   market: string;
   period: string;
   dataSource: DataMode;
+
+  /** Exactly what data this run used. Never omitted. */
+  provenance: BacktestProvenance;
+
+  /**
+   * Trading-cost assumptions, stated in full.
+   *
+   * Costs are NOT in the candle feed, so they are modelled and disclosed
+   * rather than omitted or presented as measured.
+   */
+  costModel: {
+    takerFee: number;
+    slippageFraction: number;
+    summary: string;
+    /** Total modelled cost charged across every filled trade, in dollars. */
+    totalCosts: number;
+  };
 
   totalSignals: number;
   filledSignals: number;
@@ -650,7 +692,14 @@ export interface BacktestResult {
   losingSignals: number;
 
   winRate: number;
-  profitFactor: number;
+  /**
+   * Gross win dollars / gross loss dollars.
+   *
+   * `null` when there were no losing trades to divide by. `Infinity` is a
+   * number a reader cannot interpret and a UI cannot render honestly, so an
+   * undefined ratio is reported as unavailable rather than invented.
+   */
+  profitFactor: number | null;
   maxDrawdown: number;
   averageRR: number;
   netPips: number;
@@ -660,11 +709,26 @@ export interface BacktestResult {
 
   ambiguityPolicy: string;
 
+  /**
+   * True when the simulated account was exhausted and the run stopped early.
+   *
+   * A run that ended in bankruptcy is not comparable with one that completed,
+   * and silently presenting it as a finished experiment would overstate it.
+   */
+  bankrupt: boolean;
+
   equityCurve: {
     time: number;
     equity: number;
   }[];
 
+  /**
+   * EVERY trade this run produced, in chronological order.
+   *
+   * Not truncated. A partial log cannot be reconciled against the summary
+   * metrics, which are computed over all trades — a reader checking the maths
+   * would be unable to.
+   */
   trades: BacktestTrade[];
 
   createdAt: string;

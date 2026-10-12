@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FundAGoat - AI Prop Trading Assistant</title>
+    <title>SIRGOAT - AI Prop Trading Assistant</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta
       name="description"
@@ -11,7 +11,7 @@
     />
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0a0c11" media="(prefers-color-scheme: dark)" />
-    <meta property="og:title" content="FundAGoat - AI Prop Trading Assistant" />
+    <meta property="og:title" content="SIRGOAT - AI Prop Trading Assistant" />
     <meta
       property="og:description"
       content="AI-assisted trading for prop-firm challenge and funded accounts. Risk-checked trade proposals you approve."
@@ -36,7 +36,15 @@
     <script>
       (function () {
         try {
-          var stored = localStorage.getItem('fundagoat.theme');
+          /*
+           * The pre-rename key is read as a fallback. Without it a returning
+           * user who had chosen dark gets a LIGHT flash before the bundle
+           * loads — the one moment the pre-paint script exists to prevent,
+           * reintroduced by a rename.
+           */
+          var stored =
+            localStorage.getItem('sirgoat.theme') ||
+            localStorage.getItem('fundagoat.theme');
           var theme =
             stored === 'light' || stored === 'dark'
               ? stored

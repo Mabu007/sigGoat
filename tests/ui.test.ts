@@ -39,9 +39,9 @@ const VIEW_FILES = fs
 /* ------------------------------------------------------------------ */
 
 describe('product identity', () => {
-  test('the document title and metadata are FundAGoat', () => {
+  test('the document title and metadata are SIRGOAT', () => {
     const html = read('index.html');
-    expect(html).toContain('<title>FundAGoat');
+    expect(html).toContain('<title>SIRGOAT');
     expect(html).not.toContain('SignalGOAT');
   });
 
@@ -64,7 +64,7 @@ describe('product identity', () => {
     expect(offenders).toEqual([]);
   });
 
-  test('the wordmark renders FundAGoat', () => {
+  test('the wordmark renders SIRGOAT', () => {
     const navigation = read('src/components/Navigation.tsx');
     expect(navigation).toContain('Fund');
     expect(navigation).toContain('AGoat');
@@ -72,7 +72,7 @@ describe('product identity', () => {
 
   test('Telegram copy uses the new name', () => {
     const telegram = read('src/services/telegram/TelegramService.ts');
-    expect(telegram).toContain('FundAGoat');
+    expect(telegram).toContain('SIRGOAT');
     expect(telegram).not.toContain('SignalGOAT');
   });
 });
@@ -147,7 +147,7 @@ describe('theme system', () => {
 
     // The script must appear in <head> and BEFORE the module script, or the
     // first paint uses the wrong theme.
-    const scriptIndex = html.indexOf("localStorage.getItem('fundagoat.theme')");
+    const scriptIndex = html.indexOf("localStorage.getItem('sirgoat.theme')");
     const moduleIndex = html.indexOf('type="module"');
 
     expect(scriptIndex).toBeGreaterThan(-1);
@@ -162,12 +162,24 @@ describe('theme system', () => {
   });
 
   test('the pre-paint script handles unavailable storage', () => {
-    const script = read('index.html').slice(
-      read('index.html').indexOf("localStorage.getItem('fundagoat.theme')"),
-    );
+    const html = read('index.html');
+    // Isolate the whole inline script block, anchored on its own tags, rather
+    // than a fixed-length window or a mid-script offset: the script's length
+    // changes whenever a comment is added, and either of those approaches
+    // silently stops testing anything.
+    const open = html.lastIndexOf('<script>', html.indexOf("sirgoat.theme"));
+    const close = html.indexOf('</script>', open);
+    expect(open).toBeGreaterThan(-1);
+    expect(close).toBeGreaterThan(open);
+
+    const script = html.slice(open, close);
     // Private browsing throws on localStorage access; an uncaught throw here
-    // would abort the rest of the inline script.
-    expect(script.slice(0, 400)).toContain('catch');
+    // would abort the rest of the inline script and leave the theme unpainted.
+    expect(script).toContain('try');
+    expect(script).toContain('catch');
+    // And the pre-rename key is still honoured, so a rename cannot cause a
+    // light-mode flash for a user who had chosen dark.
+    expect(script).toContain("localStorage.getItem('fundagoat.theme')");
   });
 
   test('the theme provider is mounted ABOVE auth and data providers', () => {

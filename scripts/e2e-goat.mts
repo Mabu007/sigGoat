@@ -247,11 +247,71 @@ async function main() {
         reasoned.lastError === undefined
         && !String(reasoned.lastWakeEvent?.details ?? '').includes('MODEL_UNAVAILABLE'),
         String(reasoned.lastError ?? reasoned.lastWakeEvent?.details).slice(0, 140));
-      check('a thesis was produced', Boolean(reasoned.currentThesis),
-        JSON.stringify(reasoned.currentThesis)?.slice(0, 120));
       check('the thesis persisted without a Firestore error',
         !String(reasoned.lastError ?? '').includes('Firestore'),
         String(reasoned.lastError).slice(0, 140));
+
+      /**
+       * THE INITIAL MARKET REVIEW — the thing Priority 3 is actually about.
+       *
+       * "A thesis exists" is not the requirement. The review has to answer the
+       * questions a trader actually asks on opening a GOAT: what market was
+       * examined, what the conditions are, what evidence supports it, what it
+       * will watch next, and whether a proposal exists or it is waiting.
+       */
+      const thesis = reasoned.currentThesis;
+      check('the review names the market it examined',
+        Boolean(thesis?.market) && thesis.market === 'xyz:GOLD',
+        String(thesis?.market));
+      check('the review states observed market conditions',
+        Boolean(thesis?.assetState?.trim()) || Boolean(thesis?.summary?.trim()),
+        String(thesis?.assetState ?? thesis?.summary).slice(0, 100));
+      check('the review carries supporting evidence',
+        Array.isArray(thesis?.supportingEvidence) && thesis.supportingEvidence.length > 0,
+        `${thesis?.supportingEvidence?.length ?? 0} items`);
+      check('the review states a directional thesis with confidence',
+        Boolean(thesis?.directionalHypothesis)
+        && typeof thesis?.confidence === 'number',
+        `${thesis?.directionalHypothesis} @ ${thesis?.confidence}`);
+      check('the review records what it will monitor next',
+        Array.isArray(thesis?.tradePlan) && thesis.tradePlan.length > 0
+        && (Array.isArray(thesis?.trackers) ? thesis.trackers.length > 0 : true),
+        `${thesis?.tradePlan?.length ?? 0} plan steps / ${thesis?.trackers?.length ?? 0} trackers`);
+      check('the review states its invalidation condition',
+        Boolean(thesis?.invalidationConditions?.length)
+        || Boolean(thesis?.invalidationReason)
+        || Boolean(thesis?.observationPlan),
+        String(thesis?.invalidationConditions?.length ?? thesis?.observationPlan).slice(0, 80));
+      check('the review declares the timeframe it was evaluated on',
+        Boolean(thesis?.relevantTimeframe),
+        String(thesis?.relevantTimeframe));
+
+      /**
+       * A proposal state is REQUIRED — but the answer may legitimately be "no
+       * trade". Forcing a signal would be worse than reporting no trade.
+       */
+      check('the review states whether a proposal exists or it is waiting',
+        reasoned.latestSignal !== null && reasoned.latestSignal !== undefined
+          ? ['ACTIONABLE', 'NO_TRADE', 'INVALIDATED', 'EXPIRED'].includes(reasoned.latestSignal.status)
+          : true,
+        String(reasoned.latestSignal?.status ?? 'no signal yet'));
+      check('the review explains the GOAT\'s current position in words',
+        Boolean(reasoned.dormancyReason?.trim()),
+        String(reasoned.dormancyReason).slice(0, 100));
+
+      /**
+       * REVIEW SURVIVES A COLD START.
+       *
+       * Runtime state is in-memory, so on a serverless host it only survives a
+       * recycle because the actor hydrates from the persisted thesis. This is
+       * the check that would catch the review silently disappearing — the
+       * reported Priority 3 bug.
+       */
+      const reread = await call('GET', '/api/goats');
+      const again = (reread.json?.goats ?? []).find((g: any) => g.id === goat?.id);
+      check('the review is still served on a later request (hydrated from persistence)',
+        Boolean(again?.runtimeState?.currentThesis),
+        `runtimeState=${again?.runtimeState === null ? 'null' : 'present'} thesis=${Boolean(again?.runtimeState?.currentThesis)}`);
     }
 
     const listed = await call('GET', '/api/goats');

@@ -141,7 +141,7 @@ const SignInScreen: React.FC<{ authError: string | null; authMode: string | null
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-accent/10 border border-accent/40">
             <ShieldCheck className="w-6 h-6 text-accent-text" />
           </div>
-          <h1 className="text-lg font-bold text-fg">FundAGoat</h1>
+          <h1 className="text-lg font-bold text-fg">SIRGOAT</h1>
           <p className="text-xs text-fg-muted">
             {mode === 'signin'
               ? 'Sign in to access your workspace'
@@ -286,7 +286,7 @@ const SignInScreen: React.FC<{ authError: string | null; authMode: string | null
         </p>
 
         <p className="text-[10px] text-fg-subtle text-center leading-relaxed">
-          FundAGoat produces analysis and alerts only. It never places an order.
+          SIRGOAT produces analysis and alerts only. It never places an order.
         </p>
       </div>
     </div>

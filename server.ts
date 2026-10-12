@@ -14,7 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function logStartup(mode: string): void {
   console.log('');
-  console.log('  FundAGoat starting up');
+  console.log('  SIRGOAT starting up');
   console.log(`  Persistence mode: ${appPersistence.mode}`);
   console.log(`  Auth mode: see GET /api/settings/status`);
   console.log(`  Market data: PAPER (deterministic simulated feed — not live prices)`);
@@ -92,6 +92,6 @@ async function listen(app: ReturnType<typeof createApp>, port: number) {
 }
 
 startServer().catch((err) => {
-  console.error('Failed to start FundAGoat server:', err);
+  console.error('Failed to start SIRGOAT server:', err);
   process.exit(1);
 });

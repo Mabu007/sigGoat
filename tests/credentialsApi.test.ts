@@ -56,7 +56,7 @@ beforeAll(async () => {
   delete process.env.PROPDAO_EXECUTION_ENABLED;
   delete process.env.PROPDAO_EXECUTION_AUTHORISED;
 
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fundagoat-credentials-'));
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sirgoat-credentials-'));
   process.env.DATA_DIR = dataDir;
 
   const { apiRouter, appPersistence: persistence } = await import('../src/server/apiRouter');

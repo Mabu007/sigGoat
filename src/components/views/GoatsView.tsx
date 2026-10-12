@@ -563,7 +563,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     {
       sender: 'goat',
       text:
-        "🐐 I'm your FundAGoat.\n\n" +
+        "🐐 I'm your SIRGOAT.\n\n" +
         "Ask me what I'm watching, what my thesis is, " +
         'what conditions I need before acting, or what would invalidate the idea.',
       time: new Date().toLocaleTimeString([], {
@@ -2681,7 +2681,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
                 <div>
                   <h3 className="text-sm font-bold text-fg">
-                    Create Your FundAGoat
+                    Create Your SIRGOAT
                   </h3>
 
                   <p className="text-[10px] text-fg-subtle">

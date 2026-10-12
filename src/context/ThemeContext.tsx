@@ -33,7 +33,9 @@ import {
 
 export type Theme = 'light' | 'dark';
 
-const STORAGE_KEY = 'fundagoat.theme';
+const STORAGE_KEY = 'sirgoat.theme';
+/** Pre-rename key, read once so a rename never silently resets a user's theme. */
+const LEGACY_STORAGE_KEY = 'fundagoat.theme';
 
 interface ThemeContextValue {
   theme: Theme;
@@ -59,7 +61,14 @@ function readAppliedTheme(): Theme {
 
 function readStoredPreference(): Theme | null {
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
+    /**
+     * The legacy key is consulted so renaming the product cannot silently
+     * reset a returning user's theme to the OS default — a small thing, but
+     * it is exactly the kind of surprise a rename should never cause.
+     */
+    const stored =
+      window.localStorage.getItem(STORAGE_KEY) ??
+      window.localStorage.getItem(LEGACY_STORAGE_KEY);
     return stored === 'light' || stored === 'dark' ? stored : null;
   } catch {
     // Private browsing / storage disabled. The OS preference still works.

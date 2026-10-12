@@ -1,7 +1,7 @@
 /**
  * PROPDAO PROVIDER ADAPTER
  * ========================
- * Isolates every PropDAO-specific concern from the rest of FundAGoat.
+ * Isolates every PropDAO-specific concern from the rest of SIRGOAT.
  *
  * THE STABLE INTERNAL INTERFACE
  *   The agent and the API layer talk to `PropFundAccountProvider` and the
