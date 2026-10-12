@@ -2545,12 +2545,6 @@ export class OpenRouterClient {
     const attemptWithinBudget = async (
       options: Parameters<typeof attempt>[0] = {},
     ) => {
-      // See REASONING_DISABLED_RETRY_MAX_TOKENS: the reasoning-off retry gets
-      // a larger ceiling because we already know reasoning ate the last one.
-      if (options.reasoningDisabled && options.maxTokens === undefined) {
-        budget = REASONING_DISABLED_RETRY_MAX_TOKENS;
-      }
-
       try {
         return await attempt(options);
       } catch (err) {
@@ -2589,8 +2583,16 @@ export class OpenRouterClient {
         err instanceof ApiRequestError &&
         err.code === 'REASONING_BUDGET_EXHAUSTED'
       ) {
+        /**
+         * `maxTokens` is passed EXPLICITLY. `attempt` resolves its ceiling as
+         * `options.maxTokens ?? REASONING_RUN_MAX_TOKENS`, so assigning the
+         * local `budget` here would change nothing — `budget` is only read by
+         * the credit-ceiling fallback. Getting this wrong makes the retry a
+         * silent no-op, which is exactly what shipped the first time.
+         */
         last = await attemptWithinBudget({
           reasoningDisabled: true,
+          maxTokens: REASONING_DISABLED_RETRY_MAX_TOKENS,
         });
       } else {
         throw err;
