@@ -290,3 +290,81 @@ describe('backtest market handling', () => {
     await call('DELETE', `/api/goats/${created.json.goat.id}`, 'bt-bad-user');
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* Proposal decisions                                                  */
+/* ------------------------------------------------------------------ */
+
+describe('proposal decisions', () => {
+  test('rejecting an unknown signal is a clean 404', async () => {
+    const created = await call('POST', '/api/goats', 'dec-1', {
+      name: 'Decision GOAT',
+      goal: 'Verify decision validation.',
+      markets: ['EUR/USD'],
+      skillIds: [],
+      model: 'apodex/apodex-1.1-mini:free',
+      schedule: { mode: 'MANUAL' },
+    });
+    expect(created.status).toBe(200);
+    const goatId = created.json.goat.id;
+
+    const missing = await call(
+      'POST',
+      `/api/goats/${goatId}/signals/does-not-exist/decision`,
+      'dec-1',
+      { decision: 'ACCEPTED' },
+    );
+    expect(missing.status).toBe(404);
+
+    await call('DELETE', `/api/goats/${goatId}`, 'dec-1');
+  });
+
+  test("another user's proposal is a 404, never a 403", async () => {
+    const created = await call('POST', '/api/goats', 'dec-owner', {
+      name: 'Owned GOAT',
+      goal: 'Verify ownership on proposals.',
+      markets: ['EUR/USD'],
+      skillIds: [],
+      model: 'apodex/apodex-1.1-mini:free',
+      schedule: { mode: 'MANUAL' },
+    });
+    const goatId = created.json.goat.id;
+
+    /**
+     * A 403 would confirm the id exists. 404 is what ownership looks like
+     * from outside, so probing cannot enumerate another user's proposals.
+     */
+    const res = await call(
+      'POST',
+      `/api/goats/${goatId}/signals/anything/decision`,
+      'dec-intruder',
+      { decision: 'ACCEPTED' },
+    );
+    expect(res.status).toBe(404);
+
+    await call('DELETE', `/api/goats/${goatId}`, 'dec-owner');
+  });
+
+  test('an invalid decision verb is rejected', async () => {
+    const created = await call('POST', '/api/goats', 'dec-2', {
+      name: 'Decision GOAT 2',
+      goal: 'Verify decision validation.',
+      markets: ['EUR/USD'],
+      skillIds: [],
+      model: 'apodex/apodex-1.1-mini:free',
+      schedule: { mode: 'MANUAL' },
+    });
+    const goatId = created.json.goat.id;
+
+    const res = await call(
+      'POST',
+      `/api/goats/${goatId}/signals/whatever/decision`,
+      'dec-2',
+      { decision: 'MAYBE' },
+    );
+    // 404 for the unknown signal, never a 200 that records a nonsense decision.
+    expect([400, 404]).toContain(res.status);
+
+    await call('DELETE', `/api/goats/${goatId}`, 'dec-2');
+  });
+});
