@@ -8,6 +8,8 @@
  */
 
 import { describe, test, expect } from 'bun:test';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import { MarketStateStore } from '../src/services/market-data/MarketStateStore';
 import { parseChallengeRules } from '../src/services/propdao/PropDaoClient';
@@ -383,5 +385,76 @@ describe('autonomy mode', () => {
     expect(normaliseAutonomyMode('FULL_POWER')).toBe('PROPOSAL');
     expect(normaliseAutonomyMode(42)).toBe('PROPOSAL');
     expect(normaliseAutonomyMode(null)).toBe('PROPOSAL');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* GOAT create must not exceed the serverless timeout                  */
+/* ------------------------------------------------------------------ */
+
+describe('creating a GOAT does not block on a model call', () => {
+  const router = fs.readFileSync(
+    path.join(import.meta.dir, '..', 'src', 'server', 'apiRouter.ts'),
+    'utf8',
+  );
+
+  test('the first analysis is dispatched, not awaited', () => {
+    /**
+     * The route used to `await` a full reasoning run before responding. A
+     * model call is 15-40s and the reasoning-off retry can double it, so on
+     * Vercel every GOAT creation returned `504 FUNCTION_INVOCATION_TIMEOUT`
+     * — for a GOAT that had been created, scheduled and persisted
+     * successfully. The user retried and ended up with two.
+     */
+    expect(router).toContain('firstAnalysisPending: true');
+    // The dispatch must be detached (`void ... .catch`) and NOT awaited.
+    expect(router).toMatch(/void\s+runtime\s*\n?\s*\.wake\(/);
+    expect(router).not.toMatch(/const firstRun = await runtime\.wake/);
+  });
+
+  test('the response tells the client the first analysis is still running', () => {
+    /**
+     * Otherwise the UI receives an empty runtime state and has no way to
+     * distinguish "not started yet" from "did nothing".
+     */
+    expect(router).toContain('firstAnalysisPending');
+  });
+
+  test('the serverless function budget exceeds a slow reasoning retry', () => {
+    const vercel = JSON.parse(
+      fs.readFileSync(path.join(import.meta.dir, '..', 'vercel.json'), 'utf8'),
+    );
+    // 60s was below the worst-case reasoning run.
+    expect(vercel.functions['api/index.js'].maxDuration).toBeGreaterThan(60);
+  });
+});
+
+describe('pausing a GOAT abandons in-flight work', () => {
+  const runtime = fs.readFileSync(
+    path.join(import.meta.dir, '..', 'src', 'services', 'durable-object', 'GoatDurableObject.ts'),
+    'utf8',
+  );
+
+  test('pause assigns a new generation so a running wake cannot write state', () => {
+    /**
+     * Stopping the alarms was not enough. A model call already dispatched
+     * kept running and, on return, passed every existing check and wrote its
+     * thesis and signal — after the UI had told the user "No analysis and no
+     * tracker evaluation will run". The runtime was silently breaking a
+     * promise it made in its own copy.
+     */
+    const start = runtime.indexOf('pause(): GoatRuntimeState');
+    expect(start).toBeGreaterThan(-1);
+    // Stop at the next method declaration, which is where `pause` really ends.
+    const nextMethod = runtime.indexOf('\n  /**', start + 10);
+    const body = runtime.slice(start, nextMethod > start ? nextMethod : start + 1500);
+    expect(body).toContain('this.runtimeState.generationId = this.newGenerationId()');
+    expect(body).toContain('this.runtimeState.isEvaluating = false');
+    // And it must happen BEFORE the method returns, not after an await.
+    // `lastIndexOf` because the guard clause `if (this.paused) return …` sits
+    // above the body we care about.
+    expect(body.indexOf('newGenerationId()')).toBeLessThan(
+      body.lastIndexOf('return this.runtimeState'),
+    );
   });
 });

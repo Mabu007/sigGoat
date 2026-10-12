@@ -202,11 +202,57 @@ async function main() {
     check('chosen model persisted', goat?.model === chosen, `${goat?.model} vs ${chosen}`);
 
     const state = created.json?.runtimeState;
-    check('GOAT produced a first analysis', Boolean(state), JSON.stringify(state)?.slice(0, 200));
-    const reasoningReached = state?.lastError === undefined
-      && state?.lastWakeEvent?.details !== undefined;
-    check('model was actually reached', reasoningReached,
-      state?.lastError ?? state?.lastWakeEvent?.details ?? 'no wake event');
+    check('GOAT returned immediately with a pending first analysis',
+      created.json?.firstAnalysisPending === true,
+      `firstAnalysisPending=${created.json?.firstAnalysisPending}`);
+
+    /**
+     * The first analysis is dispatched, not awaited — awaiting it blew the
+     * serverless timeout and returned 504 for a GOAT that had been created
+     * successfully. So poll for it the way the UI does.
+     */
+    /**
+     * Generous, because a reasoning-first free model genuinely takes this
+     * long: measured at ~70s end to end on a cold run, and the suite has a
+     * second GOAT reasoning concurrently against the same free tier. A short
+     * deadline here measures the model's latency, not the product.
+     */
+    let reasoned: any = null;
+    const deadline = Date.now() + 300_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const poll = await call('GET', `/api/goats/${goat?.id}`);
+      const st = poll.json?.runtimeState;
+      if (process.env.E2E_VERBOSE) {
+        console.log(`    poll: evaluating=${st?.isEvaluating} status=${st?.status} wake=${String(st?.lastWakeEvent?.details).slice(0,60)} err=${String(st?.lastError).slice(0,60)}`);
+      }
+      /**
+       * Break on a RECORDED wake event, not on `isEvaluating === false`.
+       *
+       * A completed analysis whose trackers immediately satisfy a condition
+       * escalates straight into another wake, so the flag can be true again
+       * by the time the poll lands. Waiting for false would time out against
+       * a GOAT that is working exactly as designed.
+       */
+      if (st?.lastWakeEvent) {
+        reasoned = st;
+        break;
+      }
+    }
+
+    check('the reasoning run completed asynchronously', Boolean(reasoned),
+      reasoned === null ? 'no wake event within 300s' : '');
+    if (reasoned) {
+      check('the model was actually reached',
+        reasoned.lastError === undefined
+        && !String(reasoned.lastWakeEvent?.details ?? '').includes('MODEL_UNAVAILABLE'),
+        String(reasoned.lastError ?? reasoned.lastWakeEvent?.details).slice(0, 140));
+      check('a thesis was produced', Boolean(reasoned.currentThesis),
+        JSON.stringify(reasoned.currentThesis)?.slice(0, 120));
+      check('the thesis persisted without a Firestore error',
+        !String(reasoned.lastError ?? '').includes('Firestore'),
+        String(reasoned.lastError).slice(0, 140));
+    }
 
     const listed = await call('GET', '/api/goats');
     check('GOAT appears in the list', (listed.json?.goats ?? []).some((g: any) => g.id === goat?.id));

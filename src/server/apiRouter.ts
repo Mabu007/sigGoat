@@ -3781,28 +3781,45 @@ apiRouter.post('/goats', handle(async (req, res) => {
   const runtime = await ensureGoatRuntime(newGoat);
 
   /**
-   * INSTANT FIRST RUN.
+   * THE FIRST ANALYSIS MUST NOT BLOCK THIS RESPONSE.
    *
-   * A deployed GOAT must analyse the market immediately rather than sitting
-   * idle until its first scheduled tick. Awaited so the response already
-   * contains the first thesis, state and trackers. A failure here is NOT
-   * fatal — the GOAT still exists and the scheduler will retry.
+   * This route used to `await` a full reasoning run before responding. A model
+   * call takes 15-40 seconds, and the reasoning-off retry can double it, so on
+   * Vercel the whole request blew past the function timeout and the user got
+   * `504 FUNCTION_INVOCATION_TIMEOUT` — for a GOAT that had in fact been
+   * created, scheduled and persisted successfully. The response was lost
+   * while the work completed.
+   *
+   * Worse, a timed-out invocation is indistinguishable from a failed one: the
+   * user retries, and now there are two GOATs.
+   *
+   * So the first analysis is dispatched, not awaited. `wake()` is fire-and-
+   * forget and its result reaches the UI through the normal poll, exactly
+   * like any later wake. The durable scheduler is also already armed by
+   * `syncSchedule` above, so even if this process is frozen the Worker's
+   * alarm re-arms the same analysis — the run is not lost, only its timing is
+   * no longer the request's problem.
+   *
+   * The client is told the GOAT exists and that the first analysis is running,
+   * so the UI can show a pending state instead of an empty one.
    */
-  let firstRun: GoatRuntimeState | null = null;
-  try {
-    firstRun = await runtime.wake(
-      'Initial analysis on deployment',
-      'MANUAL_REEVALUATE',
-      markets.resolved[0],
-    );
-  } catch (err) {
-    console.error('[api] Initial GOAT analysis failed:', err);
-  }
+  void runtime
+    .wake('Initial analysis on deployment', 'MANUAL_REEVALUATE', markets.resolved[0])
+    .catch((err) => {
+      // Already recorded on the runtime state; never surface as an unhandled
+      // rejection from a detached promise.
+      console.error('[api] Initial GOAT analysis failed:', err);
+    });
 
   res.json({
     goat: newGoat,
-    runtimeState: firstRun ?? runtime.getState(),
+    runtimeState: runtime.getState(),
     dataMode: marketProvider.dataMode,
+    /**
+     * Explicit, so the UI can show "first analysis running" rather than an
+     * empty state that looks like the GOAT did nothing.
+     */
+    firstAnalysisPending: true,
   });
 }));
 

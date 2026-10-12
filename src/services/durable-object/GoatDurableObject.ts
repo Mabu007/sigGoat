@@ -488,6 +488,25 @@ export class GoatDurableObject {
 
     this.paused = true;
 
+    /**
+     * ABANDON IN-FLIGHT WORK, DO NOT JUST STOP SCHEDULING NEW WORK.
+     *
+     * Stopping the alarms is not enough. A model call already dispatched
+     * keeps running, and when it returns it passes every existing check and
+     * writes its thesis and its signal — after the UI has told the user
+     * "Paused by the user. No analysis and no tracker evaluation will run".
+     * That is a promise the runtime was silently breaking.
+     *
+     * The runtime already has the mechanism for exactly this: work started
+     * for an older generation must never mutate newer state, enforced by
+     * `isCurrentGeneration`, which compares against the ASSIGNED id. So
+     * pausing assigns a fresh generation — invalidating whatever is in flight
+     * at its next checkpoint — and clears the flag so the UI stops showing a
+     * spinner for work that is no longer going to be recorded.
+     */
+    this.runtimeState.generationId = this.newGenerationId();
+    this.runtimeState.isEvaluating = false;
+
     if (this.scheduledAlarm) {
       clearTimeout(this.scheduledAlarm);
       this.scheduledAlarm = null;

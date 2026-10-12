@@ -244,6 +244,31 @@ const REASONING_RUN_MAX_TOKENS = 4_096;
  */
 const REASONING_DISABLED_RETRY_MAX_TOKENS = 8_192;
 
+/**
+ * Final rung of the reasoning-off ladder.
+ *
+ * Reasoning-first models are not merely slow at respecting `exclude` — they
+ * can still consume a whole 8k budget before emitting a character, and then
+ * do the same again on the next call, because the free tier routes them to a
+ * different, slower upstream each time. Measured live on
+ * `apodex/apodex-1.1-mini:free`: roughly one run in three exhausted 8k even
+ * with reasoning switched off.
+ *
+ * Giving up there means a GOAT that silently produces nothing, which is the
+ * worst outcome the product has. One more rung converts those into normal
+ * runs. This ceiling is only ever reached after two failed attempts, and only
+ * for a model that would otherwise have returned nothing at all.
+ */
+const REASONING_DISABLED_FINAL_MAX_TOKENS = 16_384;
+
+/** True when a failure means "spent the budget thinking, produced nothing". */
+function isReasoningBudgetExhausted(err: unknown): boolean {
+  return (
+    err instanceof ApiRequestError &&
+    err.code === 'REASONING_BUDGET_EXHAUSTED'
+  );
+}
+
 /** Floor after credit-limit adaptation; below this a run is pointless. */
 const MIN_ADAPTED_TOKENS = 1_536;
 
@@ -2578,24 +2603,46 @@ export class OpenRouterClient {
     try {
       last = await attemptWithinBudget();
     } catch (err) {
-      // Retry 1: suppress reasoning and give the answer the whole budget.
-      if (
-        err instanceof ApiRequestError &&
-        err.code === 'REASONING_BUDGET_EXHAUSTED'
-      ) {
-        /**
-         * `maxTokens` is passed EXPLICITLY. `attempt` resolves its ceiling as
-         * `options.maxTokens ?? REASONING_RUN_MAX_TOKENS`, so assigning the
-         * local `budget` here would change nothing — `budget` is only read by
-         * the credit-ceiling fallback. Getting this wrong makes the retry a
-         * silent no-op, which is exactly what shipped the first time.
-         */
-        last = await attemptWithinBudget({
-          reasoningDisabled: true,
-          maxTokens: REASONING_DISABLED_RETRY_MAX_TOKENS,
-        });
-      } else {
-        throw err;
+      if (!isReasoningBudgetExhausted(err)) throw err;
+
+      /**
+       * RETRY 1 — suppress reasoning, give the answer the whole budget.
+       *
+       * `maxTokens` is passed EXPLICITLY. `attempt` resolves its ceiling as
+       * `options.maxTokens ?? REASONING_RUN_MAX_TOKENS`, so assigning the
+       * local `budget` here would change nothing — `budget` is only read by
+       * the credit-ceiling fallback. Getting that wrong makes the retry a
+       * silent no-op, which is exactly what shipped the first time.
+       */
+      const reasoningOffLadder = [
+        REASONING_DISABLED_RETRY_MAX_TOKENS,
+        REASONING_DISABLED_FINAL_MAX_TOKENS,
+      ];
+
+      for (const maxTokens of reasoningOffLadder) {
+        try {
+          last = await attemptWithinBudget({
+            reasoningDisabled: true,
+            maxTokens,
+          });
+          break;
+        } catch (retryErr) {
+          // Only the same failure earns another rung. Anything else — a
+          // retired model, a credit ceiling, a network drop — would fail
+          // identically however large the budget is.
+          if (!isReasoningBudgetExhausted(retryErr)) throw retryErr;
+          last = undefined;
+        }
+      }
+
+      if (!last) {
+        throw new ApiRequestError(
+          'The model spent its entire output budget on hidden reasoning three ' +
+            'times and never produced an answer, even with reasoning disabled. ' +
+            'This model is not usable for structured trading analysis — pick ' +
+            'another one in Settings → AI Reasoning Engine.',
+          { code: 'REASONING_BUDGET_EXHAUSTED', retryable: false },
+        );
       }
     }
 

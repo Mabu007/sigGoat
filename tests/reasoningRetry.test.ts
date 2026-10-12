@@ -113,6 +113,45 @@ describe('a model that exhausts its budget on reasoning is retried properly', ()
     expect(attempts[1].maxTokens).toBeGreaterThan(attempts[0].maxTokens!);
   });
 
+  test('a model that burns the retry budget too is escalated once more', async () => {
+    const client = new OpenRouterClient({ apiKey: 'sk-or-v1-test-key-not-used-000000000000' });
+    const attempts = instrument(client, true);
+
+    // Every attempt burns its budget on reasoning.
+    let calls = 0;
+    (client as unknown as { complete: unknown }).complete = async (
+      options: { maxTokens?: number; reasoningDisabled?: boolean },
+    ) => {
+      attempts.push({
+        maxTokens: options.maxTokens,
+        reasoningDisabled: options.reasoningDisabled === true,
+      });
+      calls += 1;
+      // Attempts 1-3 are: original, 8k retry, 16k escalation.
+      if (calls <= 2) {
+        throw new ApiRequestError(
+          'The model used its entire token budget on hidden reasoning and returned no answer.',
+          { code: 'REASONING_BUDGET_EXHAUSTED', retryable: false },
+        );
+      }
+      return validCompletion();
+    };
+
+    await client.evaluateGoat(context, 'some/model');
+
+    /**
+     * Reasoning-first free models do not merely resist `exclude` — they can
+     * exhaust an 8k budget and do the same again on the next call, because
+     * the free tier routes each request to a different upstream. Giving up
+     * there means a GOAT that silently produces nothing.
+     */
+    // Attempt 1 (original) fails, 8k retry fails, 16k escalation succeeds.
+    expect(attempts.length).toBe(3);
+    const ceilings = attempts.map((a) => a.maxTokens!);
+    expect(ceilings[1]).toBeGreaterThan(ceilings[0]);
+    expect(ceilings[2]).toBeGreaterThan(ceilings[1]);
+  });
+
   test('a healthy model is not retried at all', async () => {
     const client = new OpenRouterClient({ apiKey: 'sk-or-v1-test-key-not-used-000000000000' });
     const attempts = instrument(client, false);

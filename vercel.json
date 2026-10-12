@@ -5,7 +5,7 @@
   "installCommand": "npm ci --include=dev --no-audit --no-fund",
   "functions": {
     "api/index.js": {
-      "maxDuration": 60,
+      "maxDuration": 240,
       "memory": 1024
     }
   },
