@@ -913,7 +913,7 @@ class FirestoreGoatRepository implements GoatRepository {
     return goat && goat.userId === userId ? goat : null;
   }
   async save(goat: FundGoat) {
-    await this.col().doc(goat.id).set({ ...goat });
+    await this.col().doc(goat.id).set(firestoreSafe({ ...goat }));
   }
   async delete(goatId: string) {
     await this.col().doc(goatId).delete();
@@ -934,7 +934,7 @@ class FirestoreSkillRepository implements SkillRepository {
     return doc.exists ? (doc.data() as TradingSkill) : null;
   }
   async save(skill: TradingSkill) {
-    await this.col().doc(skill.id).set({ ...skill });
+    await this.col().doc(skill.id).set(firestoreSafe({ ...skill }));
   }
   async delete(skillId: string) {
     await this.col().doc(skillId).delete();
@@ -953,15 +953,103 @@ class FirestoreSignalRepository implements SignalRepository {
     return snap.docs.map((d) => d.data() as TradeSignal);
   }
   async save(signal: TradeSignal) {
-    await this.db.collection(SIGNALS).doc(signal.id).set({ ...signal });
+    await this.db.collection(SIGNALS).doc(signal.id).set(firestoreSafe({ ...signal }));
   }
   async update(signal: TradeSignal) {
     const ref = this.db.collection(SIGNALS).doc(signal.id);
     const snap = await ref.get();
     if (!snap.exists) return false;
-    await ref.set({ ...signal });
+    await ref.set(firestoreSafe({ ...signal }));
     return true;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Firestore value sanitising                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Deep-copies a value, dropping `undefined` and rejecting non-Firestore types.
+ *
+ * WHY THIS EXISTS
+ *
+ *   Firestore has no `undefined`. Passing it — even nested, even inside an
+ *   array — fails the WHOLE write with "Value for argument data is not a
+ *   valid Firestore document". Nothing is saved; the error surfaces only as a
+ *   `persistenceErrors` string on the wake event.
+ *
+ *   The application's own optional fields produce it routinely: a tracker for
+ *   an indicator with no extra parameters serialises `indicatorParams:
+ *   undefined`, and a signal with no `decisionNote` yet does the same. In
+ *   development the file-backed repository stores the object as-is and is
+ *   perfectly happy, so this ONLY reproduces on Firestore — meaning it
+ *   appears for the first time in production, on exactly the records that
+ *   matter most: the theses and proposals a GOAT just reasoned about.
+ *
+ *   Observed in production on 2026-10-12: `trackers.0.indicatorParams`.
+ *
+ * WHY NOT `ignoreUndefinedProperties`
+ *
+ *   That setting silently discards the field everywhere, which is the same
+ *   outcome but spread across every call site and invisible in review.
+ *   Sanitising once, at the boundary, keeps the type system honest — the
+ *   domain types still say `indicatorParams?: …` — and makes the rule
+ *   auditable in one place.
+ *
+ * Rules:
+ *   - `undefined` is DROPPED (the field simply does not exist);
+ *   - `null` is KEPT (Firestore stores it, and it is a meaningful value);
+ *   - arrays are mapped element-wise, so a hole never becomes `null`;
+ *   - `Date` is kept as-is, which Firestore understands natively;
+ *   - anything else that is not a plain object or a primitive is stringified
+ *     rather than throwing, so one odd field cannot fail a whole document.
+ */
+export function firestoreSafe<T>(value: T): T {
+  const seen = new WeakSet<object>();
+
+  const walk = (input: unknown): unknown => {
+    if (input === null) return null;
+    if (input === undefined) return undefined;
+
+    const type = typeof input;
+    if (type === 'string' || type === 'boolean') return input;
+    if (type === 'number') {
+      // Firestore rejects NaN and Infinity outright.
+      return Number.isFinite(input as number) ? input : null;
+    }
+    if (type === 'bigint') return String(input);
+    if (type === 'function' || type === 'symbol') return undefined;
+
+    if (input instanceof Date) return input;
+    if (Array.isArray(input)) {
+      return input.map((item) => {
+        const walked = walk(item);
+        return walked === undefined ? null : walked;
+      });
+    }
+
+    if (type === 'object') {
+      const object = input as object;
+      // Cycle guard: a self-referential document would otherwise hang the write.
+      if (seen.has(object)) return null;
+      seen.add(object);
+
+      if (typeof (object as { toJSON?: () => unknown }).toJSON === 'function') {
+        return walk((object as { toJSON: () => unknown }).toJSON());
+      }
+
+      const out: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(object)) {
+        const walked = walk(item);
+        if (walked !== undefined) out[key] = walked;
+      }
+      return out;
+    }
+
+    return undefined;
+  };
+
+  return walk(value) as T;
 }
 
 class FirestoreThesisRepository implements ThesisRepository {
@@ -976,7 +1064,7 @@ class FirestoreThesisRepository implements ThesisRepository {
     return snap.docs.map((d) => d.data() as MarketThesis);
   }
   async save(thesis: MarketThesis) {
-    await this.db.collection(THESES).doc(thesis.id).set({ ...thesis });
+    await this.db.collection(THESES).doc(thesis.id).set(firestoreSafe({ ...thesis }));
   }
 }
 
@@ -992,7 +1080,7 @@ class FirestoreWakeEventRepository implements WakeEventRepository {
     return snap.docs.map((d) => d.data() as WakeEvent);
   }
   async save(event: WakeEvent) {
-    await this.db.collection(WAKE_EVENTS).doc(event.id).set({ ...event });
+    await this.db.collection(WAKE_EVENTS).doc(event.id).set(firestoreSafe({ ...event }));
   }
 }
 
@@ -1003,7 +1091,7 @@ class FirestoreProfileRepository implements UserProfileRepository {
     return doc.exists ? (doc.data() as UserProfile) : null;
   }
   async save(profile: UserProfile) {
-    await this.db.collection(PROFILES).doc(profile.id).set({ ...profile });
+    await this.db.collection(PROFILES).doc(profile.id).set(firestoreSafe({ ...profile }));
   }
   async findByTelegramChatId(chatId: string) {
     const snap = await this.db.collection(PROFILES).where('telegramChatId', '==', chatId).limit(1).get();
@@ -1031,7 +1119,7 @@ class FirestoreMarketRecapRepository implements MarketRecapRepository {
   async save(recap: DailyMarketRecap) {
     // doc().set() is an upsert, and the id embeds the trading date, which is
     // what makes the daily rollup idempotent.
-    await this.db.collection(RECAPS).doc(recap.id).set({ ...recap });
+    await this.db.collection(RECAPS).doc(recap.id).set(firestoreSafe({ ...recap }));
   }
 }
 
@@ -1061,7 +1149,9 @@ class FirestoreKeyStore implements KeyStore {
     userId: string,
     fields: Record<string, unknown>,
   ): Promise<void> {
-    await this.doc(userId).set(fields, { merge: true });
+    // `merge: true` throws on an explicit `undefined` too, so a caller clearing
+    // a credential by setting it to undefined would fail the whole write.
+    await this.doc(userId).set(firestoreSafe(fields), { merge: true });
   }
 
   async getOpenRouterKey(userId: string) {
@@ -1190,11 +1280,11 @@ class FirestoreChatRepository implements ChatRepository {
     return chat && chat.userId === userId ? chat : null;
   }
   async create(chat: Chat) {
-    await this.col().doc(chat.id).set(chat);
+    await this.col().doc(chat.id).set(firestoreSafe(chat));
     return chat;
   }
   async update(chatId: string, updates: Partial<Chat>) {
-    await this.col().doc(chatId).update(updates);
+    await this.col().doc(chatId).update(firestoreSafe(updates));
   }
   async delete(chatId: string) {
     await this.col().doc(chatId).delete();
@@ -1215,7 +1305,7 @@ class FirestoreMessageRepository implements MessageRepository {
     return snap.docs.map((d) => d.data() as ChatMessage);
   }
   async create(chatId: string, message: ChatMessage) {
-    await this.db.collection(CHATS).doc(chatId).collection(MESSAGES).doc(message.id).set(message);
+    await this.db.collection(CHATS).doc(chatId).collection(MESSAGES).doc(message.id).set(firestoreSafe(message));
     return message;
   }
   async deleteByChat(chatId: string) {
