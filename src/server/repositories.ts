@@ -65,6 +65,7 @@ export interface ThesisRepository {
 export interface WakeEventRepository {
   listByGoat(goatId: string, limit?: number): Promise<WakeEvent[]>;
   save(event: WakeEvent): Promise<void>;
+  update(event: WakeEvent): Promise<boolean>;
   deleteByGoat(goatId: string): Promise<void>;
 }
 
@@ -293,6 +294,13 @@ class MemoryWakeEventRepository implements WakeEventRepository {
     const list = this.store.get(event.goatId) ?? [];
     list.unshift(event);
     this.store.set(event.goatId, list.slice(0, 500));
+  }
+  async update(event: WakeEvent) {
+    const list = this.store.get(event.goatId) ?? [];
+    const index = list.findIndex((existing) => existing.id === event.id);
+    if (index < 0) return false;
+    list[index] = event;
+    return true;
   }
   async deleteByGoat(goatId: string) { this.store.delete(goatId); }
 }
@@ -1115,6 +1123,13 @@ class FirestoreWakeEventRepository implements WakeEventRepository {
   }
   async save(event: WakeEvent) {
     await this.db.collection(WAKE_EVENTS).doc(event.id).set(firestoreSafe({ ...event }));
+  }
+  async update(event: WakeEvent) {
+    const ref = this.db.collection(WAKE_EVENTS).doc(event.id);
+    const snapshot = await ref.get();
+    if (!snapshot.exists) return false;
+    await ref.set(firestoreSafe({ ...event }));
+    return true;
   }
 }
 
