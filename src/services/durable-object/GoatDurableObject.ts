@@ -1269,9 +1269,40 @@ export class GoatDurableObject {
       const report = TrackerEvaluator.evaluate(tracker, quote, candles, indicators);
 
       if (report.isTriggered) {
+        const previous = {
+          isTriggered: tracker.isTriggered,
+          triggeredAt: tracker.triggeredAt,
+          currentCalculatedValue: tracker.currentCalculatedValue,
+        };
         tracker.isTriggered = true;
         tracker.triggeredAt = this.now();
         tracker.currentCalculatedValue = report.calculatedValue;
+
+        // Persist the one-shot transition BEFORE notification or reevaluation.
+        // Otherwise a cold restart restores the old untriggered tracker and
+        // emits the same trigger again.
+        const thesis = this.runtimeState.currentThesis;
+        if (thesis && this.thesisRepo) {
+          const updatedThesis: MarketThesis = {
+            ...thesis,
+            trackers: this.runtimeState.trackers.map((item) => ({ ...item })),
+            updatedAt: new Date().toISOString(),
+          };
+          try {
+            await this.thesisRepo.save(updatedThesis);
+            this.runtimeState.currentThesis = updatedThesis;
+          } catch (err) {
+            Object.assign(tracker, previous);
+            this.runtimeState.lastError =
+              `Tracker trigger could not be persisted: ${err instanceof Error ? err.message : 'unknown error'}`;
+            console.error(`[goat ${this.id}] failed to persist tracker trigger:`, err);
+            return false;
+          }
+        } else {
+          Object.assign(tracker, previous);
+          this.runtimeState.lastError = 'Tracker trigger could not be persisted because no current thesis repository is available.';
+          return false;
+        }
 
         /**
          * Alert the user FIRST: this is the "your wait-for condition just
