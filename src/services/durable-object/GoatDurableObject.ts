@@ -1,5 +1,5 @@
 /**
- * GOAT DURABLE OBJECT (in-process actor)
+ * GOAT RUNTIME ACTOR (in-process)
  * =======================================
  * One actor per deployed GOAT. Owns:
  *  - the canonical wake pipeline (investigate -> reason -> gate -> persist)
@@ -445,9 +445,8 @@ export class GoatDurableObject {
 
     /**
      * Only arm an in-process timer when there is no external scheduler.
-     * With a Durable Object scheduler the alarm lives in durable storage and
-     * is re-armed by the DO, so a local timer would be a second, competing
-     * source of truth.
+     * With the Firebase scheduler, due times live in Firestore, so a local timer
+     * would be a second, competing source of truth.
      */
     if (
       options.autoStartScheduler !== false &&
@@ -1274,9 +1273,8 @@ export class GoatDurableObject {
   /**
    * Evaluates trackers once against a supplied snapshot.
    *
-   * Public because the serverless path calls it on demand: there is no
-   * persistent process watching market state there, so the Durable Object's
-   * tracker-check alarm drives it. Deterministic and AI-free — it only
+   * Public because the serverless path calls it on demand: there is no persistent process watching market state there, so Firebase cron
+   * drives deterministic tracker checks. Deterministic and AI-free — it only
    * escalates to a reasoning wake when a condition is actually satisfied.
    *
    * Returns true when a tracker fired.
