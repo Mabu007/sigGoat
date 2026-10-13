@@ -416,10 +416,11 @@ export function normaliseMarket(input: NormaliseMarketInput): NormalisedMarket |
  * Converts a normalised market into the public `MarketSymbol` shape.
  *
  * `pipSize` and `minSpread` are retained on the type because the signal gate
- * reads them, and are set to values that make the gate INERT rather than
- * invented: a pip of 0 and a max spread of 0 both mean "no constraint". A
- * fabricated 0.0001 pip on a market quoted at 1.1205 would silently reject
- * every trade through `SPREAD_UNDER_x_PIPS`.
+ * needs a trustworthy unit conversion before enforcing a pip-based rule.
+ * Hyperliquid does not publish these values, so they remain 0 rather than
+ * inventing a tick/pip size. If a skill explicitly requires a pip-based spread
+ * limit on such a market, the gate fails closed because it cannot verify that
+ * constraint; it must never compare a raw price delta to a pip count.
  */
 export function toMarketSymbol(market: NormalisedMarket): MarketSymbol {
   const digits = priceDigitsFor(market.symbol, market.szDecimals);
