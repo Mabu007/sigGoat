@@ -452,6 +452,8 @@ export function Chatbot() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [chatModel, setChatModel] = useState<string | null>(null);
+  const [chatModels, setChatModels] = useState<ChatModelOption[]>([]);
+  const [modelSaving, setModelSaving] = useState(false);
   const [streamStatus, setStreamStatus] = useState('SirGOAT is on it…');
   const [renameTarget, setRenameTarget] = useState<ChatItem | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -622,8 +624,6 @@ export function Chatbot() {
 
       setCurrentChatId(chatId);
 
-      setShowSessions(false);
-
       try { localStorage.setItem(CHATBOT_STORAGE_KEY, JSON.stringify({ chatId })); } catch { /* Storage is optional. */ }
 
       setDraft(null);
@@ -792,7 +792,7 @@ export function Chatbot() {
         const res = await fetch('/api/chat/stream', {
           method: 'POST',
           headers: { ...(await loadAuthHeaders()), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: trimmed, chatId }),
+          body: JSON.stringify({ message: trimmed, chatId, modelId: chatModel }),
         });
 
         if (!res.ok) {
@@ -891,7 +891,7 @@ export function Chatbot() {
 
     },
 
-    [currentChatId, isSending, currentUser, createChat, loadAuthHeaders],
+    [currentChatId, isSending, currentUser, createChat, loadAuthHeaders, chatModel],
 
   );
 
@@ -908,6 +908,51 @@ export function Chatbot() {
   /* ---- Lifecycle ---- */
 
 
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const headers = await loadAuthHeaders();
+        const [prefsResponse, modelsResponse] = await Promise.all([
+          fetch('/api/settings/preferences', { headers }),
+          fetch('/api/ai/models', { headers }),
+        ]);
+        const prefs = prefsResponse.ok ? await prefsResponse.json().catch(() => null) : null;
+        const modelData = modelsResponse.ok ? await modelsResponse.json().catch(() => null) : null;
+        const models: ChatModelOption[] = Array.isArray(modelData?.models) ? modelData.models : [];
+        models.sort((a, b) => Number(!a.id.endsWith(':free')) - Number(!b.id.endsWith(':free')) || a.name.localeCompare(b.name));
+        if (cancelled) return;
+        setChatModels(models);
+        const preferred = typeof prefs?.aiModel === 'string' ? prefs.aiModel : null;
+        setChatModel(preferred || models.find((model) => model.id.endsWith(':free'))?.id || models[0]?.id || null);
+      } catch {
+        // Chat remains usable with the saved model if the catalogue is unavailable.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [currentUser, loadAuthHeaders]);
+
+  const chooseChatModel = useCallback(async (modelId: string) => {
+    setChatModel(modelId);
+    setModelSaving(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/settings/preferences', {
+        method: 'POST',
+        headers: { ...(await loadAuthHeaders()), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aiModel: modelId }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error?.message ?? 'Could not save this model.');
+      if (typeof data?.aiModel === 'string') setChatModel(data.aiModel);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save this model.');
+    } finally {
+      setModelSaving(false);
+    }
+  }, [loadAuthHeaders]);
 
   useEffect(() => {
 
@@ -1097,9 +1142,7 @@ export function Chatbot() {
 
         />
 
-        <span className="hidden sm:inline">AI assistant</span>
-
-        <span className="inline sm:hidden">Assistant</span>
+        <span>SIRGOAT</span>
 
       </button>
 
@@ -1135,7 +1178,7 @@ export function Chatbot() {
 
     >
 
-    <div className="flex h-full w-full max-w-full flex-col overflow-hidden bg-surface shadow-2xl sm:h-full sm:w-[min(1100px,96vw)]">
+    <div className="flex h-full w-full max-w-full flex-col overflow-hidden bg-surface shadow-2xl">
 
 
 
@@ -1217,11 +1260,11 @@ export function Chatbot() {
 
             </button>
 
-            <Sparkles size={15} className="shrink-0 text-accent-text" aria-hidden="true" />
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg"><Sparkles size={15} aria-hidden="true" /></span>
 
             <h2 className="truncate text-[13px] font-semibold tracking-tight text-fg">
 
-              AI assistant
+              SIRGOAT
 
             </h2>
 
@@ -1473,15 +1516,8 @@ export function Chatbot() {
 
 
             <div className="shrink-0 border-t border-line p-2 text-[10px] leading-relaxed text-fg-subtle">
-
-              <p className="truncate">
-
-                {chatModel ? `Model: ${chatModel}` : 'Model: set in Settings'}
-
-              </p>
-
-              <p className="mt-0.5">Answers questions only — it never places an order.</p>
-
+              <p className="truncate">SIRGOAT conversations</p>
+              <p className="mt-0.5">Switch sessions anytime.</p>
             </div>
 
           </div>
@@ -1666,6 +1702,23 @@ export function Chatbot() {
 
             >
 
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label htmlFor="sirgoat-chat-model" className="text-[10px] font-medium uppercase tracking-wider text-fg-subtle">Model</label>
+                <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+                  <select
+                    id="sirgoat-chat-model"
+                    value={chatModel ?? ''}
+                    onChange={(event) => void chooseChatModel(event.target.value)}
+                    disabled={modelSaving || chatModels.length === 0}
+                    className="max-w-[min(75vw,420px)] rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[11px] text-fg outline-none focus:border-focus disabled:opacity-60"
+                    aria-label="Choose SIRGOAT reasoning model"
+                  >
+                    {chatModels.length === 0 && <option value="">Model configured in Settings</option>}
+                    {chatModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}{model.id.endsWith(':free') ? ' · FREE' : ''}</option>)}
+                  </select>
+                  {modelSaving && <Loader2 size={12} className="animate-spin text-fg-subtle" aria-label="Saving model" />}
+                </div>
+              </div>
               <div className="flex items-end gap-2 rounded-lg border border-line bg-sunken px-3 py-2 focus-within:border-focus">
 
                 <textarea
