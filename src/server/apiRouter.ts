@@ -1019,7 +1019,7 @@ async function notifyGoatMarketReview(
   reason: string,
 ): Promise<void> {
   const [token, profile] = await Promise.all([
-    keyStore.getTelegramToken(goat.userId),
+    keyStore.getTelegramToken(goat.userId).then((token) => token || process.env.TELEGRAM_BOT_TOKEN?.trim()),
     persistence.profiles.get(goat.userId),
   ]);
   // Do not create dead-letter records for users who have not connected Telegram.
