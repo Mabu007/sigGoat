@@ -340,6 +340,7 @@ async function runScheduledWakeSync(
   goatId: string,
   eventId: string,
   reason: string,
+  scheduledAt: number = Date.now(),
 ): Promise<void> {
   const goat = await persistence.goats.get(goatId);
   if (!goat) return;
@@ -349,13 +350,13 @@ async function runScheduledWakeSync(
     eventId,
     generationId: scheduleGeneration(goat),
     reason,
-    firedAt: Date.now(),
+    firedAt: scheduledAt,
   });
 
   if (verdict.allowed === false) {
     console.log(`[scheduler] suppressed wake for ${goatId}: ${verdict.reason}`);
     if (firebaseScheduler) {
-      const nextWake = computeNextWakeAt(goat);
+      const nextWake = computeNextWakeAfterRun(goat, scheduledAt);
       const nextTracker = computeNextTrackerCheckAt(goat);
       await firebaseScheduler.complete(
         goat.id,
@@ -378,7 +379,7 @@ async function runScheduledWakeSync(
     const refreshed = await persistence.goats.get(goatId);
     if (refreshed) {
       if (firebaseScheduler) {
-        const nextWake = computeNextWakeAt(refreshed);
+        const nextWake = computeNextWakeAfterRun(refreshed, scheduledAt);
         const nextTracker = computeNextTrackerCheckAt(refreshed);
         await firebaseScheduler.complete(
           refreshed.id,
@@ -1581,6 +1582,20 @@ function computeNextTrackerCheckAt(
   return from + pollIntervalForTimeframe(timeframe);
 }
 
+function computeNextWakeAfterRun(goat: FundGoat, scheduledAt: number): number | null {
+  const schedule = normaliseSchedule(goat.schedule);
+  if (schedule.mode !== "INTERVAL") return computeNextWakeAt(goat, Date.now());
+
+  // Preserve the original cadence anchor instead of adding the AI runtime to
+  // every interval. If a run overruns its next slot, skip missed slots rather
+  // than creating an immediate catch-up loop.
+  const intervalMs = (schedule.intervalMinutes ?? 60) * 60_000;
+  const now = Date.now();
+  let next = scheduledAt + intervalMs;
+  if (next <= now) next += (Math.floor((now - next) / intervalMs) + 1) * intervalMs;
+  return goat.status === "PAUSED" || goat.deploymentState === "DRAFT" ? null : next;
+}
+
 function computeNextWakeAt(
   goat: FundGoat,
   from: number = Date.now(),
@@ -1904,46 +1919,46 @@ apiRouter.get(
       return fail(res, 503, "FIREBASE_SCHEDULER_UNAVAILABLE", "Firebase-backed scheduling is unavailable.");
     }
 
-    const due = await firebaseScheduler.claimDue(Date.now(), 20);
+    const due = await firebaseScheduler.claimDue(Date.now(), 8);
+    // Claim tracker work before executing AI runs. The shared Firestore lease
+    // prevents a GOAT from being claimed for both jobs in the same cron pass.
+    const trackerDue = await firebaseScheduler.claimDueTrackerChecks(Date.now(), 16);
     let ran = 0;
     let trackerChecks = 0;
     let stale = 0;
     let failed = 0;
-    for (const event of due) {
+
+    const processWake = async (event: FiredWake) => {
       try {
         const goat = await persistence.goats.get(event.goatId);
         if (!goat || goat.status === "PAUSED" || goat.deploymentState === "DRAFT") {
           await firebaseScheduler.complete(event.goatId, event.generationId, null, null);
-          continue;
+          return;
         }
         if (scheduleGeneration(goat) !== event.generationId) {
           await syncSchedule(goat);
           stale += 1;
-          continue;
+          return;
         }
-        await runScheduledWakeSync(event.goatId, event.eventId, event.reason);
+        await runScheduledWakeSync(event.goatId, event.eventId, event.reason, event.firedAt);
         ran += 1;
       } catch (error) {
         failed += 1;
         console.error(`[firebase-cron] failed GOAT ${event.goatId}:`, error);
       }
-    }
+    };
 
-    // Trackers are deterministic and do not call the model unless a condition
-    // fires. They use the same persisted lease so overlapping cron invocations
-    // cannot evaluate the same GOAT concurrently.
-    const trackerDue = await firebaseScheduler.claimDueTrackerChecks(Date.now(), 20);
-    for (const event of trackerDue) {
+    const processTracker = async (event: FiredWake) => {
       try {
         const goat = await persistence.goats.get(event.goatId);
         if (!goat || goat.status === "PAUSED" || goat.deploymentState === "DRAFT") {
           await firebaseScheduler.completeTrackerCheck(event.goatId, event.generationId, null);
-          continue;
+          return;
         }
         if (scheduleGeneration(goat) !== event.generationId) {
           await syncSchedule(goat);
           stale += 1;
-          continue;
+          return;
         }
         const result = await runTrackerCheckSync(event.goatId, event.eventId);
         await firebaseScheduler.completeTrackerCheck(event.goatId, event.generationId, result.nextAt);
@@ -1952,7 +1967,17 @@ apiRouter.get(
         failed += 1;
         console.error(`[firebase-cron] tracker check failed for GOAT ${event.goatId}:`, error);
       }
-    }
+    };
+
+    const runBatches = async <T,>(items: T[], size: number, run: (item: T) => Promise<void>) => {
+      for (let index = 0; index < items.length; index += size) {
+        await Promise.all(items.slice(index, index + size).map(run));
+      }
+    };
+    await Promise.all([
+      runBatches(due, 4, processWake),
+      runBatches(trackerDue, 8, processTracker),
+    ]);
     res.json({
       handled: true,
       due: due.length,
