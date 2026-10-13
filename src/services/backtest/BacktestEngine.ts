@@ -274,8 +274,6 @@ export class BacktestEngine {
         continue;
       }
 
-      allTrades.push(simulation.trade);
-
       /**
        * A single loss can never exceed the equity that exists.
        *
@@ -283,10 +281,14 @@ export class BacktestEngine {
        * 100%, reporting a statistic that describes no real account state.
        */
       const affordableRisk = Math.min(riskAmount, Math.max(0, currentEquity));
+      simulation.trade.pnlDollars = 0;
 
       /** Only filled WIN/LOSS trades modify realised equity. */
       if (simulation.trade.outcome === 'WIN' || simulation.trade.outcome === 'LOSS') {
         const pnl = this.calculateDollarPnl(simulation.trade, affordableRisk);
+        // Persist the actual gross PnL for this trade. Summary metrics must not
+        // assume full starting-balance risk after the account has drawn down.
+        simulation.trade.pnlDollars = Number(pnl.toFixed(2));
 
         /**
          * Trading costs are charged on the SAME basis as the P&L, inside the
@@ -305,6 +307,7 @@ export class BacktestEngine {
           equity: Number(currentEquity.toFixed(2)),
         });
       }
+      allTrades.push(simulation.trade);
 
       /** Consume the full lifecycle: prevents overlapping orders, duplicate
        *  positions, and re-signals while an older setup is alive.
@@ -932,9 +935,11 @@ export class BacktestEngine {
 
     const totalWinDollars = filledTrades
       .filter((trade) => trade.outcome === 'WIN')
-      .reduce((sum, trade) => sum + riskAmount * trade.riskReward, 0);
+      .reduce((sum, trade) => sum + (trade.pnlDollars ?? riskAmount * trade.riskReward), 0);
 
-    const totalLossDollars = losingSignals * riskAmount;
+    const totalLossDollars = filledTrades
+      .filter((trade) => trade.outcome === 'LOSS')
+      .reduce((sum, trade) => sum + Math.abs(trade.pnlDollars ?? -riskAmount), 0);
 
     /**
      * PROFIT FACTOR — or `null` when it is genuinely undefined.
