@@ -5546,6 +5546,23 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
 
 const CHAT_MODEL = "apodex/apodex-1.1-mini:free";
 
+async function resolveChatModel(userId: string, requested?: unknown): Promise<string> {
+  if (typeof requested === "string" && isValidModel(requested)) return requested;
+  const profile = await persistence.profiles.get(userId).catch(() => null);
+  if (profile?.aiModel && isValidModel(profile.aiModel)) return profile.aiModel;
+  try { return (await reasoningGateway.pickAnyModel(userId)) || CHAT_MODEL; } catch { return CHAT_MODEL; }
+}
+
+function isLightConversation(message: string): boolean {
+  return /^\\s*(hey|hello|hi|yo|hiya|sup|good morning|good afternoon|good evening|thanks|thank you|cheers|nice|cool|lol|haha|how are you|how you doing|you good)[!,.\\s?]*$/i.test(message.trim());
+}
+
+function needsMarketResearch(message: string): boolean {
+  if (inferChatMarketQueries(message).length) return true;
+  return /\\b(market|price|quote|chart|candle|ohlcv|funding|open interest|volume|technical|support|resistance|trend|setup|trade|trading|buy|sell|bullish|bearish|opportunit|backtest|historical|history|research|analyse|analyze|compare|news|latest|today|right now|live|goat|proposal|signal|portfolio|my account|my setup|economic calendar)\\b/i.test(message);
+}
+
+
 /** A concise, honest system persona for the assistant. */
 const CHAT_SYSTEM_PROMPT =
   "You are SirGOAT: G's sharp, capable, slightly witty finance copilot — like a cooler JARVIS who works with the user, not a corporate helpdesk. Sound like a real, trusted friend who happens to be excellent at markets. Be relaxed, confident, direct, observant, and useful. Never call yourself an AI assistant, copilot, chatbot, or market-research assistant unless directly asked. Never open with a feature list, disclaimer, or generic 'How can I help you today?' " +
@@ -5786,7 +5803,7 @@ apiRouter.patch("/chats/:id", authMiddleware, async (req, res) => {
  */
 apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
   const user = requireUser(req);
-  const { message, chatId } = req.body ?? {};
+  const { message, chatId, modelId } = req.body ?? {};
   if (typeof message !== "string" || !message.trim()) {
     return fail(res, 400, "EMPTY_MESSAGE", "Message is required.");
   }
@@ -5825,9 +5842,10 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
     const emit = (event: Record<string, unknown>) => res.write("data: " + JSON.stringify(event) + "\n\n");
-    emit({ type: "status", message: "Researching relevant markets, history, news and your SIRGOAT state…" });
+    emit({ type: "status", message: "Getting ready…" });
 
     const { key } = await resolveChatbotCredential(user.uid);
+    const activeModel = await resolveChatModel(user.uid, modelId);
     if (!key) {
       emit({ type: "error", message: "No AI model key is configured. Add an OpenRouter key in Settings." });
       res.end();
@@ -5836,43 +5854,58 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
 
     // Generate a concise, semantic title from the opening message only once.
     const needsTitle = !chat.title || chat.title === "New chat";
-    const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim()) : Promise.resolve(chat.title);
-
-    // Greetings are conversations, not research tasks. Reply immediately and skip market/news retrieval.
-    if (/^\s*(hey|hello|hi|yo|hiya|sup|what'?s up|good morning|good afternoon|good evening)[!,.\s]*$/i.test(message.trim())) {
-      const title = await titlePromise;
-      const now = new Date().toISOString();
-      if (needsTitle) {
-        await persistence.chats.update(chat.id, { title, updatedAt: now, lastMessageAt: now });
-        chat.title = title;
+    const historyBeforeReply = await persistence.messages.listByChat(chat.id, 40).catch(() => []);
+    const priorUserMessages = historyBeforeReply.filter((item) => item.role === "user").slice(-12);
+    const mentionedAssets = inferChatMarketQueries(message.trim());
+    let inheritedAsset = "";
+    if (!mentionedAssets.length) {
+      for (let i = priorUserMessages.length - 1; i >= 0; i--) {
+        const found = inferChatMarketQueries(priorUserMessages[i].content);
+        if (found.length) { inheritedAsset = found[0]; break; }
       }
-      const greeting = "Hey G, you good?";
+    }
+    const effectiveResearchMessage = inheritedAsset && /\\b(it|that|this|again|same asset|same market|the chart|the setup|on the \\d+[mhdw])\\b/i.test(message)
+      ? message.trim() + "\\n\\nSESSION CONTEXT: The current asset under discussion is " + inheritedAsset + ". Resolve pronouns and timeframe follow-ups against this asset unless the user explicitly names another asset."
+      : message.trim();
+    const lightConversation = isLightConversation(message.trim());
+    const researchNeeded = !lightConversation && needsMarketResearch(effectiveResearchMessage);
+
+    if (lightConversation) {
+      const now = new Date().toISOString();
+      const lowerMessage = message.trim().toLowerCase();
+      const greeting = /^(thanks|thank you|cheers)[!,.\\s]*$/i.test(lowerMessage)
+        ? "Anytime, G."
+        : /^(nice|cool|lol|haha)[!,.\\s]*$/i.test(lowerMessage) ? "😄" : "Hey G, you good?";
       const assistantMessage: ChatMessage = {
         id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
         chatId: chat.id, userId: user.uid, role: "assistant", content: greeting,
-        model: CHAT_MODEL, createdAt: now,
+        model: activeModel, createdAt: now,
       };
       await Promise.all([
         persistence.messages.create(chat.id, assistantMessage),
         persistence.chats.update(chat.id, { updatedAt: now, lastMessageAt: now }),
       ]);
       emit({ type: "delta", content: greeting });
-      emit({ type: "done", chat: { id: chat.id, title: chat.title }, message: assistantMessage, userMessage, model: CHAT_MODEL });
+      emit({ type: "done", chat: { id: chat.id, title: chat.title }, message: assistantMessage, userMessage, model: activeModel });
       res.end();
       return;
     }
 
-    const initialResearch = await buildChatResearchContext(user.uid, message.trim());
-    emit({ type: "status", message: "Checking whether more market history or news is needed…" });
-    const followUpResearch = await runChatResearchLoop(key, message.trim(), initialResearch);
-    const researchContext = initialResearch + followUpResearch;
-    if (needsTitle) {
-      const title = await titlePromise;
-      const now = new Date().toISOString();
-      await persistence.chats.update(chat.id, { title, updatedAt: now, lastMessageAt: now });
+    const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim()) : Promise.resolve(chat.title);
+    const title = needsTitle ? await titlePromise : chat.title;
+    if (needsTitle && title && title !== "New chat") {
+      const titleNow = new Date().toISOString();
+      await persistence.chats.update(chat.id, { title, updatedAt: titleNow, lastMessageAt: titleNow });
       chat.title = title;
     }
-    emit({ type: "status", message: "Research complete. Streaming the analysis…" });
+    const initialResearch = researchNeeded
+      ? await buildChatResearchContext(user.uid, effectiveResearchMessage)
+      : "\\nROUTING: Ordinary conversation; market research tools were not needed. Do not claim market data was fetched.";
+    const followUpResearch = researchNeeded
+      ? (emit({ type: "status", message: "Checking whether more market history or news is needed…" }), await runChatResearchLoop(key, effectiveResearchMessage, initialResearch))
+      : "";
+    const researchContext = initialResearch + followUpResearch;
+    emit({ type: "status", message: researchNeeded ? "Research complete. Streaming the analysis…" : "Replying…" });
     const history = await persistence.messages.listByChat(chat.id, 40);
     const modelMessages = [
       { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + researchContext },
@@ -5887,7 +5920,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
         "X-Title": "SIRGOAT",
       },
       body: JSON.stringify({
-        model: CHAT_MODEL, messages: modelMessages,
+        model: activeModel, messages: modelMessages,
         temperature: 0.3, max_tokens: 2000, stream: true,
       }),
       signal: AbortSignal.timeout(90000),
