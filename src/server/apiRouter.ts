@@ -238,10 +238,9 @@ export const marketStateStore = new MarketStateStore(marketProvider, {
  * finalizer that converts completed sessions into durable summaries BEFORE
  * pruning their minutes.
  *
- * This shared service handles the current API process. Its candle cache is ephemeral; durable GOAT state and schedule state are stored in Firestore. The former Worker runtime was removed. Both
- * `MarketDataDO` runs; the DO is the durable owner in production and this
- * service is what serves a self-hosted or development deployment. Both
- * implement identical rules, so behaviour does not fork between environments.
+ * This service runs in the Node API process. Its candle cache is ephemeral;
+ * GOAT configuration, schedules, theses, signals and review history are
+ * persisted separately in Firestore. No Cloudflare Worker is required.
  */
 export const candleStorage = new MemoryCandleRepository();
 
