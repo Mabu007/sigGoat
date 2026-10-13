@@ -55,7 +55,7 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
-/** The wordmark. Split so "AGoat" can carry the accent. */
+/** The SIRGOAT wordmark. */
 export function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <span className="flex items-center gap-2 select-none">
@@ -76,7 +76,7 @@ export function BrandMark({ compact = false }: { compact?: boolean }) {
       </span>
       {!compact && (
         <span className="text-[15px] font-semibold tracking-tight text-fg">
-          Fund<span className="text-accent-text">AGoat</span>
+          SIR<span className="text-accent-text">GOAT</span>
         </span>
       )}
     </span>
