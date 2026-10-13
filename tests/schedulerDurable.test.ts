@@ -62,6 +62,26 @@ describe('DurableObjectScheduler — publish lifecycle', () => {
     });
   });
 
+  test('retries the SAME generation after a failed publish', async () => {
+    let attempts = 0;
+    const scheduler = new DurableObjectScheduler({
+      endpoint: 'https://worker.example',
+      secret: 's3cret',
+      fetchImpl: (async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('temporary outage');
+        return { ok: true, status: 200 } as Response;
+      }) as unknown as typeof fetch,
+      log: () => {},
+    });
+
+    await expect(scheduler.sync({ goatId: 'g1', ...BASE })).rejects.toThrow();
+    await scheduler.sync({ goatId: 'g1', ...BASE });
+
+    expect(attempts).toBe(2);
+    expect(scheduler.health().consecutiveFailures).toBe(0);
+  });
+
   test('re-publishing the SAME generation is a no-op (no second alarm)', async () => {
     const calls: Call[] = [];
     const scheduler = new DurableObjectScheduler({
