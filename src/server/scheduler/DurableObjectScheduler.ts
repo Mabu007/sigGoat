@@ -65,8 +65,10 @@ export class DurableObjectScheduler implements WakeScheduler {
   private readonly processedOrder: string[] = [];
   private static readonly MAX_PROCESSED_EVENTS = 500;
 
-  /** Per-GOAT schedule generation, so a stale alarm is rejected. */
+  /** Desired per-GOAT generation; stale alarms are rejected immediately. */
   private readonly generations = new Map<string, string>();
+  /** Last generation confirmed by the Worker. Failed publishes must remain retryable. */
+  private readonly syncedGenerations = new Map<string, string>();
   private readonly paused = new Set<string>();
 
   constructor(options: DurableObjectSchedulerOptions) {
@@ -84,11 +86,12 @@ export class DurableObjectScheduler implements WakeScheduler {
   }
 
   async sync(request: ScheduleRequest): Promise<void> {
-    const current = this.generations.get(request.goatId);
+    const synced = this.syncedGenerations.get(request.goatId);
 
-    // Never move a schedule backwards: a late retry of an old generation must
-    // not un-arm a newer alarm.
-    if (current && current === request.generationId && request.paused !== true) {
+    // Skip only a generation the Worker has ACKNOWLEDGED. The desired
+    // generation may already be in memory after a failed POST; deduping that
+    // value would permanently suppress retries and leave the GOAT unscheduled.
+    if (synced === request.generationId && request.paused !== true) {
       return;
     }
 
@@ -108,10 +111,12 @@ export class DurableObjectScheduler implements WakeScheduler {
       generationId: request.generationId,
       paused: request.paused ?? false,
     });
+    this.syncedGenerations.set(request.goatId, request.generationId);
   }
 
   async cancel(goatId: string): Promise<void> {
     this.generations.delete(goatId);
+    this.syncedGenerations.delete(goatId);
     this.paused.delete(goatId);
     await this.postFor(goatId, '/cancel', { goatId });
   }
