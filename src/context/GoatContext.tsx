@@ -867,10 +867,11 @@ export const GoatProvider: React.FC<{
         'GOAT goal'
       );
 
-      const model = requireNonEmpty(
-        input.model,
-        'Model'
-      );
+      const requestedModel = input.model?.trim() ?? '';
+      if (!requestedModel && input.deploymentState !== 'DRAFT') {
+        throw new Error('Select a reasoning model before deploying this GOAT. Drafts can be saved without one.');
+      }
+      const model = requestedModel || undefined;
 
       const markets =
         cleanStringArray(input.markets);
@@ -901,7 +902,7 @@ export const GoatProvider: React.FC<{
                 goal,
                 markets,
                 skillIds,
-                model,
+                ...(model ? { model } : {}),
                 deploymentState: input.deploymentState ?? 'DEPLOYED',
                 ...(input.schedule
                   ? { schedule: input.schedule }
