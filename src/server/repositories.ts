@@ -620,6 +620,10 @@ class FileSignalRepository implements SignalRepository {
     this.parent.persist();
     return true;
   }
+  async deleteByGoat(goatId: string) {
+    delete this.parent.data.signals[goatId];
+    this.parent.persist();
+  }
 }
 
 class FileThesisRepository implements ThesisRepository {
@@ -633,6 +637,10 @@ class FileThesisRepository implements ThesisRepository {
     this.parent.data.theses[thesis.goatId] = list.slice(0, 200);
     this.parent.persist();
   }
+  async deleteByGoat(goatId: string) {
+    delete this.parent.data.theses[goatId];
+    this.parent.persist();
+  }
 }
 
 class FileWakeEventRepository implements WakeEventRepository {
@@ -644,6 +652,10 @@ class FileWakeEventRepository implements WakeEventRepository {
     const list = this.parent.data.wakeEvents[event.goatId] ?? [];
     list.unshift(event);
     this.parent.data.wakeEvents[event.goatId] = list.slice(0, 500);
+    this.parent.persist();
+  }
+  async deleteByGoat(goatId: string) {
+    delete this.parent.data.wakeEvents[goatId];
     this.parent.persist();
   }
 }
