@@ -662,6 +662,14 @@ class FileWakeEventRepository implements WakeEventRepository {
     this.parent.data.wakeEvents[event.goatId] = list.slice(0, 500);
     this.parent.persist();
   }
+  async update(event: WakeEvent) {
+    const list = this.parent.data.wakeEvents[event.goatId] ?? [];
+    const index = list.findIndex((existing) => existing.id === event.id);
+    if (index < 0) return false;
+    list[index] = event;
+    this.parent.persist();
+    return true;
+  }
   async deleteByGoat(goatId: string) {
     delete this.parent.data.wakeEvents[goatId];
     this.parent.persist();
