@@ -468,6 +468,26 @@ export class GoatDurableObject {
   }
 
   getState(): GoatRuntimeState {
+    const signal = this.runtimeState.latestSignal;
+    if (signal?.status === 'ACTIONABLE') {
+      const explicitExpiry = signal.expiresAt ? Date.parse(signal.expiresAt) : NaN;
+      const createdAt = Date.parse(signal.createdAt);
+      const expiryAt = Number.isFinite(explicitExpiry)
+        ? explicitExpiry
+        : Number.isFinite(createdAt)
+          ? createdAt + 60 * 60_000
+          : 0;
+      const isStale =
+        signal.thesisId !== this.runtimeState.currentThesis?.id ||
+        signal.market !== this.goatConfig.markets[0] ||
+        expiryAt <= this.now();
+      if (isStale) {
+        this.runtimeState.latestSignal = null;
+        if (!this.paused) this.runtimeState.status = 'WATCHING';
+        this.runtimeState.dormancyReason =
+          'The previous proposal is stale or expired. A fresh market review is required.';
+      }
+    }
     return { ...this.runtimeState };
   }
 
@@ -952,6 +972,34 @@ export class GoatDurableObject {
         }
       } else {
         persistenceErrors.push('thesis: repository unavailable');
+      }
+
+      // Retire undecided proposals from earlier thesis versions as soon as a
+      // new thesis is persisted. The decision endpoint also checks the current
+      // thesis id, so a failed cleanup cannot make an old proposal acceptable.
+      if (thesisPersisted && this.signalRepo) {
+        try {
+          const previousSignals = await this.signalRepo.listByGoat(this.id, 500);
+          for (const previous of previousSignals) {
+            if (
+              previous.status === 'ACTIONABLE' &&
+              !previous.decision &&
+              previous.thesisId !== newThesis.id
+            ) {
+              const expiredSignal: TradeSignal = {
+                ...previous,
+                status: 'EXPIRED',
+                updatedAt: nowStr,
+              };
+              const updated = await this.signalRepo.update(expiredSignal);
+              if (!updated) {
+                persistenceErrors.push(`stale signal ${previous.id}: update not acknowledged`);
+              }
+            }
+          }
+        } catch (err) {
+          persistenceErrors.push(`stale signals: ${err instanceof Error ? err.message : 'unknown'}`);
+        }
       }
 
       let latestSignal: TradeSignal = gateResult.signal;
