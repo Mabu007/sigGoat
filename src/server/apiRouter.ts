@@ -522,7 +522,6 @@ const runtimeOptions = {
 };
 
 function ensureGoatRuntime(goat: FundGoat) {
-  subscribeToMarkets(goat);
   const migrated = migrateGoatMarkets(goat);
   const canonicalGoat = migrated ?? goat;
   if (migrated) {
