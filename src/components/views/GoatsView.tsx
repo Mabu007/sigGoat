@@ -1971,8 +1971,12 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                         {inspectedGoat.name}
                       </h1>
 
-                      <span className="rounded-full border border-positive/40 bg-positive-soft px-2 py-0.5 text-[9px] font-mono font-bold uppercase text-positive">
-                        {inspectedGoat.deploymentState === 'DRAFT' ? 'DRAFT' : inspectedState?.status || inspectedGoat.status}
+                      <span className={`rounded-full border px-2 py-0.5 text-[9px] font-mono font-bold uppercase ${inspectedGoat.deploymentState === 'DRAFT' ? 'border-line bg-sunken text-fg-subtle' : inspectedState?.lastError && /(openrouter|model|provider|api key|credential|reasoning)/i.test(inspectedState.lastError) ? 'border-negative/40 bg-negative-soft text-negative' : 'border-positive/40 bg-positive-soft text-positive'}`}>
+                        {inspectedGoat.deploymentState === 'DRAFT'
+                          ? 'DRAFT'
+                          : inspectedState?.lastError && /(openrouter|model|provider|api key|credential|reasoning)/i.test(inspectedState.lastError)
+                            ? 'AI NOT CONNECTED'
+                            : inspectedState?.status || inspectedGoat.status}
                       </span>
 
                       {signalIsActionable && (
