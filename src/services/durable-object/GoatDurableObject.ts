@@ -510,6 +510,13 @@ export class GoatDurableObject {
     this.attachMarketListeners();
   }
 
+  /** Clear the persisted review timeline without deleting the current thesis. */
+  clearReviewHistory(): GoatRuntimeState {
+    this.runtimeState.recentWakeEvents = [];
+    this.runtimeState.lastWakeEvent = null;
+    return this.runtimeState;
+  }
+
   /** True while the user has explicitly stopped this GOAT. */
   isPaused(): boolean {
     return this.paused;
