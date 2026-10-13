@@ -4990,13 +4990,44 @@ apiRouter.post(
       );
     }
 
-    // An expired proposal can be rejected (closing it out) but not accepted.
-    const expired = signal.expiresAt
-      ? Date.parse(signal.expiresAt) < Date.now()
-      : false;
+    // Expiry applies to legacy proposals too, even if they predate expiresAt.
+    const explicitExpiry = signal.expiresAt ? Date.parse(signal.expiresAt) : NaN;
+    const createdAt = Date.parse(signal.createdAt);
+    const expiryAt = Number.isFinite(explicitExpiry)
+      ? explicitExpiry
+      : Number.isFinite(createdAt)
+        ? createdAt + 60 * 60_000
+        : 0;
+    const expired = expiryAt <= Date.now();
 
-    // 2. Acceptance passes through the SAME execution policy the executor uses.
+    // Acceptance requires a live actionable proposal tied to the current thesis.
+    // A later review writes a new thesis id, so old proposals cannot be revived.
     if (decision === "ACCEPTED") {
+      if (signal.status !== "ACTIONABLE" || signal.direction === "NO_TRADE") {
+        return fail(
+          res,
+          409,
+          "PROPOSAL_NOT_ACTIONABLE",
+          "Only an actionable proposal can be accepted. Review the GOAT's latest analysis.",
+        );
+      }
+
+      const latestTheses = await persistence.theses.listByGoat(goat.id, 1);
+      const latestThesis = latestTheses[0];
+      if (
+        !latestThesis ||
+        latestThesis.id !== signal.thesisId ||
+        signal.market !== goat.markets[0]
+      ) {
+        return fail(
+          res,
+          409,
+          "STALE_PROPOSAL",
+          "This proposal is not tied to the GOAT's current thesis and asset. Review the latest analysis before accepting.",
+        );
+      }
+
+      // 2. Acceptance passes through the SAME execution policy the executor uses.
       const execution = propDaoFor(user.uid).policyStatus();
 
       if (!execution.enabled || !execution.authorised) {
