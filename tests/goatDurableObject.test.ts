@@ -262,4 +262,84 @@ describe('GoatDurableObject wake pipeline', () => {
     const state = await actor.wake('should-not-run', 'MANUAL_REEVALUATE');
     expect(state.lastWakeEvent?.reason).not.toBe('should-not-run');
   });
+
+  test('each successful review creates a new thesis version', async () => {
+    const gateway = makeGateway(async (ctx) => ({
+      investigation: { summary: `Reviewed ${ctx.market}.` },
+      thesis: {
+        directionalBias: 'NEUTRAL',
+        summary: 'No clear edge.',
+        confidence: 40,
+        invalidation: 'Not applicable.',
+        observationPlan: 'Wait for confirmation.',
+        trackers: [],
+      },
+      proposal: { decision: 'NO_TRADE', noTradeReason: 'Evidence is insufficient.' },
+      evidence: [],
+    }));
+    ({ actor, persistence } = makeObject(gateway));
+
+    const first = await actor.wake('review one', 'MANUAL_REEVALUATE');
+    const firstId = first.currentThesis?.id;
+    const second = await actor.wake('review two', 'MANUAL_REEVALUATE');
+
+    expect(firstId).toBeTruthy();
+    expect(second.currentThesis?.id).not.toBe(firstId);
+    expect(await persistence.theses.listByGoat('goat_test_1', 10)).toHaveLength(2);
+  });
+
+  test('a valid-looking proposal is downgraded when thesis persistence fails', async () => {
+    const gateway = makeGateway(async () =>
+      parseReasoningResult({
+        investigation: { summary: 'Bullish structure on 1h.' },
+        thesis: {
+          directionalBias: 'BULLISH',
+          summary: 'Bullish continuation.',
+          confidence: 85,
+          invalidation: 'Close below 1.0800.',
+          observationPlan: 'Watch demand retest.',
+          trackers: [],
+        },
+        proposal: {
+          decision: 'ACTIONABLE',
+          triggerSequence: ['EMA(20) crosses above 1.0840', 'price holds above 1.0840 on a 15m close'],
+          direction: 'LONG',
+          orderType: 'LIMIT',
+          market: 'EUR/USD',
+          entry: 1.0845,
+          stopLoss: 1.082,
+          takeProfit: 1.092,
+          rationale: 'Demand retest after sweep.',
+          confirmationRequired: '15m close above entry.',
+          invalidation: 'Close below 1.0800.',
+        },
+        evidence: [
+          { source: 'STRUCTURE', market: 'EUR/USD', observation: 'HH established.', classification: 'SUPPORTING' },
+          { source: 'RSI_14', market: 'EUR/USD', observation: 'RSI recovering.', classification: 'SUPPORTING' },
+        ],
+      }),
+    );
+    const persistence = new InMemoryPersistence();
+    const provider = new PaperMarketDataProvider({ enableTicks: false });
+    let signalled = false;
+    actor = new GoatDurableObject(makeGoat(), SKILLS, {
+      reasoning: gateway,
+      marketProvider: provider,
+      signals: persistence.signals,
+      theses: {
+        listByGoat: async () => [],
+        save: async () => { throw new Error('database unavailable'); },
+      },
+      wakeEvents: persistence.wakeEvents,
+      onSignal: () => { signalled = true; },
+      autoStartScheduler: false,
+    });
+
+    const state = await actor.wake('persistence failure test', 'MANUAL_REEVALUATE');
+
+    expect(state.status).toBe('WATCHING');
+    expect(state.latestSignal?.status).toBe('NO_TRADE');
+    expect(state.latestSignal?.direction).toBe('NO_TRADE');
+    expect(signalled).toBe(false);
+  });
 });
