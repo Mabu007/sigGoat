@@ -18,11 +18,5 @@
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/internal/cron",
-      "schedule": "* * * * *"
-    }
   ]
 }
