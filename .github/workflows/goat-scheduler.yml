@@ -1,0 +1,34 @@
+name: GOAT Scheduler
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sirgoat-scheduler
+  cancel-in-progress: false
+
+jobs:
+  dispatch-due-goats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Dispatch due GOAT reviews
+        env:
+          SIRGOAT_API_URL: ${{ vars.SIRGOAT_API_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -eu
+          if [ -z "${SIRGOAT_API_URL:-}" ]; then
+            echo "::error::Set the repository variable SIRGOAT_API_URL to the deployed SIRGOAT base URL."
+            exit 1
+          fi
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::Set the repository secret CRON_SECRET to the same value configured in Vercel."
+            exit 1
+          fi
+          curl --fail --silent --show-error \
+            --max-time 250 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${SIRGOAT_API_URL%/}/api/internal/cron"
