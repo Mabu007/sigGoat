@@ -1734,8 +1734,9 @@ async function runScheduledWakeInBackground(
     const runtime = durableObjectRegistry.get(goatId)
       ? durableObjectRegistry.get(goatId)!
       : await ensureGoatRuntime(goat);
+    await runtime.ready();
 
-    await runtime.wake(reason, "SCHEDULED", goat.markets[0]);
+    await runtime.wake(reason, "SCHEDULED", runtime.getConfig().markets[0]);
 
     /**
      * The schedule was already anchored to the start of this run when the
@@ -1872,6 +1873,7 @@ async function runTrackerCheckInBackground(goatId: string): Promise<void> {
     const runtime = durableObjectRegistry.get(goatId)
       ? durableObjectRegistry.get(goatId)!
       : await ensureGoatRuntime(goat);
+    await runtime.ready();
 
     await runtime.evaluateTrackersNow(state);
   } catch (err) {
