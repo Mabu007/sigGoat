@@ -2461,6 +2461,9 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                             minute: '2-digit',
                           })}
                         </span>
+                        <span className={`rounded-md px-1.5 py-0.5 text-[8px] font-bold uppercase ${event.readAt || readWakeEventIds.has(event.id) ? 'bg-sunken text-fg-subtle' : 'bg-accent-soft text-accent-text'}`}>
+                          {event.readAt || readWakeEventIds.has(event.id) ? 'Read' : 'Unread'}
+                        </span>
                       </div>
 
                       <p className="mt-1 line-clamp-1 text-[10px] text-fg-subtle">
