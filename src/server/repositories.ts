@@ -1268,8 +1268,12 @@ class FirestoreChatRepository implements ChatRepository {
     return this.db.collection(CHATS);
   }
   async listByUser(userId: string) {
-    const snap = await this.col().where('userId', '==', userId).orderBy('updatedAt', 'desc').get();
-    return snap.docs.map((d) => d.data() as Chat);
+    // Avoid requiring a composite Firestore index just to load a user's chats.
+    // Query by owner, then sort the small per-user result set in application code.
+    const snap = await this.col().where('userId', '==', userId).get();
+    return snap.docs
+      .map((d) => d.data() as Chat)
+      .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
   }
   async get(chatId: string) {
     const doc = await this.col().doc(chatId).get();
