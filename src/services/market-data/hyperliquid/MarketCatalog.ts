@@ -421,6 +421,7 @@ export function normaliseMarket(input: NormaliseMarketInput): NormalisedMarket |
  * inventing a tick/pip size. If a skill explicitly requires a pip-based spread
  * limit on such a market, the gate fails closed because it cannot verify that
  * constraint; it must never compare a raw price delta to a pip count.
+ * Venue-neutral relative limits should use `SPREAD_UNDER_x_BPS` instead.
  */
 export function toMarketSymbol(market: NormalisedMarket): MarketSymbol {
   const digits = priceDigitsFor(market.symbol, market.szDecimals);
