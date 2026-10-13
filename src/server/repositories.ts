@@ -53,16 +53,19 @@ export interface SignalRepository {
    * duplicate record.
    */
   update(signal: TradeSignal): Promise<boolean>;
+  deleteByGoat(goatId: string): Promise<void>;
 }
 
 export interface ThesisRepository {
   listByGoat(goatId: string, limit?: number): Promise<MarketThesis[]>;
   save(thesis: MarketThesis): Promise<void>;
+  deleteByGoat(goatId: string): Promise<void>;
 }
 
 export interface WakeEventRepository {
   listByGoat(goatId: string, limit?: number): Promise<WakeEvent[]>;
   save(event: WakeEvent): Promise<void>;
+  deleteByGoat(goatId: string): Promise<void>;
 }
 
 export interface UserProfileRepository {
@@ -265,6 +268,7 @@ class MemorySignalRepository implements SignalRepository {
     list[index] = signal;
     return true;
   }
+  async deleteByGoat(goatId: string) { this.store.delete(goatId); }
 }
 
 class MemoryThesisRepository implements ThesisRepository {
@@ -277,6 +281,7 @@ class MemoryThesisRepository implements ThesisRepository {
     list.unshift(thesis);
     this.store.set(thesis.goatId, list.slice(0, 200));
   }
+  async deleteByGoat(goatId: string) { this.store.delete(goatId); }
 }
 
 class MemoryWakeEventRepository implements WakeEventRepository {
@@ -289,6 +294,7 @@ class MemoryWakeEventRepository implements WakeEventRepository {
     list.unshift(event);
     this.store.set(event.goatId, list.slice(0, 500));
   }
+  async deleteByGoat(goatId: string) { this.store.delete(goatId); }
 }
 
 class MemoryProfileRepository implements UserProfileRepository {
@@ -941,6 +947,19 @@ class FirestoreSkillRepository implements SkillRepository {
   }
 }
 
+/** Deletes all documents belonging to a GOAT in bounded Firestore batches. */
+async function deleteGoatDocuments(db: Firestore, collectionName: string, goatId: string): Promise<void> {
+  const collection = db.collection(collectionName);
+  while (true) {
+    const snapshot = await collection.where('goatId', '==', goatId).limit(400).get();
+    if (snapshot.empty) return;
+    const batch = db.batch();
+    for (const doc of snapshot.docs) batch.delete(doc.ref);
+    await batch.commit();
+    if (snapshot.size < 400) return;
+  }
+}
+
 class FirestoreSignalRepository implements SignalRepository {
   constructor(private db: Firestore) {}
   async listByGoat(goatId: string, limit = 50) {
@@ -955,6 +974,7 @@ class FirestoreSignalRepository implements SignalRepository {
   async save(signal: TradeSignal) {
     await this.db.collection(SIGNALS).doc(signal.id).set(firestoreSafe({ ...signal }));
   }
+  async deleteByGoat(goatId: string) { await deleteGoatDocuments(this.db, SIGNALS, goatId); }
   async update(signal: TradeSignal) {
     const ref = this.db.collection(SIGNALS).doc(signal.id);
     const snap = await ref.get();
@@ -1054,6 +1074,7 @@ export function firestoreSafe<T>(value: T): T {
 
 class FirestoreThesisRepository implements ThesisRepository {
   constructor(private db: Firestore) {}
+  async deleteByGoat(goatId: string) { await deleteGoatDocuments(this.db, THESES, goatId); }
   async listByGoat(goatId: string, limit = 50) {
     const snap = await this.db
       .collection(THESES)
@@ -1070,6 +1091,7 @@ class FirestoreThesisRepository implements ThesisRepository {
 
 class FirestoreWakeEventRepository implements WakeEventRepository {
   constructor(private db: Firestore) {}
+  async deleteByGoat(goatId: string) { await deleteGoatDocuments(this.db, WAKE_EVENTS, goatId); }
   async listByGoat(goatId: string, limit = 50) {
     const snap = await this.db
       .collection(WAKE_EVENTS)
