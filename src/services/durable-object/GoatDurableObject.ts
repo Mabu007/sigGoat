@@ -467,6 +467,16 @@ export class GoatDurableObject {
     await this.hydrationPromise;
   }
 
+  /** Mark a persisted review as read in the live state cache as well. */
+  markWakeEventRead(eventId: string, readAt: number): void {
+    const mark = (event: WakeEvent | null | undefined): WakeEvent | null | undefined =>
+      event?.id === eventId ? { ...event, readAt } : event;
+    this.runtimeState.recentWakeEvents = this.runtimeState.recentWakeEvents.map((event) =>
+      event.id === eventId ? { ...event, readAt } : event,
+    );
+    this.runtimeState.lastWakeEvent = mark(this.runtimeState.lastWakeEvent) as WakeEvent | null;
+  }
+
   getState(): GoatRuntimeState {
     const signal = this.runtimeState.latestSignal;
     if (signal?.status === 'ACTIONABLE') {
