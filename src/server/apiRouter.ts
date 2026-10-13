@@ -5211,11 +5211,16 @@ apiRouter.post(
     const user = requireUser(req);
     const { goatId, market, period } = req.body ?? {};
 
-    const goat = goatId
+    const foundGoat = goatId
       ? await persistence.goats.getForUser(String(goatId), user.uid)
       : (await persistence.goats.listByUser(user.uid))[0];
-    if (!goat) {
+    if (!foundGoat) {
       return fail(res, 400, "NO_GOAT", "No GOAT available for backtest.");
+    }
+    const migratedGoat = migrateGoatMarkets(foundGoat);
+    const goat = migratedGoat ?? foundGoat;
+    if (migratedGoat) {
+      await persistence.goats.save(migratedGoat);
     }
 
     const skills = (await allSkillsFor(user.uid)).filter((s) =>
