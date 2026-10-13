@@ -118,6 +118,7 @@ import {
 import {
   NotificationOutbox,
   MemoryOutboxStore,
+  FirestoreOutboxStore,
 } from "../services/telegram/NotificationOutbox";
 
 export const apiRouter = express.Router();
@@ -269,7 +270,9 @@ export const marketIngestion = new MarketIngestionService({
  * record rather than a lost alert.
  */
 export const notificationOutbox = new NotificationOutbox({
-  store: new MemoryOutboxStore(),
+  store: getFirebaseAdmin()
+    ? new FirestoreOutboxStore(getFirebaseAdmin()!.firestore)
+    : new MemoryOutboxStore(),
   deliverer: {
     deliver: async (record) => {
       const token =
