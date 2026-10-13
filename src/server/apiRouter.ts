@@ -367,6 +367,16 @@ async function runScheduledWakeSync(
 
   if (verdict.allowed === false) {
     console.log(`[scheduler] suppressed wake for ${goatId}: ${verdict.reason}`);
+    if (firebaseScheduler) {
+      const nextWake = computeNextWakeAt(goat);
+      const nextTracker = computeNextTrackerCheckAt(goat);
+      await firebaseScheduler.complete(
+        goat.id,
+        scheduleGeneration(goat),
+        nextWake === null ? null : new Date(nextWake).toISOString(),
+        nextTracker === null ? null : new Date(nextTracker).toISOString(),
+      );
+    }
     return;
   }
 
@@ -2014,8 +2024,9 @@ apiRouter.get(
       return fail(res, 503, "FIREBASE_SCHEDULER_UNAVAILABLE", "Firebase-backed scheduling is unavailable.");
     }
 
-    const due = await firebaseScheduler.claimDue(Date.now(), 40);
+    const due = await firebaseScheduler.claimDue(Date.now(), 20);
     let ran = 0;
+    let trackerChecks = 0;
     let stale = 0;
     let failed = 0;
     for (const event of due) {
@@ -2037,7 +2048,41 @@ apiRouter.get(
         console.error(`[firebase-cron] failed GOAT ${event.goatId}:`, error);
       }
     }
-    res.json({ handled: true, due: due.length, ran, stale, failed, scheduler: firebaseScheduler.health() });
+
+    // Trackers are deterministic and do not call the model unless a condition
+    // fires. They use the same persisted lease so overlapping cron invocations
+    // cannot evaluate the same GOAT concurrently.
+    const trackerDue = await firebaseScheduler.claimDueTrackerChecks(Date.now(), 20);
+    for (const event of trackerDue) {
+      try {
+        const goat = await persistence.goats.get(event.goatId);
+        if (!goat || goat.status === "PAUSED" || goat.deploymentState === "DRAFT") {
+          await firebaseScheduler.completeTrackerCheck(event.goatId, event.generationId, null);
+          continue;
+        }
+        if (scheduleGeneration(goat) !== event.generationId) {
+          await syncSchedule(goat);
+          stale += 1;
+          continue;
+        }
+        const result = await runTrackerCheckSync(event.goatId, event.eventId);
+        await firebaseScheduler.completeTrackerCheck(event.goatId, event.generationId, result.nextAt);
+        if (result.handled) trackerChecks += 1;
+      } catch (error) {
+        failed += 1;
+        console.error(`[firebase-cron] tracker check failed for GOAT ${event.goatId}:`, error);
+      }
+    }
+    res.json({
+      handled: true,
+      due: due.length,
+      ran,
+      trackerChecks,
+      trackerDue: trackerDue.length,
+      stale,
+      failed,
+      scheduler: firebaseScheduler.health(),
+    });
   }),
 );
 
