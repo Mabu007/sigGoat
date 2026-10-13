@@ -601,6 +601,7 @@ async function setGoatStatusFor(
   const updated: FundGoat = {
     ...goat,
     status: paused ? "PAUSED" : "WATCHING",
+    deploymentState: paused ? (goat.deploymentState ?? 'DEPLOYED') : 'DEPLOYED',
     updatedAt: new Date().toISOString(),
   };
 
@@ -609,6 +610,9 @@ async function setGoatStatusFor(
 
   const runtime = await ensureGoatRuntime(updated);
   const state = paused ? runtime.pause() : runtime.play();
+  if (!paused && goat.deploymentState !== 'DEPLOYED') {
+    await runtime.wake('Initial market review on deployment', 'MANUAL_REEVALUATE', updated.markets[0]);
+  }
 
   return {
     ...updated,
@@ -1500,6 +1504,7 @@ interface ValidatedGoatInput {
    * creation perform a network round trip.
    */
   modelProvided: boolean;
+  deploymentState: 'DRAFT' | 'DEPLOYED';
 }
 
 function validateGoatInput(body: unknown): ValidatedGoatInput | null {
@@ -1529,6 +1534,7 @@ function validateGoatInput(body: unknown): ValidatedGoatInput | null {
     skillIds: b.skillIds as string[],
     model,
     modelProvided,
+    deploymentState: b.deploymentState === 'DRAFT' ? 'DRAFT' : 'DEPLOYED',
     schedule: normaliseSchedule(b.schedule as GoatSchedule | undefined),
     /**
      * Tracking timeframe is validated server-side. An unrecognised value falls
@@ -1626,7 +1632,7 @@ async function syncSchedule(goat: FundGoat): Promise<void> {
         : null,
       timeframe: normaliseTrackingTimeframe(goat.timeframe),
       generationId: scheduleGeneration(goat),
-      paused: goat.status === "PAUSED",
+      paused: goat.status === "PAUSED" || goat.deploymentState === 'DRAFT',
     });
   } catch (err) {
     console.error(
@@ -4559,6 +4565,7 @@ async function runtimeFor(
   const state = runtime.getState();
 
   const needsReview =
+    goat.deploymentState !== 'DRAFT' &&
     !state.currentThesis && !state.lastWakeEvent && !state.isEvaluating && goat.status !== "PAUSED";
   if (needsReview) {
     void runtime
@@ -4610,7 +4617,7 @@ apiRouter.get(
     const runtime = await runtimeFor(goat);
     res.json({
       goat,
-      runtimeState: runtime.getState(),
+      runtimeState: runtime?.getState() ?? null,
       dataMode: marketProvider.dataMode,
     });
   }),
@@ -4691,10 +4698,12 @@ apiRouter.post(
 
     await persistence.goats.save(newGoat);
 
-    /** Durable alarm becomes the authoritative schedule. */
-    await syncSchedule(newGoat);
+    // Drafts are stored in Firebase but must not create a runtime schedule.
+    if (newGoat.deploymentState !== 'DRAFT') await syncSchedule(newGoat);
 
-    const runtime = await ensureGoatRuntime(newGoat);
+    const runtime = newGoat.deploymentState === 'DRAFT'
+      ? null
+      : await ensureGoatRuntime(newGoat);
 
     /**
      * THE FIRST ANALYSIS MUST NOT BLOCK THIS RESPONSE.
@@ -4719,7 +4728,7 @@ apiRouter.post(
      * The client is told the GOAT exists and that the first analysis is running,
      * so the UI can show a pending state instead of an empty one.
      */
-    void runtime
+    if (runtime) void runtime
       .wake(
         "Initial analysis on deployment",
         "MANUAL_REEVALUATE",
@@ -4739,7 +4748,7 @@ apiRouter.post(
        * Explicit, so the UI can show "first analysis running" rather than an
        * empty state that looks like the GOAT did nothing.
        */
-      firstAnalysisPending: true,
+      firstAnalysisPending: Boolean(runtime),
     });
   }),
 );
