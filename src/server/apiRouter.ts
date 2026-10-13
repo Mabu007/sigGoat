@@ -523,11 +523,19 @@ const runtimeOptions = {
 
 function ensureGoatRuntime(goat: FundGoat) {
   subscribeToMarkets(goat);
-  const attached = allSkillsFor(goat.userId).then((skills) =>
-    skills.filter((s) => goat.skillIds.includes(s.id)),
+  const migrated = migrateGoatMarkets(goat);
+  const canonicalGoat = migrated ?? goat;
+  if (migrated) {
+    void persistence.goats.save(migrated).catch((err) => {
+      console.error(`[api] failed to persist single-asset migration for ${goat.id}:`, err);
+    });
+  }
+  subscribeToMarkets(canonicalGoat);
+  const attached = allSkillsFor(canonicalGoat.userId).then((skills) =>
+    skills.filter((s) => canonicalGoat.skillIds.includes(s.id)),
   );
   return attached.then((attachedSkills) =>
-    durableObjectRegistry.getOrCreate(goat, attachedSkills, runtimeOptions),
+    durableObjectRegistry.getOrCreate(canonicalGoat, attachedSkills, runtimeOptions),
   );
 }
 
@@ -719,7 +727,11 @@ export function migrateGoatMarkets(goat: FundGoat): FundGoat | null {
       : market;
   });
 
-  const unique = [...new Set(migrated)];
+  // Legacy GOATs may have been created when multi-market assignments were allowed.
+  // Collapse them deterministically to one supported asset so runtime analysis,
+  // tracker subscriptions and backtests all agree on the same instrument.
+  const preferred = migrated.find((m) => KNOWN_LISTED_MARKETS.has(m.toUpperCase())) ?? migrated[0];
+  const unique = preferred ? [preferred] : [];
   if (
     unique.every((m) => goat.markets.includes(m)) &&
     unique.length === goat.markets.length
@@ -1493,8 +1505,7 @@ function validateGoatInput(body: unknown): ValidatedGoatInput | null {
     return null;
   if (
     !Array.isArray(b.markets) ||
-    b.markets.length === 0 ||
-    b.markets.length > 20
+    b.markets.length !== 1
   )
     return null;
   if (!b.markets.every((m) => typeof m === "string" && m.length <= 32))
@@ -4594,7 +4605,7 @@ apiRouter.post(
         res,
         400,
         "INVALID_INPUT",
-        "Name, goal, at least one market, and a supported model are required.",
+        "Name, goal, exactly one asset, and a supported model are required.",
       );
     }
 
