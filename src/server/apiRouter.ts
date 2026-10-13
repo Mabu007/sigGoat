@@ -609,6 +609,7 @@ async function setGoatStatusFor(
   await syncSchedule(updated);
 
   const runtime = await ensureGoatRuntime(updated);
+  runtime.updateConfig(updated, await allSkillsFor(userId));
   const state = paused ? runtime.pause() : runtime.play();
   if (!paused && goat.deploymentState !== 'DEPLOYED') {
     await runtime.wake('Initial market review on deployment', 'MANUAL_REEVALUATE', updated.markets[0]);
