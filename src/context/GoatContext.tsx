@@ -877,9 +877,9 @@ export const GoatProvider: React.FC<{
       const skillIds =
         cleanStringArray(input.skillIds);
 
-      if (markets.length === 0) {
+      if (markets.length !== 1) {
         throw new Error(
-          'At least one market is required.'
+          'A GOAT must be assigned exactly one asset.'
         );
       }
 
