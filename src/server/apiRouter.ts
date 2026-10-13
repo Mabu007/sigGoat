@@ -388,7 +388,8 @@ async function runScheduledWakeSync(
     : await ensureGoatRuntime(goat);
 
   try {
-    await runtime.wake(reason, "SCHEDULED", goat.markets[0]);
+    const reviewedState = await runtime.wake(reason, "SCHEDULED", goat.markets[0]);
+    await notifyGoatMarketReview(goat, reviewedState, reason);
   } finally {
     const refreshed = await persistence.goats.get(goatId);
     if (refreshed) {
@@ -618,7 +619,8 @@ async function setGoatStatusFor(
   if (paused) runtime.pause();
   else runtime.play();
   if (!paused && goat.deploymentState !== 'DEPLOYED') {
-    await runtime.wake('Initial market review on deployment', 'MANUAL_REEVALUATE', updated.markets[0]);
+    const reviewedState = await runtime.wake('Initial market review on deployment', 'MANUAL_REEVALUATE', updated.markets[0]);
+    await notifyGoatMarketReview(updated, reviewedState, 'Initial deployment review');
   }
 
   return {
@@ -4551,10 +4553,10 @@ apiRouter.post(
         "MANUAL_REEVALUATE",
         markets.resolved[0],
       )
+      .then((state) => notifyGoatMarketReview(newGoat, state, "Initial deployment review"))
       .catch((err) => {
-        // Already recorded on the runtime state; never surface as an unhandled
-        // rejection from a detached promise.
-        console.error("[api] Initial GOAT analysis failed:", err);
+        // The runtime records its own failure; log detached work and keep the request safe.
+        console.error("[api] Initial GOAT analysis or Telegram recap failed:", err);
       });
 
     res.json({
@@ -4734,6 +4736,7 @@ apiRouter.post(
         : goat.markets[0];
 
     const state = await runtime.wake(reason, "MANUAL_REEVALUATE", market);
+    await notifyGoatMarketReview(goat, state, reason);
     res.json({ state, dataMode: marketProvider.dataMode });
   }),
 );
