@@ -170,6 +170,28 @@ describe('SignalGate', () => {
     expect(result.reasons.join()).toContain('Spread');
   });
 
+  test('enforces venue-neutral spread limits in basis points', () => {
+    const skills = [
+      {
+        id: 's', userId: 'system', name: 'Spread', description: '', methodology: '',
+        constraints: 'SPREAD_UNDER_2_BPS', preferredTimeframes: ['1h'], requiredEvidence: '', invalidationRules: '',
+        createdAt: '', updatedAt: '',
+      },
+    ] as TradingSkill[];
+    const quote = { ...QUOTE, bid: 1.0844, ask: 1.0846, mid: 1.0845, spread: 0.0002 };
+    const result = SignalGate.validate({
+      reasoningResult: VALID_RESULT,
+      thesis: makeThesis(),
+      market: 'EUR/USD',
+      quote,
+      spreadBps: (quote.spread / quote.mid) * 10_000,
+      constraints: aggregateHardConstraints(skills),
+      goatId: 'g1',
+      userId: 'u1',
+    });
+    expect(result.approved).toBe(true);
+  });
+
   test('fails closed when a spread rule cannot be verified', () => {
     const skills = [
       {
