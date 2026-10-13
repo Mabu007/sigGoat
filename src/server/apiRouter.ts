@@ -5338,6 +5338,9 @@ function inferChatCandleCount(message: string, timeframe: string): number {
     const total = /week/.test(unit) ? n * 10080 : /day/.test(unit) ? n * 1440 : /hour/.test(unit) ? n * 60 : n;
     return Math.min(5000, Math.max(30, Math.ceil(total / (minutesPerCandle[timeframe] || 60))));
   }
+  if (/\b(today|this session|session today|intraday)\b/.test(lower)) {
+    return Math.min(5000, Math.max(30, Math.ceil(1440 / (minutesPerCandle[timeframe] || 60))));
+  }
   return /\b(history|historical|trend|backtest|compare|research|over time|long.?term)\b/.test(lower) ? 500 : 80;
 }
 
