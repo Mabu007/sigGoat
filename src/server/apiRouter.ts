@@ -589,7 +589,9 @@ async function setGoatStatusFor(
   }
 
   const deployingDraft = !paused && goat.deploymentState === 'DRAFT';
-  const resolvedModel = deployingDraft
+  // Preserve a model the user chose while saving the draft. Only resolve a
+  // current fallback when the draft was created before any model was selected.
+  const resolvedModel = deployingDraft && goat.model === LEGACY_DEFAULT_MODEL
     ? await resolveModelForNewGoat(userId, goat.model, false)
     : goat.model;
   const updated: FundGoat = {
