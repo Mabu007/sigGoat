@@ -5868,7 +5868,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       const assistantMessage: ChatMessage = {
         id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
         chatId: chat.id, userId: user.uid, role: "assistant", content: reply,
-        model: "conversation", createdAt: now,
+        createdAt: now,
       };
       await Promise.all([
         persistence.messages.create(chat.id, assistantMessage),
