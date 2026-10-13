@@ -5391,10 +5391,12 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
         expiresAt: signal.expiresAt,
       })),
       recentActivity: wakeEvents.map((event) => ({
-        trigger: event.trigger,
-        result: event.result,
+        triggerType: event.triggerType,
+        decisionResult: event.decisionResult,
         reason: event.reason,
-        createdAt: event.createdAt,
+        market: event.market,
+        details: event.details,
+        timestamp: event.timestamp,
       })),
     };
   }));
