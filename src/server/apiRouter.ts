@@ -5295,6 +5295,52 @@ async function fetchChatNews(query: string): Promise<Array<{ title: string; sour
   }
 }
 
+function inferChatMarketQueries(message: string): string[] {
+  const queries: string[] = [];
+  const add = (value: string) => { if (!queries.some((q) => q.toLowerCase() === value.toLowerCase())) queries.push(value); };
+  const aliases: Array<[RegExp, string[]]> = [
+    [/\b(gold|xau|xauusd|xyz:gold|paxg)\b/i, ["gold", "xyz:GOLD", "XAU"]],
+    [/\b(bitcoin|btc|xbt)\b/i, ["BTC", "Bitcoin"]],
+    [/\b(ethereum|ether|eth)\b/i, ["ETH", "Ethereum"]],
+    [/\b(solana|sol)\b/i, ["SOL", "Solana"]],
+    [/\b(silver|xag)\b/i, ["silver", "XAG"]],
+    [/\b(crude oil|oil|wti|brent)\b/i, ["oil", "WTI", "Brent"]],
+    [/\b(hype|hyperliquid)\b/i, ["HYPE"]],
+    [/\b(doge|dogecoin)\b/i, ["DOGE"]],
+    [/\b(xrp|ripple)\b/i, ["XRP"]],
+    [/\b(link|chainlink)\b/i, ["LINK"]],
+    [/\b(avax|avalanche)\b/i, ["AVAX"]],
+    [/\b(sui)\b/i, ["SUI"]],
+  ];
+  for (const [pattern, terms] of aliases) if (pattern.test(message)) terms.forEach(add);
+  const ignored = new Set(["AI", "GOAT", "GOATS", "USD", "USDT", "USDC", "API", "UTC", "LIVE", "BUY", "SELL", "NOW", "THE", "AND", "FOR", "FROM", "WITH", "WHAT", "WHICH"]);
+  for (const match of message.matchAll(/\b[A-Z][A-Z0-9]{1,9}\b/g)) {
+    if (!ignored.has(match[0])) add(match[0]);
+  }
+  return queries.slice(0, 8);
+}
+
+function inferChatTimeframe(message: string, goats: FundGoat[]): string {
+  const explicit = message.match(/\b(1m|3m|5m|15m|30m|1h|2h|4h|6h|12h|1d|1w)\b/i)?.[1];
+  if (explicit) return explicit.toLowerCase();
+  return goats.find((goat) => message.toLowerCase().includes(goat.name.toLowerCase()))?.timeframe || "1h";
+}
+
+function inferChatCandleCount(message: string, timeframe: string): number {
+  const lower = message.toLowerCase();
+  const minutesPerCandle: Record<string, number> = {
+    "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60,
+    "2h": 120, "4h": 240, "6h": 360, "12h": 720, "1d": 1440, "1w": 10080,
+  };
+  const duration = lower.match(/\b(?:last|past|previous|over)\s+(\d+)\s*(minutes?|mins?|hours?|days?|weeks?)\b/);
+  if (duration) {
+    const n = Number(duration[1]), unit = duration[2];
+    const total = /week/.test(unit) ? n * 10080 : /day/.test(unit) ? n * 1440 : /hour/.test(unit) ? n * 60 : n;
+    return Math.min(5000, Math.max(30, Math.ceil(total / (minutesPerCandle[timeframe] || 60))));
+  }
+  return /\b(history|historical|trend|backtest|compare|research|over time|long.?term)\b/.test(lower) ? 500 : 80;
+}
+
 async function buildChatResearchContext(userId: string, userMessage: string): Promise<string> {
   const now = new Date();
   const lower = userMessage.toLowerCase();
@@ -5421,39 +5467,60 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   const marketNames = new Set<string>();
   for (const goat of matchedGoats) for (const market of goat.markets ?? []) marketNames.add(market);
 
-  const matchingSymbols = symbols.filter((symbol) => {
-    const s = symbol.symbol.toLowerCase();
-    const name = symbol.name.toLowerCase();
-    if (marketNames.has(symbol.symbol)) return true;
-    if (wantsGold && /\b(gold|xau|paxg)\b/i.test(s + " " + name)) return true;
-    if (wantsBitcoin && /\b(bitcoin|btc)\b/i.test(s + " " + name)) return true;
-    if (wantsEthereum && /\b(ethereum|ether|eth)\b/i.test(s + " " + name)) return true;
-    return lower.includes(s) || (name.length > 3 && lower.includes(name));
-  }).slice(0, 5);
-
+  const marketQueries = inferChatMarketQueries(userMessage);
+  for (const goat of matchedGoats) {
+    for (const market of goat.markets ?? []) {
+      if (marketQueries.length < 8 && !marketQueries.some((q) => q.toLowerCase() === market.toLowerCase())) marketQueries.push(market);
+    }
+  }
+  const discovered = new Map<string, { symbol: string; name: string }>();
+  const addMarket = (item: { symbol: string; name?: string }) => {
+    if (!discovered.has(item.symbol.toUpperCase())) discovered.set(item.symbol.toUpperCase(), { symbol: item.symbol, name: item.name || item.symbol });
+  };
+  for (const query of marketQueries) {
+    symbols.filter((symbol) =>
+      symbol.symbol.toLowerCase() === query.toLowerCase() ||
+      symbol.name.toLowerCase() === query.toLowerCase() ||
+      symbol.symbol.toLowerCase().endsWith(":" + query.toLowerCase())
+    ).forEach(addMarket);
+  }
+  if (marketProvider.dataMode === "LIVE") {
+    const searchResults = await Promise.all(marketQueries.map(async (query) => {
+      try { return await hyperliquidProvider.searchInstruments(query, 8); }
+      catch { return []; }
+    }));
+    searchResults.flat().forEach((item) => addMarket({ symbol: item.symbol, name: item.name || item.symbol }));
+  }
+  const matchingSymbols = [...discovered.values()].filter((item) => {
+    const text = (item.symbol + " " + item.name).toLowerCase();
+    return marketQueries.some((query) => {
+      const q = query.toLowerCase();
+      return text === q || text.includes(q) || item.symbol.toLowerCase().endsWith(":" + q);
+    });
+  }).slice(0, 6);
   if (matchingSymbols.length) {
+    const timeframe = inferChatTimeframe(userMessage, matchedGoats);
+    const candleCount = inferChatCandleCount(userMessage, timeframe);
     const quotes = await Promise.all(matchingSymbols.map(async (symbol) => {
       try {
         const quote = await marketProvider.getQuote(symbol.symbol);
         let candles: unknown[] = [];
-        if (matchingSymbols.indexOf(symbol) < 3) {
-          try {
-            candles = (await marketProvider.getCandles(symbol.symbol, "1h", 24)).slice(-12);
-          } catch { /* candles may be unavailable even when a quote exists */ }
+        let candleError: string | undefined;
+        try {
+          candles = (await marketProvider.getCandles(symbol.symbol, timeframe, candleCount)).map((c) => ({
+            time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+          }));
+        } catch (error) {
+          candleError = error instanceof Error ? error.message : "Historical candles unavailable.";
         }
-        return {
-          symbol: symbol.symbol,
-          name: symbol.name,
-          quote,
-          recentHourlyCandles: candles,
-        };
+        return { symbol: symbol.symbol, name: symbol.name, quote, timeframe, requestedCandleCount: candleCount, returnedCandleCount: candles.length, historicalCandles: candles, candleError, dataMode: marketProvider.dataMode };
       } catch (error) {
-        return { symbol: symbol.symbol, name: symbol.name, unavailable: error instanceof Error ? error.message : "quote unavailable" };
+        return { symbol: symbol.symbol, name: symbol.name, unavailable: error instanceof Error ? error.message : "quote unavailable", dataMode: marketProvider.dataMode };
       }
     }));
     sections.push(
-      "LIVE HYPERLIQUID MARKET SNAPSHOTS (retrieved for this request; quote timestamps are Unix milliseconds; zero-valued unavailable fields are not real quotes):\n" +
-      JSON.stringify(quotes).slice(0, 10000),
+      "ON-DEMAND HYPERLIQUID RESEARCH RESULTS (historical candles oldest-to-newest; unavailable fields are not zero):\\n" +
+      JSON.stringify({ fetchedAt: now.toISOString(), timeframe, requestedCandleCount: candleCount, results: quotes }).slice(0, 30000),
     );
   } else {
     sections.push("LIVE MARKET SNAPSHOTS: no matching listed instrument was identified from the current message or this user's GOAT markets. Do not invent a quote; ask which listed symbol they mean if needed.");
@@ -5478,15 +5545,10 @@ const CHAT_MODEL = "apodex/apodex-1.1-mini:free";
 
 /** A concise, honest system persona for the assistant. */
 const CHAT_SYSTEM_PROMPT =
-  "You are SIRGOAT's trading copilot: direct, practical, analytical, and grounded in evidence. " +
-  "You receive a fresh research context each turn containing any available live Hyperliquid data, " +
-  "recent internet news, and the authenticated user's saved GOATs, skills, theses, activity, and proposals. " +
-  "Use that context rather than generic outdated training knowledge. Cite timestamps and news sources in plain text. " +
-  "When asked whether to buy or sell, give a conditional market assessment with bullish and bearish scenarios, " +
-  "confirmation, invalidation, and risk considerations; do not promise outcomes or invent certainty. " +
-  "State clearly when a quote, candle, news feed, or user record is unavailable or stale. " +
-  "Never expose another user's data, credentials, or internal secrets. Chat can analyze existing proposals but must not execute trades, " +
-  "create proposals, accept/reject proposals, or alter GOAT settings.";
+  "You are SIRGOAT's autonomous market-research copilot. For every question, identify the evidence needed and use the backend's on-demand Hyperliquid instrument discovery, live quote retrieval, historical OHLCV candle retrieval, internet news, and authenticated SIRGOAT state. " +
+  "Do not treat one preloaded snapshot as the entire market-data capability: relevant instruments can be searched and fetched per request. For multi-asset questions, analyze every requested asset individually and compare timestamps and timeframes. For historical questions, use the retrieved candle series and report timeframe and sample size. " +
+  "For GOAT questions, inspect the actual saved configuration, skills, theses, activity and proposals. Distinguish facts from analysis, give sources and timestamps, and explain gaps. Never fabricate an asset listing, price, funding, open interest, volume, candle, or news headline. If the requested instrument is not found on Hyperliquid, say so and ask for a symbol or alternate source. " +
+  "Research workflow: plan the required evidence, inspect retrieved data, identify gaps, use all relevant evidence supplied for this turn, then synthesize a clear answer with competing scenarios, confirmation, invalidation and risk. State whether the feed is LIVE or PAPER and never label stale/PAPER data live. Never expose another user's data or credentials. Never execute trades, create or decide proposals, or alter GOAT settings from chat.";
 
 /** Resolve the chatbot credential: user OpenRouter key from the vault, else the server fallback. */
 async function resolveChatbotCredential(uid: string): Promise<{
