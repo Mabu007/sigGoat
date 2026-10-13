@@ -2023,6 +2023,25 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             </div>
           </section>
 
+          {inspectedGoat.deploymentState !== 'DRAFT' &&
+            !inspectedState?.lastError &&
+            (inspectedState?.isEvaluating ||
+              (!inspectedState?.currentThesis && inspectedGoat.status !== 'PAUSED')) && (
+              <section className="rounded-2xl border border-accent/30 bg-accent-soft/40 p-4">
+                <div className="flex items-start gap-3">
+                  <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-accent-text" />
+                  <div>
+                    <h3 className="text-xs font-bold text-accent-text">
+                      {inspectedState?.isEvaluating ? 'Investigating market' : 'Initial market review queued'}
+                    </h3>
+                    <p className="mt-1 text-xs leading-relaxed text-fg-muted">
+                      SIRGOAT is loading market context and building its thesis, trade idea and tracked conditions. The review will appear here once its results are persisted.
+                    </p>
+                  </div>
+                </div>
+              </section>
+            )}
+
           {inspectedState?.lastError && (
             <section
               role="alert"
