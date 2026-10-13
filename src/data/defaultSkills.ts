@@ -127,7 +127,7 @@ Failure to establish directional displacement within 2 hours of London open or m
     name: 'Breakout Detection',
     description: 'Volatility expansion confirmation out of compression regimes with volume and spread verification.',
     methodology: 'Identify consolidation ranges where spread is low and volatility compressed. Trigger investigation upon high-momentum candle piercing range boundary.',
-    constraints: 'REQUIRE_INVALIDATION_BEFORE_TRADE, SPREAD_UNDER_2_PIPS',
+    constraints: 'REQUIRE_INVALIDATION_BEFORE_TRADE, SPREAD_UNDER_2_BPS',
     preferredTimeframes: ['15m', '1h', '4h'],
     requiredEvidence: 'Candle close outside range by at least 1x ATR accompanied by volume expansion.',
     invalidationRules: 'Re-entry into the center 50% of the consolidation channel within two periods.',
