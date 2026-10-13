@@ -1041,6 +1041,49 @@ export async function seedDefaultSkills(): Promise<void> {
 }
 
 // Signal -> Telegram fan-out (only when the owner configured Telegram).
+/** Send a durable Telegram recap after every completed scheduled/initial review. */
+async function notifyGoatMarketReview(
+  goat: FundGoat,
+  state: GoatRuntimeState,
+  reason: string,
+): Promise<void> {
+  const [token, profile] = await Promise.all([
+    keyStore.getTelegramToken(goat.userId),
+    persistence.profiles.get(goat.userId),
+  ]);
+  // Do not create dead-letter records for users who have not connected Telegram.
+  if (!token || !profile?.telegramChatId) return;
+
+  const thesis = state.currentThesis;
+  const signal = state.latestSignal;
+  const event = state.lastWakeEvent;
+  const subjectId = event?.id ?? thesis?.id;
+  if (!subjectId) return;
+
+  const lines = [
+    `🐐 ${goat.name} — Market Review`,
+    `Asset: ${goat.markets[0] ?? 'Unknown'}`,
+    `Review: ${reason}`,
+    `Status: ${state.status}`,
+    thesis ? `Bias: ${thesis.directionalHypothesis} (${thesis.confidence}% confidence)` : 'Thesis: not available',
+    thesis?.assetState || thesis?.summary || state.dormancyReason || 'No market-state summary was persisted.',
+    signal && signal.status === 'ACTIONABLE' && signal.direction !== 'NO_TRADE'
+      ? `Trade idea: ${signal.direction} ${signal.orderType} | Entry ${signal.entry ?? signal.entryZone?.low ?? 'wait for confirmation'} | Stop ${signal.stopLoss ?? '—'} | Target ${signal.takeProfit ?? '—'}`
+      : 'Trade idea: no actionable setup; wait for confirmation.',
+    `Tracked conditions: ${thesis?.trackers?.length ?? state.trackers.length}`,
+    event ? `Review time: ${new Date(event.timestamp).toISOString()}` : '',
+  ].filter(Boolean);
+
+  const { id, created } = await notificationOutbox.enqueue({
+    goatId: goat.id,
+    userId: goat.userId,
+    kind: 'MARKET_REVIEW',
+    subjectId,
+    body: lines.join('\n'),
+  });
+  if (created) await notificationOutbox.deliverOne(id);
+}
+
 durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
   if (signal.direction === "NO_TRADE" || signal.status !== "ACTIONABLE") return;
 
