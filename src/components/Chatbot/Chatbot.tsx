@@ -439,6 +439,7 @@ export function Chatbot() {
   const [modelSaving, setModelSaving] = useState(false);
   const [streamStatus, setStreamStatus] = useState('SirGOAT is on it…');
   const [renameTarget, setRenameTarget] = useState<ChatItem | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ChatItem | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
 
@@ -1458,7 +1459,7 @@ export function Chatbot() {
 
                             e.stopPropagation();
 
-                            void deleteChat(chat.id);
+                            setDeleteTarget(chat);
 
                           }}
 
@@ -1501,6 +1502,23 @@ export function Chatbot() {
             <div className="shrink-0 border-t border-line p-2 text-[10px] leading-relaxed text-fg-subtle">
               <p className="truncate">SIRGOAT conversations</p>
               <p className="mt-0.5">Switch sessions anytime.</p>
+              <div className="mt-3 border-t border-line pt-3">
+                <label htmlFor="sirgoat-chat-model" className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-fg-subtle">Model</label>
+                <div className="flex items-center gap-2">
+                  <select
+                    id="sirgoat-chat-model"
+                    value={chatModel ?? ''}
+                    onChange={(event) => void chooseChatModel(event.target.value)}
+                    disabled={modelSaving || chatModels.length === 0}
+                    className="min-w-0 w-full rounded-lg border border-line bg-surface px-2 py-2 text-[11px] text-fg outline-none focus:border-focus disabled:opacity-60"
+                    aria-label="Choose SIRGOAT reasoning model"
+                  >
+                    {chatModels.length === 0 && <option value="">Model configured in Settings</option>}
+                    {chatModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}{model.id.endsWith(':free') ? ' · FREE' : ''}</option>)}
+                  </select>
+                  {modelSaving && <Loader2 size={12} className="shrink-0 animate-spin text-fg-subtle" aria-label="Saving model" />}
+                </div>
+              </div>
             </div>
 
           </div>
@@ -1683,23 +1701,6 @@ export function Chatbot() {
 
             >
 
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <label htmlFor="sirgoat-chat-model" className="text-[10px] font-medium uppercase tracking-wider text-fg-subtle">Model</label>
-                <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
-                  <select
-                    id="sirgoat-chat-model"
-                    value={chatModel ?? ''}
-                    onChange={(event) => void chooseChatModel(event.target.value)}
-                    disabled={modelSaving || chatModels.length === 0}
-                    className="max-w-[min(75vw,420px)] rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[11px] text-fg outline-none focus:border-focus disabled:opacity-60"
-                    aria-label="Choose SIRGOAT reasoning model"
-                  >
-                    {chatModels.length === 0 && <option value="">Model configured in Settings</option>}
-                    {chatModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}{model.id.endsWith(':free') ? ' · FREE' : ''}</option>)}
-                  </select>
-                  {modelSaving && <Loader2 size={12} className="animate-spin text-fg-subtle" aria-label="Saving model" />}
-                </div>
-              </div>
               <div className="flex items-end gap-2 rounded-lg border border-line bg-sunken px-3 py-2 focus-within:border-focus">
 
                 <textarea
@@ -1759,6 +1760,68 @@ export function Chatbot() {
         </div>
 
       </div>
+
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 backdrop-blur-[3px]"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && deletingId !== deleteTarget.id) setDeleteTarget(null);
+          }}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="sirgoat-delete-title"
+            aria-describedby="sirgoat-delete-description"
+            className="w-full max-w-sm overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl"
+          >
+            <div className="flex items-start gap-3 border-b border-line px-5 py-4">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-negative/10 text-negative">
+                <Trash2 size={16} aria-hidden="true" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 id="sirgoat-delete-title" className="text-sm font-semibold text-fg">ARE YOU SURE?</h2>
+                <p id="sirgoat-delete-description" className="mt-1 text-xs leading-relaxed text-fg-muted">
+                  Delete “{deleteTarget.title}”? This permanently removes the conversation and its messages.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deletingId === deleteTarget.id}
+                className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40"
+                aria-label="Close delete confirmation"
+              >
+                <X size={16} aria-hidden="true" />
+              </button>
+            </div>
+            <div className="flex justify-end gap-2 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deletingId === deleteTarget.id}
+                className="rounded-xl border border-line px-3 py-2 text-xs font-medium text-fg transition-colors hover:bg-raised disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = deleteTarget;
+                  if (!target) return;
+                  setDeleteTarget(null);
+                  void deleteChat(target.id);
+                }}
+                disabled={deletingId === deleteTarget.id}
+                className="inline-flex items-center gap-2 rounded-xl bg-negative px-3.5 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Trash2 size={13} aria-hidden="true" />
+                Delete conversation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {renameTarget && (
         <div
