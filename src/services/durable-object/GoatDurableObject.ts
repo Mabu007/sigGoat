@@ -873,7 +873,12 @@ export class GoatDurableObject {
       }
 
       // ---- Stage 5: thesis --------------------------------------------
-      const nowStr = new Date().toISOString();
+      const previousCreatedAt = Date.parse(this.runtimeState.currentThesis?.createdAt ?? '');
+      const thesisTimestamp = Math.max(
+        this.now(),
+        Number.isFinite(previousCreatedAt) ? previousCreatedAt + 1 : 0,
+      );
+      const nowStr = new Date(thesisTimestamp).toISOString();
       // Every review is a new thesis version. Reusing an ID made old proposals
       // indistinguishable from the latest thesis and allowed stale approvals.
       const thesisId = this.newId('ths');
