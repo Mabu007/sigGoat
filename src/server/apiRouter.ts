@@ -645,13 +645,7 @@ function subscribeToMarkets(goat: FundGoat): void {
     });
   }
 
-  /**
-   * Mirror into the durable runtime so the Worker knows what to ingest.
-   *
-   * Fire-and-forget: a GOAT must be creatable when the Worker is unreachable,
-   * and `describe()` on the client reports `lastError` so the failure is
-   * visible rather than silent.
-   */
+  // Market subscriptions are process-local; Firestore separately persists the GOAT schedule.
 }
 
 async function allSkillsFor(userId: string) {
@@ -1346,9 +1340,7 @@ function marketEventDedup(eventId: string): boolean {
 /**
  * Mirrors the in-process subscription table into the shared ingestion layer.
  *
- * Failure is non-fatal by design: the in-process path still works, and the
- * status endpoint reports the durable sync count so an unreachable Worker is
- * visible rather than silently degrading event delivery.
+ * The in-process event router fans finalized market events out to subscribed GOATs.
  */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
@@ -1653,8 +1645,8 @@ async function syncSchedule(goat: FundGoat): Promise<void> {
 /**
  * Executes a scheduled wake, applying duplicate suppression BEFORE any work.
  *
- * Every trigger path (Durable Object alarm, in-process timer, manual wake)
- * funnels through here so idempotency cannot be bypassed by adding a new
+ * Every trigger path (Firebase cron, local timer, manual wake) funnels through
+ * here so idempotency cannot be bypassed by adding a new
  * trigger. This is what stops a duplicated alarm from producing a second AI
  * call, a second signal or a second Telegram message.
  */
@@ -1663,8 +1655,8 @@ async function syncSchedule(goat: FundGoat): Promise<void> {
  * never doing the AI work.
  *
  * Returning the decision in tens of milliseconds is what fixes the silent
- * loss of scheduled analysis. The Durable Object alarm's callback currently
- * aborts after 10 seconds, but a single reasoning run takes 60-180+ seconds,
+ * loss of scheduled analysis. The cron endpoint claims a due event before
+ * starting the longer AI workflow, so its lease and generation prevent duplicate work.
  * so the DO always timed out, recorded a failed delivery, and retried with a
  * deduped eventId that produced no work and no re-arm. Acking immediately
  * lets the DO re-arm on a fixed cadence while the run executes in the
@@ -1771,8 +1763,7 @@ function isoNow(ms: number | null): string | null {
 }
 
 /**
- * Deterministic tracker check, called by the Durable Object on the GOAT's
- * tracking cadence.
+ * Deterministic tracker check, called on the GOAT's configured tracking cadence.
  *
  * SPENDS NO AI. Trackers are indicator comparisons recomputed from candles;
  * only when one is actually satisfied does the GOAT escalate to a full
@@ -1780,8 +1771,7 @@ function isoNow(ms: number | null): string | null {
  * polling a model.
  */
 /**
- * Deterministic tracker check shared by the Durable Object callback and the
- * in-process timer.
+ * Deterministic tracker check shared by Firebase cron and local development timers.
  *
  * SPENDS NO AI. Trackers are indicator comparisons recomputed from candles;
  * only a satisfied condition escalates to a full reasoning wake. Returns the
