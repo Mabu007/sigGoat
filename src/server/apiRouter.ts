@@ -5355,7 +5355,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   const lower = userMessage.toLowerCase();
   const lowerMessage = userMessage.toLowerCase();
   const includeUserState = /\b(goat|my agent|my setup|my proposal|my signal|my strategy|my portfolio|my account|my trades|my activity)\b/i.test(userMessage);
-  const includeNews = /\b(news|why|latest|what happened|fundamental|economic|calendar|macro|research|compare|event|fed|ecb|cpi|nfp|today|current|currently|right now|market conditions)\b/i.test(userMessage);
+  const includeNews = inferChatMarketQueries(userMessage).length > 0 || /\b(news|why|latest|what happened|fundamental|economic|calendar|macro|research|compare|event|fed|ecb|cpi|nfp|today|current|currently|right now|market conditions)\b/i.test(userMessage);
   const newsQueries: string[] = [];
   if (/\b(gold|xau|paxg)\b/i.test(userMessage)) newsQueries.push("gold price market Federal Reserve latest");
   if (/\b(bitcoin|btc|xbt)\b/i.test(userMessage)) newsQueries.push("Bitcoin crypto market latest");
