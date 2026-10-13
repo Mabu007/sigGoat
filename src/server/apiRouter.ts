@@ -4408,18 +4408,18 @@ apiRouter.post(
     };
     const canonicalCopy = migrateGoatMarkets(copy) ?? copy;
 
-    await persistence.goats.save(canonicalCopy);
-
     /**
-     * A copy of a SKILL must also be owned by the caller, otherwise the copy would
-     * reference a system record that must stay immutable.
+     * User-owned skills are copied into the caller's library and the GOAT must
+     * reference those new IDs, not the source user's skill records.
      */
-    await copyReferencedSkills(user.uid, canonicalCopy.skillIds);
+    const resolvedSkillIds = await copyReferencedSkills(user.uid, canonicalCopy.skillIds);
+    const ownedCopy = { ...canonicalCopy, skillIds: resolvedSkillIds };
+    await persistence.goats.save(ownedCopy);
 
-    await syncSchedule(canonicalCopy);
-    subscribeToMarkets(canonicalCopy);
+    await syncSchedule(ownedCopy);
+    subscribeToMarkets(ownedCopy);
 
-    res.status(201).json({ goat: canonicalCopy, copiedFrom: template.id });
+    res.status(201).json({ goat: ownedCopy, copiedFrom: template.id });
   }),
 );
 
@@ -4454,20 +4454,23 @@ async function copyReferencedSkills(
       continue;
     }
 
-    // Never copy another user's skill into this user's library.
-    if (existing && existing.userId !== userId) {
+    // Missing references are discarded; never create a malformed skill by
+    // spreading undefined. Never copy another user's skill into this user's library.
+    if (!existing || existing.userId !== userId) {
       continue;
     }
 
     const now = new Date().toISOString();
-    await persistence.skills.save({
+    const copiedSkill = {
       ...existing,
       id: `skill_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       userId,
       isDefault: false,
       createdAt: now,
       updatedAt: now,
-    });
+    };
+    await persistence.skills.save(copiedSkill);
+    resolved.push(copiedSkill.id);
   }
 
   return resolved;
