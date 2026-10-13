@@ -5914,7 +5914,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     const contextualFollowUp = /\b(it|that|this|again|same asset|same market|the chart|the setup|what about|what do you think|analyse|analyze|opportunit|timeframe)\b/i.test(message);
     const affirmative = /^(yes|yeah|yep|yup|correct|that's right|that one|do that|please|go ahead|sure|exactly)[!. ,]*$/i.test(message.trim());
     const lastAssistantMessage = [...historyBeforeReply].reverse().find((item) => item.role === "assistant")?.content || "";
-    const pendingSymbol = lastAssistantMessage.match(/\b(?:do you mean|mean|confirm(?:ing)?|are you referring to)\s+(?:Hyperliquid(?:'s)?\s+)?(xyz:[A-Z0-9]{2,16})\??/i)?.[1];
+    const pendingSymbol = lastAssistantMessage.match(/\b(?:do you mean|mean|confirm(?:ing)?|are you referring to)\s+(?:Hyperliquid(?:'s)?\s+)?(xyz:[A-Z0-9]{2,16})(?:\s+market)?\??/i)?.[1];
     const confirmedSymbol = affirmative && pendingSymbol ? pendingSymbol.toUpperCase().replace("XYZ:", "xyz:") : "";
     const requestedPair = message.match(/\b(EUR|USD|GBP|JPY|AUD|NZD|CAD|CHF)\s*[/]\s*(EUR|USD|GBP|JPY|AUD|NZD|CAD|CHF)\b/i);
     const bareCurrency = /\b(euro|eur|pound|sterling|gbp|yen|jpy)\b/i.test(message) &&
