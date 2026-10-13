@@ -29,6 +29,7 @@ export interface CreateGoatInput {
   skillIds: string[];
   model: string;
   schedule?: GoatSchedule;
+  deploymentState?: 'DRAFT' | 'DEPLOYED';
 }
 
 export interface CreateSkillInput {
@@ -901,6 +902,7 @@ export const GoatProvider: React.FC<{
                 markets,
                 skillIds,
                 model,
+                deploymentState: input.deploymentState ?? 'DEPLOYED',
                 ...(input.schedule
                   ? { schedule: input.schedule }
                   : {}),
