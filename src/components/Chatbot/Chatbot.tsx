@@ -315,8 +315,8 @@ function renderContent(content: string): React.ReactNode {
     const line = lines[index].trim();
     if (!line) { index++; continue; }
 
-    const cells = (value: string) => value.trim().replace(/^\\|/, "").replace(/\\|$/, "").split("|").map((cell) => cell.trim());
-    const isTableDivider = (value: string) => /^\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?$/.test(value.trim());
+    const cells = (value: string) => value.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+    const isTableDivider = (value: string) => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(value.trim());
     if (line.includes("|") && index + 1 < lines.length && isTableDivider(lines[index + 1])) {
       const headers = cells(line);
       index += 2;
@@ -337,7 +337,7 @@ function renderContent(content: string): React.ReactNode {
       continue;
     }
 
-    const heading = /^(#{1,4})\\s+(.+)$/.exec(line);
+    const heading = /^(#{1,4})\s+(.+)$/.exec(line);
     if (heading) {
       const level = heading[1].length;
       nodes.push(<p key={index} className={`mb-2 mt-3 font-semibold tracking-tight text-fg ${level === 1 ? "text-base" : level === 2 ? "text-sm" : "text-[13px]"}`}>{renderInline(heading[2])}</p>);
@@ -345,15 +345,15 @@ function renderContent(content: string): React.ReactNode {
       continue;
     }
 
-    if (/^[-*•]\\s+/.test(line)) {
+    if (/^[-*•]\s+/.test(line)) {
       const items: string[] = [];
-      while (index < lines.length && /^\\s*[-*•]\\s+/.test(lines[index])) { items.push(lines[index].trim().replace(/^[-*•]\\s+/, "")); index++; }
+      while (index < lines.length && /^\s*[-*•]\s+/.test(lines[index])) { items.push(lines[index].trim().replace(/^[-*•]\s+/, "")); index++; }
       nodes.push(<ul key={`ul-${index}`} className="my-2 ml-4 list-disc space-y-1">{items.map((item, i) => <li key={i} className="pl-0.5">{renderInline(item)}</li>)}</ul>);
       continue;
     }
-    if (/^\\d+[.)]\\s+/.test(line)) {
+    if (/^\d+[.)]\s+/.test(line)) {
       const items: string[] = [];
-      while (index < lines.length && /^\\s*\\d+[.)]\\s+/.test(lines[index])) { items.push(lines[index].trim().replace(/^\\d+[.)]\\s+/, "")); index++; }
+      while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) { items.push(lines[index].trim().replace(/^\d+[.)]\s+/, "")); index++; }
       nodes.push(<ol key={`ol-${index}`} className="my-2 ml-4 list-decimal space-y-1">{items.map((item, i) => <li key={i} className="pl-0.5">{renderInline(item)}</li>)}</ol>);
       continue;
     }
