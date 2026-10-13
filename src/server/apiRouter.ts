@@ -124,6 +124,12 @@ import {
 export const apiRouter = express.Router();
 apiRouter.use(express.json({ limit: "1mb" }));
 
+/** Keep serverless background work alive after returning the HTTP response. */
+function keepBackgroundTaskAlive(task: Promise<unknown>): void {
+  if (process.env.VERCEL) waitUntil(task);
+  else void task;
+}
+
 /* ------------------------------------------------------------------ */
 /* Wiring                                                              */
 /* ------------------------------------------------------------------ */
@@ -609,8 +615,11 @@ async function setGoatStatusFor(
   if (paused) runtime.pause();
   else runtime.play();
   if (!paused && goat.deploymentState !== 'DEPLOYED') {
-    const reviewedState = await runtime.wake('Initial market review on deployment', 'MANUAL_REEVALUATE', updated.markets[0]);
-    await notifyGoatMarketReview(updated, reviewedState, 'Initial deployment review');
+    keepBackgroundTaskAlive(
+      runtime.wake('Initial market review on deployment', 'MANUAL_REEVALUATE', updated.markets[0])
+        .then((reviewedState) => notifyGoatMarketReview(updated, reviewedState, 'Initial deployment review'))
+        .catch((error) => console.error(`[api] first review for ${updated.id} failed:`, error)),
+    );
   }
 
   return {
@@ -4531,17 +4540,19 @@ apiRouter.post(
      * thesis, proposal and wake event as the review completes. Firestore already
      * holds the schedule, so later cron dispatches do not depend on this request.
      */
-    if (runtime) void runtime
-      .wake(
-        "Initial analysis on deployment",
-        "MANUAL_REEVALUATE",
-        markets.resolved[0],
-      )
-      .then((state) => notifyGoatMarketReview(newGoat, state, "Initial deployment review"))
-      .catch((err) => {
-        // The runtime records its own failure; log detached work and keep the request safe.
-        console.error("[api] Initial GOAT analysis or Telegram recap failed:", err);
-      });
+    if (runtime) keepBackgroundTaskAlive(
+      runtime
+        .wake(
+          "Initial analysis on deployment",
+          "MANUAL_REEVALUATE",
+          markets.resolved[0],
+        )
+        .then((state) => notifyGoatMarketReview(newGoat, state, "Initial deployment review"))
+        .catch((err) => {
+          // The runtime records its own failure; log detached work and keep the request safe.
+          console.error("[api] Initial GOAT analysis or Telegram recap failed:", err);
+        }),
+    );
 
     res.json({
       goat: newGoat,
