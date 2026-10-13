@@ -1548,6 +1548,8 @@ function scheduleGeneration(goat: FundGoat): string {
   const schedule = normaliseSchedule(goat.schedule);
   return [
     goat.id,
+    goat.status,
+    goat.deploymentState ?? 'DEPLOYED',
     schedule.mode,
     schedule.intervalMinutes ?? "-",
     (schedule.times ?? []).join(".") || "-",
