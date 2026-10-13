@@ -392,10 +392,25 @@ async function runScheduledWakeSync(
     ? durableObjectRegistry.get(goatId)!
     : await ensureGoatRuntime(goat);
 
-  await runtime.wake(reason, "SCHEDULED", goat.markets[0]);
-
-  const refreshed = await persistence.goats.get(goatId);
-  if (refreshed) await syncSchedule(refreshed);
+  try {
+    await runtime.wake(reason, "SCHEDULED", goat.markets[0]);
+  } finally {
+    const refreshed = await persistence.goats.get(goatId);
+    if (refreshed) {
+      if (firebaseScheduler) {
+        const nextWake = computeNextWakeAt(refreshed);
+        const nextTracker = computeNextTrackerCheckAt(refreshed);
+        await firebaseScheduler.complete(
+          refreshed.id,
+          scheduleGeneration(refreshed),
+          nextWake === null ? null : new Date(nextWake).toISOString(),
+          nextTracker === null ? null : new Date(nextTracker).toISOString(),
+        );
+      } else {
+        await syncSchedule(refreshed);
+      }
+    }
+  }
 }
 
 /**
@@ -2067,6 +2082,46 @@ apiRouter.post(
  * is destroyed on every cold start. Without this, a fresh container would wake
  * nobody until each GOAT happened to be touched again.
  */
+apiRouter.get(
+  "/internal/cron",
+  handle(async (req, res) => {
+    const secret = process.env.CRON_SECRET?.trim();
+    const authorization = req.header("authorization") ?? "";
+    const supplied = req.header("x-cron-secret") ?? "";
+    if (!secret || (authorization !== `Bearer ${secret}` && supplied !== secret)) {
+      return fail(res, 401, "UNAUTHORISED", "Invalid cron secret.");
+    }
+    if (!firebaseScheduler) {
+      return fail(res, 503, "FIREBASE_SCHEDULER_UNAVAILABLE", "Firebase-backed scheduling is unavailable.");
+    }
+
+    const due = await firebaseScheduler.claimDue(Date.now(), 40);
+    let ran = 0;
+    let stale = 0;
+    let failed = 0;
+    for (const event of due) {
+      try {
+        const goat = await persistence.goats.get(event.goatId);
+        if (!goat || goat.status === "PAUSED" || goat.deploymentState === "DRAFT") {
+          await firebaseScheduler.complete(event.goatId, event.generationId, null, null);
+          continue;
+        }
+        if (scheduleGeneration(goat) !== event.generationId) {
+          await syncSchedule(goat);
+          stale += 1;
+          continue;
+        }
+        await runScheduledWakeSync(event.goatId, event.eventId, event.reason);
+        ran += 1;
+      } catch (error) {
+        failed += 1;
+        console.error(`[firebase-cron] failed GOAT ${event.goatId}:`, error);
+      }
+    }
+    res.json({ handled: true, due: due.length, ran, stale, failed, scheduler: firebaseScheduler.health() });
+  }),
+);
+
 apiRouter.post(
   "/internal/reconcile",
   handle(async (req, res) => {
