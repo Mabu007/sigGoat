@@ -5554,12 +5554,12 @@ async function resolveChatModel(userId: string, requested?: unknown): Promise<st
 }
 
 function isLightConversation(message: string): boolean {
-  return /^\\s*(hey|hello|hi|yo|hiya|sup|good morning|good afternoon|good evening|thanks|thank you|cheers|nice|cool|lol|haha|how are you|how you doing|you good)[!,.\\s?]*$/i.test(message.trim());
+  return /^\s*(hey|hello|hi|yo|hiya|sup|good morning|good afternoon|good evening|thanks|thank you|cheers|nice|cool|lol|haha|how are you|how you doing|you good)[!,.\s?]*$/i.test(message.trim());
 }
 
 function needsMarketResearch(message: string): boolean {
   if (inferChatMarketQueries(message).length) return true;
-  return /\\b(market|price|quote|chart|candle|ohlcv|funding|open interest|volume|technical|support|resistance|trend|setup|trade|trading|buy|sell|bullish|bearish|opportunit|backtest|historical|history|research|analyse|analyze|compare|news|latest|today|right now|live|goat|proposal|signal|portfolio|my account|my setup|economic calendar)\\b/i.test(message);
+  return /\b(market|price|quote|chart|candle|ohlcv|funding|open interest|volume|technical|support|resistance|trend|setup|trade|trading|buy|sell|bullish|bearish|opportunit|backtest|historical|history|research|analyse|analyze|compare|news|latest|today|right now|live|goat|proposal|signal|portfolio|my account|my setup|economic calendar)\b/i.test(message);
 }
 
 
@@ -5864,8 +5864,8 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
         if (found.length) { inheritedAsset = found[0]; break; }
       }
     }
-    const effectiveResearchMessage = inheritedAsset && /\\b(it|that|this|again|same asset|same market|the chart|the setup|on the \\d+[mhdw])\\b/i.test(message)
-      ? message.trim() + "\\n\\nSESSION CONTEXT: The current asset under discussion is " + inheritedAsset + ". Resolve pronouns and timeframe follow-ups against this asset unless the user explicitly names another asset."
+    const effectiveResearchMessage = inheritedAsset && !mentionedAssets.length
+      ? message.trim() + "\n\nSESSION CONTEXT: The current asset under discussion is " + inheritedAsset + ". Resolve pronouns and timeframe follow-ups against this asset unless the user explicitly names another asset."
       : message.trim();
     const lightConversation = isLightConversation(message.trim());
     const researchNeeded = !lightConversation && needsMarketResearch(effectiveResearchMessage);
@@ -5873,9 +5873,9 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     if (lightConversation) {
       const now = new Date().toISOString();
       const lowerMessage = message.trim().toLowerCase();
-      const greeting = /^(thanks|thank you|cheers)[!,.\\s]*$/i.test(lowerMessage)
+      const greeting = /^(thanks|thank you|cheers)[!,.\s]*$/i.test(lowerMessage)
         ? "Anytime, G."
-        : /^(nice|cool|lol|haha)[!,.\\s]*$/i.test(lowerMessage) ? "😄" : "Hey G, you good?";
+        : /^(nice|cool|lol|haha)[!,.\s]*$/i.test(lowerMessage) ? "😄" : "Hey G, you good?";
       const assistantMessage: ChatMessage = {
         id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
         chatId: chat.id, userId: user.uid, role: "assistant", content: greeting,
@@ -5900,7 +5900,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     }
     const initialResearch = researchNeeded
       ? await buildChatResearchContext(user.uid, effectiveResearchMessage)
-      : "\\nROUTING: Ordinary conversation; market research tools were not needed. Do not claim market data was fetched.";
+      : "\nROUTING: Ordinary conversation; market research tools were not needed. Do not claim market data was fetched.";
     const followUpResearch = researchNeeded
       ? (emit({ type: "status", message: "Checking whether more market history or news is needed…" }), await runChatResearchLoop(key, effectiveResearchMessage, initialResearch))
       : "";
