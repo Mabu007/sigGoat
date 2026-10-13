@@ -1649,9 +1649,7 @@ export class GoatDurableObject {
    *   like it had never been reviewed, even though its thesis was sitting in
    *   Firestore the whole time.
    *
-   *   Combined with a durable scheduler that was unreachable (the Worker URL
-   *   pointed at a hostname that does not exist), nothing ever ran a wake to
-   *   repopulate it. The user's Initial Market Review simply disappeared the
+   *   Combined with missing scheduled dispatch, nothing ever ran a wake to repopulate it. The user's Initial Market Review simply disappeared the
    *   first time their instance recycled — which, on a serverless host with a
    *   short idle window, is seconds.
    *
