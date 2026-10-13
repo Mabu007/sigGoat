@@ -244,10 +244,13 @@ export class FirestoreOutboxStore implements OutboxStore {
   }
 
   async due(nowMs: number, limit: number): Promise<OutboxRecord[]> {
-    const snapshot = await this.collection.orderBy('nextAttemptAtMs', 'asc').limit(Math.max(limit * 4, limit)).get();
+    // Query only retryable states. Ordering the entire collection by due time
+    // lets old SENT records occupy every page and starve fresh failed messages.
+    const snapshot = await this.collection.where('status', 'in', ['PENDING', 'FAILED']).get();
     return snapshot.docs
       .map(doc => doc.data() as OutboxRecord)
-      .filter(record => record.nextAttemptAtMs <= nowMs && (record.status === 'PENDING' || record.status === 'FAILED'))
+      .filter(record => record.nextAttemptAtMs <= nowMs)
+      .sort((a, b) => a.nextAttemptAtMs - b.nextAttemptAtMs)
       .slice(0, limit);
   }
 
