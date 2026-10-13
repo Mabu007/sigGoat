@@ -280,11 +280,24 @@ export class BacktestEngine {
        * Without this the curve can cross zero mid-trade and drawdown exceeds
        * 100%, reporting a statistic that describes no real account state.
        */
-      const affordableRisk = Math.min(riskAmount, Math.max(0, currentEquity));
+      let affordableRisk = Math.min(riskAmount, Math.max(0, currentEquity));
       simulation.trade.pnlDollars = 0;
 
       /** Only filled WIN/LOSS trades modify realised equity. */
       if (simulation.trade.outcome === 'WIN' || simulation.trade.outcome === 'LOSS') {
+        // A loss also pays fees/slippage. Risking 100% of remaining equity
+        // would therefore push the account below zero after costs. Scale the
+        // final trade down so loss plus modelled costs cannot exceed equity.
+        if (simulation.trade.outcome === 'LOSS' && currentEquity > 0) {
+          const costPerRiskDollar = tradeCost(
+            1,
+            this.estimateNotionalUsd(simulation.trade, 1),
+          );
+          affordableRisk = Math.min(
+            affordableRisk,
+            currentEquity / (1 + costPerRiskDollar),
+          );
+        }
         const pnl = this.calculateDollarPnl(simulation.trade, affordableRisk);
         // Persist the actual gross PnL for this trade. Summary metrics must not
         // assume full starting-balance risk after the account has drawn down.
