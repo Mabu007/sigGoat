@@ -5344,16 +5344,18 @@ function inferChatCandleCount(message: string, timeframe: string): number {
 async function buildChatResearchContext(userId: string, userMessage: string): Promise<string> {
   const now = new Date();
   const lower = userMessage.toLowerCase();
-  const wantsGold = /\b(gold|xau|paxg)\b/i.test(userMessage);
-  const wantsBitcoin = /\b(bitcoin|btc)\b/i.test(userMessage);
-  const wantsEthereum = /\b(ethereum|ether|eth)\b/i.test(userMessage);
-  const newsQuery = wantsGold
-    ? "gold price market Federal Reserve latest"
-    : wantsBitcoin
-      ? "Bitcoin crypto market latest"
-      : wantsEthereum
-        ? "Ethereum crypto market latest"
-        : userMessage.slice(0, 160) + " latest news";
+  const lowerMessage = userMessage.toLowerCase();
+  const newsQueries: string[] = [];
+  if (/\b(gold|xau|paxg)\b/i.test(userMessage)) newsQueries.push("gold price market Federal Reserve latest");
+  if (/\b(bitcoin|btc|xbt)\b/i.test(userMessage)) newsQueries.push("Bitcoin crypto market latest");
+  if (/\b(ethereum|ether|eth)\b/i.test(userMessage)) newsQueries.push("Ethereum crypto market latest");
+  if (/\b(solana|sol)\b/i.test(userMessage)) newsQueries.push("Solana crypto market latest");
+  if (newsQueries.length === 0 && /\b(news|latest|today|current|why|what happened|research|compare|market)\b/i.test(userMessage)) {
+    newsQueries.push(userMessage.slice(0, 150) + " latest news");
+  }
+  if (newsQueries.length === 0 && !/\b(hey|hello|hi|thanks|thank you)\b/i.test(lowerMessage)) {
+    newsQueries.push(userMessage.slice(0, 150) + " latest news");
+  }
 
   const sections: string[] = [
     "CURRENT SERVER TIME (UTC): " + now.toISOString(),
@@ -5361,12 +5363,13 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
       ". Only describe quotes as live if the returned timestamp is recent and dataMode is LIVE.",
   ];
 
-  const [goats, skills, symbols, news] = await Promise.all([
+  const [goats, skills, symbols, newsGroups] = await Promise.all([
     persistence.goats.listByUser(userId).catch(() => []),
     persistence.skills.listByUser(userId).catch(() => []),
     marketProvider.getSymbols().catch(() => []),
-    fetchChatNews(newsQuery),
+    Promise.all(newsQueries.slice(0, 4).map(fetchChatNews)),
   ]);
+  const news = newsGroups.flat().slice(0, 16);
 
   const matchedGoats = goats.filter((goat) =>
     lower.includes(goat.name.toLowerCase()) ||
@@ -5693,12 +5696,24 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     };
     await persistence.messages.create(chat.id, userMessage);
 
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+    const emit = (event: Record<string, unknown>) => res.write("data: " + JSON.stringify(event) + "\n\n");
+    emit({ type: "status", message: "Researching relevant markets, history, news and your SIRGOAT state…" });
+
     const { key } = await resolveChatbotCredential(user.uid);
     if (!key) {
-      return fail(res, 503, "NO_MODEL_KEY", "No AI model key is configured. Add an OpenRouter key in Settings.");
+      emit({ type: "error", message: "No AI model key is configured. Add an OpenRouter key in Settings." });
+      res.end();
+      return;
     }
 
     const researchContext = await buildChatResearchContext(user.uid, message.trim());
+    emit({ type: "status", message: "Evidence gathered. Reviewing and composing the answer…" });
     const history = await persistence.messages.listByChat(chat.id, 40);
     const modelMessages = [
       { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + researchContext },
@@ -5720,17 +5735,15 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     });
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 1200);
-      return fail(res, 502, "CHAT_PROVIDER_FAILED", "OpenRouter rejected the request (" + response.status + "): " + detail);
+      emit({ type: "error", message: "OpenRouter rejected the request (" + response.status + "): " + detail });
+      res.end();
+      return;
     }
-    if (!response.body) return fail(res, 502, "CHAT_STREAM_UNAVAILABLE", "The AI provider did not return a stream.");
-
-    res.status(200);
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
-    res.flushHeaders?.();
-    const emit = (event: Record<string, unknown>) => res.write("data: " + JSON.stringify(event) + "\n\n");
+    if (!response.body) {
+      emit({ type: "error", message: "The AI provider did not return a stream." });
+      res.end();
+      return;
+    }
 
     let content = "";
     let buffer = "";
