@@ -5832,6 +5832,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
   }
 
   let chat: Chat | null = null;
+  let researchNeeded = false;
   try {
     if (chatId) {
       chat = await persistence.chats.getForUser(String(chatId), user.uid);
@@ -5913,7 +5914,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     const effectiveResearchMessage = shouldInheritAsset
       ? message.trim() + "\n\nSESSION CONTEXT: The current asset under discussion is " + inheritedAsset + ". Resolve pronouns and timeframe follow-ups against this asset unless the user explicitly names another asset."
       : message.trim();
-    const researchNeeded = needsMarketResearch(effectiveResearchMessage);
+    researchNeeded = needsMarketResearch(effectiveResearchMessage);
     const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim(), activeModel) : Promise.resolve(chat.title);
     const title = needsTitle ? await titlePromise : chat.title;
     if (needsTitle && title && title !== "New chat") {
