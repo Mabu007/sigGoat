@@ -209,23 +209,13 @@ export function isEphemeralRuntime(): boolean {
 }
 
 /**
- * Shared market state: one fetch + one indicator computation per
- * (symbol, timeframe) per TTL, fanned out to every GOAT and persisted so a
- * restart does not start from an empty chart.
+ * Shared, process-local market-state cache.
  *
- * Shared market state is cached by market, not GOAT, because indicator computation
- * per-key derived market state). It is deliberately keyed by MARKET, not by
- * GOAT, because the expensive thing — indicator computation over candles — is
- * identical for every GOAT watching the same pair.
- *
- * PERSISTENCE IS DISABLED ON SERVERLESS HOSTS.
- *
- * A snapshot written to an ephemeral filesystem is not persistence: it is
- * discarded on the next cold start, and it fails silently because the writer
- * swallows its own errors. On Vercel the canonical, durable home for market
- * state is the Cloudflare MarketDataDO — which is configured separately via
- * MARKET_DATA_WORKER_URL — so writing a shadow copy to local disk here would
- * create a second, divergent history rather than a cache.
+ * One provider fetch and indicator computation is reused per (symbol,
+ * timeframe) during the cache TTL. Candle snapshots are ephemeral on serverless
+ * hosts and reconstructed after cold starts. Durable GOAT configuration,
+ * schedules, theses, signals and review events live in Firestore; this cache
+ * is not presented as durable market history.
  */
 export const marketStateStore = new MarketStateStore(marketProvider, {
   ttlMs: 30_000,
@@ -629,22 +619,8 @@ async function setGoatStatusFor(
 }
 
 /**
- * Registers a GOAT with the shared ingestion layer and mirrors it into the
- * Cloudflare runtime.
- *
- * THIS WAS MISSING ENTIRELY.
- *
- * `MarketIngestionService.subscribe()` was only ever called from tests, so:
- *   - the in-process subscription table was always empty, meaning
- *     `routeMarketEvent()` considered zero subscribers and every market event
- *     was dropped as irrelevant;
-
- *     `MarketDataDO` never received a single subscription — and since it derives
- *     its instrument list from that table, the shared store had nothing to
- *     ingest.
- *
- * Registering here, at the single point every GOAT passes through, means a new
- * GOAT is watched whether or not anything else touched it.
+ * Register a deployed GOAT with the in-process market ingestion service.
+ * Firestore-backed scheduling is separate and survives API cold starts.
  */
 function subscribeToMarkets(goat: FundGoat): void {
   /**
@@ -1633,10 +1609,8 @@ function computeNextWakeAt(
 }
 
 /**
- * Publishes a GOAT's authoritative schedule to the durable scheduler.
- *
- * Never throws: a GOAT must still be creatable and usable when the scheduler
- * Worker is unreachable. The failure is reported through health() instead.
+ * Publish a GOAT's due times to the configured scheduler. In production this
+ * writes Firestore schedule state; local development may use in-process timers.
  */
 async function syncSchedule(goat: FundGoat): Promise<void> {
   const nextWakeAt = computeNextWakeAt(goat);
@@ -1913,13 +1887,9 @@ async function runTrackerCheckInBackground(goatId: string): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 /**
- * Shared-secret auth for internal endpoints.
- *
- * These internal handlers run without a user session
- * and cannot present a Firebase ID token. The secret authenticates the
- * WORKER, not a user, and every handler below still resolves the GOAT through
- * the application persistence layer and its owner — so an internal caller can
- * never widen access beyond what the owner already has.
+ * Shared-secret auth for internal cron endpoints. These requests have no user
+ * session; the cron secret authorizes dispatch while each GOAT is still loaded
+ * from the application's own persistence layer.
  */
 apiRouter.get(
   "/internal/cron",
@@ -4524,28 +4494,11 @@ apiRouter.post(
       ? null
       : await ensureGoatRuntime(newGoat);
 
-    /**
-     * THE FIRST ANALYSIS MUST NOT BLOCK THIS RESPONSE.
-     *
-     * This route used to `await` a full reasoning run before responding. A model
-     * call takes 15-40 seconds, and the reasoning-off retry can double it, so on
-     * Vercel the whole request blew past the function timeout and the user got
-     * `504 FUNCTION_INVOCATION_TIMEOUT` — for a GOAT that had in fact been
-     * created, scheduled and persisted successfully. The response was lost
-     * while the work completed.
-     *
-     * Worse, a timed-out invocation is indistinguishable from a failed one: the
-     * user retries, and now there are two GOATs.
-     *
-     * So the first analysis is dispatched, not awaited. `wake()` is fire-and-
-     * forget and its result reaches the UI through the normal poll, exactly
-     * like any later wake. The durable scheduler is also already armed by
-     * `syncSchedule` above, so even if this process is frozen the Worker's
-     * alarm re-arms the same analysis — the run is not lost, only its timing is
-     * no longer the request's problem.
-     *
-     * The client is told the GOAT exists and that the first analysis is running,
-     * so the UI can show a pending state instead of an empty one.
+        /**
+     * Start the first market review without holding the creation request open.
+     * The UI receives a pending state immediately; the runtime persists its
+     * thesis, proposal and wake event as the review completes. Firestore already
+     * holds the schedule, so later cron dispatches do not depend on this request.
      */
     if (runtime) void runtime
       .wake(
