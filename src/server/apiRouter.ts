@@ -1509,14 +1509,13 @@ function validateGoatInput(body: unknown): ValidatedGoatInput | null {
     return null;
   if (typeof b.goal !== "string" || !b.goal.trim() || b.goal.length > 1000)
     return null;
+  if (!Array.isArray(b.markets) || b.markets.length !== 1) return null;
   if (
-    !Array.isArray(b.markets) ||
-    b.markets.length !== 1
-  )
-    return null;
-  if (!b.markets.every((m) => typeof m === "string" && m.length <= 32))
-    return null;
-  if (!Array.isArray(b.skillIds) || b.skillIds.length > 20) return null;
+    !b.markets.every(
+      (m) => typeof m === "string" && m.trim().length > 0 && m.length <= 32,
+    )
+  ) return null;
+  if (!Array.isArray(b.skillIds) || b.skillIds.length === 0 || b.skillIds.length > 20) return null;
   if (!b.skillIds.every((s) => typeof s === "string" && s.length <= 128))
     return null;
   const modelProvided =
@@ -4627,7 +4626,7 @@ apiRouter.post(
         res,
         400,
         "INVALID_INPUT",
-        "Name, goal, exactly one asset, and a supported model are required.",
+        "Name, goal, exactly one asset, at least one skill, and a supported model are required.",
       );
     }
 
@@ -4677,8 +4676,7 @@ apiRouter.post(
       name: input.name,
       goal: input.goal,
       markets: markets.resolved,
-      skillIds:
-        input.skillIds.length > 0 ? input.skillIds : ["skill_price_action"],
+      skillIds: input.skillIds,
       model: await resolveModelForNewGoat(
         user.uid,
         input.model,
