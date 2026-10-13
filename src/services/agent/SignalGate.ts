@@ -25,6 +25,7 @@ export interface GateValidationResult {
     limitOrdersOnly: boolean;
     noCounterTrend: boolean;
     maxSpreadPips: number;
+    maxSpreadBps: number;
   };
 }
 
@@ -35,6 +36,8 @@ export interface GateInput {
   quote: MarketQuote;
   /** Spread normalized by the market's pipSize. Omit when unavailable. */
   spreadPips?: number;
+  /** Relative spread in basis points: spread / mid * 10,000. */
+  spreadBps?: number;
   constraints: HardConstraints;
   goatId: string;
   userId: string;
@@ -61,7 +64,7 @@ function roundTo(value: number, digits: number): number {
  */
 export class SignalGate {
   static validate(input: GateInput): GateValidationResult {
-    const { reasoningResult, thesis, market, quote, spreadPips, constraints, goatId, userId } = input;
+    const { reasoningResult, thesis, market, quote, spreadPips, spreadBps, constraints, goatId, userId } = input;
     const proposal = reasoningResult.proposal;
 
     const applied = {
@@ -72,6 +75,7 @@ export class SignalGate {
       limitOrdersOnly: constraints.limitOrdersOnly,
       noCounterTrend: constraints.noCounterTrend,
       maxSpreadPips: constraints.maxSpreadPips,
+      maxSpreadBps: constraints.maxSpreadBps,
     };
 
     const nowStr = new Date().toISOString();
@@ -158,6 +162,17 @@ export class SignalGate {
       } else if (spreadPips > constraints.maxSpreadPips) {
         reasons.push(
           `Spread ${spreadPips.toFixed(2)} pips exceeds skill constraint SPREAD_UNDER_${constraints.maxSpreadPips}_PIPS.`,
+        );
+      }
+    }
+    if (constraints.maxSpreadBps > 0) {
+      if (quote.bidProvided === false || quote.askProvided === false) {
+        reasons.push('Cannot verify basis-point spread constraint: the market has no confirmed bid/ask.');
+      } else if (!isFiniteNumber(spreadBps) || spreadBps < 0) {
+        reasons.push('Cannot verify basis-point spread constraint: relative spread is unavailable.');
+      } else if (spreadBps > constraints.maxSpreadBps) {
+        reasons.push(
+          `Spread ${spreadBps.toFixed(2)} bps exceeds skill constraint SPREAD_UNDER_${constraints.maxSpreadBps}_BPS.`,
         );
       }
     }
