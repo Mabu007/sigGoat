@@ -1,0 +1,113 @@
+import type { Firestore } from 'firebase-admin/firestore';
+import type { FiredWake, ScheduleRequest, SchedulerHealth, WakeScheduler } from './types';
+
+/** Firestore owns due times and leases; Vercel Cron runs the Node/AI workflow. */
+export class FirebaseScheduler implements WakeScheduler {
+  readonly kind = 'firebase' as const;
+  private readonly schedules;
+  private readonly processed = new Map<string, number>();
+  private lastSyncAt?: number;
+  private lastError?: string;
+
+  constructor(private readonly db: Firestore, private readonly now: () => number = Date.now) {
+    this.schedules = db.collection('goatSchedules');
+  }
+
+  async sync(request: ScheduleRequest): Promise<void> {
+    try {
+      const ref = this.schedules.doc(request.goatId);
+      const snapshot = await ref.get();
+      const existing = snapshot.exists ? snapshot.data() : undefined;
+      const paused = Boolean(request.paused);
+      if (existing?.generationId === request.generationId && existing?.paused === paused) {
+        this.lastSyncAt = this.now();
+        this.lastError = undefined;
+        return;
+      }
+      await ref.set({
+        goatId: request.goatId,
+        nextWakeAt: paused ? null : request.nextWakeAt,
+        nextTrackerCheckAt: paused ? null : request.nextTrackerCheckAt,
+        timeframe: request.timeframe,
+        generationId: request.generationId,
+        paused,
+        leaseUntilMs: 0,
+        updatedAt: new Date(this.now()).toISOString(),
+      });
+      this.lastSyncAt = this.now();
+      this.lastError = undefined;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
+  }
+
+  async cancel(goatId: string): Promise<void> {
+    await this.schedules.doc(goatId).delete();
+    this.processed.delete(goatId);
+  }
+
+  decide(goatId: string, event: FiredWake): { allowed: true } | { allowed: false; reason: string } {
+    const previous = this.processed.get(goatId);
+    if (previous === event.firedAt) return { allowed: false, reason: 'duplicate event' };
+    this.processed.set(goatId, event.firedAt);
+    if (this.processed.size > 5000) {
+      const cutoff = this.now() - 24 * 60 * 60_000;
+      for (const [id, at] of this.processed) if (at < cutoff) this.processed.delete(id);
+    }
+    return { allowed: true };
+  }
+
+  async claimDue(nowMs = this.now(), limit = 40): Promise<FiredWake[]> {
+    const dueIso = new Date(nowMs).toISOString();
+    const snapshot = await this.schedules.where('nextWakeAt', '<=', dueIso).limit(limit).get();
+    const claimed: FiredWake[] = [];
+    for (const doc of snapshot.docs) {
+      const event = await this.db.runTransaction(async transaction => {
+        const fresh = await transaction.get(doc.ref);
+        if (!fresh.exists) return null;
+        const row = fresh.data()!;
+        if (row.paused || typeof row.nextWakeAt !== 'string' || row.nextWakeAt > dueIso) return null;
+        if (typeof row.leaseUntilMs === 'number' && row.leaseUntilMs > nowMs) return null;
+        const scheduledAt = row.nextWakeAt as string;
+        const generationId = String(row.generationId ?? '');
+        transaction.update(doc.ref, {
+          leaseUntilMs: nowMs + 4 * 60_000,
+          claimedAt: new Date(nowMs).toISOString(),
+        });
+        return {
+          goatId: String(row.goatId ?? doc.id),
+          eventId: `${doc.id}:${generationId}:${scheduledAt}`,
+          generationId,
+          reason: 'Firebase scheduled market review',
+          firedAt: Date.parse(scheduledAt) || nowMs,
+        } satisfies FiredWake;
+      });
+      if (event) claimed.push(event);
+    }
+    return claimed;
+  }
+
+  async complete(goatId: string, generationId: string, nextWakeAt: string | null, nextTrackerCheckAt: string | null): Promise<void> {
+    const ref = this.schedules.doc(goatId);
+    await this.db.runTransaction(async transaction => {
+      const snapshot = await transaction.get(ref);
+      if (!snapshot.exists || snapshot.data()?.generationId !== generationId) return;
+      transaction.update(ref, {
+        nextWakeAt,
+        nextTrackerCheckAt,
+        leaseUntilMs: 0,
+        updatedAt: new Date(this.now()).toISOString(),
+      });
+    });
+  }
+
+  health(): SchedulerHealth {
+    return {
+      kind: 'firebase',
+      lastSyncAt: this.lastSyncAt,
+      consecutiveFailures: this.lastError ? 1 : 0,
+      lastError: this.lastError,
+    };
+  }
+}
