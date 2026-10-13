@@ -5593,7 +5593,7 @@ async function resolveChatbotCredential(uid: string): Promise<{
   return { provider: await reasoningGateway.providerFor(uid), key: serverKey };
 }
 
-async function generateSemanticChatTitle(key: string, firstMessage: string): Promise<string> {
+async function generateSemanticChatTitle(key: string, firstMessage: string, model: string = CHAT_MODEL): Promise<string> {
   try {
     const result = await sendToModel(key, [
       {
@@ -5601,7 +5601,7 @@ async function generateSemanticChatTitle(key: string, firstMessage: string): Pro
         content: "Create a short semantic title for a saved finance/trading chat based on the user's message. Return only the title, 2-6 words, ideally 3-5. Be specific, natural, and scannable. No quotes, emojis, punctuation at the end, or generic titles like Chat or New Chat. Do not answer the message.",
       },
       { role: "user", content: firstMessage.slice(0, 1200) },
-    ]);
+    ], model);
     const title = result.content.trim().replace(/^["'\`]+|["'\`]+$/g, "").replace(/[.!?]+$/, "").replace(/\s+/g, " ");
     if (title && title.length <= 60 && !/^(new chat|chat|conversation)$/i.test(title)) return title;
   } catch (error) {
@@ -5614,6 +5614,7 @@ async function generateSemanticChatTitle(key: string, firstMessage: string): Pro
 async function sendToModel(
   key: string,
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+  model: string = CHAT_MODEL,
 ): Promise<{
   content: string;
   model: string;
@@ -5624,7 +5625,7 @@ async function sendToModel(
     headers: { "X-Title": "SIRGOAT" },
   });
   return client.complete({
-    model: CHAT_MODEL,
+    model,
     messages,
     temperature: 0.3,
     maxTokens: 2000,
@@ -5641,6 +5642,7 @@ async function runChatResearchLoop(
   key: string,
   userMessage: string,
   initialContext: string,
+  model: string = CHAT_MODEL,
 ): Promise<string> {
   if (/^\s*(hey|hello|hi|thanks|thank you|good morning|good afternoon|good evening)[!.\s]*$/i.test(userMessage)) {
     return "\n\nFOLLOW-UP RESEARCH LOOP: skipped for a greeting; no market research was needed.";
@@ -5669,7 +5671,7 @@ async function runChatResearchLoop(
     const planned = await sendToModel(key, [
       { role: "system", content: "You produce small, valid JSON research plans only. No markdown." },
       { role: "user", content: plannerPrompt },
-    ]);
+    ], model);
     const raw = planned.content.trim();
     const jsonText = raw.match(/\{[\s\S]*\}/)?.[0];
     if (!jsonText) return "\n\nFOLLOW-UP RESEARCH LOOP: planner returned no valid plan; the initial retrieval was used.";
@@ -5914,7 +5916,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       return;
     }
 
-    const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim()) : Promise.resolve(chat.title);
+    const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim(), activeModel) : Promise.resolve(chat.title);
     const title = needsTitle ? await titlePromise : chat.title;
     if (needsTitle && title && title !== "New chat") {
       const titleNow = new Date().toISOString();
@@ -5925,7 +5927,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       ? await buildChatResearchContext(user.uid, effectiveResearchMessage)
       : "\nROUTING: Ordinary conversation; market research tools were not needed. Do not claim market data was fetched.";
     const followUpResearch = researchNeeded
-      ? (emit({ type: "status", message: "Checking whether more market history or news is needed…" }), await runChatResearchLoop(key, effectiveResearchMessage, initialResearch))
+      ? (emit({ type: "status", message: "Checking whether more market history or news is needed…" }), await runChatResearchLoop(key, effectiveResearchMessage, initialResearch, activeModel))
       : "";
     const researchContext = initialResearch + followUpResearch;
     emit({ type: "status", message: researchNeeded ? "Research complete. Streaming the analysis…" : "Replying…" });
