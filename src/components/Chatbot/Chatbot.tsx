@@ -308,78 +308,61 @@ function formatTime(iso: string): string {
   */
 
 function renderContent(content: string): React.ReactNode {
-
-  const blocks = content.split('\n');
-
+  const lines = content.split("\n");
   const nodes: React.ReactNode[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index].trim();
+    if (!line) { index++; continue; }
 
-  let bullets: string[] = [];
-
-
-
-  const flushBullets = (key: string) => {
-
-    if (bullets.length === 0) return;
-
-    nodes.push(
-
-      <ul key={key} className="my-1.5 ml-4 list-disc space-y-0.5">
-
-        {bullets.map((item, index) => (
-
-          <li key={index}>{renderInline(item)}</li>
-
-        ))}
-
-      </ul>,
-
-    );
-
-    bullets = [];
-
-  };
-
-
-
-  blocks.forEach((raw, index) => {
-
-    const line = raw.trimEnd();
-
-    const bullet = /^[-*•]\s+(.*)$/.exec(line.trim());
-
-    if (bullet) {
-
-      bullets.push(bullet[1]);
-
-      return;
-
+    const cells = (value: string) => value.trim().replace(/^\\|/, "").replace(/\\|$/, "").split("|").map((cell) => cell.trim());
+    const isTableDivider = (value: string) => /^\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?$/.test(value.trim());
+    if (line.includes("|") && index + 1 < lines.length && isTableDivider(lines[index + 1])) {
+      const headers = cells(line);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && lines[index].trim().includes("|")) {
+        const row = cells(lines[index]);
+        if (row.some(Boolean)) rows.push(row);
+        index++;
+      }
+      nodes.push(
+        <div key={`table-${index}`} className="my-3 max-w-full overflow-x-auto rounded-xl border border-line">
+          <table className="w-full border-collapse text-left text-[11px] sm:text-xs">
+            <thead className="bg-raised text-fg"><tr>{headers.map((cell, i) => <th key={i} className="whitespace-nowrap border-b border-line px-3 py-2 font-semibold">{renderInline(cell)}</th>)}</tr></thead>
+            <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex} className={rowIndex % 2 ? "bg-surface" : "bg-sunken/50"}>{headers.map((_, colIndex) => <td key={colIndex} className="border-b border-line/70 px-3 py-2 align-top leading-relaxed last:border-b-0">{renderInline(row[colIndex] ?? "")}</td>)}</tr>)}</tbody>
+          </table>
+        </div>,
+      );
+      continue;
     }
 
-    flushBullets(`ul-${index}`);
+    const heading = /^(#{1,4})\\s+(.+)$/.exec(line);
+    if (heading) {
+      const level = heading[1].length;
+      nodes.push(<p key={index} className={`mb-2 mt-3 font-semibold tracking-tight text-fg ${level === 1 ? "text-base" : level === 2 ? "text-sm" : "text-[13px]"}`}>{renderInline(heading[2])}</p>);
+      index++;
+      continue;
+    }
 
-    if (line.trim().length === 0) return;
+    if (/^[-*•]\\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\\s*[-*•]\\s+/.test(lines[index])) { items.push(lines[index].trim().replace(/^[-*•]\\s+/, "")); index++; }
+      nodes.push(<ul key={`ul-${index}`} className="my-2 ml-4 list-disc space-y-1">{items.map((item, i) => <li key={i} className="pl-0.5">{renderInline(item)}</li>)}</ul>);
+      continue;
+    }
+    if (/^\\d+[.)]\\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\\s*\\d+[.)]\\s+/.test(lines[index])) { items.push(lines[index].trim().replace(/^\\d+[.)]\\s+/, "")); index++; }
+      nodes.push(<ol key={`ol-${index}`} className="my-2 ml-4 list-decimal space-y-1">{items.map((item, i) => <li key={i} className="pl-0.5">{renderInline(item)}</li>)}</ol>);
+      continue;
+    }
 
-    nodes.push(
-
-      <p key={index} className="mb-1.5 last:mb-0">
-
-        {renderInline(line)}
-
-      </p>,
-
-    );
-
-  });
-
-  flushBullets('ul-final');
-
-
-
-  return nodes;
-
+    nodes.push(<p key={index} className="mb-2 last:mb-0 leading-relaxed">{renderInline(line.replace(/^---+$/, "—"))}</p>);
+    index++;
+  }
+  return <div className="min-w-0 break-words">{nodes}</div>;
 }
-
-
 
 /** Handles `\*\*bold\*\*` and `` `code` `` without touching HTML. */
 
