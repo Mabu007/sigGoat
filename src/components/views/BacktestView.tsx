@@ -184,7 +184,7 @@ export const BacktestView: React.FC = () => {
               onChange={e => setSelectedMarket(e.target.value)}
               className="w-full bg-sunken border border-line rounded-xl px-3 py-2.5 text-sm text-fg focus:outline-none focus:border-focus"
             >
-              {(currentGoat?.markets ?? []).map(market => (
+              {(currentGoat?.markets ?? []).slice(0, 1).map(market => (
                 <option key={market} value={market}>
                   {market}
                 </option>
