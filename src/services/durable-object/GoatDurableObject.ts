@@ -1627,7 +1627,43 @@ export class GoatDurableObject {
           : 'Restored from the last review. No further condition recorded.';
       }
 
-      if (signal) this.runtimeState.latestSignal = signal;
+      if (signal) {
+        const matchesCurrentThesis =
+          Boolean(thesis) &&
+          signal.thesisId === thesis?.id &&
+          signal.market === this.goatConfig.markets[0];
+        const explicitExpiry = signal.expiresAt ? Date.parse(signal.expiresAt) : NaN;
+        const signalCreatedAt = Date.parse(signal.createdAt);
+        const expiryAt = Number.isFinite(explicitExpiry)
+          ? explicitExpiry
+          : Number.isFinite(signalCreatedAt)
+            ? signalCreatedAt + 60 * 60_000
+            : 0;
+        const expiredActionable =
+          signal.status === 'ACTIONABLE' && expiryAt <= this.now();
+
+        if (matchesCurrentThesis && !expiredActionable) {
+          this.runtimeState.latestSignal = signal;
+          if (
+            signal.status === 'ACTIONABLE' &&
+            signal.direction !== 'NO_TRADE' &&
+            !this.paused
+          ) {
+            this.runtimeState.status = 'ACTIVE';
+            this.runtimeState.dormancyReason =
+              `Restored actionable proposal for ${signal.market}; it expires at ${new Date(expiryAt).toISOString()}.`;
+          }
+        } else {
+          // Never rehydrate an old proposal as the current actionable result.
+          this.runtimeState.latestSignal = null;
+          if (!this.paused) {
+            this.runtimeState.status = 'WATCHING';
+            this.runtimeState.dormancyReason = expiredActionable
+              ? 'The previous proposal expired. A fresh market review is required before another action.'
+              : 'The previous proposal belongs to an older thesis. Waiting for a current review.';
+          }
+        }
+      }
 
       const lastEvent = wakeEvents[0] ?? null;
       if (lastEvent) {
