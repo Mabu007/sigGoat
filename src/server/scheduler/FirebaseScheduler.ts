@@ -31,7 +31,9 @@ export class FirebaseScheduler implements WakeScheduler {
         timeframe: request.timeframe,
         generationId: request.generationId,
         paused,
-        leaseUntilMs: 0,
+        leaseUntilMs: typeof existing?.leaseUntilMs === 'number' && existing.leaseUntilMs > this.now()
+          ? existing.leaseUntilMs
+          : 0,
         updatedAt: new Date(this.now()).toISOString(),
       });
       this.lastSyncAt = this.now();
@@ -60,9 +62,10 @@ export class FirebaseScheduler implements WakeScheduler {
 
   async claimDue(nowMs = this.now(), limit = 40): Promise<FiredWake[]> {
     const dueIso = new Date(nowMs).toISOString();
-    const snapshot = await this.schedules.where('nextWakeAt', '<=', dueIso).limit(limit).get();
+    const snapshot = await this.schedules.where('nextWakeAt', '<=', dueIso).limit(Math.max(limit * 5, limit)).get();
     const claimed: FiredWake[] = [];
     for (const doc of snapshot.docs) {
+      if (claimed.length >= limit) break;
       const event = await this.db.runTransaction(async transaction => {
         const fresh = await transaction.get(doc.ref);
         if (!fresh.exists) return null;
@@ -90,9 +93,10 @@ export class FirebaseScheduler implements WakeScheduler {
 
   async claimDueTrackerChecks(nowMs = this.now(), limit = 40): Promise<FiredWake[]> {
     const dueIso = new Date(nowMs).toISOString();
-    const snapshot = await this.schedules.where('nextTrackerCheckAt', '<=', dueIso).limit(limit).get();
+    const snapshot = await this.schedules.where('nextTrackerCheckAt', '<=', dueIso).limit(Math.max(limit * 5, limit)).get();
     const claimed: FiredWake[] = [];
     for (const doc of snapshot.docs) {
+      if (claimed.length >= limit) break;
       const event = await this.db.runTransaction(async transaction => {
         const fresh = await transaction.get(doc.ref);
         if (!fresh.exists) return null;
