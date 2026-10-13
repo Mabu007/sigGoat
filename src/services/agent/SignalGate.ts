@@ -33,6 +33,8 @@ export interface GateInput {
   thesis: MarketThesis;
   market: string;
   quote: MarketQuote;
+  /** Spread normalized by the market's pipSize. Omit when unavailable. */
+  spreadPips?: number;
   constraints: HardConstraints;
   goatId: string;
   userId: string;
@@ -59,7 +61,7 @@ function roundTo(value: number, digits: number): number {
  */
 export class SignalGate {
   static validate(input: GateInput): GateValidationResult {
-    const { reasoningResult, thesis, market, quote, constraints, goatId, userId } = input;
+    const { reasoningResult, thesis, market, quote, spreadPips, constraints, goatId, userId } = input;
     const proposal = reasoningResult.proposal;
 
     const applied = {
@@ -144,11 +146,20 @@ export class SignalGate {
       reasons.push(`Proposal market "${proposal.market}" does not match evaluated market "${market}".`);
     }
 
-    // 4. Spread constraint (evaluated against the live quote).
-    if (constraints.maxSpreadPips > 0 && quote.spread > constraints.maxSpreadPips) {
-      reasons.push(
-        `Spread ${quote.spread} pips exceeds skill constraint SPREAD_UNDER_${constraints.maxSpreadPips}_PIPS.`,
-      );
+    // 4. Spread constraint. Provider spread is a PRICE delta, not inherently
+    // pips; the caller must normalize it using the listed market's pipSize.
+    // If the book or conversion is unavailable, fail closed rather than let a
+    // missing bid/ask masquerade as a zero-spread market.
+    if (constraints.maxSpreadPips > 0) {
+      if (quote.bidProvided === false || quote.askProvided === false) {
+        reasons.push('Cannot verify spread constraint: the market has no confirmed bid/ask.');
+      } else if (!isFiniteNumber(spreadPips) || spreadPips < 0) {
+        reasons.push('Cannot verify spread constraint: spread cannot be normalized to pips for this market.');
+      } else if (spreadPips > constraints.maxSpreadPips) {
+        reasons.push(
+          `Spread ${spreadPips.toFixed(2)} pips exceeds skill constraint SPREAD_UNDER_${constraints.maxSpreadPips}_PIPS.`,
+        );
+      }
     }
 
     if (reasons.length > 0) {
