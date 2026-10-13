@@ -4935,10 +4935,43 @@ apiRouter.get(
     const user = requireUser(req);
     const goat = await persistence.goats.getForUser(req.params.id, user.uid);
     if (!goat) return notFound(res);
-    const signals: TradeSignal[] = await persistence.signals.listByGoat(
-      goat.id,
-      100,
-    );
+    const [storedSignals, latestTheses] = await Promise.all([
+      persistence.signals.listByGoat(goat.id, 100),
+      persistence.theses.listByGoat(goat.id, 1),
+    ]);
+    const latestThesis = latestTheses[0] ?? null;
+    const now = Date.now();
+    const signals: TradeSignal[] = [];
+
+    for (const signal of storedSignals) {
+      if (signal.status === "ACTIONABLE" && !signal.decision) {
+        const explicitExpiry = signal.expiresAt ? Date.parse(signal.expiresAt) : NaN;
+        const createdAt = Date.parse(signal.createdAt);
+        const expiryAt = Number.isFinite(explicitExpiry)
+          ? explicitExpiry
+          : Number.isFinite(createdAt)
+            ? createdAt + 60 * 60_000
+            : 0;
+        const stale =
+          !latestThesis ||
+          signal.thesisId !== latestThesis.id ||
+          signal.market !== goat.markets[0] ||
+          expiryAt <= now;
+        if (stale) {
+          const expired: TradeSignal = {
+            ...signal,
+            status: "EXPIRED",
+            updatedAt: new Date(now).toISOString(),
+          };
+          await persistence.signals.update(expired).catch((err) => {
+            console.error(`[api] failed to expire stale proposal ${signal.id}:`, err);
+          });
+          signals.push(expired);
+          continue;
+        }
+      }
+      signals.push(signal);
+    }
     res.json({ signals });
   }),
 );
@@ -5044,6 +5077,40 @@ apiRouter.post(
           409,
           "STALE_PROPOSAL",
           "This proposal is not tied to the GOAT's current thesis and asset. Review the latest analysis before accepting.",
+        );
+      }
+
+      // Recheck current, provider-confirmed market data at the point of approval.
+      // A fresh thesis cannot authorize an order after its stop/target has already
+      // been crossed or when the provider is serving stale/degraded data.
+      const liveMarketState = await marketStateStore.getState(signal.market, "1h");
+      if (!isUsableMarketState(liveMarketState) || !liveMarketState.quote) {
+        return fail(
+          res,
+          409,
+          "MARKET_DATA_UNAVAILABLE",
+          "Current market data is unavailable or stale. Do not accept this proposal until the GOAT completes a fresh review.",
+        );
+      }
+      const currentPrice = liveMarketState.quote.mid;
+      const stop = signal.stopLoss;
+      const target = signal.takeProfit;
+      if (
+        !Number.isFinite(currentPrice) ||
+        !Number.isFinite(stop) ||
+        !Number.isFinite(target)
+      ) {
+        return fail(res, 409, "INVALID_PROPOSAL_LEVELS", "The proposal has incomplete price levels.");
+      }
+      const levelsInvalidated = signal.direction === "LONG"
+        ? currentPrice <= stop || currentPrice >= target
+        : currentPrice >= stop || currentPrice <= target;
+      if (levelsInvalidated) {
+        return fail(
+          res,
+          409,
+          "THESIS_INVALIDATED",
+          "The current price has crossed the proposal's stop or target. Reject this stale proposal and request a fresh review.",
         );
       }
 
