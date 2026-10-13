@@ -61,8 +61,7 @@ where per-GOAT polling would have made 48. Counters are exposed at
 A provider outage keeps the last good snapshot and flags it `degraded`; reasoning
 refuses to run on degraded data so stale prices cannot become a thesis.
 
-See [docs/durable-objects.md](docs/durable-objects.md) for the storage and
-scheduling architecture, including what ports to Cloudflare Durable Objects.
+Scheduled reviews and GOAT runtime records are backed by Firebase/Firestore; GitHub Actions calls the authenticated cron endpoint to dispatch due work.
 
 ## Bring-your-own OpenRouter key (BYOK)
 
@@ -219,124 +218,67 @@ mode**. Nothing pretends to be real:
 
 ## Hosting
 
-**Vercel runs the application. Cloudflare Durable Objects run the stateful
-runtime.**
+**Vercel runs the app and AI workflow. Firebase/Firestore is the durable source of truth. GitHub Actions dispatches scheduled work to the authenticated API. Cloudflare Workers and Durable Objects are not used.**
 
 ```
-Vercel                                  Cloudflare (one Worker, two DO classes)
-──────                                  ─────────────────────────────────────
-UI + API (api/index.ts)                 worker/market-data-worker.ts
-Firebase auth + Firestore               GoatSchedulerDO  — one per GOAT id
-OpenRouter (the user's own key)           durable: nextWakeAt, nextTrackerCheckAt,
-Telegram outbox + delivery                                generationId, paused
-Trackers (deterministic)                MarketDataDO     — one per instrument class
-GOAT wake -> AI -> SignalGate             SQLite: candles, session summaries,
-        ▲                                            swings, levels, subscriptions
-        │                                alarms: ingest / finalize / prune
-        ├──── POST /api/internal/wake ◀────────── alarm()
-        ├──── POST /api/internal/check-trackers     (no AI cost)
-        └──── POST /api/internal/market-event ◀──── published candle events
+Vercel UI + API
+  ├── Firebase Auth
+  ├── Firestore: GOATs, schedules, theses, signals, trackers, review history,
+  │              Telegram outbox, chats and messages
+  ├── OpenRouter / user-selected AI provider
+  └── Telegram delivery
+        ▲
+GitHub Actions (every 5 minutes)
+  └── POST /api/internal/cron
+        ├── claims due GOAT schedules using Firestore leases
+        ├── runs scheduled AI reviews
+        └── evaluates deterministic trackers
 ```
-
-Neither Durable Object ever sees a user id, an API key, a thesis or a signal, and
-neither imports a Node-only module — `firebase-admin` cannot run on the Workers
-runtime, which is exactly why nothing that needs it lives there. See
-[docs/durable-objects.md](docs/durable-objects.md).
-
-### Market data storage and retention
-
-One-minute OHLC candles are stored once, shared by every GOAT, and bounded by a
-configurable retention policy. The rule that governs all of it:
-
-> **No candle history is deleted before its required durable summary and
-> structural facts are safely persisted.**
-
-Session summaries, the confirmed swing ledger and the level ledger outlive the
-minutes they were derived from, so a GOAT can still explain why it considers a
-level important weeks after the candles are gone. Session boundaries are
-derived from IANA timezone rules, so daylight-saving transitions are correct
-rather than hardcoded to a fixed UTC offset.
 
 ### Vercel setup
 
-1. Import the repo. `vercel.json` builds `npm run build`, serves `dist`, and
-   routes `/api/*` to the `api/index.ts` function.
-2. Set these under **Settings → Environment Variables**:
+1. Import the repository and deploy with the committed `vercel.json`.
+2. Configure the Firebase Admin service account. Recommended environment variable:
 
    ```
-   FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=<base64 of the service-account JSON>
-   DURABLE_SCHEDULER_URL=https://<worker-name>.<subdomain>.workers.dev
-   DURABLE_SCHEDULER_SECRET=<same value as the Worker's SCHEDULER_SECRET>
-   MARKET_DATA_WORKER_URL=https://<worker-name>.<subdomain>.workers.dev
-   MARKET_DATA_WORKER_SECRET=<a separate random value>
+   FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=<base64 of the Firebase service-account JSON>
+   CRON_SECRET=<long random secret>
+   APP_ORIGIN=https://your-production-domain
    OPENROUTER_API_KEY=                 # optional platform fallback
-   TELEGRAM_BOT_TOKEN=                 # optional
+   TELEGRAM_BOT_TOKEN=                 # optional platform fallback
    ```
 
-   Generate the shared secret with `openssl rand -hex 32`. `MARKET_DATA_*` is a
-   **separate** secret from `DURABLE_SCHEDULER_SECRET` so the two surfaces can
-   be rotated independently and a leaked market secret cannot schedule GOAT
-   wakes. Retention overrides (`RETENTION_*`) are optional; see
-   `.env.example` for the defaults.
+   Generate a secret with `openssl rand -hex 32`. The same `CRON_SECRET` must be set in GitHub repository secrets. Never enable `SIGNALGOAT_ALLOW_DEV_AUTH` in production.
 
-   `base64 -w0 firebase-service-account.json`. Never set
-   `SIGNALGOAT_ALLOW_DEV_AUTH` in production.
+3. In GitHub repository settings, add:
+   - **Variable** `SIRGOAT_API_URL`: the deployed app base URL, without a trailing slash.
+   - **Secret** `CRON_SECRET`: the same value configured in Vercel.
 
-3. Deploy the scheduler Worker, with the same secret:
+   The `.github/workflows/goat-scheduler.yml` workflow runs every five minutes and can also be started manually. This is the minimum dependable cadence of this scheduler; intervals shorter than five minutes are not guaranteed by GitHub Actions cron.
 
-   ```
-   npx wrangler deploy
-   ```
+4. Configure Firebase Authentication's authorized domains to include your Vercel/custom domain and local development domains. Public `VITE_FIREBASE_*` web configuration is compiled into the frontend; Admin credentials remain server-side.
 
-   `SCHEDULER_SECRET` and `APP_ORIGIN` are Worker secrets:
-   `npx wrangler secret put SCHEDULER_SECRET`.
+### Persistence and scheduling
 
-   `wrangler.toml` declares two migrations — `v1` uses `new_classes` for
-   `GoatSchedulerDO`, and `v2` uses **`new_sqlite_classes`** for
-   `MarketDataDO`. SQLite storage requires the latter; using `new_classes`
-   there is the usual cause of `SQLite storage unavailable` at runtime.
+- Firestore stores GOAT configuration, deployment state, schedules, theses, proposals, review events, chat records and the Telegram notification outbox.
+- A GOAT is saved as a draft until explicitly deployed. Deployment starts an immediate market review; later runs follow its persisted schedule.
+- Firestore leases and schedule generations suppress overlapping and stale cron dispatches. A completed run advances its next due time.
+- Telegram market-review recaps are queued before delivery and deduplicated. Opening a review history item marks it read; unclicked entries remain unread.
+- In-process timers are a local-development fallback only. Production must have Firebase Admin configured and the GitHub scheduler workflow variables/secrets set.
 
-4. Public Firebase **web** config is committed in `.env.example` as
-   `VITE_FIREBASE_*` and inlined at build time. Add your Vercel domain (and
-   `localhost` / `127.0.0.1`) to **Authentication → Settings → Authorized
-   domains**, otherwise Google sign-in fails with `auth/unauthorized-domain`.
-
-### What works where
-
-| Feature | Vercel + Durable Objects |
-|---|---|
-| Sign in, save keys, GOAT CRUD, manual wake, chat | yes |
-| Scheduled reasoning at the user's interval | yes — durable alarm |
-| Tracker conditions firing at the tracking cadence | yes — durable alarm, no AI cost |
-| Shared one-minute candle history, one provider call per instrument | yes |
-| Bounded retention with summary-before-delete | yes — Durable Object alarm |
-| Session summaries, swing ledger, level ledger | yes — survive candle pruning |
-| Dormant GOATs do not poll | yes — woken by published candle events |
-| Telegram alerts, deduplicated and retried | yes |
-| Survives Vercel restart / redeploy | yes — alarm state is in the Durable Object |
-
-Without `DURABLE_SCHEDULER_URL` the app falls back to in-process timers and says
-so loudly at boot and in `GET /api/settings/status` (`scheduler.kind`). That
-fallback does **not** survive restarts. Without `MARKET_DATA_WORKER_URL` the
-durable market store is not used and `durableMarketData.configured` reports
-`false` — both states are reported rather than silently assumed.
-
-### Checking it is actually working
+### Health checks
 
 ```
-GET /api/settings/status      scheduler + durableMarketData + filesystemPersistence
-GET /api/markets/ingestion    per-instrument freshness, staleness, prune counts
-GET /api/markets/session?symbol=EUR/USD   the UTC offset in force right now
+GET /api/health
+GET /api/settings/status
+GET /api/markets/ingestion
 ```
 
-`filesystemPersistence` reads `disabled` on Vercel by design: the filesystem
-there is ephemeral, so a "persisted" snapshot would vanish on the next cold
-start. The durable home for market state is the Durable Object.
+Check the deployment logs and the GitHub Actions **GOAT Scheduler** workflow to confirm scheduled dispatches are running. A successful deployment alone does not prove that cron credentials or Firebase access are configured.
 
 ## Secrets policy
 
-- `data/` is git-ignored. It holds each user's saved OpenRouter key and
-  Telegram token **in plaintext** — treat the directory as sensitive.
+- In production, user credentials are handled through the encrypted credential vault and Firebase-backed persistence. Local development may use a file-backed repository; protect the local `data/` directory.
 - `.env.example` is committed and must contain **empty** placeholders for
   every server-side value. Only `VITE_FIREBASE_*` holds real values, because
   Firebase web config is public by design.
