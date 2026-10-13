@@ -4744,7 +4744,7 @@ apiRouter.post(
 
     res.json({
       goat: newGoat,
-      runtimeState: runtime.getState(),
+      runtimeState: runtime?.getState() ?? null,
       dataMode: marketProvider.dataMode,
       /**
        * Explicit, so the UI can show "first analysis running" rather than an
