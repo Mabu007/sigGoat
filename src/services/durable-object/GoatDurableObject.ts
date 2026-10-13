@@ -899,11 +899,17 @@ export class GoatDurableObject {
 
       // ---- Stage 5: deterministic gate ---------------------------------
       const constraints: HardConstraints = aggregateHardConstraints(this.skills);
+      const marketMetadata = this.marketProvider.getMarketMetadata(market);
+      const spreadPips = marketMetadata && marketMetadata.pipSize > 0 &&
+        quote.bidProvided !== false && quote.askProvided !== false
+        ? quote.spread / marketMetadata.pipSize
+        : undefined;
       const gateResult = SignalGate.validate({
         reasoningResult,
         thesis: newThesis,
         market,
         quote,
+        spreadPips,
         constraints,
         goatId: this.id,
         userId: this.goatConfig.userId,
