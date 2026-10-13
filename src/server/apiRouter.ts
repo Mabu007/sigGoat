@@ -4871,10 +4871,16 @@ apiRouter.delete(
     await scheduler.cancel(goat.id).catch((err) => {
       console.error("[scheduler] cancel failed:", err);
     });
-    // 3. Remove persisted data.
+    // 3. Delete the GOAT's dependent records before deleting its parent.
+    // Firestore does not cascade subcollections/related top-level collections.
+    await Promise.all([
+      persistence.signals.deleteByGoat(goat.id),
+      persistence.theses.deleteByGoat(goat.id),
+      persistence.wakeEvents.deleteByGoat(goat.id),
+    ]);
     await persistence.goats.delete(goat.id);
 
-    res.json({ success: true, deletedId: goat.id });
+    res.json({ success: true, deletedId: goat.id, deletedHistory: true });
   }),
 );
 
