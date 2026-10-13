@@ -1964,6 +1964,30 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             </div>
           </section>
 
+          {inspectedState?.lastError && (
+            <section
+              role="alert"
+              className="rounded-2xl border border-negative/40 bg-negative-soft p-4"
+            >
+              <div className="flex items-start gap-3">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-negative" />
+                <div className="min-w-0">
+                  <h3 className="text-xs font-bold text-negative">
+                    {/(openrouter|model|provider|api key|credential|reasoning)/i.test(inspectedState.lastError)
+                      ? 'AI not connected'
+                      : 'GOAT needs attention'}
+                  </h3>
+                  <p className="mt-1 break-words text-xs leading-relaxed text-fg-muted">
+                    {inspectedState.lastError}
+                  </p>
+                  <p className="mt-2 text-[10px] text-fg-subtle">
+                    No new actionable proposal will be trusted until the issue is resolved and a fresh review succeeds.
+                  </p>
+                </div>
+              </div>
+            </section>
+          )}
+
           {/* ========================================================= */}
           {/* SIGNAL — THE PRIMARY ARTIFACT                              */}
           {/* ========================================================= */}
