@@ -131,7 +131,7 @@ export const BacktestView: React.FC = () => {
             </h1>
 
             <p className="text-xs text-fg-muted mt-0.5">
-              Replay your GOAT's signals against historical market conditions.
+              Replay a deterministic historical strategy using this GOAT's hard risk constraints. This is not a replay of the LLM's exact decisions.
             </p>
           </div>
         </div>
