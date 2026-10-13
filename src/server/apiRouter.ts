@@ -5379,9 +5379,9 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
 
   const goatSnapshots = await Promise.all(matchedGoats.map(async (goat) => {
     const [theses, signals, wakeEvents] = await Promise.all([
-      persistence.theses.listByGoat(goat.id, 3).catch(() => []),
-      persistence.signals.listByGoat(goat.id, 5).catch(() => []),
-      persistence.wakeEvents.listByGoat(goat.id, 5).catch(() => []),
+      persistence.theses.listByGoat(goat.id, 10).catch(() => []),
+      persistence.signals.listByGoat(goat.id, 20).catch(() => []),
+      persistence.wakeEvents.listByGoat(goat.id, 10).catch(() => []),
     ]);
     const attachedSkills = skills.filter((skill) => goat.skillIds.includes(skill.id));
     return {
@@ -5605,6 +5605,9 @@ async function runChatResearchLoop(
   userMessage: string,
   initialContext: string,
 ): Promise<string> {
+  if (/^\s*(hey|hello|hi|thanks|thank you|good morning|good afternoon|good evening)[!.\s]*$/i.test(userMessage)) {
+    return "\n\nFOLLOW-UP RESEARCH LOOP: skipped for a greeting; no market research was needed.";
+  }
   const plannerPrompt = [
     "You are the research planner inside SIRGOAT. Inspect the user question and the evidence already fetched.",
     "Return ONLY one JSON object with this schema:",
