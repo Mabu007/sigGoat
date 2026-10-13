@@ -622,7 +622,7 @@ async function setGoatStatusFor(
 
   return {
     ...updated,
-    runtimeState: state,
+    runtimeState: runtime.getState(),
     schedule: runtime.getConfig().schedule,
   };
 }
@@ -1528,6 +1528,10 @@ function scheduleGeneration(goat: FundGoat): string {
     schedule.mode,
     schedule.intervalMinutes ?? "-",
     (schedule.times ?? []).join(".") || "-",
+    normaliseTrackingTimeframe(goat.timeframe),
+    goat.markets[0] ?? "-",
+    [...goat.skillIds].sort().join(",") || "-",
+    goat.model,
   ].join(":");
 }
 
