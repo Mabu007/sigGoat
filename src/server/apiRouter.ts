@@ -5345,6 +5345,8 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   const now = new Date();
   const lower = userMessage.toLowerCase();
   const lowerMessage = userMessage.toLowerCase();
+  const includeUserState = /\b(goat|my agent|my setup|my proposal|my signal|my strategy|my portfolio|my account|my trades|my activity)\b/i.test(userMessage);
+  const includeNews = /\b(news|why|latest|what happened|fundamental|economic|calendar|macro|research|compare|event|fed|ecb|cpi|nfp)\b/i.test(userMessage);
   const newsQueries: string[] = [];
   if (/\b(gold|xau|paxg)\b/i.test(userMessage)) newsQueries.push("gold price market Federal Reserve latest");
   if (/\b(bitcoin|btc|xbt)\b/i.test(userMessage)) newsQueries.push("Bitcoin crypto market latest");
@@ -5357,6 +5359,8 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
     newsQueries.push(userMessage.slice(0, 150) + " latest news");
   }
 
+  if (!includeNews) newsQueries.length = 0;
+
   const sections: string[] = [
     "CURRENT SERVER TIME (UTC): " + now.toISOString(),
     "MARKET DATA SOURCE: " + marketProvider.name + "; mode=" + marketProvider.dataMode +
@@ -5364,8 +5368,8 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   ];
 
   const [goats, skills, symbols, newsGroups] = await Promise.all([
-    persistence.goats.listByUser(userId).catch(() => []),
-    persistence.skills.listByUser(userId).catch(() => []),
+    includeUserState ? persistence.goats.listByUser(userId).catch(() => []) : Promise.resolve([]),
+    includeUserState ? persistence.skills.listByUser(userId).catch(() => []) : Promise.resolve([]),
     marketProvider.getSymbols().catch(() => []),
     Promise.all(newsQueries.slice(0, 4).map(fetchChatNews)),
   ]);
@@ -5450,6 +5454,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
     };
   }));
 
+  if (includeUserState) {
   if (goats.length) {
     sections.push(
       "USER'S SIRGOAT STATE (only this authenticated user's records; proposals are existing saved signals, not new recommendations):\n" +
@@ -5465,6 +5470,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
     );
   } else {
     sections.push("USER'S SIRGOAT STATE: no GOATs were returned for this account, or the state store was unavailable. Do not invent any.");
+  }
   }
 
   const marketNames = new Set<string>();
@@ -5529,6 +5535,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
     sections.push("LIVE MARKET SNAPSHOTS: no matching listed instrument was identified from the current message or this user's GOAT markets. Do not invent a quote; ask which listed symbol they mean if needed.");
   }
 
+  if (includeNews) {
   if (news.length) {
     sections.push(
       "LATEST INTERNET NEWS HEADLINES (Google News RSS search, fetched at " + now.toISOString() + "; headlines are leads, not proof of a claim):\n" +
@@ -5536,6 +5543,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
     );
   } else {
     sections.push("LATEST INTERNET NEWS: the news feed returned no results or was unavailable. Be transparent; do not claim to have searched successfully or invent recent headlines.");
+  }
   }
 
   sections.push(
