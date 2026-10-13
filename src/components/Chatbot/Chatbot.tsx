@@ -577,62 +577,39 @@ export function Chatbot() {
     */
 
   const createChat = useCallback(async (): Promise<string | null> => {
-
     setError(null);
-
     try {
-
-      const res = await fetch('/api/chat', {
-
+      const res = await fetch('/api/chats', {
         method: 'POST',
-
-        headers: { ...(await loadAuthHeaders()), 'Content-Type': 'application/json' },
-
-        body: JSON.stringify({ message: '' }),
-
+        headers: await loadAuthHeaders(),
       });
-
-      if (!res.ok) throw new Error('Could not start a new chat.');
-
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.error?.message ?? 'Could not start a new chat.');
+      }
 
       const id: string = data?.chat?.id;
-
       if (!id) throw new Error('The server did not return a chat id.');
 
-
-
       const newChat: ChatItem = {
-
         id,
-
         title: data.chat.title || 'New chat',
-
-        lastMessageAt: new Date().toISOString(),
-
+        lastMessageAt: data.chat.lastMessageAt || new Date().toISOString(),
       };
-
       setChats((prev) => [newChat, ...prev]);
-
       setCurrentChatId(id);
-
       setMessages([]);
-
-      try { localStorage.setItem(CHATBOT_STORAGE_KEY, JSON.stringify({ chatId: id })); } catch { /* Storage is optional. */ }
-
+      try {
+        localStorage.setItem(CHATBOT_STORAGE_KEY, JSON.stringify({ chatId: id }));
+      } catch {
+        /* Storage is optional. */
+      }
       return id;
-
     } catch (err) {
-
       setError(err instanceof Error ? err.message : 'Could not start a new chat.');
-
       return null;
-
     }
-
   }, [loadAuthHeaders]);
-
-
 
   const selectChat = useCallback(
 
