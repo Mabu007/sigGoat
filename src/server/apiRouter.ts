@@ -5804,7 +5804,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       chat = await persistence.chats.create({
         id: "chat_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
         userId: user.uid,
-        title: message.trim().slice(0, 60),
+        title: "New chat",
         createdAt: now,
         updatedAt: now,
         lastMessageAt: now,
