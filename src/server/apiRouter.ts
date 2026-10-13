@@ -4534,13 +4534,16 @@ async function runtimeFor(
   goat: FundGoat,
 ): Promise<ReturnType<typeof ensureGoatRuntime>> {
   const runtime = await ensureGoatRuntime(goat);
+  // Do not interpret the constructor's temporary empty state as an unreviewed
+  // GOAT. Hydration must finish before deciding whether to dispatch first work.
+  await runtime.ready();
   const state = runtime.getState();
 
   const needsReview =
-    !state.currentThesis && !state.isEvaluating && goat.status !== "PAUSED";
+    !state.currentThesis && !state.lastWakeEvent && !state.isEvaluating && goat.status !== "PAUSED";
   if (needsReview) {
     void runtime
-      .wake("Initial market review", "MANUAL_REEVALUATE", goat.markets[0])
+      .wake("Initial market review", "MANUAL_REEVALUATE", runtime.getConfig().markets[0])
       .catch((err) => {
         console.error(
           `[api] resume of initial review failed for ${goat.id}:`,
