@@ -31,14 +31,18 @@ export const BacktestView: React.FC = () => {
 
   // Keep the selection valid as the catalogue and GOAT list load.
   useEffect(() => {
-    if (selectedMarket) return;
-    // The GOAT's own market is resolved from the goat list, falling back to
-    // the first listed symbol. It used to be hardcoded to a conventional FX
-    // pair the current venue does not list.
-    const fallback =
-      (goats.find(g => g.id === selectedGoatId) || goats[0])?.markets[0] ??
-      symbols[0]?.symbol;
-    if (fallback) setSelectedMarket(fallback);
+    // The selected market must always belong to the selected GOAT. Previously,
+    // changing GOAT could leave the old asset selected and submit a request the
+    // server correctly rejected.
+    const selectedGoat = goats.find(g => g.id === selectedGoatId) || goats[0];
+    const assignedMarket = selectedGoat?.markets[0];
+    if (assignedMarket && selectedMarket !== assignedMarket) {
+      setSelectedMarket(assignedMarket);
+      return;
+    }
+    if (!assignedMarket && !selectedMarket && symbols[0]?.symbol) {
+      setSelectedMarket(symbols[0].symbol);
+    }
   }, [selectedMarket, selectedGoatId, goats, symbols]);
   const [selectedPeriod, setSelectedPeriod] =
     useState<'24h' | '7d' | '30d' | '90d'>('7d');
@@ -180,9 +184,9 @@ export const BacktestView: React.FC = () => {
               onChange={e => setSelectedMarket(e.target.value)}
               className="w-full bg-sunken border border-line rounded-xl px-3 py-2.5 text-sm text-fg focus:outline-none focus:border-focus"
             >
-              {symbols.map(symbol => (
-                <option key={symbol.symbol} value={symbol.symbol}>
-                  {symbol.symbol} — {symbol.name}
+              {(currentGoat?.markets ?? []).map(market => (
+                <option key={market} value={market}>
+                  {market}
                 </option>
               ))}
             </select>
