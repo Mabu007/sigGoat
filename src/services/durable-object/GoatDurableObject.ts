@@ -942,18 +942,58 @@ export class GoatDurableObject {
         return this.runtimeState;
       }
       const persistenceErrors: string[] = [];
-      try {
-        await this.thesisRepo?.save(newThesis);
-      } catch (err) {
-        persistenceErrors.push(`thesis: ${err instanceof Error ? err.message : 'unknown'}`);
+      let thesisPersisted = false;
+      if (this.thesisRepo) {
+        try {
+          await this.thesisRepo.save(newThesis);
+          thesisPersisted = true;
+        } catch (err) {
+          persistenceErrors.push(`thesis: ${err instanceof Error ? err.message : 'unknown'}`);
+        }
+      } else {
+        persistenceErrors.push('thesis: repository unavailable');
       }
 
       let latestSignal: TradeSignal = gateResult.signal;
-      try {
-        await this.signalRepo?.save(gateResult.signal);
-      } catch (err) {
-        persistenceErrors.push(`signal: ${err instanceof Error ? err.message : 'unknown'}`);
+      // A proposal whose thesis was not durably recorded is never actionable.
+      if (gateResult.approved && !thesisPersisted) {
+        latestSignal = {
+          ...gateResult.signal,
+          direction: 'NO_TRADE',
+          status: 'NO_TRADE',
+          rationale: 'Actionable proposal suppressed because the thesis could not be persisted.',
+        };
       }
+
+      let signalPersisted = false;
+      if (this.signalRepo) {
+        try {
+          await this.signalRepo.save(latestSignal);
+          signalPersisted = true;
+        } catch (err) {
+          persistenceErrors.push(`signal: ${err instanceof Error ? err.message : 'unknown'}`);
+        }
+      } else {
+        persistenceErrors.push('signal: repository unavailable');
+      }
+
+      const actionable = gateResult.approved && thesisPersisted && signalPersisted;
+      if (gateResult.approved && !actionable) {
+        latestSignal = {
+          ...latestSignal,
+          direction: 'NO_TRADE',
+          status: 'NO_TRADE',
+          rationale: 'Actionable proposal suppressed because persistence was not confirmed.',
+        };
+      }
+      const finalReasons = actionable
+        ? []
+        : [
+            ...gateResult.reasons,
+            ...(persistenceErrors.length > 0
+              ? ['Persistence was not confirmed; actionable proposal suppressed.']
+              : []),
+          ];
 
       // ---- Stage 7: update runtime state -------------------------------
       this.runtimeState.currentThesis = newThesis;
@@ -968,7 +1008,7 @@ export class GoatDurableObject {
         this.runtimeState.lastReviewSession = session.session as GoatRuntimeState['lastReviewSession'];
       }
 
-      if (gateResult.approved) {
+      if (actionable) {
         this.runtimeState.status = 'ACTIVE';
         this.runtimeState.latestSignal = latestSignal;
         this.runtimeState.dormancyReason = `Active conditional setup (${latestSignal.orderType} ${latestSignal.direction} ${market} @ ${latestSignal.entry}).`;
@@ -977,8 +1017,8 @@ export class GoatDurableObject {
       } else {
         this.runtimeState.status = 'WATCHING';
         this.runtimeState.latestSignal = latestSignal;
-        this.runtimeState.dormancyReason = gateResult.reasons[0]
-          ? `NO_TRADE: ${gateResult.reasons[0]}`
+        this.runtimeState.dormancyReason = finalReasons[0]
+          ? `NO_TRADE: ${finalReasons[0]}`
           : 'Waiting for high-probability structural confluence.';
         this.runtimeState.nextWatchingCondition =
           trackers[0]?.description ?? `Watching ${market} key levels`;
@@ -988,13 +1028,13 @@ export class GoatDurableObject {
         reason,
         triggerType,
         market,
-        gateResult.approved ? 'SIGNAL_PRODUCED' : 'NO_TRADE',
-        gateResult.approved
+        actionable ? 'SIGNAL_PRODUCED' : 'NO_TRADE',
+        actionable
           ? `Conditional setup formed: ${latestSignal.orderType} ${latestSignal.direction} ${market} @ ${latestSignal.entry}`
-          : `NO_TRADE: ${gateResult.reasons.join(' ') || 'waiting for high-probability condition'}`,
-        gateResult.approved ? 'SIGNAL_PRODUCED' : 'NO_TRADE',
+          : `NO_TRADE: ${finalReasons.join(' ') || 'waiting for high-probability condition'}`,
+        actionable ? 'SIGNAL_PRODUCED' : 'NO_TRADE',
         generationId,
-        { gateReasons: gateResult.reasons, appliedConstraints: gateResult.appliedConstraints },
+        { gateReasons: finalReasons, appliedConstraints: gateResult.appliedConstraints, persistenceErrors },
       );
 
       if (persistenceErrors.length > 0) {
