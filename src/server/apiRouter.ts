@@ -6004,13 +6004,13 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     const assistantMessage: ChatMessage = {
       id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
       chatId: chat.id, userId: user.uid, role: "assistant", content,
-      model: CHAT_MODEL, createdAt: new Date().toISOString(),
+      model: activeModel, createdAt: new Date().toISOString(),
     };
     await Promise.all([
       persistence.messages.create(chat.id, assistantMessage),
       persistence.chats.update(chat.id, { updatedAt: assistantMessage.createdAt, lastMessageAt: assistantMessage.createdAt }),
     ]);
-    emit({ type: "done", chat: { id: chat.id, title: chat.title }, message: assistantMessage, userMessage, model: CHAT_MODEL });
+    emit({ type: "done", chat: { id: chat.id, title: chat.title }, message: assistantMessage, userMessage, model: activeModel });
     res.end();
   } catch (error) {
     console.error("[chat] Streaming request failed.", error);
