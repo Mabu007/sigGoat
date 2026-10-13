@@ -5637,6 +5637,24 @@ apiRouter.post("/chats", authMiddleware, async (req, res) => {
   }
 });
 
+/** Rename a chat owned by the authenticated user. */
+apiRouter.patch("/chats/:id", authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  const chatId = String(req.params.id || "");
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  if (!title) return fail(res, 400, "INVALID_CHAT_TITLE", "A chat title is required.");
+  if (title.length > 80) return fail(res, 400, "INVALID_CHAT_TITLE", "Chat titles must be 80 characters or fewer.");
+  try {
+    const chat = await persistence.chats.getForUser(chatId, user.uid);
+    if (!chat) return fail(res, 404, "CHAT_NOT_FOUND", "This chat does not exist or is not yours.");
+    await persistence.chats.update(chatId, { title, updatedAt: new Date().toISOString() });
+    res.json({ chat: { id: chatId, title, updatedAt: new Date().toISOString() } });
+  } catch (error) {
+    console.error("[chat] Failed to rename chat session.", error);
+    return fail(res, 500, "CHAT_RENAME_FAILED", "Could not rename this chat session.");
+  }
+});
+
 apiRouter.post("/chat", authMiddleware, async (req, res) => {
   const user = requireUser(req);
   const { message, chatId } = req.body ?? {};
