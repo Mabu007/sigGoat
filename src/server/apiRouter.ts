@@ -5548,10 +5548,12 @@ const CHAT_MODEL = "apodex/apodex-1.1-mini:free";
 
 /** A concise, honest system persona for the assistant. */
 const CHAT_SYSTEM_PROMPT =
-  "You are SIRGOAT's autonomous market-research copilot. For every question, identify the evidence needed and use the backend's on-demand Hyperliquid instrument discovery, live quote retrieval, historical OHLCV candle retrieval, internet news, and authenticated SIRGOAT state. " +
-  "Do not treat one preloaded snapshot as the entire market-data capability: relevant instruments can be searched and fetched per request. For multi-asset questions, analyze every requested asset individually and compare timestamps and timeframes. For historical questions, use the retrieved candle series and report timeframe and sample size. " +
-  "For GOAT questions, inspect the actual saved configuration, skills, theses, activity and proposals. Distinguish facts from analysis, give sources and timestamps, and explain gaps. Never fabricate an asset listing, price, funding, open interest, volume, candle, or news headline. If the requested instrument is not found on Hyperliquid, say so and ask for a symbol or alternate source. " +
-  "Research workflow: plan the required evidence, inspect retrieved data, identify gaps, use all relevant evidence supplied for this turn, then synthesize a clear answer with competing scenarios, confirmation, invalidation and risk. State whether the feed is LIVE or PAPER and never label stale/PAPER data live. Never expose another user's data or credentials. Never execute trades, create or decide proposals, or alter GOAT settings from chat.";
+  "You are SirGOAT: G's sharp, capable, slightly witty finance copilot — like a cooler JARVIS who works with the user, not a corporate helpdesk. Sound like a real, trusted friend who happens to be excellent at markets. Be relaxed, confident, direct, observant, and useful. Never call yourself an AI assistant, copilot, chatbot, or market-research assistant unless directly asked. Never open with a feature list, disclaimer, or generic 'How can I help you today?' " +
+  "CONVERSATION STYLE: For a simple greeting like 'hey', reply only 'Hey G, you good?' (or a similarly natural one-line greeting if the conversation context calls for it). For thanks, reply briefly. Match the user's casual tone without forced slang, excessive emojis, fake intimacy, or overdoing the JARVIS act. Remember the conversation and avoid repeating context the user already knows. " +
+  "DEFAULT ANSWER SHAPE: Lead with the answer or your actual take in plain language. Usually use 1-3 short paragraphs. Do not automatically produce a report with numbered sections, tables, 'bottom line', 'gaps and caveats', or generic disclaimers. Use headings, bullets, and tables only when they make a complex research answer easier to scan or the user asks for detail. Do not repeat the user's question. Ask one focused follow-up only when a genuinely important detail is missing. " +
+  "DEPTH CONTROL: Casual chat gets a casual, short reply. 'What do you think about EUR?' gets a concise view plus the key evidence and level/condition that would change the view. 'Research', 'analyse in detail', 'compare', 'backtest', or multi-part requests warrant a deeper evidence-led answer. For trading analysis, be decisive about what the evidence suggests while separating observation from inference and uncertainty; do not hide behind generic financial disclaimers. " +
+  "DATA AND RESEARCH: Use the backend's on-demand Hyperliquid instrument discovery, live quote retrieval, historical OHLCV candles, internet news, and authenticated SIRGOAT state. Search/fetch every asset the user asks about; use historical data when relevant; inspect saved GOAT configuration, skills, theses, activity, and proposals for GOAT questions. A greeting does not need market research. Never pretend to have fetched data that is absent. Never fabricate a listing, price, funding, open interest, volume, candle, news item, source, or timestamp. State LIVE versus PAPER accurately, and mention a data gap only when it materially affects the answer. " +
+  "When researching, plan what evidence is needed, inspect retrieved data, identify material gaps, use available follow-up research, then synthesize a clear view. For complex trading questions, include the strongest bullish and bearish case, important confirmation/invalidation conditions, and risk only where relevant. Never expose another user's data or credentials. Never execute trades, create/accept proposals, or alter GOAT settings from chat.";
 
 /** Resolve the chatbot credential: user OpenRouter key from the vault, else the server fallback. */
 async function resolveChatbotCredential(uid: string): Promise<{
@@ -5572,6 +5574,24 @@ async function resolveChatbotCredential(uid: string): Promise<{
   }
   const serverKey = process.env.OPENROUTER_API_KEY?.trim();
   return { provider: await reasoningGateway.providerFor(uid), key: serverKey };
+}
+
+async function generateSemanticChatTitle(key: string, firstMessage: string): Promise<string> {
+  try {
+    const result = await sendToModel(key, [
+      {
+        role: "system",
+        content: "Create a short semantic title for a saved finance/trading chat based on the user's message. Return only the title, 2-6 words, ideally 3-5. Be specific, natural, and scannable. No quotes, emojis, punctuation at the end, or generic titles like Chat or New Chat. Do not answer the message.",
+      },
+      { role: "user", content: firstMessage.slice(0, 1200) },
+    ]);
+    const title = result.content.trim().replace(/^["'\`]+|["'\`]+$/g, "").replace(/[.!?]+$/, "").replace(/\s+/g, " ");
+    if (title && title.length <= 60 && !/^(new chat|chat|conversation)$/i.test(title)) return title;
+  } catch (error) {
+    console.warn("[chat] AI title generation failed; using a readable fallback.", error);
+  }
+  const words = firstMessage.replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N}\s'-]/gu, " ").trim().split(/\s+/).slice(0, 6);
+  return words.join(" ").slice(0, 60) || "Quick Chat";
 }
 
 async function sendToModel(
@@ -5814,10 +5834,44 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       return;
     }
 
+    // Generate a concise, semantic title from the opening message only once.
+    const needsTitle = !chat.title || chat.title === "New chat";
+    const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim()) : Promise.resolve(chat.title);
+
+    // Greetings are conversations, not research tasks. Reply immediately and skip market/news retrieval.
+    if (/^\s*(hey|hello|hi|yo|hiya|sup|what'?s up|good morning|good afternoon|good evening)[!,.\s]*$/i.test(message.trim())) {
+      const title = await titlePromise;
+      const now = new Date().toISOString();
+      if (needsTitle) {
+        await persistence.chats.update(chat.id, { title, updatedAt: now, lastMessageAt: now });
+        chat.title = title;
+      }
+      const greeting = "Hey G, you good?";
+      const assistantMessage: ChatMessage = {
+        id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+        chatId: chat.id, userId: user.uid, role: "assistant", content: greeting,
+        model: CHAT_MODEL, createdAt: now,
+      };
+      await Promise.all([
+        persistence.messages.create(chat.id, assistantMessage),
+        persistence.chats.update(chat.id, { updatedAt: now, lastMessageAt: now }),
+      ]);
+      emit({ type: "delta", content: greeting });
+      emit({ type: "done", chat: { id: chat.id, title: chat.title }, message: assistantMessage, userMessage, model: CHAT_MODEL });
+      res.end();
+      return;
+    }
+
     const initialResearch = await buildChatResearchContext(user.uid, message.trim());
     emit({ type: "status", message: "Checking whether more market history or news is needed…" });
     const followUpResearch = await runChatResearchLoop(key, message.trim(), initialResearch);
     const researchContext = initialResearch + followUpResearch;
+    if (needsTitle) {
+      const title = await titlePromise;
+      const now = new Date().toISOString();
+      await persistence.chats.update(chat.id, { title, updatedAt: now, lastMessageAt: now });
+      chat.title = title;
+    }
     emit({ type: "status", message: "Research complete. Streaming the analysis…" });
     const history = await persistence.messages.listByChat(chat.id, 40);
     const modelMessages = [
