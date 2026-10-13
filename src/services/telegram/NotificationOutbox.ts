@@ -105,6 +105,8 @@ export interface OutboxStore {
   /** Records in a given state, bounded. Used by the reclaim sweep. */
   byStatus(status: NotificationStatus, limit: number): Promise<OutboxRecord[]>;
   countByStatus(status: NotificationStatus): Promise<number>;
+  /** Delete one GOAT's notifications, optionally only one notification kind. */
+  deleteByGoat(goatId: string, kind?: NotificationKind): Promise<void>;
 }
 
 export interface Deliverer {
@@ -203,6 +205,12 @@ export class MemoryOutboxStore implements OutboxStore {
     return total;
   }
 
+  async deleteByGoat(goatId: string, kind?: NotificationKind): Promise<void> {
+    for (const [id, record] of this.records) {
+      if (record.goatId === goatId && (!kind || record.kind === kind)) this.records.delete(id);
+    }
+  }
+
   /** All records, for assertions. */
   all(): OutboxRecord[] {
     return [...this.records.values()].map((record) => ({ ...record }));
@@ -251,6 +259,19 @@ export class FirestoreOutboxStore implements OutboxStore {
   async countByStatus(status: NotificationStatus): Promise<number> {
     const snapshot = await this.collection.where('status', '==', status).get();
     return snapshot.size;
+  }
+
+  async deleteByGoat(goatId: string, kind?: NotificationKind): Promise<void> {
+    while (true) {
+      let query = this.collection.where('goatId', '==', goatId);
+      if (kind) query = query.where('kind', '==', kind);
+      const snapshot = await query.limit(400).get();
+      if (snapshot.empty) return;
+      const batch = this.db.batch();
+      for (const doc of snapshot.docs) batch.delete(doc.ref);
+      await batch.commit();
+      if (snapshot.size < 400) return;
+    }
   }
 }
 
