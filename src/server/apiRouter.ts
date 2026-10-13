@@ -5248,16 +5248,243 @@ apiRouter.post(
  *   `chats/{chatId}/messages/{messageId}`.
  */
 
+
+/**
+ * Gather fresh, user-scoped evidence for every chat turn.
+ * The model must not pretend its training data is live data: current prices,
+ * user GOAT state and recent news are supplied here with timestamps and sources.
+ */
+function xmlText(value: string): string {
+  return value
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .trim();
+}
+
+async function fetchChatNews(query: string): Promise<Array<{ title: string; source: string; publishedAt: string; url: string }>> {
+  try {
+    const url = "https://news.google.com/rss/search?q=" +
+      encodeURIComponent(query) + "&hl=en-US&gl=US&ceid=US:en";
+    const response = await fetch(url, {
+      headers: { "User-Agent": "SIRGOAT/1.0 (market research)" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) return [];
+    const xml = await response.text();
+    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 5).map((match) => {
+      const item = match[1];
+      const field = (name: string) => {
+        const found = item.match(new RegExp("<" + name + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/" + name + ">", "i"));
+        return found ? xmlText(found[1]) : "";
+      };
+      return {
+        title: field("title"),
+        source: field("source") || "Google News",
+        publishedAt: field("pubDate"),
+        url: field("link"),
+      };
+    }).filter((item) => item.title && item.url);
+  } catch {
+    // News is optional context. A feed outage must not prevent the chat working.
+    return [];
+  }
+}
+
+async function buildChatResearchContext(userId: string, userMessage: string): Promise<string> {
+  const now = new Date();
+  const lower = userMessage.toLowerCase();
+  const wantsGold = /\b(gold|xau|paxg)\b/i.test(userMessage);
+  const wantsBitcoin = /\b(bitcoin|btc)\b/i.test(userMessage);
+  const wantsEthereum = /\b(ethereum|ether|eth)\b/i.test(userMessage);
+  const newsQuery = wantsGold
+    ? "gold price market Federal Reserve latest"
+    : wantsBitcoin
+      ? "Bitcoin crypto market latest"
+      : wantsEthereum
+        ? "Ethereum crypto market latest"
+        : userMessage.slice(0, 160) + " latest news";
+
+  const sections: string[] = [
+    "CURRENT SERVER TIME (UTC): " + now.toISOString(),
+    "MARKET DATA SOURCE: " + marketProvider.name + "; mode=" + marketProvider.dataMode +
+      ". Only describe quotes as live if the returned timestamp is recent and dataMode is LIVE.",
+  ];
+
+  const [goats, skills, symbols, news] = await Promise.all([
+    persistence.goats.listByUser(userId).catch(() => []),
+    persistence.skills.listByUser(userId).catch(() => []),
+    marketProvider.getSymbols().catch(() => []),
+    fetchChatNews(newsQuery),
+  ]);
+
+  const matchedGoats = goats.filter((goat) =>
+    lower.includes(goat.name.toLowerCase()) ||
+    /\b(my goats?|my agents?|my proposals?|my signals?|my trading setup|my portfolio)\b/i.test(userMessage) ||
+    /\b(goat|agent|proposal|signal|strategy|skill)\b/i.test(userMessage),
+  ).slice(0, 12);
+
+  const goatSnapshots = await Promise.all(matchedGoats.map(async (goat) => {
+    const [theses, signals, wakeEvents] = await Promise.all([
+      persistence.theses.listByGoat(goat.id, 3).catch(() => []),
+      persistence.signals.listByGoat(goat.id, 5).catch(() => []),
+      persistence.wakeEvents.listByGoat(goat.id, 5).catch(() => []),
+    ]);
+    const attachedSkills = skills.filter((skill) => goat.skillIds.includes(skill.id));
+    return {
+      id: goat.id,
+      name: goat.name,
+      goal: goat.goal,
+      markets: goat.markets,
+      status: goat.status,
+      timeframe: goat.timeframe,
+      model: goat.model,
+      lastWakeReason: goat.lastWakeReason,
+      lastWakeTime: goat.lastWakeTime,
+      skills: attachedSkills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        methodology: skill.methodology,
+        constraints: skill.constraints,
+        preferredTimeframes: skill.preferredTimeframes,
+        requiredEvidence: skill.requiredEvidence,
+        invalidationRules: skill.invalidationRules,
+      })),
+      recentTheses: theses.map((thesis) => ({
+        market: thesis.market,
+        directionalHypothesis: thesis.directionalHypothesis,
+        summary: thesis.summary,
+        assetState: thesis.assetState,
+        tradePlan: thesis.tradePlan,
+        supportingEvidence: thesis.supportingEvidence,
+        contradictoryEvidence: thesis.contradictoryEvidence,
+        relevantTimeframe: thesis.relevantTimeframe,
+        confirmationConditions: thesis.confirmationConditions,
+        invalidationConditions: thesis.invalidationConditions,
+        confidence: thesis.confidence,
+        status: thesis.status,
+        updatedAt: thesis.updatedAt,
+      })),
+      recentProposalsAndSignals: signals.map((signal) => ({
+        market: signal.market,
+        direction: signal.direction,
+        entry: signal.entry,
+        entryZone: signal.entryZone,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        riskReward: signal.riskReward,
+        confidence: signal.confidence,
+        thesis: signal.thesis,
+        rationale: signal.rationale,
+        confirmationRequired: signal.confirmationRequired,
+        invalidation: signal.invalidation,
+        supportingEvidence: signal.supportingEvidence,
+        contradictoryEvidence: signal.contradictoryEvidence,
+        status: signal.status,
+        decision: signal.decision,
+        decisionNote: signal.decisionNote,
+        createdAt: signal.createdAt,
+        expiresAt: signal.expiresAt,
+      })),
+      recentActivity: wakeEvents.map((event) => ({
+        trigger: event.trigger,
+        result: event.result,
+        reason: event.reason,
+        createdAt: event.createdAt,
+      })),
+    };
+  }));
+
+  if (goats.length) {
+    sections.push(
+      "USER'S SIRGOAT STATE (only this authenticated user's records; proposals are existing saved signals, not new recommendations):\n" +
+      JSON.stringify({
+        totalGoats: goats.length,
+        goats: goats.slice(0, 12).map((goat) => ({
+          id: goat.id, name: goat.name, goal: goat.goal, markets: goat.markets,
+          skillIds: goat.skillIds, status: goat.status, timeframe: goat.timeframe,
+          lastWakeReason: goat.lastWakeReason, lastWakeTime: goat.lastWakeTime,
+        })),
+        relevantGoatDetails: goatSnapshots,
+      }).slice(0, 16000),
+    );
+  } else {
+    sections.push("USER'S SIRGOAT STATE: no GOATs were returned for this account, or the state store was unavailable. Do not invent any.");
+  }
+
+  const marketNames = new Set<string>();
+  for (const goat of matchedGoats) for (const market of goat.markets ?? []) marketNames.add(market);
+
+  const matchingSymbols = symbols.filter((symbol) => {
+    const s = symbol.symbol.toLowerCase();
+    const name = symbol.name.toLowerCase();
+    if (marketNames.has(symbol.symbol)) return true;
+    if (wantsGold && /\b(gold|xau|paxg)\b/i.test(s + " " + name)) return true;
+    if (wantsBitcoin && /\b(bitcoin|btc)\b/i.test(s + " " + name)) return true;
+    if (wantsEthereum && /\b(ethereum|ether|eth)\b/i.test(s + " " + name)) return true;
+    return lower.includes(s) || (name.length > 3 && lower.includes(name));
+  }).slice(0, 5);
+
+  if (matchingSymbols.length) {
+    const quotes = await Promise.all(matchingSymbols.map(async (symbol) => {
+      try {
+        const quote = await marketProvider.getQuote(symbol.symbol);
+        let candles: unknown[] = [];
+        if (matchingSymbols.indexOf(symbol) < 3) {
+          try {
+            candles = (await marketProvider.getCandles(symbol.symbol, "1h", 24)).slice(-12);
+          } catch { /* candles may be unavailable even when a quote exists */ }
+        }
+        return {
+          symbol: symbol.symbol,
+          name: symbol.name,
+          quote,
+          recentHourlyCandles: candles,
+        };
+      } catch (error) {
+        return { symbol: symbol.symbol, name: symbol.name, unavailable: error instanceof Error ? error.message : "quote unavailable" };
+      }
+    }));
+    sections.push(
+      "LIVE HYPERLIQUID MARKET SNAPSHOTS (retrieved for this request; quote timestamps are Unix milliseconds; zero-valued unavailable fields are not real quotes):\n" +
+      JSON.stringify(quotes).slice(0, 10000),
+    );
+  } else {
+    sections.push("LIVE MARKET SNAPSHOTS: no matching listed instrument was identified from the current message or this user's GOAT markets. Do not invent a quote; ask which listed symbol they mean if needed.");
+  }
+
+  if (news.length) {
+    sections.push(
+      "LATEST INTERNET NEWS HEADLINES (Google News RSS search, fetched at " + now.toISOString() + "; headlines are leads, not proof of a claim):\n" +
+      JSON.stringify(news),
+    );
+  } else {
+    sections.push("LATEST INTERNET NEWS: the news feed returned no results or was unavailable. Be transparent; do not claim to have searched successfully or invent recent headlines.");
+  }
+
+  sections.push(
+    "HOW TO USE THIS EVIDENCE: Answer the user's actual question. For market questions, explain the latest observed price, timestamp, 24h change/funding/open-interest only when those fields are provided, relevant news, and bullish/bearish scenarios with confirmation and invalidation. If quote data is stale, missing, or PAPER, say so. For GOAT questions, refer to the user's actual saved goal, skills, thesis, activity and proposals above. Clearly distinguish facts from your interpretation. Never claim certainty, never fabricate data, and never execute trades or create/accept a proposal from chat.",
+  );
+  return sections.join("\n\n");
+}
+
 const CHAT_MODEL = "apodex/apodex-1.1-mini:free";
 
 /** A concise, honest system persona for the assistant. */
 const CHAT_SYSTEM_PROMPT =
-  "You are a helpful, concise trading assistant for the SIRGOAT platform. " +
-  "Speak plainly: describe ideas, definitions and mechanics clearly and briefly. " +
-  "Never invent live price quotes, funding rates, volumes or news; if the user " +
-  "asks for a current number you cannot compute, say you do not have live market " +
-  "data and point them at the Markets tab instead. Do not run GOAT reasoning or " +
-  "generate trading signals or proposals; answer questions instead.";
+  "You are SIRGOAT's trading copilot: direct, practical, analytical, and grounded in evidence. " +
+  "You receive a fresh research context each turn containing any available live Hyperliquid data, " +
+  "recent internet news, and the authenticated user's saved GOATs, skills, theses, activity, and proposals. " +
+  "Use that context rather than generic outdated training knowledge. Cite timestamps and news sources in plain text. " +
+  "When asked whether to buy or sell, give a conditional market assessment with bullish and bearish scenarios, " +
+  "confirmation, invalidation, and risk considerations; do not promise outcomes or invent certainty. " +
+  "State clearly when a quote, candle, news feed, or user record is unavailable or stale. " +
+  "Never expose another user's data, credentials, or internal secrets. Chat can analyze existing proposals but must not execute trades, " +
+  "create proposals, accept/reject proposals, or alter GOAT settings.";
 
 /** Resolve the chatbot credential: user OpenRouter key from the vault, else the server fallback. */
 async function resolveChatbotCredential(uid: string): Promise<{
@@ -5411,9 +5638,11 @@ apiRouter.post("/chat", authMiddleware, async (req, res) => {
       );
     }
 
-    const messages = [
-      ...(await persistence.messages.listByChat(chat.id, 40)),
-      { role: "user" as const, content: message.trim() },
+    const researchContext = await buildChatResearchContext(user.uid, message.trim());
+    const history = await persistence.messages.listByChat(chat.id, 40);
+    const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+      { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + researchContext },
+      ...history.map((item) => ({ role: item.role as "user" | "assistant", content: item.content })),
     ];
     const completion = await sendToModel(key, messages);
 
