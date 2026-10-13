@@ -110,12 +110,6 @@ import {
 } from "../services/market-data/MarketIngestionService";
 import { MemoryCandleRepository } from "../services/market-data/candle-core/CandleRepositories";
 import { retentionPolicyFromEnv } from "../services/market-data/candle-core/RetentionPolicy";
-import {
-  DurableMarketDataClient,
-  durableMarketDataEnvFromProcess,
-  validateMarketEvent,
-  type DurablePartition,
-} from "../services/market-data/DurableMarketDataClient";
 import type { MarketEvent } from "../services/market-data/MarketEvent";
 import {
   describeSessionSpec,
@@ -265,18 +259,6 @@ export const marketIngestion = new MarketIngestionService({
   source: marketProvider,
   retention: retentionPolicyFromEnv(),
 });
-
-/**
- * Authenticated client for the Cloudflare market-data Durable Objects.
- *
- * Disabled unless both the worker URL and the shared secret are configured —
- * there is deliberately no insecure fallback. `durableMarketDataClient.enabled`
- * is reported by /api/settings/status so an unconfigured deployment is never
- * mistaken for a working one.
- */
-export const durableMarketDataClient = new DurableMarketDataClient(
-  durableMarketDataEnvFromProcess(),
-);
 
 /**
  * Durable notification delivery.
@@ -642,7 +624,7 @@ async function setGoatStatusFor(
  *   - the in-process subscription table was always empty, meaning
  *     `routeMarketEvent()` considered zero subscribers and every market event
  *     was dropped as irrelevant;
- *   - `syncDurableSubscriptions()` iterated an empty list, so
+
  *     `MarketDataDO` never received a single subscription — and since it derives
  *     its instrument list from that table, the shared store had nothing to
  *     ingest.
@@ -679,13 +661,6 @@ function subscribeToMarkets(goat: FundGoat): void {
    * and `describe()` on the client reports `lastError` so the failure is
    * visible rather than silent.
    */
-  if (durableMarketDataClient.isEnabled) {
-    void syncDurableSubscriptions(marketIngestion.listSubscriptions()).catch(
-      (err) => {
-        console.error("[api] durable subscription sync failed:", err);
-      },
-    );
-  }
 }
 
 async function allSkillsFor(userId: string) {
@@ -1010,7 +985,6 @@ export async function restoreRuntimes(): Promise<void> {
 export async function reconcileRuntime(): Promise<{
   goats: number;
   subscriptions: number;
-  durableSynced: number;
 }> {
   const goats = await persistence.goats.listAll();
 
@@ -1034,9 +1008,8 @@ export async function reconcileRuntime(): Promise<{
   }
 
   const restored = marketIngestion.rebuildSubscriptions(subscriptions);
-  const durableSynced = await syncDurableSubscriptions(subscriptions);
 
-  return { goats: goats.length, subscriptions: restored, durableSynced };
+  return { goats: goats.length, subscriptions: restored };
 }
 
 /** Seed default skills once so new users always see the standard library. */
@@ -1343,32 +1316,6 @@ function marketEventDedup(eventId: string): boolean {
  * status endpoint reports the durable sync count so an unreachable Worker is
  * visible rather than silently degrading event delivery.
  */
-async function syncDurableSubscriptions(
-  subscriptions: readonly IngestionSubscription[],
-): Promise<number> {
-  if (!durableMarketDataClient.isEnabled) return 0;
-
-  let synced = 0;
-
-  for (const subscription of subscriptions) {
-    const partition = MarketIngestionService.partitionFor(
-      subscription.instrument,
-    ) as DurablePartition;
-
-    const result = await durableMarketDataClient.subscribe({
-      partition,
-      subscriberId: subscription.subscriberId,
-      instrument: subscription.instrument,
-      eventTypes: subscription.eventTypes,
-    });
-
-    if (result.ok) synced += 1;
-  }
-
-  return synced;
-}
-
-/* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -2045,34 +1992,6 @@ function internalAuth(req: Request, res: Response): boolean {
  * suppression happens on the event id, so the same candle delivered twice wakes
  * nothing twice.
  */
-apiRouter.post(
-  "/internal/market-event",
-  handle(async (req, res) => {
-    if (!internalAuth(req, res)) return;
-
-    const event = validateMarketEvent(req.body);
-    if (!event) {
-      return fail(
-        res,
-        400,
-        "INVALID_EVENT",
-        "Market event failed validation or its id did not match its payload.",
-      );
-    }
-
-    const result = await routeMarketEvent(event);
-
-    res.json({
-      handled: true,
-      eventId: event.eventId,
-      subscribersConsidered: result.considered,
-      wokeGoats: result.woke,
-      ignoredAsDuplicate: result.duplicates,
-      ignoredAsIrrelevant: result.irrelevant,
-      filteredAsStopped: result.stopped,
-    });
-  }),
-);
 
 /**
  * Reconciles a market-data runtime: rebuilds this process's view of
@@ -2171,7 +2090,6 @@ apiRouter.post(
       republished,
       failed,
       subscriptionsRestored: runtime.subscriptions,
-      durableSubscriptionsSynced: runtime.durableSynced,
       scheduler: scheduler.health(),
     });
   }),
@@ -2206,11 +2124,9 @@ apiRouter.post(
     }
 
     const restored = marketIngestion.rebuildSubscriptions(subscriptions);
-    const durableSynced = await syncDurableSubscriptions(subscriptions);
 
     res.json({
       restored,
-      durableSynced,
       byPartition: marketIngestion.subscriptionCounts(),
       dataMode: marketProvider.dataMode,
     });
@@ -2229,7 +2145,6 @@ apiRouter.get(
   handle(async (_req, res) => {
     res.json({
       ...marketIngestion.health(),
-      durableRuntime: durableMarketDataClient.describe(),
     });
   }),
 );
@@ -2357,12 +2272,6 @@ apiRouter.get("/settings/status", async (_req, res) => {
         lastError: state.lastError,
       })),
     },
-    /**
-     * Durable market runtime (Cloudflare). `configured: false` is reported
-     * honestly rather than omitted, so a deployment without the Worker is never
-     * mistaken for one where retention and finalization are running.
-     */
-    durableMarketData: durableMarketDataClient.describe(),
     /**
      * Whether this process may write to a local filesystem. False on Vercel and
      * other ephemeral hosts, where a "persisted" file would vanish on the next
