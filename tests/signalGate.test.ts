@@ -69,6 +69,7 @@ function gate(result = VALID_RESULT, thesis = makeThesis(), constraints = aggreg
     thesis,
     market: 'EUR/USD',
     quote: QUOTE,
+    spreadPips: QUOTE.spread,
     constraints,
     goatId: 'g1',
     userId: 'u1',
@@ -167,6 +168,27 @@ describe('SignalGate', () => {
     const result = gate(VALID_RESULT, makeThesis(), aggregateHardConstraints(skills));
     expect(result.approved).toBe(false);
     expect(result.reasons.join()).toContain('Spread');
+  });
+
+  test('fails closed when a spread rule cannot be verified', () => {
+    const skills = [
+      {
+        id: 's', userId: 'system', name: 'Spread', description: '', methodology: '',
+        constraints: 'SPREAD_UNDER_0_5_PIPS', preferredTimeframes: ['1h'], requiredEvidence: '', invalidationRules: '',
+        createdAt: '', updatedAt: '',
+      },
+    ] as TradingSkill[];
+    const result = SignalGate.validate({
+      reasoningResult: VALID_RESULT,
+      thesis: makeThesis(),
+      market: 'EUR/USD',
+      quote: { ...QUOTE, bidProvided: false, askProvided: false },
+      constraints: aggregateHardConstraints(skills),
+      goatId: 'g1',
+      userId: 'u1',
+    });
+    expect(result.approved).toBe(false);
+    expect(result.reasons.join()).toContain('no confirmed bid/ask');
   });
 
   test('rejects low-confidence thesis (platform floor 70)', () => {
