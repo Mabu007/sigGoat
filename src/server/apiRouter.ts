@@ -5907,6 +5907,13 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
         if (found.length) { inheritedAsset = found[0]; break; }
       }
     }
+    const contextualFollowUp = /\b(it|that|this|again|same asset|same market|the chart|the setup|what about|what do you think|analyse|analyze|opportunit|timeframe)\b/i.test(message);
+    const shouldInheritAsset = Boolean(inheritedAsset && !mentionedAssets.length &&
+      (needsMarketResearch(message.trim()) || contextualFollowUp));
+    const effectiveResearchMessage = shouldInheritAsset
+      ? message.trim() + "\n\nSESSION CONTEXT: The current asset under discussion is " + inheritedAsset + ". Resolve pronouns and timeframe follow-ups against this asset unless the user explicitly names another asset."
+      : message.trim();
+    const researchNeeded = needsMarketResearch(effectiveResearchMessage);
     const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim(), activeModel) : Promise.resolve(chat.title);
     const title = needsTitle ? await titlePromise : chat.title;
     if (needsTitle && title && title !== "New chat") {
