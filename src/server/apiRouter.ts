@@ -4676,6 +4676,27 @@ apiRouter.patch(
   }),
 );
 
+apiRouter.post(
+  "/goats/:id/history/:eventId/read",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
+
+    const events = await persistence.wakeEvents.listByGoat(goat.id, 500);
+    const event = events.find((candidate) => candidate.id === req.params.eventId);
+    if (!event) return notFound(res);
+
+    const updated = event.readAt ? event : { ...event, readAt: Date.now() };
+    if (!event.readAt) {
+      const saved = await persistence.wakeEvents.update(updated);
+      if (!saved) return notFound(res);
+    }
+    durableObjectRegistry.get(goat.id)?.markWakeEventRead(updated.id, updated.readAt ?? Date.now());
+    res.json({ event: updated, read: true });
+  }),
+);
+
 apiRouter.delete(
   "/goats/:id/history",
   handle(async (req, res) => {
