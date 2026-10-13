@@ -373,6 +373,8 @@ export interface FundGoat {
   skillIds: string[];
   model: string;
   status: GoatStatus;
+  /** Drafts are persisted but never scheduled or analysed until explicitly deployed. */
+  deploymentState?: 'DRAFT' | 'DEPLOYED';
   /** When this GOAT is allowed to spend AI tokens. See GoatSchedule. */
   schedule?: GoatSchedule;
   /**
