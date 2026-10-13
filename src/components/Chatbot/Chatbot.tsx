@@ -772,61 +772,82 @@ export function Chatbot() {
 
       try {
 
-        const res = await fetch('/api/chat', {
-
+        const res = await fetch('/api/chat/stream', {
           method: 'POST',
-
           headers: { ...(await loadAuthHeaders()), 'Content-Type': 'application/json' },
-
           body: JSON.stringify({ message: trimmed, chatId }),
-
         });
 
-        const body = await res.json().catch(() => null);
-
-
-
         if (!res.ok) {
-
+          const body = await res.json().catch(() => null);
           throw new Error(body?.error?.message ?? 'The assistant could not respond.');
-
         }
+        if (!res.body) throw new Error('This browser could not open the assistant response stream.');
 
+        const streamId = 'stream_' + Date.now();
+        const streamCreatedAt = new Date().toISOString();
+        const streamingMessage: ChatMessage = {
+          id: streamId,
+          chatId,
+          userId: currentUser?.uid ?? 'unknown',
+          role: 'assistant',
+          content: '',
+          createdAt: streamCreatedAt,
+        };
+        let streamedContent = '';
+        let streamFinished = false;
+        let buffer = '';
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
 
+        const handleStreamLine = (line: string) => {
+          if (!line.startsWith('data:')) return;
+          const payload = line.slice(5).trim();
+          if (!payload) return;
+          const event = JSON.parse(payload);
+          if (event.type === 'delta' && typeof event.content === 'string') {
+            streamedContent += event.content;
+            setMessages((prev) => {
+              const exists = prev.some((item) => item.id === streamId);
+              return exists
+                ? prev.map((item) => item.id === streamId ? { ...item, content: streamedContent } : item)
+                : [...prev, { ...streamingMessage, content: streamedContent }];
+            });
+          } else if (event.type === 'done' && event.message) {
+            const assistantMsg: ChatMessage = event.message;
+            setMessages((prev) => {
+              const exists = prev.some((item) => item.id === streamId);
+              return exists
+                ? prev.map((item) => item.id === streamId ? assistantMsg : item)
+                : [...prev, assistantMsg];
+            });
+            setDraft(null);
+            streamFinished = true;
+            if (assistantMsg.model) setChatModel(assistantMsg.model);
+            if (event.chat?.title) {
+              setChats((prev) => prev.map((item) => item.id === chatId
+                ? { ...item, title: event.chat.title, lastMessageAt: assistantMsg.createdAt ?? new Date().toISOString() }
+                : item));
+            }
+          } else if (event.type === 'error') {
+            throw new Error(event.message || 'The assistant stream failed.');
+          }
+        };
 
-        const assistantMsg: ChatMessage = body.message;
-
-        setMessages((prev) => [...prev, assistantMsg]);
-
-        setDraft(null);
-
-        if (assistantMsg.model) setChatModel(assistantMsg.model);
-
-        if (body.chat?.title) {
-
-          setChats((prev) =>
-
-            prev.map((c) =>
-
-              c.id === chatId
-
-                ? {
-
-                    ...c,
-
-                    title: body.chat.title,
-
-                    lastMessageAt: assistantMsg.createdAt ?? new Date().toISOString(),
-
-                  }
-
-                : c,
-
-            ),
-
-          );
-
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() ?? '';
+            for (const line of lines) handleStreamLine(line);
+          }
+          if (buffer.trim()) handleStreamLine(buffer);
+        } finally {
+          reader.releaseLock();
         }
+        if (!streamFinished) throw new Error('The assistant stream ended before the response was saved.');
 
       } catch (err) {
 
