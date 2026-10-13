@@ -602,6 +602,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const [actionError, setActionError] = useState('');
   const [isClearingHistory, setIsClearingHistory] = useState(false);
+  const [readWakeEventIds, setReadWakeEventIds] = useState<Set<string>>(new Set());
   const [showScheduleEditor, setShowScheduleEditor] =
     useState(false);
 
@@ -727,11 +728,40 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       if (!response.ok) {
         throw new Error(typeof payload?.error === 'string' ? payload.error : 'Could not delete review history.');
       }
+      setReadWakeEventIds(new Set());
+      setSelectedWakeEvent(null);
       await refreshGoats();
     } catch (err: unknown) {
       setActionError(err instanceof Error ? err.message : 'Could not delete review history.');
     } finally {
       setIsClearingHistory(false);
+    }
+  };
+
+  const handleOpenWakeEvent = async (event: WakeEvent) => {
+    setSelectedWakeEvent(event);
+    if (event.readAt || readWakeEventIds.has(event.id)) return;
+
+    const readAt = Date.now();
+    setReadWakeEventIds(previous => new Set(previous).add(event.id));
+    try {
+      const headers = await getApiAuthHeaders();
+      const response = await fetch(
+        `/api/goats/${encodeURIComponent(inspectedGoat?.id ?? detailGoatId ?? '')}/history/${encodeURIComponent(event.id)}/read`,
+        { method: 'POST', headers },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload?.error === 'string' ? payload.error : 'Could not update review read state.');
+      }
+      setSelectedWakeEvent(payload.event ?? { ...event, readAt });
+    } catch (err) {
+      setReadWakeEventIds(previous => {
+        const next = new Set(previous);
+        next.delete(event.id);
+        return next;
+      });
+      setActionError(err instanceof Error ? err.message : 'Could not update review read state.');
     }
   };
 
@@ -2362,7 +2392,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               {(inspectedState?.recentWakeEvents ?? []).map(event => (
                 <button
                   key={event.id}
-                  onClick={() => setSelectedWakeEvent(event)}
+                  onClick={() => void handleOpenWakeEvent(event)}
                   className="flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-sunken/60 p-3 text-left hover:bg-sunken"
                 >
                   <div className="min-w-0">
