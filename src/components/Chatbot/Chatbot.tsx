@@ -1500,8 +1500,6 @@ export function Chatbot() {
 
 
             <div className="shrink-0 border-t border-line p-2 text-[10px] leading-relaxed text-fg-subtle">
-              <p className="truncate">SIRGOAT conversations</p>
-              <p className="mt-0.5">Switch sessions anytime.</p>
               <div className="mt-3 border-t border-line pt-3">
                 <label htmlFor="sirgoat-chat-model" className="mb-1.5 block text-[10px] font-medium uppercase tracking-wider text-fg-subtle">Model</label>
                 <div className="flex items-center gap-2">
