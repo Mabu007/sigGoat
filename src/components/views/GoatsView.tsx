@@ -87,7 +87,7 @@ const MODEL_CATALOGUE_ENDPOINT = '/api/ai/models';
  * previous provider. `EUR/USD`, `US500` and similar no longer resolve;
  * selecting them would produce a GOAT that can never fetch data.
  */
-const DEFAULT_MARKETS = ['BTC', 'ETH'];
+const DEFAULT_MARKETS = ['BTC'];
 
 /** Starter Markdown handed to the inline skill creator. */
 const SKILL_STARTER_TEMPLATE = `---
@@ -481,7 +481,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       // Parse is a pure function, so the constraints/timeframes are exactly
       // what the server will store — no divergence with the Skills view.
       const parsed = SkillParser.parse(skillMarkdownInput.trim());
-      await createSkill({
+      const createdSkill = await createSkill({
         name: parsed.name,
         description: parsed.description,
         methodology: parsed.methodology,
@@ -491,6 +491,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
         invalidationRules: parsed.invalidationRules,
         rawMarkdown: parsed.rawMarkdown,
       });
+      setSelectedSkillIds(previous => [...new Set([...previous, createdSkill.id])]);
       setShowSkillCreator(false);
       setSkillMarkdownInput('');
     } catch (err) {
@@ -798,7 +799,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
     if (!name.trim() || !goal.trim() || !selectedMarkets.length) {
       setCreateError(
-        'Please provide a name, objective goal, and select at least one market.'
+        'Please provide a name, objective goal, and select exactly one asset.'
       );
       return;
     }
@@ -914,13 +915,9 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   };
 
   const toggleMarket = (sym: string) => {
-    setSelectedMarkets(prev =>
-      prev.includes(sym)
-        ? prev.length > 1
-          ? prev.filter(s => s !== sym)
-          : prev
-        : [...prev, sym]
-    );
+    // A GOAT owns exactly one asset. Clicking another asset replaces the
+    // current selection; clicking the selected asset leaves it selected.
+    setSelectedMarkets([sym]);
   };
 
   const toggleSkill = (id: string) => {
@@ -2748,11 +2745,11 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 <div>
                   <div className="mb-1.5 flex items-center justify-between">
                     <label className="font-semibold text-fg-muted">
-                      Assigned Markets
+                      Assigned Asset
                     </label>
 
                     <span className="text-[9px] font-mono text-fg-subtle">
-                      {selectedMarkets.length} selected
+                      {selectedMarkets.length === 1 ? '1 asset selected' : 'Choose one asset'}
                     </span>
                   </div>
 
