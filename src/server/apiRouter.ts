@@ -5323,6 +5323,29 @@ apiRouter.get("/chats", authMiddleware, async (req, res) => {
   }
 });
 
+/** Create an empty chat session separately from sending a message. */
+apiRouter.post("/chats", authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  try {
+    const now = new Date().toISOString();
+    const chat: Chat = {
+      id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      userId: user.uid,
+      title: "New chat",
+      createdAt: now,
+      updatedAt: now,
+      lastMessageAt: now,
+    };
+    await persistence.chats.create(chat);
+    res.status(201).json({
+      chat: { id: chat.id, title: chat.title, lastMessageAt: chat.lastMessageAt },
+    });
+  } catch (error) {
+    console.error("[chat] Failed to create chat session.", error);
+    return fail(res, 500, "CHAT_CREATE_FAILED", "Could not create a new chat session.");
+  }
+});
+
 apiRouter.post("/chat", authMiddleware, async (req, res) => {
   const user = requireUser(req);
   const { message, chatId } = req.body ?? {};
