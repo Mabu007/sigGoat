@@ -475,6 +475,8 @@ export type WakeDecisionResult =
 
 export interface WakeEvent {
   id: string;
+  /** Unset until the user opens this history entry. */
+  readAt?: number;
   goatId: string;
   timestamp: number;
   reason: string;
