@@ -5571,7 +5571,7 @@ async function resolveChatModel(userId: string, requested?: unknown): Promise<st
 }
 
 function isLightConversation(message: string): boolean {
-  return /^\s*(hey|hello|hi|yo|hiya|sup|good morning|good afternoon|good evening|thanks|thank you|cheers|nice|cool|lol|haha|how are you|how you doing|you good)[!,. \s]*$/i.test(message.trim());
+  return /^\s*(hey|hello|hi|yo|hiya|sup|good morning|good afternoon|good evening|thanks|thank you|cheers|nice|cool|lol|haha|how are you|how you doing|you good)[!,.\s?]*$/i.test(message.trim());
 }
 
 function needsMarketResearch(message: string): boolean {
@@ -5869,9 +5869,9 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     if (isLightConversation(message.trim())) {
       const now = new Date().toISOString();
       const lowerMessage = message.trim().toLowerCase();
-      const reply = /^(thanks|thank you|cheers)[!,.\s]*$/i.test(lowerMessage)
+            const reply = /^(thanks|thank you|cheers)[!,. \s]*$/i.test(lowerMessage)
         ? "Anytime, G."
-        : /^(nice|cool|lol|haha)[!,.\\s]*$/i.test(lowerMessage) ? "😄" : "Hey G, you good?";
+        : /^(nice|cool|lol|haha)[!,. \s]*$/i.test(lowerMessage) ? "😄" : "Hey G, you good?";
       const assistantMessage: ChatMessage = {
         id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
         chatId: chat.id, userId: user.uid, role: "assistant", content: reply,
