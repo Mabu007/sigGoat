@@ -24,7 +24,7 @@ import {
   normaliseAutonomyMode,
 } from "../types";
 import { authMiddleware, requireUser, resolveAuthMode } from "./auth";
-import { getFirebaseAdminFailureReason } from "./firebaseAdmin";
+import { getFirebaseAdmin, getFirebaseAdminFailureReason } from "./firebaseAdmin";
 import {
   CredentialValidationError,
   isPlausibleOpenRouterKey,
@@ -88,7 +88,7 @@ import {
   ApiRequestError,
   OpenRouterClient,
 } from "../services/ai/OpenRouterClient";
-import { durableObjectSchedulerFromEnv } from "./scheduler/DurableObjectScheduler";
+import { FirebaseScheduler } from "./scheduler/FirebaseScheduler";
 import type { WakeScheduler, FiredWake } from "./scheduler/types";
 import { InProcessScheduler } from "./scheduler/InProcessScheduler";
 import {
@@ -352,7 +352,8 @@ export const notificationOutbox = new NotificationOutbox({
  *
  * The fallback is what makes local development work with no Cloudflare account.
  */
-const durableScheduler = durableObjectSchedulerFromEnv();
+const firebaseBundle = getFirebaseAdmin();
+const firebaseScheduler = firebaseBundle ? new FirebaseScheduler(firebaseBundle.firestore) : null;
 
 /**
  * Called when an in-process alarm fires. With a Durable Object scheduler this
@@ -458,25 +459,19 @@ async function runTrackerCheckSync(
 
 let inProcessScheduler: InProcessScheduler | null = null;
 
-if (durableScheduler) {
-  console.log("[api] Durable Object scheduler active.");
+if (firebaseScheduler) {
+  console.log("[api] Firebase-backed GOAT scheduler active; Vercel Cron dispatches due reviews.");
 } else {
   inProcessScheduler = new InProcessScheduler(async (wake) => {
     await runScheduledWakeSync(wake.goatId, wake.eventId, wake.reason);
   });
-
-  // Tracker checks spend no AI: they only escalate when a condition is met.
   inProcessScheduler.onTrackerCheck = async (wake) => {
     await runTrackerCheckSync(wake.goatId, wake.eventId);
   };
-  console.warn(
-    "[api] DURABLE_SCHEDULER_URL not set — using IN-PROCESS timers. " +
-      "Schedules will NOT survive a restart. Configure the Cloudflare " +
-      "scheduler worker for production.",
-  );
+  console.warn("[api] Firebase Admin unavailable — using in-process timers for local development only.");
 }
 
-const scheduler: WakeScheduler = durableScheduler ?? inProcessScheduler!;
+const scheduler: WakeScheduler = firebaseScheduler ?? inProcessScheduler!;
 
 /**
  * Routes locally-ingested events to the same handler the Cloudflare runtime
