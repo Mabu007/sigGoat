@@ -4755,10 +4755,51 @@ apiRouter.post(
       goat.id,
       user.uid,
     );
+    const [recentTheses, recentSignals, recentReviews] = await Promise.all([
+      persistence.theses.listByGoat(goat.id, 5),
+      persistence.signals.listByGoat(goat.id, 10),
+      persistence.wakeEvents.listByGoat(goat.id, 10),
+    ]);
     const runtime = durableObjectRegistry.get(goat.id);
     const enriched = {
       ...context,
-      activeThesis: runtime?.getState().currentThesis ?? null,
+      activeThesis: runtime?.getState().currentThesis ?? recentTheses[0] ?? null,
+      historyContext: {
+        recentTheses: recentTheses.map((thesis) => ({
+          createdAt: thesis.createdAt,
+          market: thesis.market,
+          directionalHypothesis: thesis.directionalHypothesis,
+          summary: thesis.summary?.slice(0, 500),
+          assetState: thesis.assetState?.slice(0, 700),
+          tradePlan: thesis.tradePlan?.slice(0, 5),
+          confidence: thesis.confidence,
+          status: thesis.status,
+          invalidationReason: thesis.invalidationReason?.slice(0, 300),
+        })),
+        recentSignals: recentSignals.map((signal) => ({
+          createdAt: signal.createdAt,
+          market: signal.market,
+          direction: signal.direction,
+          status: signal.status,
+          entry: signal.entry,
+          entryZone: signal.entryZone,
+          stopLoss: signal.stopLoss,
+          takeProfit: signal.takeProfit,
+          thesis: signal.thesis.slice(0, 400),
+          rationale: signal.rationale.slice(0, 500),
+          decision: signal.decision,
+          expiresAt: signal.expiresAt,
+        })),
+        recentReviews: recentReviews.map((event) => ({
+          timestamp: event.timestamp,
+          market: event.market,
+          triggerType: event.triggerType,
+          reason: event.reason.slice(0, 200),
+          decisionResult: event.decisionResult,
+          details: event.details.slice(0, 500),
+          readAt: event.readAt ?? null,
+        })),
+      },
     };
 
     const answer = await reasoningGateway.answerGoatQuestion(
