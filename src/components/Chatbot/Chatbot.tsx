@@ -121,6 +121,7 @@ import {
   MessageSquare,
 
   Trash2,
+  Pencil,
 
   Loader2,
 
@@ -634,6 +635,30 @@ export function Chatbot() {
   );
 
 
+
+  const renameChat = useCallback(async (chat: ChatItem) => {
+    const proposed = window.prompt('Rename chat', chat.title);
+    if (proposed === null) return;
+    const title = proposed.trim();
+    if (!title || title === chat.title) return;
+    if (title.length > 80) {
+      setError('Chat titles must be 80 characters or fewer.');
+      return;
+    }
+    setError(null);
+    try {
+      const res = await fetch(`/api/chats/${encodeURIComponent(chat.id)}`, {
+        method: 'PATCH',
+        headers: { ...(await loadAuthHeaders()), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error?.message ?? 'Could not rename this chat.');
+      setChats((prev) => prev.map((item) => item.id === chat.id ? { ...item, title: data?.chat?.title ?? title } : item));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not rename this chat.');
+    }
+  }, [loadAuthHeaders]);
 
   const deleteChat = useCallback(
 
@@ -1333,6 +1358,19 @@ export function Chatbot() {
 
                           )}
 
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void renameChat(chat);
+                          }}
+                          className="shrink-0 rounded p-1 text-fg-subtle transition-colors hover:bg-raised hover:text-fg"
+                          aria-label={`Rename ${chat.title}`}
+                          title="Rename chat"
+                        >
+                          <Pencil size={11} aria-hidden="true" />
                         </button>
 
                         {/**
