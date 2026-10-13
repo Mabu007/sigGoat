@@ -1186,7 +1186,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                                     : 'bg-fg-subtle'
                             }`}
                           />
-                          {state?.status || goat.status}
+                          {goat.deploymentState === 'DRAFT' ? 'DRAFT' : state?.status || goat.status}
                         </span>
                       </div>
 
@@ -1276,7 +1276,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                             )}
                             <span>
                               {goatIsPaused
-                                ? 'Play'
+                                ? goat.deploymentState === 'DRAFT' ? 'Deploy' : 'Play'
                                 : 'Stop'}
                             </span>
                           </button>
@@ -1831,7 +1831,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   <Pause className="h-3.5 w-3.5 text-accent-text" />
                 )}
                 {inspectedGoat.status === 'PAUSED'
-                  ? 'Play'
+                  ? inspectedGoat.deploymentState === 'DRAFT' ? 'Deploy' : 'Play'
                   : 'Stop'}
               </button>
 
@@ -1942,7 +1942,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                       </h1>
 
                       <span className="rounded-full border border-positive/40 bg-positive-soft px-2 py-0.5 text-[9px] font-mono font-bold uppercase text-positive">
-                        {inspectedState?.status || inspectedGoat.status}
+                        {inspectedGoat.deploymentState === 'DRAFT' ? 'DRAFT' : inspectedState?.status || inspectedGoat.status}
                       </span>
 
                       {signalIsActionable && (
