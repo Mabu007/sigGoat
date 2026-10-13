@@ -5655,6 +5655,143 @@ apiRouter.patch("/chats/:id", authMiddleware, async (req, res) => {
   }
 });
 
+/**
+ * Streaming chat transport. Research is completed before the first token;
+ * the answer itself is streamed as soon as OpenRouter emits text.
+ */
+apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  const { message, chatId } = req.body ?? {};
+  if (typeof message !== "string" || !message.trim()) {
+    return fail(res, 400, "EMPTY_MESSAGE", "Message is required.");
+  }
+  if (message.trim().length > 8000) {
+    return fail(res, 400, "MESSAGE_TOO_LONG", "Messages must be 8,000 characters or fewer.");
+  }
+
+  let chat: Chat | null = null;
+  try {
+    if (chatId) {
+      chat = await persistence.chats.getForUser(String(chatId), user.uid);
+      if (!chat) return fail(res, 404, "CHAT_NOT_FOUND", "This chat does not exist or is not yours.");
+    } else {
+      const now = new Date().toISOString();
+      chat = await persistence.chats.create({
+        id: "chat_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+        userId: user.uid,
+        title: message.trim().slice(0, 60),
+        createdAt: now,
+        updatedAt: now,
+        lastMessageAt: now,
+      });
+    }
+
+    const userMessage: ChatMessage = {
+      id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+      chatId: chat.id, userId: user.uid, role: "user",
+      content: message.trim(), createdAt: new Date().toISOString(),
+    };
+    await persistence.messages.create(chat.id, userMessage);
+
+    const { key } = await resolveChatbotCredential(user.uid);
+    if (!key) {
+      return fail(res, 503, "NO_MODEL_KEY", "No AI model key is configured. Add an OpenRouter key in Settings.");
+    }
+
+    const researchContext = await buildChatResearchContext(user.uid, message.trim());
+    const history = await persistence.messages.listByChat(chat.id, 40);
+    const modelMessages = [
+      { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + researchContext },
+      ...history.map((item) => ({ role: item.role, content: item.content })),
+    ];
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + key,
+        "Content-Type": "application/json",
+        "X-Title": "SIRGOAT",
+      },
+      body: JSON.stringify({
+        model: CHAT_MODEL, messages: modelMessages,
+        temperature: 0.3, max_tokens: 2000, stream: true,
+      }),
+      signal: AbortSignal.timeout(90000),
+    });
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 1200);
+      return fail(res, 502, "CHAT_PROVIDER_FAILED", "OpenRouter rejected the request (" + response.status + "): " + detail);
+    }
+    if (!response.body) return fail(res, 502, "CHAT_STREAM_UNAVAILABLE", "The AI provider did not return a stream.");
+
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+    const emit = (event: Record<string, unknown>) => res.write("data: " + JSON.stringify(event) + "\n\n");
+
+    let content = "";
+    let buffer = "";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          const parsed = JSON.parse(payload) as {
+            choices?: Array<{ delta?: { content?: unknown }; finish_reason?: string | null }>;
+            error?: { message?: string };
+          };
+          if (parsed.error) throw new Error(parsed.error.message || "AI provider stream failed.");
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta) {
+            content += delta;
+            emit({ type: "delta", content: delta });
+          }
+        }
+      }
+    } catch (error) {
+      emit({ type: "error", message: error instanceof Error ? error.message : "The AI stream failed." });
+      res.end();
+      return;
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!content.trim()) {
+      emit({ type: "error", message: "The AI provider finished without answer text. Try again or change the model in Settings." });
+      res.end();
+      return;
+    }
+
+    const assistantMessage: ChatMessage = {
+      id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+      chatId: chat.id, userId: user.uid, role: "assistant", content,
+      model: CHAT_MODEL, createdAt: new Date().toISOString(),
+    };
+    await Promise.all([
+      persistence.messages.create(chat.id, assistantMessage),
+      persistence.chats.update(chat.id, { updatedAt: assistantMessage.createdAt, lastMessageAt: assistantMessage.createdAt }),
+    ]);
+    emit({ type: "done", chat: { id: chat.id, title: chat.title }, message: assistantMessage, userMessage, model: CHAT_MODEL });
+    res.end();
+  } catch (error) {
+    console.error("[chat] Streaming request failed.", error);
+    if (!res.headersSent) return fail(res, 502, "CHAT_STREAM_FAILED", error instanceof Error ? error.message : "The assistant could not respond.");
+    res.write("data: " + JSON.stringify({ type: "error", message: error instanceof Error ? error.message : "The assistant could not respond." }) + "\n\n");
+    res.end();
+  }
+});
+
 apiRouter.post("/chat", authMiddleware, async (req, res) => {
   const user = requireUser(req);
   const { message, chatId } = req.body ?? {};
