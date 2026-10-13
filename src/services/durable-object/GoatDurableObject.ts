@@ -1756,6 +1756,13 @@ export class GoatDurableObject {
       if (lastEvent) {
         this.runtimeState.lastWakeEvent = lastEvent;
         this.runtimeState.recentWakeEvents = wakeEvents;
+        if (lastEvent.decisionResult === 'ERROR') {
+          this.runtimeState.lastError = lastEvent.details || 'The last market review failed.';
+          this.runtimeState.consecutiveFailures = Math.max(1, this.runtimeState.consecutiveFailures);
+        } else {
+          this.runtimeState.lastError = undefined;
+          this.runtimeState.consecutiveFailures = 0;
+        }
       }
 
       /**
