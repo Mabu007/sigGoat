@@ -52,6 +52,9 @@ export interface GoatReasoningContext {
    * model infer them. Serialised into the chat system prompt verbatim.
    */
   proposal?: Record<string, unknown> | null;
+
+  /** Recent Firestore-backed GOAT records retrieved for history-aware chat. */
+  historyContext?: Record<string, unknown>;
 }
 
 export interface OpenRouterUsage {
@@ -1358,6 +1361,14 @@ ${JSON.stringify(
       ),
     ),
 )}
+
+Persisted GOAT history (retrieved records; use only when relevant to the user's question):
+${truncate(JSON.stringify(context.historyContext ?? null), 10_000)}
+
+History rules:
+- Treat stored records as historical evidence, not as current market data.
+- Use timestamps and statuses to distinguish old reviews from the current thesis.
+- If the requested history is not included, say it is not available; do not invent it.
 
 ${
   context.proposal !== undefined
