@@ -1577,11 +1577,9 @@ export function Chatbot() {
 
                       <div
 
-                        className={`max-w-[85%] rounded-lg px-3 py-2 text-[13px] leading-relaxed sm:max-w-[80%] ${
-
-                          msg.role === 'user' ? 'bg-accent text-accent-fg' : 'bg-sunken text-fg'
-
-                        }`}
+                        className={msg.role === 'user'
+                          ? 'max-w-[88%] rounded-2xl rounded-br-md bg-accent px-3.5 py-2.5 text-[13px] leading-relaxed text-accent-fg shadow-sm'
+                          : 'w-full max-w-[min(100%,1200px)] rounded-2xl rounded-bl-md border border-line bg-surface px-4 py-3 text-[13px] leading-relaxed text-fg shadow-sm'}
 
                       >
 
