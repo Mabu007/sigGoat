@@ -10,6 +10,7 @@ import {
   BacktestProvenance,
 } from '../../types';
 import { MarketDataProvider, MarketDataUnavailableError } from '../market-data/MarketDataProvider';
+import { aggregateHardConstraints } from '../agent/SkillConstraints';
 import {
   analyzeMarketStructure,
   calculateRSI,
@@ -150,6 +151,20 @@ export class BacktestEngine {
 
     this.validateParams(startingBalance, riskPerTradePct);
 
+    // Backtests use OHLC candles, not historical bid/ask quotes. Enforce the
+    // selected GOAT's deterministic hard rules, and fail closed when a skill
+    // requires a spread measurement the historical source cannot provide.
+    const constraints = aggregateHardConstraints(skills);
+    if (constraints.maxSpreadPips > 0 || constraints.maxSpreadBps > 0) {
+      const required = [
+        constraints.maxSpreadPips > 0 ? `SPREAD_UNDER_${constraints.maxSpreadPips}_PIPS` : '',
+        constraints.maxSpreadBps > 0 ? `SPREAD_UNDER_${constraints.maxSpreadBps}_BPS` : '',
+      ].filter(Boolean).join(', ');
+      throw new Error(
+        `Cannot faithfully backtest ${required}: historical candles do not include verified bid/ask spread data. Remove that spread constraint or use a data source with historical quotes.`,
+      );
+    }
+
     const periodSettings = this.getPeriodSettings(period);
 
     const candles = await this.loadHistoricalCandles(provider, market, periodSettings);
@@ -227,6 +242,23 @@ export class BacktestEngine {
       const setup = this.evaluateHistoricalSetup(structure, rsi, atr, currentBar, pip, market);
 
       if (!setup) {
+        cursor += 1;
+        continue;
+      }
+
+      // Apply selected skill constraints to each historical setup. The entry
+      // generator is deterministic, but its outputs must still obey the same
+      // hard risk/order-direction rules as live proposals.
+      const counterTrend =
+        (structure.bias === 'BULLISH' && setup.direction === 'SHORT') ||
+        (structure.bias === 'BEARISH' && setup.direction === 'LONG');
+      const invalidStop = !Number.isFinite(setup.stopLoss) || setup.stopLoss <= 0;
+      if (
+        setup.rr < constraints.minRiskReward ||
+        (constraints.limitOrdersOnly && setup.orderType === 'MARKET') ||
+        (constraints.noCounterTrend && counterTrend) ||
+        (constraints.requireInvalidation && invalidStop)
+      ) {
         cursor += 1;
         continue;
       }
