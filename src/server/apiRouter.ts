@@ -4657,7 +4657,10 @@ apiRouter.delete(
     const goat = await persistence.goats.getForUser(req.params.id, user.uid);
     if (!goat) return notFound(res);
 
-    await persistence.wakeEvents.deleteByGoat(goat.id);
+    await Promise.all([
+      persistence.wakeEvents.deleteByGoat(goat.id),
+      notificationOutbox.store.deleteByGoat(goat.id, 'MARKET_REVIEW'),
+    ]);
     const runtime = durableObjectRegistry.get(goat.id);
     runtime?.clearReviewHistory();
 
@@ -4684,6 +4687,7 @@ apiRouter.delete(
       persistence.signals.deleteByGoat(goat.id),
       persistence.theses.deleteByGoat(goat.id),
       persistence.wakeEvents.deleteByGoat(goat.id),
+      notificationOutbox.store.deleteByGoat(goat.id),
     ]);
     await persistence.goats.delete(goat.id);
 
