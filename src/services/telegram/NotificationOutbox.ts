@@ -1,3 +1,5 @@
+import type { Firestore } from 'firebase-admin/firestore';
+
 /**
  * NOTIFICATION OUTBOX
  * ===================
@@ -204,6 +206,51 @@ export class MemoryOutboxStore implements OutboxStore {
   /** All records, for assertions. */
   all(): OutboxRecord[] {
     return [...this.records.values()].map((record) => ({ ...record }));
+  }
+}
+
+/** Firestore-backed outbox for serverless deployments; delivery state survives cold starts. */
+export class FirestoreOutboxStore implements OutboxStore {
+  private readonly collection;
+  constructor(private readonly db: Firestore, collectionName = 'telegramOutbox') {
+    this.collection = db.collection(collectionName);
+  }
+
+  async enqueue(record: OutboxRecord): Promise<boolean> {
+    const ref = this.collection.doc(record.id);
+    return this.db.runTransaction(async transaction => {
+      const existing = await transaction.get(ref);
+      if (existing.exists) return false;
+      transaction.create(ref, record);
+      return true;
+    });
+  }
+
+  async get(id: string): Promise<OutboxRecord | null> {
+    const snapshot = await this.collection.doc(id).get();
+    return snapshot.exists ? snapshot.data() as OutboxRecord : null;
+  }
+
+  async save(record: OutboxRecord): Promise<void> {
+    await this.collection.doc(record.id).set(record);
+  }
+
+  async due(nowMs: number, limit: number): Promise<OutboxRecord[]> {
+    const snapshot = await this.collection.orderBy('nextAttemptAtMs', 'asc').limit(Math.max(limit * 4, limit)).get();
+    return snapshot.docs
+      .map(doc => doc.data() as OutboxRecord)
+      .filter(record => record.nextAttemptAtMs <= nowMs && (record.status === 'PENDING' || record.status === 'FAILED'))
+      .slice(0, limit);
+  }
+
+  async byStatus(status: NotificationStatus, limit: number): Promise<OutboxRecord[]> {
+    const snapshot = await this.collection.where('status', '==', status).limit(limit).get();
+    return snapshot.docs.map(doc => doc.data() as OutboxRecord).sort((a, b) => a.updatedAtMs - b.updatedAtMs);
+  }
+
+  async countByStatus(status: NotificationStatus): Promise<number> {
+    const snapshot = await this.collection.where('status', '==', status).get();
+    return snapshot.size;
   }
 }
 
