@@ -5844,6 +5844,29 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     const emit = (event: Record<string, unknown>) => res.write("data: " + JSON.stringify(event) + "\n\n");
     emit({ type: "status", message: "Getting ready…" });
 
+    // Fast path: social messages do not resolve credentials, query model catalogues,
+    // fetch market/news data, read GOAT state, or invoke an LLM.
+    if (isLightConversation(message.trim())) {
+      const now = new Date().toISOString();
+      const lowerMessage = message.trim().toLowerCase();
+      const reply = /^(thanks|thank you|cheers)[!,.\\s]*$/i.test(lowerMessage)
+        ? "Anytime, G."
+        : /^(nice|cool|lol|haha)[!,.\\s]*$/i.test(lowerMessage) ? "😄" : "Hey G, you good?";
+      const assistantMessage: ChatMessage = {
+        id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+        chatId: chat.id, userId: user.uid, role: "assistant", content: reply,
+        model: chat.model || "conversation", createdAt: now,
+      };
+      await Promise.all([
+        persistence.messages.create(chat.id, assistantMessage),
+        persistence.chats.update(chat.id, { updatedAt: now, lastMessageAt: now }),
+      ]);
+      emit({ type: "delta", content: reply });
+      emit({ type: "done", chat: { id: chat.id, title: chat.title }, message: assistantMessage, userMessage, model: assistantMessage.model });
+      res.end();
+      return;
+    }
+
     const { key } = await resolveChatbotCredential(user.uid);
     const activeModel = await resolveChatModel(user.uid, modelId);
     if (!key) {
