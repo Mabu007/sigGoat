@@ -840,6 +840,7 @@ export class GoatDurableObject {
           'ERROR',
           generationId,
         );
+        this.runtimeState.isEvaluating = false;
         return this.runtimeState;
       }
 
