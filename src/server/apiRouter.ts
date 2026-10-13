@@ -10,7 +10,8 @@
  * persistence on boot (restart recovery).
  */
 
-import express, { Request, Response, NextFunction } from 'express';
+import express, { Request, Response, NextFunction } from "express";
+import { waitUntil } from "@vercel/functions";
 import {
   FundGoat,
   GoatSchedule,
@@ -21,9 +22,9 @@ import {
   UserProfile,
   AutonomyMode,
   normaliseAutonomyMode,
-} from '../types';
-import { authMiddleware, requireUser, resolveAuthMode } from './auth';
-import { getFirebaseAdminFailureReason } from './firebaseAdmin';
+} from "../types";
+import { authMiddleware, requireUser, resolveAuthMode } from "./auth";
+import { getFirebaseAdminFailureReason } from "./firebaseAdmin";
 import {
   CredentialValidationError,
   isPlausibleOpenRouterKey,
@@ -31,82 +32,102 @@ import {
   normaliseOpenRouterKey,
   normalisePropDaoKey,
   normaliseTelegramToken,
-} from './credentialValidation';
+} from "./credentialValidation";
 import {
   createPersistence,
   PersistenceLayer,
   NotFoundError,
-} from './repositories';
-import { UserScopedReasoningGateway, type AiProvider } from './reasoningGateway';
-import { buildGoatContext } from './goatContext';
-import { configureCredentialVault, credentialVault } from './security/instance';
-import { CredentialVaultError } from './security/CredentialVault';
-import { createVaultBackedKeyStore } from './security/vaultKeyStore';
-import { autoAcceptSignal } from './autonomy';
-import type { CanonicalMarketCategory } from '../types';
-import { PropFundAccountProvider } from '../services/propdao/PropFundAccountProvider';
-import { executionPolicyStatus } from '../services/propdao/executionPolicy';
-import { DEFAULT_RISK_LIMITS, validateTradeIntent } from '../services/propdao/PropRiskValidator';
-import { durableObjectRegistry } from '../services/durable-object/DurableObjectRegistry';
-import { hyperliquidProvider } from '../services/market-data/hyperliquid/HyperliquidMarketDataProvider';
+} from "./repositories";
+import {
+  UserScopedReasoningGateway,
+  type AiProvider,
+} from "./reasoningGateway";
+import { buildGoatContext } from "./goatContext";
+import { configureCredentialVault, credentialVault } from "./security/instance";
+import { CredentialVaultError } from "./security/CredentialVault";
+import { createVaultBackedKeyStore } from "./security/vaultKeyStore";
+import { autoAcceptSignal } from "./autonomy";
+import type { CanonicalMarketCategory } from "../types";
+import { PropFundAccountProvider } from "../services/propdao/PropFundAccountProvider";
+import { executionPolicyStatus } from "../services/propdao/executionPolicy";
+import {
+  DEFAULT_RISK_LIMITS,
+  validateTradeIntent,
+} from "../services/propdao/PropRiskValidator";
+import { durableObjectRegistry } from "../services/durable-object/DurableObjectRegistry";
+import { hyperliquidProvider } from "../services/market-data/hyperliquid/HyperliquidMarketDataProvider";
 import {
   DEFAULT_MARKET_UNIVERSE,
   HYPERLIQUID_DEXES,
   MARKET_CATEGORIES,
   tradableMarkets,
-} from '../services/market-data/hyperliquid/MarketCatalog';
-import { paperProvider } from '../services/market-data/PaperMarketDataProvider';
-import { MarketDataProvider, MarketDataUnavailableError } from '../services/market-data/MarketDataProvider';
+} from "../services/market-data/hyperliquid/MarketCatalog";
+import { paperProvider } from "../services/market-data/PaperMarketDataProvider";
+import {
+  MarketDataProvider,
+  MarketDataUnavailableError,
+} from "../services/market-data/MarketDataProvider";
 import {
   MarketStateStore,
   isUsableMarketState,
-} from '../services/market-data/MarketStateStore';
-import { FileMarketStatePersistence } from '../services/market-data/FileMarketStatePersistence';
-import { BacktestEngine } from '../services/backtest/BacktestEngine';
-import { DEFAULT_SKILLS } from '../data/defaultSkills';
-import { SYSTEM_GOATS } from '../data/systemGoats';
-import { SYSTEM_SKILLS, isSystemOwnedSkillId } from '../data/systemSkills';
-import { telegramService } from '../services/telegram/TelegramService';
+} from "../services/market-data/MarketStateStore";
+import { FileMarketStatePersistence } from "../services/market-data/FileMarketStatePersistence";
+import { BacktestEngine } from "../services/backtest/BacktestEngine";
+import { DEFAULT_SKILLS } from "../data/defaultSkills";
+import { SYSTEM_GOATS } from "../data/systemGoats";
+import { SYSTEM_SKILLS, isSystemOwnedSkillId } from "../data/systemSkills";
+import { telegramService } from "../services/telegram/TelegramService";
 import type {
   TelegramProcessSummary,
   TelegramResolution,
-} from '../services/telegram/TelegramService';
-import { TelegramRateLimiter } from '../services/telegram/TelegramCommands';
-import { TelegramBotClient } from '../services/telegram/TelegramBotClient';
-import { ApiRequestError, OpenRouterClient } from '../services/ai/OpenRouterClient';
-import { durableObjectSchedulerFromEnv } from './scheduler/DurableObjectScheduler';
-import type { WakeScheduler, FiredWake } from './scheduler/types';
-import { InProcessScheduler } from './scheduler/InProcessScheduler';
-import { msUntilNextScheduledTime, normaliseSchedule, describeSchedule } from '../services/durable-object/GoatDurableObject';
+  TelegramUpdateHandlers,
+} from "../services/telegram/TelegramService";
+import { TelegramRateLimiter } from "../services/telegram/TelegramCommands";
+import { TelegramBotClient } from "../services/telegram/TelegramBotClient";
+import {
+  ApiRequestError,
+  OpenRouterClient,
+} from "../services/ai/OpenRouterClient";
+import { durableObjectSchedulerFromEnv } from "./scheduler/DurableObjectScheduler";
+import type { WakeScheduler, FiredWake } from "./scheduler/types";
+import { InProcessScheduler } from "./scheduler/InProcessScheduler";
+import {
+  msUntilNextScheduledTime,
+  normaliseSchedule,
+  describeSchedule,
+} from "../services/durable-object/GoatDurableObject";
 import {
   TRACKING_TIMEFRAMES,
   isTrackingTimeframe,
   normaliseTrackingTimeframe,
   pollIntervalForTimeframe,
   type TrackingTimeframe,
-} from '../services/market-data/trackingTimeframes';
-import { DailyMarketRollup } from '../services/daily-rolling/DailyMarketRollup';
+} from "../services/market-data/trackingTimeframes";
+import { DailyMarketRollup } from "../services/daily-rolling/DailyMarketRollup";
 import {
   MarketIngestionService,
   type Subscription as IngestionSubscription,
-} from '../services/market-data/MarketIngestionService';
-import { MemoryCandleRepository } from '../services/market-data/candle-core/CandleRepositories';
-import { retentionPolicyFromEnv } from '../services/market-data/candle-core/RetentionPolicy';
+} from "../services/market-data/MarketIngestionService";
+import { MemoryCandleRepository } from "../services/market-data/candle-core/CandleRepositories";
+import { retentionPolicyFromEnv } from "../services/market-data/candle-core/RetentionPolicy";
 import {
   DurableMarketDataClient,
   durableMarketDataEnvFromProcess,
   validateMarketEvent,
   type DurablePartition,
-} from '../services/market-data/DurableMarketDataClient';
-import type { MarketEvent } from '../services/market-data/MarketEvent';
-import { describeSessionSpec, resolveSession } from '../services/market-data/candle-core/SessionCalendar';
+} from "../services/market-data/DurableMarketDataClient";
+import type { MarketEvent } from "../services/market-data/MarketEvent";
+import {
+  describeSessionSpec,
+  resolveSession,
+} from "../services/market-data/candle-core/SessionCalendar";
 import {
   NotificationOutbox,
   MemoryOutboxStore,
-} from '../services/telegram/NotificationOutbox';
+} from "../services/telegram/NotificationOutbox";
 
 export const apiRouter = express.Router();
-apiRouter.use(express.json({ limit: '1mb' }));
+apiRouter.use(express.json({ limit: "1mb" }));
 
 /* ------------------------------------------------------------------ */
 /* Wiring                                                              */
@@ -143,7 +164,7 @@ const keyStore = createVaultBackedKeyStore(persistence.keys, credentialVault);
  */
 function propDaoFor(userId: string): PropFundAccountProvider {
   return new PropFundAccountProvider({
-    resolveApiKey: () => credentialVault.getCredential(userId, 'propdao'),
+    resolveApiKey: () => credentialVault.getCredential(userId, "propdao"),
   });
 }
 
@@ -164,14 +185,12 @@ const reasoningGateway = new UserScopedReasoningGateway(keyStore);
  * live data.
  */
 const marketProvider: MarketDataProvider =
-  process.env.MARKET_DATA_PROVIDER === 'paper'
+  process.env.MARKET_DATA_PROVIDER === "paper"
     ? paperProvider
     : hyperliquidProvider;
 
-if (marketProvider.dataMode === 'PAPER') {
-  console.warn(
-    '[api] MARKET_DATA_PROVIDER=paper — serving SIMULATED prices.',
-  );
+if (marketProvider.dataMode === "PAPER") {
+  console.warn("[api] MARKET_DATA_PROVIDER=paper — serving SIMULATED prices.");
 }
 
 /**
@@ -216,9 +235,9 @@ export function isEphemeralRuntime(): boolean {
 export const marketStateStore = new MarketStateStore(marketProvider, {
   ttlMs: 30_000,
   pollIntervalMs: 5_000,
-  timeframe: '15m',
+  timeframe: "15m",
   candleCount: 120,
-  ...(marketProvider.dataMode === 'LIVE' && !isEphemeralRuntime()
+  ...(marketProvider.dataMode === "LIVE" && !isEphemeralRuntime()
     ? { persist: new FileMarketStatePersistence() }
     : {}),
 });
@@ -280,7 +299,7 @@ export const notificationOutbox = new NotificationOutbox({
          * No credential is a PERMANENT failure, not a transient one. Retrying
          * would burn the attempt budget on something no retry can fix.
          */
-        throw new Error('No Telegram bot token configured for this user.');
+        throw new Error("No Telegram bot token configured for this user.");
       }
 
       const chatId =
@@ -288,7 +307,7 @@ export const notificationOutbox = new NotificationOutbox({
         process.env.TELEGRAM_CHAT_ID;
 
       if (!chatId) {
-        throw new Error('No Telegram chat id configured for this user.');
+        throw new Error("No Telegram chat id configured for this user.");
       }
 
       const result = await telegramService.sendMessage(
@@ -304,13 +323,13 @@ export const notificationOutbox = new NotificationOutbox({
        * marking a failed delivery as sent.
        */
       if (!result.ok) {
-        throw new Error(result.description ?? 'Telegram delivery failed.');
+        throw new Error(result.description ?? "Telegram delivery failed.");
       }
 
       const messageId =
-        result.result && typeof result.result === 'object'
-          ? String((result.result as { message_id?: number }).message_id ?? '')
-          : '';
+        result.result && typeof result.result === "object"
+          ? String((result.result as { message_id?: number }).message_id ?? "")
+          : "";
 
       /**
        * An empty message id means the acknowledgement could not be read. The
@@ -339,23 +358,121 @@ const durableScheduler = durableObjectSchedulerFromEnv();
  * Called when an in-process alarm fires. With a Durable Object scheduler this
  * is never used, because that actor arms no local timers.
  */
+/**
+ * Synchronous counterparts for the in-process scheduler fallback (local
+ * development only: it is used when DURABLE_SCHEDULER_URL is not configured,
+ * so Node timers must finish before the alarm handler returns).
+ *
+ * They perform the same decide-then-run sequence as the background paths, but
+ * execute the run inline so nothing is deferred behind ctx.waitUntil.
+ */
+async function runScheduledWakeSync(
+  goatId: string,
+  eventId: string,
+  reason: string,
+): Promise<void> {
+  const goat = await persistence.goats.get(goatId);
+  if (!goat) return;
+
+  const verdict = scheduler.decide(goatId, {
+    goatId,
+    eventId,
+    generationId: scheduleGeneration(goat),
+    reason,
+    firedAt: Date.now(),
+  });
+
+  if (verdict.allowed === false) {
+    console.log(`[scheduler] suppressed wake for ${goatId}: ${verdict.reason}`);
+    return;
+  }
+
+  const runtime = durableObjectRegistry.get(goatId)
+    ? durableObjectRegistry.get(goatId)!
+    : await ensureGoatRuntime(goat);
+
+  await runtime.wake(reason, "SCHEDULED", goat.markets[0]);
+
+  const refreshed = await persistence.goats.get(goatId);
+  if (refreshed) await syncSchedule(refreshed);
+}
+
+/**
+ * Synchronous counterpart for the in-process scheduler's tracker check.
+ */
+async function runTrackerCheckSync(
+  goatId: string,
+  eventId: string,
+): Promise<{ handled: boolean; nextAt: string | null }> {
+  const goat = await persistence.goats.get(goatId);
+  if (!goat) return { handled: false, nextAt: null };
+
+  const verdict = scheduler.decide(goatId, {
+    goatId,
+    eventId,
+    generationId: scheduleGeneration(goat),
+    reason: "Scheduled tracker check",
+    firedAt: Date.now(),
+  });
+
+  if (verdict.allowed === false) {
+    return {
+      handled: false,
+      nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+    };
+  }
+
+  const market = await resolveGoatMarket(goat);
+  if (!market)
+    return {
+      handled: false,
+      nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+    };
+
+  const state = await marketStateStore.getState(
+    market,
+    normaliseTrackingTimeframe(goat.timeframe),
+  );
+
+  if (!isUsableMarketState(state) || !state.quote) {
+    return {
+      handled: false,
+      nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+    };
+  }
+
+  const runtime = await ensureGoatRuntime(goat);
+  await runtime.evaluateTrackersNow(state);
+
+  const refreshed = await persistence.goats.get(goatId);
+
+  return {
+    handled: true,
+    nextAt: isoOrNull(
+      refreshed
+        ? computeNextTrackerCheckAt(refreshed)
+        : computeNextTrackerCheckAt(goat),
+    ),
+  };
+}
+
 let inProcessScheduler: InProcessScheduler | null = null;
 
 if (durableScheduler) {
-  console.log('[api] Durable Object scheduler active.');
+  console.log("[api] Durable Object scheduler active.");
 } else {
   inProcessScheduler = new InProcessScheduler(async (wake) => {
-    await runScheduledWake(wake.goatId, wake.eventId, wake.reason);
+    await runScheduledWakeSync(wake.goatId, wake.eventId, wake.reason);
   });
 
   // Tracker checks spend no AI: they only escalate when a condition is met.
   inProcessScheduler.onTrackerCheck = async (wake) => {
-    await runTrackerCheck(wake.goatId, wake.eventId);
+    await runTrackerCheckSync(wake.goatId, wake.eventId);
   };
   console.warn(
-    '[api] DURABLE_SCHEDULER_URL not set — using IN-PROCESS timers. ' +
-      'Schedules will NOT survive a restart. Configure the Cloudflare ' +
-      'scheduler worker for production.',
+    "[api] DURABLE_SCHEDULER_URL not set — using IN-PROCESS timers. " +
+      "Schedules will NOT survive a restart. Configure the Cloudflare " +
+      "scheduler worker for production.",
   );
 }
 
@@ -372,7 +489,7 @@ const scheduler: WakeScheduler = durableScheduler ?? inProcessScheduler!;
  */
 marketIngestion.onEvent((event: MarketEvent) => {
   void routeMarketEvent(event).catch((err) => {
-    console.error('[market-event] local routing failed:', err);
+    console.error("[market-event] local routing failed:", err);
   });
 });
 
@@ -415,6 +532,85 @@ function ensureGoatRuntime(goat: FundGoat) {
 }
 
 /**
+ * Persist a GOAT's schedule, optionally its timeframe, re-synchronise it with
+ * the scheduler, and attach a fresh runtime actor with the new config.
+ *
+ * Operates on an authenticated userId. Ownership is enforced by the caller;
+ * used by both the HTTP route and the Telegram handlers so the same
+ * validation/normalisation path is exercised in both.
+ */
+async function patchGoatScheduleFor(
+  userId: string,
+  goatId: string,
+  schedule: GoatSchedule,
+  timeframe?: string,
+): Promise<FundGoat> {
+  const goat = await persistence.goats.getForUser(goatId, userId);
+  if (!goat) {
+    throw new NotFoundError();
+  }
+
+  const resolvedTimeframe =
+    timeframe !== undefined
+      ? normaliseTrackingTimeframe(timeframe)
+      : goat.timeframe;
+
+  const updated: FundGoat = {
+    ...goat,
+    schedule: normaliseSchedule(schedule),
+    timeframe: resolvedTimeframe,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await persistence.goats.save(updated);
+  await syncSchedule(updated);
+
+  const runtime = await ensureGoatRuntime(updated);
+  runtime.setSchedule(normaliseSchedule(schedule));
+  runtime.updateConfig(updated, await allSkillsFor(userId));
+
+  return updated;
+}
+
+/**
+ * Persist a GOAT's pause state, re-synchronise it with the scheduler, and
+ * attach a fresh runtime actor with the new state.
+ *
+ * Operates on an authenticated userId. Ownership is enforced by the caller;
+ * used by both the HTTP route and the Telegram handlers.
+ */
+async function setGoatStatusFor(
+  userId: string,
+  goatId: string,
+  paused: boolean,
+): Promise<
+  FundGoat & { runtimeState: GoatRuntimeState; schedule: GoatSchedule }
+> {
+  const goat = await persistence.goats.getForUser(goatId, userId);
+  if (!goat) {
+    throw new NotFoundError();
+  }
+
+  const updated: FundGoat = {
+    ...goat,
+    status: paused ? "PAUSED" : "WATCHING",
+    updatedAt: new Date().toISOString(),
+  };
+
+  await persistence.goats.save(updated);
+  await syncSchedule(updated);
+
+  const runtime = await ensureGoatRuntime(updated);
+  const state = paused ? runtime.pause() : runtime.play();
+
+  return {
+    ...updated,
+    runtimeState: state,
+    schedule: runtime.getConfig().schedule,
+  };
+}
+
+/**
  * Registers a GOAT with the shared ingestion layer and mirrors it into the
  * Cloudflare runtime.
  *
@@ -441,7 +637,7 @@ function subscribeToMarkets(goat: FundGoat): void {
    * it to ignore every event it receives. That also stops the shared runtime
    * ingesting a market nobody is watching.
    */
-  if (goat.status === 'PAUSED') {
+  if (goat.status === "PAUSED") {
     marketIngestion.unsubscribeAll(goat.id);
     return;
   }
@@ -450,7 +646,7 @@ function subscribeToMarkets(goat: FundGoat): void {
     marketIngestion.subscribe({
       subscriberId: goat.id,
       instrument,
-      eventTypes: ['CANDLE_FINALIZED', 'SESSION_FINALIZED', 'DATA_STALE'],
+      eventTypes: ["CANDLE_FINALIZED", "SESSION_FINALIZED", "DATA_STALE"],
     });
   }
 
@@ -462,17 +658,19 @@ function subscribeToMarkets(goat: FundGoat): void {
    * visible rather than silent.
    */
   if (durableMarketDataClient.isEnabled) {
-    void syncDurableSubscriptions(
-      marketIngestion.listSubscriptions(),
-    ).catch((err) => {
-      console.error('[api] durable subscription sync failed:', err);
-    });
+    void syncDurableSubscriptions(marketIngestion.listSubscriptions()).catch(
+      (err) => {
+        console.error("[api] durable subscription sync failed:", err);
+      },
+    );
   }
 }
 
 async function allSkillsFor(userId: string) {
   const userSkills = await persistence.skills.listByUser(userId);
-  const defaults = DEFAULT_SKILLS.filter((d) => !userSkills.some((s) => s.id === d.id));
+  const defaults = DEFAULT_SKILLS.filter(
+    (d) => !userSkills.some((s) => s.id === d.id),
+  );
   return [...defaults, ...userSkills];
 }
 
@@ -488,15 +686,15 @@ async function allSkillsFor(userId: string) {
  * theses and signals are untouched.
  */
 const STALE_MARKET_REPLACEMENTS: Record<string, string> = {
-  'EUR/USD': 'xyz:EUR',
-  'GBP/USD': 'xyz:GBP',
-  'USD/JPY': 'xyz:JPY',
-  'XAU/USD': 'xyz:GOLD',
-  'XAG/USD': 'xyz:SILVER',
-  GOLD: 'xyz:GOLD',
-  SLV: 'xyz:SILVER',
-  WTI: 'xyz:CL',
-  CL: 'xyz:CL',
+  "EUR/USD": "xyz:EUR",
+  "GBP/USD": "xyz:GBP",
+  "USD/JPY": "xyz:JPY",
+  "XAU/USD": "xyz:GOLD",
+  "XAG/USD": "xyz:SILVER",
+  GOLD: "xyz:GOLD",
+  SLV: "xyz:SILVER",
+  WTI: "xyz:CL",
+  CL: "xyz:CL",
 };
 
 /** Markets that must exist on the venue before they can be substituted in. */
@@ -516,11 +714,16 @@ export function migrateGoatMarkets(goat: FundGoat): FundGoat | null {
   const migrated = goat.markets.map((market) => {
     const replacement = STALE_MARKET_REPLACEMENTS[market.toUpperCase()];
     if (!replacement) return market;
-    return KNOWN_LISTED_MARKETS.has(replacement.toUpperCase()) ? replacement : market;
+    return KNOWN_LISTED_MARKETS.has(replacement.toUpperCase())
+      ? replacement
+      : market;
   });
 
   const unique = [...new Set(migrated)];
-  if (unique.every((m) => goat.markets.includes(m)) && unique.length === goat.markets.length) {
+  if (
+    unique.every((m) => goat.markets.includes(m)) &&
+    unique.length === goat.markets.length
+  ) {
     return null;
   }
   if (unique.length === 0) return null;
@@ -564,11 +767,11 @@ async function resolveGoatMarket(goat: FundGoat): Promise<string | null> {
 
   if (listed && migrated) {
     await persistence.goats.save(migrated).catch((err) => {
-      console.error('[api] failed to persist migrated goat markets:', err);
+      console.error("[api] failed to persist migrated goat markets:", err);
     });
     console.warn(
       `[api] Migrated markets for goat ${goat.id}: ` +
-        `${goat.markets.join(', ')} -> ${migrated.markets.join(', ')}`,
+        `${goat.markets.join(", ")} -> ${migrated.markets.join(", ")}`,
     );
   }
 
@@ -633,10 +836,10 @@ async function resolveMarketsForGoat(
     const suggestions = suggestMarkets(rejected);
     return {
       error:
-        `Hyperliquid does not list ${rejected.map((s) => `"${s}"`).join(', ')}.` +
+        `Hyperliquid does not list ${rejected.map((s) => `"${s}"`).join(", ")}.` +
         (suggestions.length > 0
-          ? ` Did you mean ${suggestions.map((s) => `"${s}"`).join(', ')}?`
-          : ' Search for it under Markets, or pick another instrument.'),
+          ? ` Did you mean ${suggestions.map((s) => `"${s}"`).join(", ")}?`
+          : " Search for it under Markets, or pick another instrument."),
     };
   }
 
@@ -655,11 +858,11 @@ function suggestMarkets(rejected: readonly string[]): string[] {
   const out: string[] = [];
 
   for (const raw of rejected) {
-    const cleaned = raw.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    const cleaned = raw.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
     if (cleaned.length < 2) continue;
 
     for (const candidate of tracked) {
-      const candidateBare = candidate.replace(/^xyz:/, '').toUpperCase();
+      const candidateBare = candidate.replace(/^xyz:/, "").toUpperCase();
       if (candidateBare === cleaned || candidateBare.includes(cleaned)) {
         if (!out.includes(candidate)) out.push(candidate);
       }
@@ -708,14 +911,17 @@ async function resolveModelForNewGoat(
     const preferred = profile?.aiModel?.trim();
     if (preferred && isValidModel(preferred)) return preferred;
   } catch (err) {
-    console.warn('[api] could not read preferred model:', err);
+    console.warn("[api] could not read preferred model:", err);
   }
 
   try {
     const fallback = await reasoningGateway.pickAnyModel(userId);
     if (fallback) return fallback;
   } catch (err) {
-    console.warn('[api] model catalogue unavailable, using requested model:', err);
+    console.warn(
+      "[api] model catalogue unavailable, using requested model:",
+      err,
+    );
   }
 
   return requested;
@@ -749,17 +955,19 @@ export async function restoreRuntimes(): Promise<void> {
       if (migrated) {
         await persistence.goats.save(migrated);
         console.log(
-          `[api] Migrated markets for goat ${goat.id}: ${goat.markets.join(', ')} -> ${migrated.markets.join(', ')}`,
+          `[api] Migrated markets for goat ${goat.id}: ${goat.markets.join(", ")} -> ${migrated.markets.join(", ")}`,
         );
       }
 
-      if (goat.status !== 'PAUSED') {
+      if (goat.status !== "PAUSED") {
         await ensureGoatRuntime(migrated ?? goat);
       }
     }
-    console.log(`[api] Restored ${goats.length} GOAT runtime(s) from persistence.`);
+    console.log(
+      `[api] Restored ${goats.length} GOAT runtime(s) from persistence.`,
+    );
   } catch (err) {
-    console.error('[api] Failed to restore GOAT runtimes:', err);
+    console.error("[api] Failed to restore GOAT runtimes:", err);
   }
 }
 
@@ -782,12 +990,12 @@ export async function reconcileRuntime(): Promise<{
 
   const subscriptions: IngestionSubscription[] = [];
   for (const goat of goats) {
-    if (goat.status === 'PAUSED') continue;
+    if (goat.status === "PAUSED") continue;
     for (const instrument of goat.markets) {
       subscriptions.push({
         subscriberId: goat.id,
         instrument,
-        eventTypes: ['CANDLE_FINALIZED', 'SESSION_FINALIZED', 'DATA_STALE'],
+        eventTypes: ["CANDLE_FINALIZED", "SESSION_FINALIZED", "DATA_STALE"],
       });
     }
   }
@@ -808,13 +1016,13 @@ export async function seedDefaultSkills(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error('[api] Failed to seed default skills:', err);
+    console.error("[api] Failed to seed default skills:", err);
   }
 }
 
 // Signal -> Telegram fan-out (only when the owner configured Telegram).
 durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
-  if (signal.direction === 'NO_TRADE' || signal.status !== 'ACTIONABLE') return;
+  if (signal.direction === "NO_TRADE" || signal.status !== "ACTIONABLE") return;
 
   /**
    * AUTONOMY MODE RUNS FIRST, before any notification.
@@ -833,23 +1041,25 @@ durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
       signal,
     );
 
-    if (outcome.action === 'AUTO_ACCEPTED') {
+    if (outcome.action === "AUTO_ACCEPTED") {
       console.log(
         `[autonomy] ${goat.name}: auto-accepted ${signal.id} ` +
           `(${signal.direction} ${signal.market}) — venue execution ` +
-          `${outcome.execution.enabled && outcome.execution.authorised ? 'authorised' : 'disabled'}`,
+          `${outcome.execution.enabled && outcome.execution.authorised ? "authorised" : "disabled"}`,
       );
       return;
     }
-    if (outcome.action === 'FAILED') {
-      console.error(`[autonomy] ${goat.name}: auto-accept failed — ${outcome.reason}`);
+    if (outcome.action === "FAILED") {
+      console.error(
+        `[autonomy] ${goat.name}: auto-accept failed — ${outcome.reason}`,
+      );
     }
   } catch (err) {
     /**
      * NEVER let autonomy break the notification path. A failure here must
      * still produce the user's Telegram alert.
      */
-    console.error('[autonomy] auto-accept threw:', err);
+    console.error("[autonomy] auto-accept threw:", err);
   }
 
   /**
@@ -863,7 +1073,7 @@ durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
     const { id, created } = await notificationOutbox.enqueue({
       goatId: goat.id,
       userId: goat.userId,
-      kind: 'SIGNAL',
+      kind: "SIGNAL",
       subjectId: signal.id,
       body: telegramService.formatSignalMessage(signal, goat.name),
     });
@@ -877,13 +1087,13 @@ durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
 
     await notificationOutbox.deliverOne(id);
   } catch (err) {
-    console.error('[api] Telegram signal notification failed:', err);
+    console.error("[api] Telegram signal notification failed:", err);
   }
 
   dailyRollup.recordEvent(
     signal.market,
-    'SIGNAL',
-    `${signal.direction} ${signal.orderType} @ ${signal.entry ?? 'n/a'}`,
+    "SIGNAL",
+    `${signal.direction} ${signal.orderType} @ ${signal.entry ?? "n/a"}`,
   );
 });
 
@@ -903,12 +1113,12 @@ durableObjectRegistry.onTrackerTriggered(async (goat, report) => {
     const { id, created } = await notificationOutbox.enqueue({
       goatId: goat.id,
       userId: goat.userId,
-      kind: 'TRACKER_TRIGGERED',
+      kind: "TRACKER_TRIGGERED",
       subjectId: report.tracker.id,
       candleOpenTimeMs: report.evaluatedCandleMs ?? null,
       body: telegramService.formatTrackerTriggerMessage(goat.name, {
         description: report.tracker.description,
-        market: report.tracker.market || goat.markets[0] || '—',
+        market: report.tracker.market || goat.markets[0] || "—",
         formula: report.formulaDescription,
         calculatedValue: report.calculatedValue,
       }),
@@ -917,12 +1127,12 @@ durableObjectRegistry.onTrackerTriggered(async (goat, report) => {
     if (created) await notificationOutbox.deliverOne(id);
 
     dailyRollup.recordEvent(
-      report.tracker.market || goat.markets[0] || 'unknown',
-      'TRACKER_TRIGGERED',
+      report.tracker.market || goat.markets[0] || "unknown",
+      "TRACKER_TRIGGERED",
       report.eventReason,
     );
   } catch (err) {
-    console.error('[api] Telegram tracker notification failed:', err);
+    console.error("[api] Telegram tracker notification failed:", err);
   }
 });
 
@@ -947,9 +1157,7 @@ durableObjectRegistry.onTrackerTriggered(async (goat, report) => {
  * One GOAT failing is contained: each is routed in its own try/catch, so a
  * broken runtime cannot stop the others from being woken.
  */
-export async function routeMarketEvent(
-  event: MarketEvent,
-): Promise<{
+export async function routeMarketEvent(event: MarketEvent): Promise<{
   considered: number;
   woke: number;
   duplicates: number;
@@ -973,7 +1181,7 @@ export async function routeMarketEvent(
   for (const goatId of goatIds) {
     try {
       const goat = await persistence.goats.get(goatId);
-      if (!goat || goat.status === 'PAUSED') {
+      if (!goat || goat.status === "PAUSED") {
         stopped += 1;
         continue;
       }
@@ -985,12 +1193,18 @@ export async function routeMarketEvent(
        */
       const runtime = durableObjectRegistry.get(goatId);
       const hasRelevantTracker = Boolean(
-        runtime?.getState().trackers.some(
-          (tracker) => tracker.market === event.instrument || !tracker.market,
-        ),
+        runtime
+          ?.getState()
+          .trackers.some(
+            (tracker) => tracker.market === event.instrument || !tracker.market,
+          ),
       );
 
-      if (event.type !== 'DATA_STALE' && event.type !== 'DATA_RECOVERED' && !hasRelevantTracker) {
+      if (
+        event.type !== "DATA_STALE" &&
+        event.type !== "DATA_RECOVERED" &&
+        !hasRelevantTracker
+      ) {
         irrelevant += 1;
         continue;
       }
@@ -1021,17 +1235,18 @@ export async function routeMarketEvent(
         continue;
       }
 
-      if (event.type === 'DATA_STALE') {
+      if (event.type === "DATA_STALE") {
         // Informational only: record the fact, spend no tokens.
         irrelevant += 1;
         continue;
       }
 
-      const active = durableObjectRegistry.get(goatId) ?? (await ensureGoatRuntime(goat));
+      const active =
+        durableObjectRegistry.get(goatId) ?? (await ensureGoatRuntime(goat));
 
       await active.wake(
         `Market event: ${event.type} on ${event.instrument}`,
-        'TRACKER_TRIGGERED',
+        "TRACKER_TRIGGERED",
         event.instrument,
         { eventId: event.eventId },
       );
@@ -1124,12 +1339,17 @@ async function syncDurableSubscriptions(
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-function fail(res: Response, status: number, code: string, message: string): void {
+function fail(
+  res: Response,
+  status: number,
+  code: string,
+  message: string,
+): void {
   res.status(status).json({ error: { code, message } });
 }
 
 function notFound(res: Response): void {
-  fail(res, 404, 'NOT_FOUND', 'Resource not found.');
+  fail(res, 404, "NOT_FOUND", "Resource not found.");
 }
 
 /** Route wrapper: structured errors, no stack traces leaked. */
@@ -1171,12 +1391,14 @@ function handle(fn: (req: Request, res: Response) => Promise<void>) {
        * the log noise this path was reported for in the first place.
        */
       if (err instanceof MarketDataUnavailableError) {
-        console.warn(`[api] ${req.method} ${req.originalUrl ?? req.url} — ${err.message}`);
-        fail(res, 400, 'MARKET_UNAVAILABLE', err.message);
+        console.warn(
+          `[api] ${req.method} ${req.originalUrl ?? req.url} — ${err.message}`,
+        );
+        fail(res, 400, "MARKET_UNAVAILABLE", err.message);
         return;
       }
 
-      console.error('[api] Unhandled route error:', err);
+      console.error("[api] Unhandled route error:", err);
 
       /**
        * Caller-supplied bad input -> 400 with the real message.
@@ -1192,8 +1414,8 @@ function handle(fn: (req: Request, res: Response) => Promise<void>) {
       fail(
         res,
         upstream ? 502 : 500,
-        upstream ? 'UPSTREAM_ERROR' : 'INTERNAL_ERROR',
-        upstream ? err.message : 'An internal error occurred.',
+        upstream ? "UPSTREAM_ERROR" : "INTERNAL_ERROR",
+        upstream ? err.message : "An internal error occurred.",
       );
     });
   };
@@ -1233,11 +1455,11 @@ const MODEL_ID_PATTERN =
  * routed to the user's real preference instead. See
  * `resolveModelForNewGoat`.
  */
-const LEGACY_DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
+const LEGACY_DEFAULT_MODEL = "anthropic/claude-3.5-sonnet";
 
 function isValidModel(model: unknown): boolean {
   return (
-    typeof model === 'string' &&
+    typeof model === "string" &&
     model.length <= 128 &&
     MODEL_ID_PATTERN.test(model)
   );
@@ -1263,15 +1485,25 @@ interface ValidatedGoatInput {
 }
 
 function validateGoatInput(body: unknown): ValidatedGoatInput | null {
-  if (typeof body !== 'object' || body === null) return null;
+  if (typeof body !== "object" || body === null) return null;
   const b = body as Record<string, unknown>;
-  if (typeof b.name !== 'string' || !b.name.trim() || b.name.length > 100) return null;
-  if (typeof b.goal !== 'string' || !b.goal.trim() || b.goal.length > 1000) return null;
-  if (!Array.isArray(b.markets) || b.markets.length === 0 || b.markets.length > 20) return null;
-  if (!b.markets.every((m) => typeof m === 'string' && m.length <= 32)) return null;
+  if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 100)
+    return null;
+  if (typeof b.goal !== "string" || !b.goal.trim() || b.goal.length > 1000)
+    return null;
+  if (
+    !Array.isArray(b.markets) ||
+    b.markets.length === 0 ||
+    b.markets.length > 20
+  )
+    return null;
+  if (!b.markets.every((m) => typeof m === "string" && m.length <= 32))
+    return null;
   if (!Array.isArray(b.skillIds) || b.skillIds.length > 20) return null;
-  if (!b.skillIds.every((s) => typeof s === 'string' && s.length <= 128)) return null;
-  const modelProvided = typeof b.model === 'string' && b.model.trim().length > 0;
+  if (!b.skillIds.every((s) => typeof s === "string" && s.length <= 128))
+    return null;
+  const modelProvided =
+    typeof b.model === "string" && b.model.trim().length > 0;
   const model = modelProvided ? (b.model as string) : LEGACY_DEFAULT_MODEL;
   if (!isValidModel(model)) return null;
   return {
@@ -1291,7 +1523,6 @@ function validateGoatInput(body: unknown): ValidatedGoatInput | null {
   };
 }
 
-
 /* ------------------------------------------------------------------ */
 /* Durable scheduling                                                  */
 /* ------------------------------------------------------------------ */
@@ -1302,9 +1533,9 @@ function scheduleGeneration(goat: FundGoat): string {
   return [
     goat.id,
     schedule.mode,
-    schedule.intervalMinutes ?? '-',
-    (schedule.times ?? []).join('.') || '-',
-  ].join(':');
+    schedule.intervalMinutes ?? "-",
+    (schedule.times ?? []).join(".") || "-",
+  ].join(":");
 }
 
 /**
@@ -1327,7 +1558,7 @@ function computeNextTrackerCheckAt(
   goat: FundGoat,
   from: number = Date.now(),
 ): number | null {
-  if (goat.status === 'PAUSED') return null;
+  if (goat.status === "PAUSED") return null;
 
   const timeframe = normaliseTrackingTimeframe(goat.timeframe);
   return from + pollIntervalForTimeframe(timeframe);
@@ -1337,22 +1568,22 @@ function computeNextWakeAt(
   goat: FundGoat,
   from: number = Date.now(),
 ): number | null {
-  if (goat.status === 'PAUSED') return null;
+  if (goat.status === "PAUSED") return null;
 
   const schedule = normaliseSchedule(goat.schedule);
 
   switch (schedule.mode) {
-    case 'MANUAL':
-    case 'TRACKERS':
+    case "MANUAL":
+    case "TRACKERS":
       return null;
 
-    case 'TIMES': {
+    case "TIMES": {
       const times = schedule.times ?? [];
       if (times.length === 0) return null;
       return from + msUntilNextScheduledTime(times, from);
     }
 
-    case 'INTERVAL':
+    case "INTERVAL":
     default: {
       const minutes = schedule.intervalMinutes ?? 60;
       return from + minutes * 60_000;
@@ -1379,7 +1610,7 @@ async function syncSchedule(goat: FundGoat): Promise<void> {
         : null,
       timeframe: normaliseTrackingTimeframe(goat.timeframe),
       generationId: scheduleGeneration(goat),
-      paused: goat.status === 'PAUSED',
+      paused: goat.status === "PAUSED",
     });
   } catch (err) {
     console.error(
@@ -1397,13 +1628,55 @@ async function syncSchedule(goat: FundGoat): Promise<void> {
  * trigger. This is what stops a duplicated alarm from producing a second AI
  * call, a second signal or a second Telegram message.
  */
-async function runScheduledWake(
+/**
+ * Decide whether a scheduled wake should run, using state reads only and
+ * never doing the AI work.
+ *
+ * Returning the decision in tens of milliseconds is what fixes the silent
+ * loss of scheduled analysis. The Durable Object alarm's callback currently
+ * aborts after 10 seconds, but a single reasoning run takes 60-180+ seconds,
+ * so the DO always timed out, recorded a failed delivery, and retried with a
+ * deduped eventId that produced no work and no re-arm. Acking immediately
+ * lets the DO re-arm on a fixed cadence while the run executes in the
+ * background via ctx.waitUntil.
+ *
+ * The decision applies the same dedupe gate as every other trigger path, plus
+ * an isEvaluating check that prevents two reasoning runs for the same GOAT
+ * from overlapping.
+ */
+async function decideScheduledWake(
   goatId: string,
   eventId: string,
   reason: string,
-): Promise<GoatRuntimeState | null> {
+): Promise<{
+  status:
+    "allowed" | "not_found" | "paused" | "evaluating" | "stale" | "duplicate";
+  nextAt: string | null;
+  reason?: string;
+}> {
   const goat = await persistence.goats.get(goatId);
-  if (!goat) return null;
+  if (!goat) {
+    return { status: "not_found", nextAt: null };
+  }
+
+  /**
+   * A wake for a PAUSED GOAT is not a duplicate. We must not consume the
+   * alarm's eventId, because the DO will re-arm it and the user has asked for
+   * the schedule to stop.
+   */
+  if (goat.status === "PAUSED") {
+    return { status: "paused", nextAt: null };
+  }
+
+  /**
+   * Is a run already in flight? The in-memory registry is authoritative: an
+   * actor exists and has set isEvaluating when a run was accepted but has not
+   * yet returned.
+   */
+  const actor = durableObjectRegistry.get(goatId);
+  if (actor?.isEvaluating()) {
+    return { status: "evaluating", nextAt: null, reason: "already evaluating" };
+  }
 
   const verdict = scheduler.decide(goatId, {
     goatId,
@@ -1414,31 +1687,54 @@ async function runScheduledWake(
   });
 
   if (verdict.allowed === false) {
-    console.log(
-      `[scheduler] suppressed wake for ${goatId}: ${verdict.reason}`,
-    );
-    return null;
+    console.log(`[scheduler] suppressed wake for ${goatId}: ${verdict.reason}`);
+    return { status: "duplicate", nextAt: null, reason: verdict.reason };
   }
 
-  const runtime = durableObjectRegistry.get(goatId)
-    ? durableObjectRegistry.get(goatId)!
-    : await ensureGoatRuntime(goat);
-
-  const state = await runtime.wake(
-    reason,
-    'SCHEDULED',
-    goat.markets[0],
-  );
-
-  // Re-arm for the following interval, based on when this run actually
-  // finished rather than when it was scheduled, so a slow run does not cause
-  // the interval to drift earlier each cycle.
-  const refreshed = await persistence.goats.get(goatId);
-  if (refreshed) await syncSchedule(refreshed);
-
-  return state;
+  return { status: "allowed", nextAt: isoNow(computeNextWakeAt(goat)) };
 }
 
+/**
+ * Run a scheduled reasoning run in the background, detached from the alarm's
+ * request/response.
+ *
+ * The decision (including eventId consumption) was already made before the
+ * alarm's HTTP response was sent, so this function never calls decide()
+ * again. It does exactly what runScheduledWake did before: market context,
+ * deterministic indicators, news, reasoning, SignalGate, thesis and signal
+ * persistence, and the Telegram notification. It runs inside ctx.waitUntil so
+ * the Vercel function stays alive until it finishes - the notification and
+ * its own 5-attempt delivery retry are kept alive even after the alarm has acked.
+ */
+async function runScheduledWakeInBackground(
+  goatId: string,
+  reason: string,
+): Promise<void> {
+  try {
+    const goat = await persistence.goats.get(goatId);
+    if (!goat || goat.status === "PAUSED") return; // user paused mid-flight
+
+    const runtime = durableObjectRegistry.get(goatId)
+      ? durableObjectRegistry.get(goatId)!
+      : await ensureGoatRuntime(goat);
+
+    await runtime.wake(reason, "SCHEDULED", goat.markets[0]);
+
+    /**
+     * The schedule was already anchored to the start of this run when the
+     * alarm acked, so there is nothing to republish here. That is exactly
+     * "every N minutes" semantics: a fixed cadence from when the run started,
+     * not a drifting cadence from when it finished.
+     */
+  } catch (err) {
+    /**
+     * A background failure must never crash the instance. Failures are recorded
+     * inside the GOAT's runtime state (lastError) and in the wake-event log;
+     * the next scheduled cycle retries automatically.
+     */
+    console.error(`[scheduler] background wake for ${goatId} failed:`, err);
+  }
+}
 function isoNow(ms: number | null): string | null {
   return ms === null ? null : new Date(ms).toISOString();
 }
@@ -1460,52 +1756,64 @@ function isoNow(ms: number | null): string | null {
  * only a satisfied condition escalates to a full reasoning wake. Returns the
  * next check time so the caller can re-anchor its schedule.
  */
-async function runTrackerCheck(
+/**
+ * Decide whether a tracker check should run, using state reads only, without
+ * doing the deterministic evaluation.
+ *
+ * A PAUSED GOAT does not consume the tracker's eventId, so the DO will
+ * re-arm it. If a reasoning run is already in flight, the deterministic check
+ * is skipped for this cycle: the reasoner will consume the same market state
+ * when it runs, and we avoid hammering the reasoning path from the (up to
+ * 4x/hour) tracker cadence. The eventId is not consumed either, so the DO
+ * will re-arm this check.
+ *
+ * Market validity is also asserted here: a GOAT persisted against a retired
+ * symbol must not be queried forever on a 60-second timer.
+ */
+async function decideTrackerCheck(
   goatId: string,
   eventId: string,
-): Promise<{ handled: boolean; reason?: string; trackerFired: boolean; nextAt: string | null }> {
+): Promise<{ handled: boolean; nextAt: string | null; reason?: string }> {
   const goat = await persistence.goats.get(goatId);
   if (!goat) {
-    return { handled: false, reason: 'not_found', trackerFired: false, nextAt: null };
+    return { handled: false, nextAt: null, reason: "not_found" };
+  }
+
+  if (goat.status === "PAUSED") {
+    return { handled: false, nextAt: null, reason: "paused" };
+  }
+
+  const actor = durableObjectRegistry.get(goatId);
+  if (actor?.isEvaluating()) {
+    return {
+      handled: false,
+      nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+      reason: "already evaluating",
+    };
   }
 
   const verdict = scheduler.decide(goatId, {
     goatId,
     eventId,
     generationId: scheduleGeneration(goat),
-    reason: 'Scheduled tracker check',
+    reason: "Scheduled tracker check",
     firedAt: Date.now(),
   });
 
   if (verdict.allowed === false) {
     return {
       handled: false,
-      reason: verdict.reason,
-      trackerFired: false,
       nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+      reason: verdict.reason,
     };
   }
 
-  /**
-   * NEVER ASK THE STORE FOR A MARKET THE VENUE DOES NOT LIST.
-   *
-   * `GoatDurableObject.attachMarketListeners` has this guard, but it only runs
-   * when a runtime attaches — and this function reads the store DIRECTLY,
-   * bypassing that path entirely. Without the guard a GOAT persisted against
-   * a retired symbol (the `EUR/USD` case) makes every scheduled tracker check
-   * a real provider round trip that can only fail, on a 60-second timer,
-   * forever.
-   *
-   * The GOAT is migrated rather than merely skipped, so the fix survives the
-   * next boot instead of re-arming itself on restart.
-   */
   const market = await resolveGoatMarket(goat);
   if (!market) {
     return {
       handled: false,
-      reason: 'market not listed by provider',
-      trackerFired: false,
       nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+      reason: "market not listed by provider",
     };
   }
 
@@ -1514,60 +1822,89 @@ async function runTrackerCheck(
     normaliseTrackingTimeframe(goat.timeframe),
   );
 
-  // Degraded data must not satisfy a tracker: a stale price is not a signal.
   if (!isUsableMarketState(state) || !state.quote) {
     return {
       handled: false,
-      reason: `market data ${state.status}`,
-      trackerFired: false,
       nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+      reason: `market data ${state.status}`,
     };
   }
 
-  const runtime = await ensureGoatRuntime(goat);
-  const trackerFired = await runtime.evaluateTrackersNow(state);
-
-  const refreshed = await persistence.goats.get(goatId);
-
-  return {
-    handled: true,
-    trackerFired,
-    nextAt: isoOrNull(
-      refreshed
-        ? computeNextTrackerCheckAt(refreshed)
-        : computeNextTrackerCheckAt(goat),
-    ),
-  };
+  return { handled: true, nextAt: isoOrNull(computeNextTrackerCheckAt(goat)) };
 }
 
 /**
- * Deterministic tracker check, called by the Durable Object on the GOAT's
- * tracking cadence. See runTrackerCheck: it spends no AI unless a condition
- * actually fires.
+ * Run a tracker check in the background, detached from the alarm's
+ * request/response. The decision (including market validity and the eventId)
+ * was already made before the alarm acked.
  */
-apiRouter.post('/internal/check-trackers', handle(async (req, res) => {
-  const expected = process.env.DURABLE_SCHEDULER_SECRET?.trim();
-  const provided = req.header('x-scheduler-secret') ?? '';
+async function runTrackerCheckInBackground(goatId: string): Promise<void> {
+  try {
+    const goat = await persistence.goats.get(goatId);
+    if (!goat || goat.status === "PAUSED") return;
 
-  if (!expected || provided !== expected) {
-    return fail(res, 401, 'UNAUTHORISED', 'Invalid scheduler secret.');
+    const market = await resolveGoatMarket(goat);
+    if (!market) return;
+
+    const state = await marketStateStore.getState(
+      market,
+      normaliseTrackingTimeframe(goat.timeframe),
+    );
+    if (!isUsableMarketState(state) || !state.quote) return;
+
+    const runtime = durableObjectRegistry.get(goatId)
+      ? durableObjectRegistry.get(goatId)!
+      : await ensureGoatRuntime(goat);
+
+    await runtime.evaluateTrackersNow(state);
+  } catch (err) {
+    console.error(
+      `[scheduler] background tracker check for ${goatId} failed:`,
+      err,
+    );
   }
+}
 
-  const { goatId, eventId } = req.body ?? {};
+apiRouter.post(
+  "/internal/check-trackers",
+  handle(async (req, res) => {
+    const expected = process.env.DURABLE_SCHEDULER_SECRET?.trim();
+    const provided = req.header("x-scheduler-secret") ?? "";
 
-  if (
-    typeof goatId !== 'string' ||
-    typeof eventId !== 'string' ||
-    !goatId ||
-    !eventId
-  ) {
-    return fail(res, 400, 'INVALID_INPUT', 'goatId and eventId are required.');
-  }
+    if (!expected || provided !== expected) {
+      return fail(res, 401, "UNAUTHORISED", "Invalid scheduler secret.");
+    }
 
-  const result = await runTrackerCheck(goatId, eventId);
+    const { goatId, eventId } = req.body ?? {};
 
-  res.json({ ...result, dataMode: marketProvider.dataMode });
-}));
+    if (
+      typeof goatId !== "string" ||
+      typeof eventId !== "string" ||
+      !goatId ||
+      !eventId
+    ) {
+      return fail(
+        res,
+        400,
+        "INVALID_INPUT",
+        "goatId and eventId are required.",
+      );
+    }
+
+    const decision = await decideTrackerCheck(goatId, eventId);
+
+    res.json({ ...decision, dataMode: marketProvider.dataMode });
+
+    if (decision.handled) {
+      /**
+       * The deterministic check runs in the background via ctx.waitUntil so the
+       * alarm's callback never waits on a market-data round trip or a runtime
+       * attachment - the ack arrives while the DO still has budget left.
+       */
+      waitUntil(runTrackerCheckInBackground(goatId));
+    }
+  }),
+);
 
 function isoOrNull(ms: number | null): string | null {
   return ms === null ? null : new Date(ms).toISOString();
@@ -1579,50 +1916,65 @@ function isoOrNull(ms: number | null): string | null {
  * Authenticated with a shared secret (the Worker cannot present a Firebase ID
  * token — it has no user session and cannot run firebase-admin).
  */
-apiRouter.post('/internal/wake', handle(async (req, res) => {
-  const expected = process.env.DURABLE_SCHEDULER_SECRET?.trim();
-  const provided =
-    req.header('x-scheduler-secret') ?? '';
+apiRouter.post(
+  "/internal/wake",
+  handle(async (req, res) => {
+    const expected = process.env.DURABLE_SCHEDULER_SECRET?.trim();
+    const provided = req.header("x-scheduler-secret") ?? "";
 
-  if (!expected || provided !== expected) {
-    return fail(res, 401, 'UNAUTHORISED', 'Invalid scheduler secret.');
-  }
+    if (!expected || provided !== expected) {
+      return fail(res, 401, "UNAUTHORISED", "Invalid scheduler secret.");
+    }
 
-  const { goatId, eventId, reason } = req.body ?? {};
+    const { goatId, eventId, reason } = req.body ?? {};
 
-  if (
-    typeof goatId !== 'string' ||
-    typeof eventId !== 'string' ||
-    !goatId ||
-    !eventId
-  ) {
-    return fail(res, 400, 'INVALID_INPUT', 'goatId and eventId are required.');
-  }
+    if (
+      typeof goatId !== "string" ||
+      typeof eventId !== "string" ||
+      !goatId ||
+      !eventId
+    ) {
+      return fail(
+        res,
+        400,
+        "INVALID_INPUT",
+        "goatId and eventId are required.",
+      );
+    }
 
-  const state = await runScheduledWake(
-    goatId,
-    eventId,
-    typeof reason === 'string' && reason.trim()
-      ? reason.trim().slice(0, 200)
-      : 'Scheduled analysis (durable alarm)',
-  );
+    const wakeReason =
+      typeof reason === "string" && reason.trim()
+        ? reason.trim().slice(0, 200)
+        : "Scheduled analysis (durable alarm)";
 
-  const refreshed = await persistence.goats.get(goatId);
+    const decision = await decideScheduledWake(goatId, eventId, wakeReason);
 
-  res.json({
-    handled: state !== null,
-    status: state?.status ?? null,
+    if (decision.status === "not_found") {
+      return fail(res, 404, "NOT_FOUND", `GOAT ${goatId} not found`);
+    }
+
     /**
-     * The DO re-arms from THIS value, so the interval stays anchored to when
-     * the run actually finished instead of drifting by one alarm latency per
-     * cycle.
+     * Ack the alarm in tens of milliseconds. The multi-second reasoning run
+     * executes in the background via ctx.waitUntil, which keeps the Vercel
+     * function alive until the notification and its 5-attempt delivery retry
+     * are done - even if the run takes longer than the DO's 10-second callback
+     * budget.
+     *
+     * The DO re-arms from this value: the interval is anchored to the start of
+     * this run, which is exactly "every N minutes" semantics.
      */
-    nextAt: isoNow(
-      refreshed ? computeNextWakeAt(refreshed) : null,
-    ),
-    dataMode: marketProvider.dataMode,
-  });
-}));
+    res.json({
+      handled: decision.status === "allowed",
+      status: decision.status === "allowed" ? "scheduled" : decision.status,
+      nextAt: decision.nextAt,
+      dataMode: marketProvider.dataMode,
+    });
+
+    if (decision.status === "allowed") {
+      waitUntil(runScheduledWakeInBackground(goatId, wakeReason));
+    }
+  }),
+);
 
 /* ------------------------------------------------------------------ */
 /* Internal market-data routes                                         */
@@ -1639,10 +1991,10 @@ apiRouter.post('/internal/wake', handle(async (req, res) => {
  */
 function internalAuth(req: Request, res: Response): boolean {
   const expected = process.env.DURABLE_SCHEDULER_SECRET?.trim();
-  const provided = req.header('x-scheduler-secret') ?? '';
+  const provided = req.header("x-scheduler-secret") ?? "";
 
   if (!expected || provided !== expected) {
-    fail(res, 401, 'UNAUTHORISED', 'Invalid scheduler secret.');
+    fail(res, 401, "UNAUTHORISED", "Invalid scheduler secret.");
     return false;
   }
 
@@ -1658,31 +2010,34 @@ function internalAuth(req: Request, res: Response): boolean {
  * suppression happens on the event id, so the same candle delivered twice wakes
  * nothing twice.
  */
-apiRouter.post('/internal/market-event', handle(async (req, res) => {
-  if (!internalAuth(req, res)) return;
+apiRouter.post(
+  "/internal/market-event",
+  handle(async (req, res) => {
+    if (!internalAuth(req, res)) return;
 
-  const event = validateMarketEvent(req.body);
-  if (!event) {
-    return fail(
-      res,
-      400,
-      'INVALID_EVENT',
-      'Market event failed validation or its id did not match its payload.',
-    );
-  }
+    const event = validateMarketEvent(req.body);
+    if (!event) {
+      return fail(
+        res,
+        400,
+        "INVALID_EVENT",
+        "Market event failed validation or its id did not match its payload.",
+      );
+    }
 
-  const result = await routeMarketEvent(event);
+    const result = await routeMarketEvent(event);
 
-  res.json({
-    handled: true,
-    eventId: event.eventId,
-    subscribersConsidered: result.considered,
-    wokeGoats: result.woke,
-    ignoredAsDuplicate: result.duplicates,
-    ignoredAsIrrelevant: result.irrelevant,
-    filteredAsStopped: result.stopped,
-  });
-}));
+    res.json({
+      handled: true,
+      eventId: event.eventId,
+      subscribersConsidered: result.considered,
+      wokeGoats: result.woke,
+      ignoredAsDuplicate: result.duplicates,
+      ignoredAsIrrelevant: result.irrelevant,
+      filteredAsStopped: result.stopped,
+    });
+  }),
+);
 
 /**
  * Reconciles a market-data runtime: rebuilds this process's view of
@@ -1692,88 +2047,94 @@ apiRouter.post('/internal/market-event', handle(async (req, res) => {
  * is destroyed on every cold start. Without this, a fresh container would wake
  * nobody until each GOAT happened to be touched again.
  */
-apiRouter.post('/internal/reconcile', handle(async (req, res) => {
-  if (!internalAuth(req, res)) return;
+apiRouter.post(
+  "/internal/reconcile",
+  handle(async (req, res) => {
+    if (!internalAuth(req, res)) return;
 
-  /**
-   * CRON RECONCILIATION
-   *
-   * The Cloudflare Worker's `scheduled()` handler calls this on a timer. It
-   * re-publishes every non-paused GOAT's authoritative schedule.
-   *
-   * This is the recovery half of `GoatSchedulerDO`'s deliberate choice not to
-   * re-arm after a failed delivery. That choice prevents a hot retry loop
-   * against a down app; without this endpoint it also meant one transient
-   * failure stopped a GOAT's schedule permanently — the GOAT reported healthy
-   * and simply never woke again.
-   *
-   * Safe to call as often as the cron fires: `DurableObjectScheduler.sync()`
-   * treats a re-publish of an unchanged generation as a no-op, and a DO that
-   * already holds the same generation answers `unchanged: true`.
-   */
-  const goats = await persistence.goats.listAll();
+    /**
+     * CRON RECONCILIATION
+     *
+     * The Cloudflare Worker's `scheduled()` handler calls this on a timer. It
+     * re-publishes every non-paused GOAT's authoritative schedule.
+     *
+     * This is the recovery half of `GoatSchedulerDO`'s deliberate choice not to
+     * re-arm after a failed delivery. That choice prevents a hot retry loop
+     * against a down app; without this endpoint it also meant one transient
+     * failure stopped a GOAT's schedule permanently — the GOAT reported healthy
+     * and simply never woke again.
+     *
+     * Safe to call as often as the cron fires: `DurableObjectScheduler.sync()`
+     * treats a re-publish of an unchanged generation as a no-op, and a DO that
+     * already holds the same generation answers `unchanged: true`.
+     */
+    const goats = await persistence.goats.listAll();
 
-  let republished = 0;
-  let failed = 0;
+    let republished = 0;
+    let failed = 0;
 
-  for (const goat of goats) {
-    // syncSchedule never throws, so a failure is reported through the count.
-    await syncSchedule(goat);
-    if (scheduler.health().lastError) failed += 1;
-    else republished += 1;
-  }
-
-  /**
-   * Rebuild the market subscription table in the same pass.
-   *
-   * The subscription table is in-memory, so a Vercel cold start leaves it
-   * empty: every market event would be dropped as irrelevant until each GOAT
-   * happened to be touched again. Reconciling schedules without subscriptions
-   * would fix the alarms and leave events still dead.
-   */
-  const runtime = await reconcileRuntime();
-
-  res.json({
-    handled: true,
-    goatsConsidered: goats.length,
-    republished,
-    failed,
-    subscriptionsRestored: runtime.subscriptions,
-    durableSubscriptionsSynced: runtime.durableSynced,
-    scheduler: scheduler.health(),
-  });
-}));
-
-apiRouter.post('/internal/market-sync', handle(async (_req, res) => {
-  if (!internalAuth(_req, res)) return;
-
-  const goats = await persistence.goats.listAll();
-  const subscriptions: IngestionSubscription[] = [];
-
-  for (const goat of goats) {
-    // A stopped GOAT is never subscribed: dormancy waits for events, stopping
-    // means it does not run its workflow at all.
-    if (goat.status === 'PAUSED') continue;
-
-    for (const instrument of goat.markets) {
-      subscriptions.push({
-        subscriberId: goat.id,
-        instrument,
-        eventTypes: ['CANDLE_FINALIZED', 'SESSION_FINALIZED', 'DATA_STALE'],
-      });
+    for (const goat of goats) {
+      // syncSchedule never throws, so a failure is reported through the count.
+      await syncSchedule(goat);
+      if (scheduler.health().lastError) failed += 1;
+      else republished += 1;
     }
-  }
 
-  const restored = marketIngestion.rebuildSubscriptions(subscriptions);
-  const durableSynced = await syncDurableSubscriptions(subscriptions);
+    /**
+     * Rebuild the market subscription table in the same pass.
+     *
+     * The subscription table is in-memory, so a Vercel cold start leaves it
+     * empty: every market event would be dropped as irrelevant until each GOAT
+     * happened to be touched again. Reconciling schedules without subscriptions
+     * would fix the alarms and leave events still dead.
+     */
+    const runtime = await reconcileRuntime();
 
-  res.json({
-    restored,
-    durableSynced,
-    byPartition: marketIngestion.subscriptionCounts(),
-    dataMode: marketProvider.dataMode,
-  });
-}));
+    res.json({
+      handled: true,
+      goatsConsidered: goats.length,
+      republished,
+      failed,
+      subscriptionsRestored: runtime.subscriptions,
+      durableSubscriptionsSynced: runtime.durableSynced,
+      scheduler: scheduler.health(),
+    });
+  }),
+);
+
+apiRouter.post(
+  "/internal/market-sync",
+  handle(async (_req, res) => {
+    if (!internalAuth(_req, res)) return;
+
+    const goats = await persistence.goats.listAll();
+    const subscriptions: IngestionSubscription[] = [];
+
+    for (const goat of goats) {
+      // A stopped GOAT is never subscribed: dormancy waits for events, stopping
+      // means it does not run its workflow at all.
+      if (goat.status === "PAUSED") continue;
+
+      for (const instrument of goat.markets) {
+        subscriptions.push({
+          subscriberId: goat.id,
+          instrument,
+          eventTypes: ["CANDLE_FINALIZED", "SESSION_FINALIZED", "DATA_STALE"],
+        });
+      }
+    }
+
+    const restored = marketIngestion.rebuildSubscriptions(subscriptions);
+    const durableSynced = await syncDurableSubscriptions(subscriptions);
+
+    res.json({
+      restored,
+      durableSynced,
+      byPartition: marketIngestion.subscriptionCounts(),
+      dataMode: marketProvider.dataMode,
+    });
+  }),
+);
 
 /**
  * Observability for the shared market-data layer.
@@ -1782,40 +2143,53 @@ apiRouter.post('/internal/market-sync', handle(async (_req, res) => {
  * subscription counts and durable-runtime health. Contains no secrets and no
  * market payloads, so it is safe to poll.
  */
-apiRouter.get('/markets/ingestion', handle(async (_req, res) => {
-  res.json({
-    ...marketIngestion.health(),
-    durableRuntime: durableMarketDataClient.describe(),
-  });
-}));
+apiRouter.get(
+  "/markets/ingestion",
+  handle(async (_req, res) => {
+    res.json({
+      ...marketIngestion.health(),
+      durableRuntime: durableMarketDataClient.describe(),
+    });
+  }),
+);
 
 /**
  * Session geometry for an instrument, with the UTC offset that applies RIGHT
  * NOW. Lets an operator verify the DST handling is correct in production rather
  * than trusting the source.
  */
-apiRouter.get('/markets/session', handle(async (req, res) => {
-  const instrument = String(req.query.symbol ?? '').trim().toUpperCase();
+apiRouter.get(
+  "/markets/session",
+  handle(async (req, res) => {
+    const instrument = String(req.query.symbol ?? "")
+      .trim()
+      .toUpperCase();
 
-  if (!instrument) {
-    return fail(res, 400, 'INVALID_INPUT', 'symbol is required.');
-  }
+    if (!instrument) {
+      return fail(res, 400, "INVALID_INPUT", "symbol is required.");
+    }
 
-  if (!/^[A-Z0-9/_:-]{1,64}$/.test(instrument)) {
-    return fail(res, 400, 'INVALID_INPUT', 'symbol must be a known instrument id (HIP-3 symbols like xyz:GOLD are allowed).');
-  }
+    if (!/^[A-Z0-9/_:-]{1,64}$/.test(instrument)) {
+      return fail(
+        res,
+        400,
+        "INVALID_INPUT",
+        "symbol must be a known instrument id (HIP-3 symbols like xyz:GOLD are allowed).",
+      );
+    }
 
-  res.json({
-    ...describeSessionSpec(instrument, Date.now()),
-    resolved: resolveSession(instrument, Date.now()),
-  });
-}));
+    res.json({
+      ...describeSessionSpec(instrument, Date.now()),
+      resolved: resolveSession(instrument, Date.now()),
+    });
+  }),
+);
 
 /* ------------------------------------------------------------------ */
 /* Public routes                                                       */
 /* ------------------------------------------------------------------ */
 
-apiRouter.get('/health', (_req, res) => {
+apiRouter.get("/health", (_req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
 });
 
@@ -1827,7 +2201,7 @@ apiRouter.get('/health', (_req, res) => {
 apiRouter.use((req: Request, res: Response, next: NextFunction) => {
   // statusCode is still 200 at this point, so the listener must be attached
   // unconditionally and checked on 'finish'.
-  res.on('finish', () => {
+  res.on("finish", () => {
     if (res.statusCode < 400) return;
     console.warn(
       `[api] ${res.statusCode} ${req.method} ${req.originalUrl}` +
@@ -1838,7 +2212,7 @@ apiRouter.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-apiRouter.get('/settings/status', async (_req, res) => {
+apiRouter.get("/settings/status", async (_req, res) => {
   const mode = resolveAuthMode();
   const symbols = await marketProvider.getSymbols();
 
@@ -1866,7 +2240,7 @@ apiRouter.get('/settings/status', async (_req, res) => {
        * is missing instead of leaving them guessing.
        */
       authNotConfiguredReason:
-        mode === 'firebase' ? undefined : getFirebaseAdminFailureReason(),
+        mode === "firebase" ? undefined : getFirebaseAdminFailureReason(),
     },
     /**
      * Shared market-state counters. `fetches` far below the number of GOATs
@@ -1890,19 +2264,17 @@ apiRouter.get('/settings/status', async (_req, res) => {
       stats: marketIngestion.stats,
       subscriptions: marketIngestion.subscriptionCounts(),
       subscriptionTotal: marketIngestion.totalSubscriptions(),
-      freshness: marketIngestion
-        .allFreshness()
-        .map((state) => ({
-          instrument: state.instrument,
-          partition: state.partition,
-          lastSuccessfulIngestAtMs: state.lastSuccessfulIngestAtMs,
-          lastCandleOpenTimeMs: state.lastCandleOpenTimeMs,
-          dataLagSeconds: state.dataLagSeconds,
-          consecutiveFailures: state.consecutiveFailures,
-          stale: state.stale,
-          marketOpen: state.marketOpen,
-          lastError: state.lastError,
-        })),
+      freshness: marketIngestion.allFreshness().map((state) => ({
+        instrument: state.instrument,
+        partition: state.partition,
+        lastSuccessfulIngestAtMs: state.lastSuccessfulIngestAtMs,
+        lastCandleOpenTimeMs: state.lastCandleOpenTimeMs,
+        dataLagSeconds: state.dataLagSeconds,
+        consecutiveFailures: state.consecutiveFailures,
+        stale: state.stale,
+        marketOpen: state.marketOpen,
+        lastError: state.lastError,
+      })),
     },
     /**
      * Durable market runtime (Cloudflare). `configured: false` is reported
@@ -1915,16 +2287,23 @@ apiRouter.get('/settings/status', async (_req, res) => {
      * other ephemeral hosts, where a "persisted" file would vanish on the next
      * cold start.
      */
-    filesystemPersistence: isEphemeralRuntime() ? 'disabled' : 'enabled',
+    filesystemPersistence: isEphemeralRuntime() ? "disabled" : "enabled",
     notifications: await notificationOutbox.health(),
   });
 });
 
 // Market data reads are public (paper feed, no secrets).
-apiRouter.get('/markets/symbols', handle(async (_req, res) => {
-  const symbols = await marketProvider.getSymbols();
-  res.json({ symbols, provider: marketProvider.name, dataMode: marketProvider.dataMode });
-}));
+apiRouter.get(
+  "/markets/symbols",
+  handle(async (_req, res) => {
+    const symbols = await marketProvider.getSymbols();
+    res.json({
+      symbols,
+      provider: marketProvider.name,
+      dataMode: marketProvider.dataMode,
+    });
+  }),
+);
 
 /**
  * Tracked majors first, then alphabetical.
@@ -1981,87 +2360,110 @@ function byTrackedThenSymbol(
  *   Tracked majors are sorted first so the default view leads with the liquid
  *   instruments rather than with whatever the venue happens to list first.
  */
-apiRouter.get('/markets/search', handle(async (req, res) => {
-  const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-  const rawLimit = Number(req.query.limit);
-  const limit = Math.min(
-    Math.max(Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 1000, 1),
-    2000,
-  );
-
-  const categoryParam = typeof req.query.category === 'string' ? req.query.category.trim() : '';
-  const category = MARKET_CATEGORIES.includes(categoryParam as CanonicalMarketCategory)
-    ? (categoryParam as CanonicalMarketCategory)
-    : null;
-
-  try {
-    const markets =
-      query.length > 0
-        ? await hyperliquidProvider.searchInstruments(query, limit)
-        : tradableMarkets(await hyperliquidProvider.listMarketsCached(HYPERLIQUID_DEXES));
-
-    const filtered = category
-      ? markets.filter((market) => market.category === category)
-      : markets;
-
-    const ordered = query.length > 0
-      ? filtered
-      : [...filtered].sort(byTrackedThenSymbol);
-
-    const limited = ordered.slice(0, limit);
-
-    res.json({
-      markets: limited,
-      total: limited.length,
-      /** How many matched BEFORE the cap, so a client can say "showing 500 of 900". */
-      matched: ordered.length,
-      query,
-      category: category ?? null,
-      provider: marketProvider.name,
-      dataMode: marketProvider.dataMode,
-    });
-  } catch (error) {
-    // Discovery is an ENRICHMENT of the app, not a prerequisite for it. A
-    // provider outage degrades search; it does not take down the product.
-    return fail(
-      res,
-      503,
-      'MARKET_DISCOVERY_UNAVAILABLE',
-      `Instrument search is temporarily unavailable: ${
-        error instanceof Error ? error.message : 'the provider could not be reached'
-      }`,
+apiRouter.get(
+  "/markets/search",
+  handle(async (req, res) => {
+    const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const rawLimit = Number(req.query.limit);
+    const limit = Math.min(
+      Math.max(Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 1000, 1),
+      2000,
     );
-  }
-}));
 
-apiRouter.get('/markets/quotes', handle(async (req, res) => {
-  const symbolsParam = req.query.symbols as string | undefined;
-  const requested = symbolsParam ? symbolsParam.split(',').slice(0, 50) : (await marketProvider.getSymbols()).map((s) => s.symbol);
-  const quotes = await marketProvider.getQuotes(requested);
-  res.json({ quotes, dataMode: marketProvider.dataMode });
-}));
+    const categoryParam =
+      typeof req.query.category === "string" ? req.query.category.trim() : "";
+    const category = MARKET_CATEGORIES.includes(
+      categoryParam as CanonicalMarketCategory,
+    )
+      ? (categoryParam as CanonicalMarketCategory)
+      : null;
 
-apiRouter.get('/markets/quote', handle(async (req, res) => {
-  // No default symbol: an omitted symbol is a client bug and must be reported
-  // as one, rather than silently fetching an instrument the venue may not list.
-  const symbol = (req.query.symbol as string) || '';
-  if (!symbol) {
-    return fail(res, 400, 'INVALID_INPUT', 'symbol is required.');
-  }
-  const quote = await marketProvider.getQuote(symbol);
-  res.json({ quote, dataMode: marketProvider.dataMode });
-}));
+    try {
+      const markets =
+        query.length > 0
+          ? await hyperliquidProvider.searchInstruments(query, limit)
+          : tradableMarkets(
+              await hyperliquidProvider.listMarketsCached(HYPERLIQUID_DEXES),
+            );
 
-apiRouter.get('/markets/candles', handle(async (req, res) => {
-  const symbol = (req.query.symbol as string) || '';
-  if (!symbol) {
-    return fail(res, 400, 'INVALID_INPUT', 'symbol is required.');
-  }
-  const timeframe = (req.query.timeframe as string) || '1h';
-  const count = Math.min(1000, Math.max(1, parseInt(req.query.count as string, 10) || 60));
-  const candles = await marketProvider.getCandles(symbol, timeframe, count);
-  res.json({ symbol, timeframe, candles, dataMode: marketProvider.dataMode });
-}));
+      const filtered = category
+        ? markets.filter((market) => market.category === category)
+        : markets;
+
+      const ordered =
+        query.length > 0 ? filtered : [...filtered].sort(byTrackedThenSymbol);
+
+      const limited = ordered.slice(0, limit);
+
+      res.json({
+        markets: limited,
+        total: limited.length,
+        /** How many matched BEFORE the cap, so a client can say "showing 500 of 900". */
+        matched: ordered.length,
+        query,
+        category: category ?? null,
+        provider: marketProvider.name,
+        dataMode: marketProvider.dataMode,
+      });
+    } catch (error) {
+      // Discovery is an ENRICHMENT of the app, not a prerequisite for it. A
+      // provider outage degrades search; it does not take down the product.
+      return fail(
+        res,
+        503,
+        "MARKET_DISCOVERY_UNAVAILABLE",
+        `Instrument search is temporarily unavailable: ${
+          error instanceof Error
+            ? error.message
+            : "the provider could not be reached"
+        }`,
+      );
+    }
+  }),
+);
+
+apiRouter.get(
+  "/markets/quotes",
+  handle(async (req, res) => {
+    const symbolsParam = req.query.symbols as string | undefined;
+    const requested = symbolsParam
+      ? symbolsParam.split(",").slice(0, 50)
+      : (await marketProvider.getSymbols()).map((s) => s.symbol);
+    const quotes = await marketProvider.getQuotes(requested);
+    res.json({ quotes, dataMode: marketProvider.dataMode });
+  }),
+);
+
+apiRouter.get(
+  "/markets/quote",
+  handle(async (req, res) => {
+    // No default symbol: an omitted symbol is a client bug and must be reported
+    // as one, rather than silently fetching an instrument the venue may not list.
+    const symbol = (req.query.symbol as string) || "";
+    if (!symbol) {
+      return fail(res, 400, "INVALID_INPUT", "symbol is required.");
+    }
+    const quote = await marketProvider.getQuote(symbol);
+    res.json({ quote, dataMode: marketProvider.dataMode });
+  }),
+);
+
+apiRouter.get(
+  "/markets/candles",
+  handle(async (req, res) => {
+    const symbol = (req.query.symbol as string) || "";
+    if (!symbol) {
+      return fail(res, 400, "INVALID_INPUT", "symbol is required.");
+    }
+    const timeframe = (req.query.timeframe as string) || "1h";
+    const count = Math.min(
+      1000,
+      Math.max(1, parseInt(req.query.count as string, 10) || 60),
+    );
+    const candles = await marketProvider.getCandles(symbol, timeframe, count);
+    res.json({ symbol, timeframe, candles, dataMode: marketProvider.dataMode });
+  }),
+);
 
 /* ------------------------------------------------------------------ */
 /* Telegram                                                            */
@@ -2116,7 +2518,7 @@ const telegramRateLimiter = new TelegramRateLimiter({
 });
 
 /** Commands that spend AI or change state, so their failure must be reported. */
-const TELEGRAM_EXPENSIVE_COMMANDS = new Set(['/trigger', '/analyse']);
+const TELEGRAM_EXPENSIVE_COMMANDS = new Set(["/trigger", "/analyse"]);
 
 /**
  * Resolves the OWNING USER for a chat.
@@ -2130,7 +2532,9 @@ const TELEGRAM_EXPENSIVE_COMMANDS = new Set(['/trigger', '/analyse']);
 async function ownerForChat(
   chatId: string,
 ): Promise<{ userId: string; chatId: string } | null> {
-  const profile = await persistence.profiles.findByTelegramChatId(String(chatId));
+  const profile = await persistence.profiles.findByTelegramChatId(
+    String(chatId),
+  );
   if (!profile) return null;
   return { userId: profile.id, chatId: String(chatId) };
 }
@@ -2186,7 +2590,9 @@ async function buildCommandResolution(
   userId: string,
 ): Promise<{
   resolution: TelegramResolution;
-  runtime: ReturnType<typeof ensureGoatRuntime> extends Promise<infer T> ? T : never;
+  runtime: ReturnType<typeof ensureGoatRuntime> extends Promise<infer T>
+    ? T
+    : never;
 }> {
   const runtime = await ensureGoatRuntime(goat);
   const skills = (await allSkillsFor(userId)).filter((s) =>
@@ -2214,8 +2620,11 @@ async function buildCommandResolution(
       },
       model: ctx.model,
       gateway: reasoningGateway,
-      requestAnalysis: async (reason: string) =>
-        buildAnalysisSummary(await runtime.wake(reason, 'MANUAL_REEVALUATE'), goat),
+      requestAnalysis: async (reason: string, targetMarket?: string) =>
+        buildAnalysisSummary(
+          await runtime.wake(reason, "MANUAL_REEVALUATE", targetMarket),
+          goat,
+        ),
     },
   };
 }
@@ -2233,32 +2642,39 @@ function buildAnalysisSummary(state: GoatRuntimeState, goat: FundGoat): string {
 
   const lines = [
     `🐐 *${goat.name.toUpperCase()} · FRESH ANALYSIS*`,
-    '',
+    "",
     `Schedule: ${describeSchedule(normaliseSchedule(goat.schedule))}`,
     `Reasoning: ${state.reasoningMode} · Data: ${state.dataSource}`,
-    '',
+    "",
   ];
 
   if (thesis) {
-    lines.push(`*Asset state:* ${thesis.summary ?? '—'}`);
+    lines.push(`*Asset state:* ${thesis.summary ?? "—"}`);
     if (thesis.assetState) lines.push(`${thesis.assetState.slice(0, 400)}`);
-    lines.push('');
+    lines.push("");
   }
 
-  lines.push(signal ? telegramService.formatSignalMessage(signal, goat.name) : 'No decision produced.');
-  lines.push('');
+  lines.push(
+    signal
+      ? telegramService.formatSignalMessage(signal, goat.name)
+      : "No decision produced.",
+  );
+  lines.push("");
   lines.push(`Conditions armed: ${state.trackers.length} · met: ${triggered}`);
   lines.push(
     state.trackers
-      .map((t) => `${t.isTriggered ? '✅' : '⏳'} ${t.formulaDescription ?? t.description}`)
-      .join('\n'),
+      .map(
+        (t) =>
+          `${t.isTriggered ? "✅" : "⏳"} ${t.formulaDescription ?? t.description}`,
+      )
+      .join("\n"),
   );
 
   if (state.lastError) {
     lines.push(`\n_Last error: ${state.lastError.slice(0, 200)}_`);
   }
 
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 /**
@@ -2275,7 +2691,10 @@ async function createProcessFromTelegram(
 ): Promise<{ ok: boolean; message: string }> {
   const owner = await ownerForChat(chatId);
   if (!owner) {
-    return { ok: false, message: 'This chat is not linked to a SIRGOAT account.' };
+    return {
+      ok: false,
+      message: "This chat is not linked to a SIRGOAT account.",
+    };
   }
 
   const trimmed = args.trim();
@@ -2283,8 +2702,8 @@ async function createProcessFromTelegram(
     return {
       ok: false,
       message:
-        'Usage: `/create <goal> <market> [timeframe]`\n' +
-        'Example: `/create wait for a London sweep on BTC 5m`',
+        "Usage: `/create <goal> <market> [timeframe]`\n" +
+        "Example: `/create wait for a London sweep on BTC 5m`",
     };
   }
 
@@ -2302,8 +2721,10 @@ async function createProcessFromTelegram(
     tokens.splice(-1, 1);
   }
 
-  const goal = tokens.join(' ').trim();
-  const instrument = String(market ?? '').trim().toUpperCase();
+  const goal = tokens.join(" ").trim();
+  const instrument = String(market ?? "")
+    .trim()
+    .toUpperCase();
 
   /**
    * The market is validated against the provider's own symbol list rather than
@@ -2318,8 +2739,11 @@ async function createProcessFromTelegram(
       ok: false,
       message:
         `I could not read that. Supported markets include: ` +
-        `${known.slice(0, 8).map((s) => s.symbol).join(', ')}.\n\n` +
-        'Usage: `/create <goal> <market> [1m|5m|15m|1h|4h]`',
+        `${known
+          .slice(0, 8)
+          .map((s) => s.symbol)
+          .join(", ")}.\n\n` +
+        "Usage: `/create <goal> <market> [1m|5m|15m|1h|4h]`",
     };
   }
 
@@ -2331,11 +2755,11 @@ async function createProcessFromTelegram(
     name,
     goal,
     markets: [match.symbol],
-    skillIds: ['skill_price_action'],
-    model: (await defaultModelFor(owner.userId)),
-    status: 'WATCHING',
-    schedule: { mode: 'TRACKERS', intervalMinutes: 60 },
-    timeframe: timeframe ?? '15m',
+    skillIds: ["skill_price_action"],
+    model: await defaultModelFor(owner.userId),
+    status: "WATCHING",
+    schedule: { mode: "TRACKERS", intervalMinutes: 60 },
+    timeframe: timeframe ?? "15m",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -2353,9 +2777,9 @@ async function createProcessFromTelegram(
    */
   const runtime = await ensureGoatRuntime(goat);
   void runtime
-    .wake('Created from Telegram', 'MANUAL_REEVALUATE', match.symbol)
+    .wake("Created from Telegram", "MANUAL_REEVALUATE", match.symbol)
     .catch((err) => {
-      console.error('[telegram] initial analysis failed:', err);
+      console.error("[telegram] initial analysis failed:", err);
     });
 
   return {
@@ -2364,203 +2788,377 @@ async function createProcessFromTelegram(
       `🐐 Created *${name}*\n\n` +
       `id: \`${goat.id}\`\n` +
       `market: ${match.symbol} · timeframe: ${goat.timeframe}\n\n` +
-      'First analysis is running. You will be alerted when a condition is met.\n' +
-      '_Use /pause ' + goat.id + ' to stop it._',
+      "First analysis is running. You will be alerted when a condition is met.\n" +
+      "_Use /pause " +
+      goat.id +
+      " to stop it._",
   };
 }
 
 /** The model a new process should use: the owner's, or a sane default. */
 async function defaultModelFor(userId: string): Promise<string> {
   const goats = await persistence.goats.listByUser(userId);
-  const existing = goats.find((g) => g.status !== 'PAUSED')?.model;
+  const existing = goats.find((g) => g.status !== "PAUSED")?.model;
   if (existing) return existing;
-  return 'openai/gpt-4o-mini';
+  return "openai/gpt-4o-mini";
 }
 
 /** Telegram webhook: secret-validated, payload-validated, deduplicated. */
-apiRouter.post('/telegram/webhook', handle(async (req, res) => {
-  /**
-   * THE WEBHOOK SECRET IS NOT OPTIONAL.
-   *
-   * It used to be checked only when `TELEGRAM_WEBHOOK_SECRET` was set, which
-   * means an unset secret produced an OPEN webhook: anyone who learned the URL
-   * could post a fake Telegram update and drive every linked user's processes.
-   *
-   * Each user's own bot is registered with a PER-BOT secret derived from the
-   * deployment secret (see `telegramWebhookSecretFor`), so all bots share one
-   * configured root and none of them is unauthenticated.
-   */
-  const rootSecret = resolveTelegramWebhookSecret();
-  if (!rootSecret) {
-    return fail(
-      res,
-      503,
-      'TELEGRAM_NOT_CONFIGURED',
-      'Telegram webhook is not configured on this server. Set TELEGRAM_WEBHOOK_SECRET.',
-    );
-  }
-
-  const provided = req.header('x-telegram-bot-api-secret-token') ?? '';
-  if (!timingSafeStringEqual(provided, rootSecret)) {
-    return fail(res, 401, 'UNAUTHORIZED_WEBHOOK', 'Invalid webhook secret.');
-  }
-
-  const update = req.body;
-  if (
-    typeof update !== 'object' ||
-    update === null ||
-    !('update_id' in (update as object))
-  ) {
-    return fail(res, 400, 'INVALID_UPDATE', 'Payload is not a valid Telegram update.');
-  }
-
-  const updateId = Number((update as { update_id: unknown }).update_id);
-  if (Number.isFinite(updateId) && !claimTelegramUpdate(updateId)) {
+apiRouter.post(
+  "/telegram/webhook",
+  handle(async (req, res) => {
     /**
-     * Already handled. Telegram only stops retrying on a 2xx, so acknowledging
-     * a duplicate is correct: re-running the command would spend AI again.
-     */
-    res.json({ handled: true, duplicate: true, updateId });
-    return;
-  }
-
-  const chatId = extractChatId(update);
-  if (chatId && !telegramRateLimiter.allow(chatId)) {
-    const retryAfter = telegramRateLimiter.retryAfterSeconds(chatId);
-    res.status(429).json({
-      error: {
-        code: 'RATE_LIMITED',
-        message: `Too many commands. Try again in ${retryAfter}s.`,
-        retryAfterSeconds: retryAfter,
-      },
-    });
-    return;
-  }
-
-  const result = await telegramService.processUpdate(update, {
-    /**
-     * Every command resolves its OWN user from the persisted chat mapping.
-     * There is no shared-credential path: an unlinked chat gets no token and
-     * therefore no reply, rather than being served by a platform-wide bot.
-     */
-    getBotTokenForUser: async (userId) =>
-      (await keyStore.getTelegramToken(userId)) ?? undefined,
-
-    listProcessesForChat: listOwnedProcesses,
-    createProcessForChat: createProcessFromTelegram,
-
-    /**
-     * Ownership is resolved through `getForUser`, so another user's process id
-     * behaves exactly like a nonexistent one. The message does not distinguish
-     * them, which would be a process-id oracle.
-     */
-    pauseProcessForChat: async (chatId, processId) => {
-      const owner = await ownerForChat(chatId);
-      if (!owner) return { ok: false, message: 'This chat is not linked.' };
-
-      const goat = await persistence.goats.getForUser(processId, owner.userId);
-      if (!goat) {
-        return { ok: false, message: `No process \`${processId}\` for your account.` };
-      }
-
-      const updated: FundGoat = { ...goat, status: 'PAUSED', updatedAt: new Date().toISOString() };
-      await persistence.goats.save(updated);
-      await syncSchedule(updated);
-      const runtime = await ensureGoatRuntime(updated);
-      runtime.pause();
-
-      return { ok: true, message: `⏸ Paused *${goat.name}* (\`${goat.id}\`).` };
-    },
-
-    resumeProcessForChat: async (chatId, processId) => {
-      const owner = await ownerForChat(chatId);
-      if (!owner) return { ok: false, message: 'This chat is not linked.' };
-
-      const goat = await persistence.goats.getForUser(processId, owner.userId);
-      if (!goat) {
-        return { ok: false, message: `No process \`${processId}\` for your account.` };
-      }
-
-      const updated: FundGoat = { ...goat, status: 'WATCHING', updatedAt: new Date().toISOString() };
-      await persistence.goats.save(updated);
-      await syncSchedule(updated);
-      const runtime = await ensureGoatRuntime(updated);
-      runtime.play();
-
-      return {
-        ok: true,
-        message: `▶️ Resumed *${goat.name}* (\`${goat.id}\`). Condition alerts are live again.`,
-      };
-    },
-
-    /**
-     * A controlled evaluation.
+     * THE WEBHOOK SECRET IS NOT OPTIONAL.
      *
-     * Explicit user intent, so it bypasses the schedule but NOT the runtime's
-     * own guards: a paused process still refuses, and the runtime's evaluation
-     * mutex means a concurrent scheduled wake cannot double-charge.
+     * It used to be checked only when `TELEGRAM_WEBHOOK_SECRET` was set, which
+     * means an unset secret produced an OPEN webhook: anyone who learned the URL
+     * could post a fake Telegram update and drive every linked user's processes.
+     *
+     * Each user's own bot is registered with a PER-BOT secret derived from the
+     * deployment secret (see `telegramWebhookSecretFor`), so all bots share one
+     * configured root and none of them is unauthenticated.
      */
-    triggerProcessForChat: async (chatId, processId) => {
-      const owner = await ownerForChat(chatId);
-      if (!owner) return { ok: false, message: 'This chat is not linked.' };
+    const rootSecret = resolveTelegramWebhookSecret();
+    if (!rootSecret) {
+      return fail(
+        res,
+        503,
+        "TELEGRAM_NOT_CONFIGURED",
+        "Telegram webhook is not configured on this server. Set TELEGRAM_WEBHOOK_SECRET.",
+      );
+    }
 
-      const goat = await persistence.goats.getForUser(processId, owner.userId);
-      if (!goat) {
-        return { ok: false, message: `No process \`${processId}\` for your account.` };
-      }
+    const provided = req.header("x-telegram-bot-api-secret-token") ?? "";
+    if (!timingSafeStringEqual(provided, rootSecret)) {
+      return fail(res, 401, "UNAUTHORIZED_WEBHOOK", "Invalid webhook secret.");
+    }
 
-      if (goat.status === 'PAUSED') {
-        return {
-          ok: false,
-          message: `*${goat.name}* is paused. Resume it first with /resume ${goat.id}.`,
-        };
-      }
+    const update = req.body;
+    if (
+      typeof update !== "object" ||
+      update === null ||
+      !("update_id" in (update as object))
+    ) {
+      return fail(
+        res,
+        400,
+        "INVALID_UPDATE",
+        "Payload is not a valid Telegram update.",
+      );
+    }
 
-      const { runtime } = await buildCommandResolution(goat, owner.userId);
+    const updateId = Number((update as { update_id: unknown }).update_id);
+    if (Number.isFinite(updateId) && !claimTelegramUpdate(updateId)) {
+      /**
+       * Already handled. Telegram only stops retrying on a 2xx, so acknowledging
+       * a duplicate is correct: re-running the command would spend AI again.
+       */
+      res.json({ handled: true, duplicate: true, updateId });
+      return;
+    }
 
-      void runtime
-        .wake('Triggered from Telegram', 'MANUAL_REEVALUATE', goat.markets[0])
-        .catch((err) => console.error('[telegram] trigger failed:', err));
+    const chatId = extractChatId(update);
+    if (chatId && !telegramRateLimiter.allow(chatId)) {
+      const retryAfter = telegramRateLimiter.retryAfterSeconds(chatId);
+      res.status(429).json({
+        error: {
+          code: "RATE_LIMITED",
+          message: `Too many commands. Try again in ${retryAfter}s.`,
+          retryAfterSeconds: retryAfter,
+        },
+      });
+      return;
+    }
 
-      return {
-        ok: true,
-        message: `🔄 Running an evaluation for *${goat.name}*… I'll message you if a condition is met.`,
-      };
-    },
+    const telegramUpdateHandlers: TelegramUpdateHandlers = {
+      /**
+       * Every command resolves its OWN user from the persisted chat mapping.
+       * There is no shared-credential path: an unlinked chat gets no token and
+       * therefore no reply, rather than being served by a platform-wide bot.
+       */
+      getBotTokenForUser: async (userId) =>
+        (await keyStore.getTelegramToken(userId)) ?? undefined,
 
-    resolveGoatForChat: async (chatId) => {
-      const owner = await ownerForChat(chatId);
-      if (!owner) return null;
-
-      const goats = await persistence.goats.listByUser(owner.userId);
-      if (goats.length === 0) return null;
+      listProcessesForChat: listOwnedProcesses,
+      createProcessForChat: createProcessFromTelegram,
 
       /**
-       * The ACTIVE process, or the first one. A user with several processes
-       * gets the one that is actually running, rather than whichever happened
-       * to be created first.
+       * Ownership is resolved through `getForUser`, so another user's process id
+       * behaves exactly like a nonexistent one. The message does not distinguish
+       * them, which would be a process-id oracle.
        */
-      const goat = goats.find((g) => g.status !== 'PAUSED') ?? goats[0];
-      const { resolution } = await buildCommandResolution(goat, owner.userId);
-      return resolution;
-    },
-  });
+      pauseProcessForChat: async (chatId, processId) => {
+        const owner = await ownerForChat(chatId);
+        if (!owner) return { ok: false, message: "This chat is not linked." };
 
-  res.json(result);
-}));
+        const goat = await persistence.goats.getForUser(
+          processId,
+          owner.userId,
+        );
+        if (!goat) {
+          return {
+            ok: false,
+            message: `No process \`${processId}\` for your account.`,
+          };
+        }
+
+        const updated: FundGoat = {
+          ...goat,
+          status: "PAUSED",
+          updatedAt: new Date().toISOString(),
+        };
+        await persistence.goats.save(updated);
+        await syncSchedule(updated);
+        const runtime = await ensureGoatRuntime(updated);
+        runtime.pause();
+
+        return {
+          ok: true,
+          message: `⏸ Paused *${goat.name}* (\`${goat.id}\`).`,
+        };
+      },
+
+      resumeProcessForChat: async (chatId, processId) => {
+        const owner = await ownerForChat(chatId);
+        if (!owner) return { ok: false, message: "This chat is not linked." };
+
+        const goat = await persistence.goats.getForUser(
+          processId,
+          owner.userId,
+        );
+        if (!goat) {
+          return {
+            ok: false,
+            message: `No process \`${processId}\` for your account.`,
+          };
+        }
+
+        const updated: FundGoat = {
+          ...goat,
+          status: "WATCHING",
+          updatedAt: new Date().toISOString(),
+        };
+        await persistence.goats.save(updated);
+        await syncSchedule(updated);
+        const runtime = await ensureGoatRuntime(updated);
+        runtime.play();
+
+        return {
+          ok: true,
+          message: `▶️ Resumed *${goat.name}* (\`${goat.id}\`). Condition alerts are live again.`,
+        };
+      },
+
+      /**
+       * A controlled evaluation.
+       *
+       * Explicit user intent, so it bypasses the schedule but NOT the runtime's
+       * own guards: a paused process still refuses, and the runtime's evaluation
+       * mutex means a concurrent scheduled wake cannot double-charge.
+       */
+      triggerProcessForChat: async (chatId, processId) => {
+        const owner = await ownerForChat(chatId);
+        if (!owner) return { ok: false, message: "This chat is not linked." };
+
+        const goat = await persistence.goats.getForUser(
+          processId,
+          owner.userId,
+        );
+        if (!goat) {
+          return {
+            ok: false,
+            message: `No process \`${processId}\` for your account.`,
+          };
+        }
+
+        if (goat.status === "PAUSED") {
+          return {
+            ok: false,
+            message: `*${goat.name}* is paused. Resume it first with /resume ${goat.id}.`,
+          };
+        }
+
+        const { runtime } = await buildCommandResolution(goat, owner.userId);
+
+        void runtime
+          .wake("Triggered from Telegram", "MANUAL_REEVALUATE", goat.markets[0])
+          .catch((err) => console.error("[telegram] trigger failed:", err));
+
+        return {
+          ok: true,
+          message: `🔄 Running an evaluation for *${goat.name}*… I'll message you if a condition is met.`,
+        };
+      },
+
+      resolveGoatForChat: async (chatId) => {
+        const owner = await ownerForChat(chatId);
+        if (!owner) return null;
+
+        const goats = await persistence.goats.listByUser(owner.userId);
+        if (goats.length === 0) return null;
+
+        /**
+         * The ACTIVE process, or the first one. A user with several processes
+         * gets the one that is actually running, rather than whichever happened
+         * to be created first.
+         */
+        const goat = goats.find((g) => g.status !== "PAUSED") ?? goats[0];
+        const { resolution } = await buildCommandResolution(goat, owner.userId);
+        return resolution;
+      },
+
+      /**
+       * Resolve a GOAT by its id for a chat (ownership enforced). The GOAT must
+       * belong to the chat's owner; returns null when that is not the case.
+       */
+      resolveGoatByIdForChat: async (chatId, goatId) => {
+        const owner = await ownerForChat(chatId);
+        if (!owner) return null;
+
+        const goats = await persistence.goats.listByUser(owner.userId);
+        const goat = goats.find((g) => g.id === goatId);
+        if (!goat) return null;
+
+        return {
+          resolution: (await buildCommandResolution(goat, owner.userId))
+            .resolution,
+          goat,
+        };
+      },
+
+      /**
+       * Apply a schedule to a specific GOAT for a chat.
+       */
+      changeScheduleForChat: async (chatId, goatId, schedule) => {
+        const owner = await ownerForChat(chatId);
+        if (!owner) return { ok: false, message: "This chat is not linked." };
+
+        const goats = await persistence.goats.listByUser(owner.userId);
+        const goat = goats.find((g) => g.id === goatId);
+        if (!goat) {
+          return {
+            ok: false,
+            message: `No GOAT \`${goatId}\` for your account.`,
+          };
+        }
+
+        try {
+          const updated = await patchGoatScheduleFor(
+            owner.userId,
+            goatId,
+            schedule,
+          );
+          return {
+            ok: true,
+            message:
+              `🐐 *${updated.name}*\nschedule: *${describeSchedule(updated.schedule)}*\n` +
+              "_Analysis will run at the new cadence._",
+          };
+        } catch (err) {
+          console.error("[telegram] schedule change failed:", err);
+          return {
+            ok: false,
+            message: "Could not change the schedule. Try again later.",
+          };
+        }
+      },
+
+      /**
+       * Pause or resume a specific GOAT for a chat.
+       */
+      pauseGoatForChat: async (chatId, goatId) => {
+        const owner = await ownerForChat(chatId);
+        if (!owner) return { ok: false, message: "This chat is not linked." };
+
+        const goats = await persistence.goats.listByUser(owner.userId);
+        const goat = goats.find((g) => g.id === goatId);
+        if (!goat) {
+          return {
+            ok: false,
+            message: `No GOAT \`${goatId}\` for your account.`,
+          };
+        }
+
+        const pausing = goat.status !== "PAUSED";
+        try {
+          const updated = await setGoatStatusFor(owner.userId, goatId, pausing);
+          return {
+            ok: true,
+            message: pausing
+              ? `*${updated.name}* is paused. Resume it first with /resume ${updated.id}.`
+              : `▶️ Resumed *${updated.name}* (\`${updated.id}\`). Condition alerts are live again.`,
+          };
+        } catch (err) {
+          console.error("[telegram] status change failed:", err);
+          return {
+            ok: false,
+            message: "Could not change the status. Try again later.",
+          };
+        }
+      },
+
+      /**
+       * Run one analysis for a specific GOAT, optionally on another market.
+       * Market resolution is deferred to resolveMarketSymbol so the caller gets
+       * the chosen HIP-3 symbol.
+       */
+      requestAnalysisForChat: async (chatId, goatId, reason, targetMarket) => {
+        const resolved = await telegramUpdateHandlers.resolveGoatByIdForChat(
+          chatId,
+          goatId,
+        );
+        if (!resolved) {
+          throw new Error("This GOAT does not exist or is not accessible.");
+        }
+        const { resolution, goat } = resolved;
+        if (!resolution.requestAnalysis) {
+          throw new Error("Analysis is not available for this GOAT right now.");
+        }
+        const summary = await resolution.requestAnalysis(reason, targetMarket);
+        return summary;
+      },
+
+      /**
+       * Resolve a free-text market mention ('gold', 'aapl', 'xauusd') to a
+       * provider-listed HIP-3 symbol. Discovery is an enrichment path: if it is
+       * temporarily unavailable we do not block the request.
+       */
+      resolveMarketSymbol: async (symbol) => {
+        const query = symbol.replace(/\//g, "").toUpperCase();
+        try {
+          const results = await hyperliquidProvider.searchInstruments(query, 5);
+          const best = results.find((m) => !m.delisted);
+          if (!best) {
+            return null;
+          }
+          return { symbol: best.symbol, name: best.name };
+        } catch (err) {
+          console.error("[telegram] market search failed:", err);
+          return null;
+        }
+      },
+    };
+
+    const result = await telegramService.processUpdate(
+      update,
+      telegramUpdateHandlers,
+    );
+    res.json(result);
+  }),
+);
 
 /** Extracts a chat id from an update of any supported shape. */
 function extractChatId(update: unknown): string | null {
-  if (typeof update !== 'object' || update === null) return null;
+  if (typeof update !== "object" || update === null) return null;
   const u = update as Record<string, unknown>;
 
-  for (const key of ['message', 'edited_message', 'channel_post'] as const) {
+  for (const key of ["message", "edited_message", "channel_post"] as const) {
     const message = u[key];
-    if (typeof message !== 'object' || message === null) continue;
+    if (typeof message !== "object" || message === null) continue;
     const chat = (message as Record<string, unknown>).chat;
-    if (typeof chat !== 'object' || chat === null) continue;
+    if (typeof chat !== "object" || chat === null) continue;
     const id = (chat as Record<string, unknown>).id;
-    if (typeof id === 'number' || typeof id === 'string') return String(id);
+    if (typeof id === "number" || typeof id === "string") return String(id);
   }
 
   return null;
@@ -2595,21 +3193,21 @@ function resolveTelegramWebhookSecret(): string | null {
  */
 function resolvePublicAppOrigin(req: Request): string | null {
   const configured = process.env.APP_ORIGIN?.trim();
-  if (configured) return configured.replace(/\/+$/, '');
+  if (configured) return configured.replace(/\/+$/, "");
 
-  for (const key of ['VERCEL_PROJECT_PRODUCTION_URL', 'VERCEL_URL'] as const) {
+  for (const key of ["VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL"] as const) {
     const value = process.env[key]?.trim();
     if (value) {
-      return `https://${value.replace(/^https?:\/\//, '').replace(/\/+$/, '')}`;
+      return `https://${value.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
     }
   }
 
-  const headerOrigin = req.header('origin')?.trim();
+  const headerOrigin = req.header("origin")?.trim();
   if (headerOrigin && /^https:\/\//i.test(headerOrigin)) {
-    return headerOrigin.replace(/\/+$/, '');
+    return headerOrigin.replace(/\/+$/, "");
   }
 
-  const host = req.header('host')?.trim();
+  const host = req.header("host")?.trim();
   if (host && /^[A-Za-z0-9.-]+(:\d+)?$/.test(host)) {
     return `https://${host}`;
   }
@@ -2660,32 +3258,38 @@ function timingSafeStringEqual(a: string, b: string): boolean {
  * NEW record owned by the caller; there is no route that edits a template, so
  * hiding an edit button in the UI is not what enforces that.
  */
-apiRouter.get('/templates/goats', handle(async (_req, res) => {
-  res.json({
-    templates: SYSTEM_GOATS.map((goat) => ({
-      id: goat.id,
-      name: goat.name,
-      goal: goat.goal,
-      markets: goat.markets,
-      skillIds: goat.skillIds,
-      model: goat.model,
-      timeframe: goat.timeframe,
-      schedule: goat.schedule,
-      /**
-       * Explicit, so the UI never has to infer "these are examples" from the
-       * absence of a status field. These are unverified starting points, not
-       * performance claims.
-       */
-      isTemplate: true,
-      performsTrades: false,
-    })),
-  });
-}));
+apiRouter.get(
+  "/templates/goats",
+  handle(async (_req, res) => {
+    res.json({
+      templates: SYSTEM_GOATS.map((goat) => ({
+        id: goat.id,
+        name: goat.name,
+        goal: goat.goal,
+        markets: goat.markets,
+        skillIds: goat.skillIds,
+        model: goat.model,
+        timeframe: goat.timeframe,
+        schedule: goat.schedule,
+        /**
+         * Explicit, so the UI never has to infer "these are examples" from the
+         * absence of a status field. These are unverified starting points, not
+         * performance claims.
+         */
+        isTemplate: true,
+        performsTrades: false,
+      })),
+    });
+  }),
+);
 
 /** EXPLORE: system-owned skills. Public for the same reason as above. */
-apiRouter.get('/templates/skills', handle(async (_req, res) => {
-  res.json({ templates: SYSTEM_SKILLS.map(publicTemplateSkill) });
-}));
+apiRouter.get(
+  "/templates/skills",
+  handle(async (_req, res) => {
+    res.json({ templates: SYSTEM_SKILLS.map(publicTemplateSkill) });
+  }),
+);
 
 apiRouter.use(authMiddleware);
 
@@ -2700,186 +3304,213 @@ apiRouter.use(authMiddleware);
  * there is nothing here that a future refactor could accidentally start
  * returning.
  */
-apiRouter.get('/settings/keys', handle(async (req, res) => {
-  const user = requireUser(req);
+apiRouter.get(
+  "/settings/keys",
+  handle(async (req, res) => {
+    const user = requireUser(req);
 
-  const [openrouter, groq, propdao, telegram, vaultConfigured] = await Promise.all([
-    credentialVault.getCredentialStatus(user.uid, 'openrouter'),
-    credentialVault.getCredentialStatus(user.uid, 'groq'),
-    credentialVault.getCredentialStatus(user.uid, 'propdao'),
-    credentialVault.getCredentialStatus(user.uid, 'telegram'),
-    Promise.resolve(credentialVault.isConfigured()),
-  ]);
+    const [openrouter, groq, propdao, telegram, vaultConfigured] =
+      await Promise.all([
+        credentialVault.getCredentialStatus(user.uid, "openrouter"),
+        credentialVault.getCredentialStatus(user.uid, "groq"),
+        credentialVault.getCredentialStatus(user.uid, "propdao"),
+        credentialVault.getCredentialStatus(user.uid, "telegram"),
+        Promise.resolve(credentialVault.isConfigured()),
+      ]);
 
-  res.json({
-    /**
-     * False when a value is stored but is not a usable key shape, so the UI
-     * cannot claim "your key is saved" while every wake fails.
-     */
-    openRouterKeyConfigured: openrouter.configured && !/unreadable/.test(openrouter.maskedHint ?? ''),
-    openRouterKeyInvalid: Boolean(openrouter.maskedHint?.includes('unreadable')),
-    openRouterKeyHint: openrouter.maskedHint,
-    groqKeyConfigured: groq.configured && !/unreadable/.test(groq.maskedHint ?? ''),
-    propDaoKeyConfigured: propdao.configured && !/unreadable/.test(propdao.maskedHint ?? ''),
-    propDaoKeyHint: propdao.maskedHint,
-    telegramTokenConfigured: telegram.configured,
-    telegramTokenHint: telegram.maskedHint,
-    /**
-     * False means the vault cannot encrypt. Saving any credential will fail
-     * with a clear error rather than silently storing plaintext — the UI
-     * surfaces this so a deployment mistake is visible before a user tries.
-     */
-    encryptionAvailable: vaultConfigured,
-    /** True when the vault is running with a per-process ephemeral key:
-     * storage works for testing, but credentials are lost on restart. */
-    ephemeralVaultKey: vaultConfigured && credentialVault.isUsingEphemeralKey(),
-    serverKeyFallback: isPlausibleOpenRouterKey(
-      process.env.OPENROUTER_API_KEY,
-    ),
-  });
-}));
-
-apiRouter.post('/settings/keys', handle(async (req, res) => {
-  const user = requireUser(req);
-  const {
-    openRouterKey,
-    groqKey,
-    telegramToken,
-    telegramChatId,
-    provider,
-  } = req.body ?? {};
-
-  /**
-   * Provider choice is validated BEFORE any key is written.
-   *
-   * If the provider were saved first and the key then failed validation, the
-   * user would be left pointed at a provider with no credential — every wake
-   * falling back to DEMO, which looks like a working app producing no signals.
-   */
-  let nextProvider: AiProvider | undefined;
-  if (provider !== undefined && provider !== null && provider !== '') {
-    if (provider !== 'openrouter' && provider !== 'groq') {
-      return fail(res, 400, 'INVALID_PROVIDER', 'provider must be openrouter or groq.');
-    }
-    nextProvider = provider;
-  }
-
-  // Throws CredentialValidationError (surfaced as 400) on a bad shape.
-  const nextOpenRouterKey = normaliseOpenRouterKey(openRouterKey);
-  const nextGroqKey = normaliseGroqKey(groqKey).key;
-  const nextTelegramToken = normaliseTelegramToken(telegramToken);
-
-  if (nextProvider) {
-    await keyStore.setProvider?.(user.uid, nextProvider);
-    reasoningGateway.setProviderFor(user.uid, nextProvider);
-  }
-
-  /**
-   * SECRETS GO THROUGH THE VAULT.
-   *
-   * `saveCredential` validates shape, encrypts with AES-256-GCM and stores
-   * only the envelope. An explicit `null` CLEARS a credential; an absent field
-   * means "leave unchanged", which is the long-standing settings semantics.
-   *
-   * When the master key is absent this THROWS rather than falling back to
-   * plaintext. The user gets a 503 with the remediation, which is strictly
-   * better than a key written in the clear that looks saved.
-   */
-  try {
-    if (nextOpenRouterKey.key !== undefined) {
-      await credentialVault.saveCredential(user.uid, 'openrouter', nextOpenRouterKey.key);
-      // Drop the cached client so the next request uses the new credential.
-      reasoningGateway.invalidate(user.uid);
-    }
-
-    if (nextGroqKey !== undefined) {
-      await credentialVault.saveCredential(user.uid, 'groq', nextGroqKey);
-      reasoningGateway.invalidate(user.uid);
-    }
-
-    if (nextTelegramToken !== undefined) {
-      await credentialVault.saveCredential(user.uid, 'telegram', nextTelegramToken);
-    }
-
-    if (req.body?.propDaoApiKey !== undefined) {
-      const propDaoKey = normalisePropDaoKey(req.body.propDaoApiKey);
-      await credentialVault.saveCredential(user.uid, 'propdao', propDaoKey);
-    }
-  } catch (error) {
-    if (error instanceof CredentialValidationError) {
-      return fail(res, 400, 'INVALID_KEY', error.message);
-    }
-    if (error instanceof CredentialVaultError) {
-      return fail(res, 503, error.code, error.message);
-    }
-    throw error;
-  }
-
-  if (telegramChatId !== undefined && telegramChatId !== null) {
-    if (
-      typeof telegramChatId !== 'string' ||
-      !/^-?\d{1,20}$/.test(telegramChatId.trim())
-    ) {
-      return fail(res, 400, 'INVALID_KEY', 'telegramChatId must be a numeric Telegram chat id.');
-    }
-
-    /**
-     * A chat id may belong to exactly ONE account.
-     *
-     * Without this check, two users could claim the same chat id and each would
-     * then receive the other's signals: the second write silently reassigns the
-     * chat and the first user keeps a profile that no longer resolves.
-     */
-    const existing = await persistence.profiles.findByTelegramChatId(
-      telegramChatId.trim(),
-    );
-    if (existing && existing.id !== user.uid) {
-      return fail(
-        res,
-        409,
-        'CHAT_ID_IN_USE',
-        'That Telegram chat is already linked to another SIRGOAT account. ' +
-          'Unlink it there first, or use a different chat.',
-      );
-    }
-
-    const profile = (await persistence.profiles.get(user.uid)) ?? {
-      id: user.uid,
-      email: user.email ?? `${user.uid}@sirgoat.internal`,
-      displayName: 'SIRGOAT Trader',
-      telegramNotificationsEnabled: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await persistence.profiles.save({
-      ...profile,
-      telegramChatId: telegramChatId.trim(),
-      updatedAt: new Date().toISOString(),
+    res.json({
+      /**
+       * False when a value is stored but is not a usable key shape, so the UI
+       * cannot claim "your key is saved" while every wake fails.
+       */
+      openRouterKeyConfigured:
+        openrouter.configured &&
+        !/unreadable/.test(openrouter.maskedHint ?? ""),
+      openRouterKeyInvalid: Boolean(
+        openrouter.maskedHint?.includes("unreadable"),
+      ),
+      openRouterKeyHint: openrouter.maskedHint,
+      groqKeyConfigured:
+        groq.configured && !/unreadable/.test(groq.maskedHint ?? ""),
+      propDaoKeyConfigured:
+        propdao.configured && !/unreadable/.test(propdao.maskedHint ?? ""),
+      propDaoKeyHint: propdao.maskedHint,
+      telegramTokenConfigured: telegram.configured,
+      telegramTokenHint: telegram.maskedHint,
+      /**
+       * False means the vault cannot encrypt. Saving any credential will fail
+       * with a clear error rather than silently storing plaintext — the UI
+       * surfaces this so a deployment mistake is visible before a user tries.
+       */
+      encryptionAvailable: vaultConfigured,
+      /** True when the vault is running with a per-process ephemeral key:
+       * storage works for testing, but credentials are lost on restart. */
+      ephemeralVaultKey:
+        vaultConfigured && credentialVault.isUsingEphemeralKey(),
+      serverKeyFallback: isPlausibleOpenRouterKey(
+        process.env.OPENROUTER_API_KEY,
+      ),
     });
-  }
+  }),
+);
 
-  const activeProvider = await reasoningGateway.providerFor(user.uid);
+apiRouter.post(
+  "/settings/keys",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const { openRouterKey, groqKey, telegramToken, telegramChatId, provider } =
+      req.body ?? {};
 
-  // Status only. No secret is echoed, so a client that intercepts the response
-  // still learns nothing about the stored value.
-  const [openrouterStatus, groqStatus, propdaoStatus] = await Promise.all([
-    credentialVault.getCredentialStatus(user.uid, 'openrouter'),
-    credentialVault.getCredentialStatus(user.uid, 'groq'),
-    credentialVault.getCredentialStatus(user.uid, 'propdao'),
-  ]);
+    /**
+     * Provider choice is validated BEFORE any key is written.
+     *
+     * If the provider were saved first and the key then failed validation, the
+     * user would be left pointed at a provider with no credential — every wake
+     * falling back to DEMO, which looks like a working app producing no signals.
+     */
+    let nextProvider: AiProvider | undefined;
+    if (provider !== undefined && provider !== null && provider !== "") {
+      if (provider !== "openrouter" && provider !== "groq") {
+        return fail(
+          res,
+          400,
+          "INVALID_PROVIDER",
+          "provider must be openrouter or groq.",
+        );
+      }
+      nextProvider = provider;
+    }
 
-  res.json({
-    success: true,
-    provider: activeProvider,
-    openRouterKeyConfigured: openrouterStatus.configured,
-    openRouterKeyHint: openrouterStatus.maskedHint,
-    groqKeyConfigured: groqStatus.configured,
-    propDaoKeyConfigured: propdaoStatus.configured,
-    propDaoKeyHint: propdaoStatus.maskedHint,
-    ...(await readUserPreferences(user.uid)),
-  });
-}));
+    // Throws CredentialValidationError (surfaced as 400) on a bad shape.
+    const nextOpenRouterKey = normaliseOpenRouterKey(openRouterKey);
+    const nextGroqKey = normaliseGroqKey(groqKey).key;
+    const nextTelegramToken = normaliseTelegramToken(telegramToken);
+
+    if (nextProvider) {
+      await keyStore.setProvider?.(user.uid, nextProvider);
+      reasoningGateway.setProviderFor(user.uid, nextProvider);
+    }
+
+    /**
+     * SECRETS GO THROUGH THE VAULT.
+     *
+     * `saveCredential` validates shape, encrypts with AES-256-GCM and stores
+     * only the envelope. An explicit `null` CLEARS a credential; an absent field
+     * means "leave unchanged", which is the long-standing settings semantics.
+     *
+     * When the master key is absent this THROWS rather than falling back to
+     * plaintext. The user gets a 503 with the remediation, which is strictly
+     * better than a key written in the clear that looks saved.
+     */
+    try {
+      if (nextOpenRouterKey.key !== undefined) {
+        await credentialVault.saveCredential(
+          user.uid,
+          "openrouter",
+          nextOpenRouterKey.key,
+        );
+        // Drop the cached client so the next request uses the new credential.
+        reasoningGateway.invalidate(user.uid);
+      }
+
+      if (nextGroqKey !== undefined) {
+        await credentialVault.saveCredential(user.uid, "groq", nextGroqKey);
+        reasoningGateway.invalidate(user.uid);
+      }
+
+      if (nextTelegramToken !== undefined) {
+        await credentialVault.saveCredential(
+          user.uid,
+          "telegram",
+          nextTelegramToken,
+        );
+      }
+
+      if (req.body?.propDaoApiKey !== undefined) {
+        const propDaoKey = normalisePropDaoKey(req.body.propDaoApiKey);
+        await credentialVault.saveCredential(user.uid, "propdao", propDaoKey);
+      }
+    } catch (error) {
+      if (error instanceof CredentialValidationError) {
+        return fail(res, 400, "INVALID_KEY", error.message);
+      }
+      if (error instanceof CredentialVaultError) {
+        return fail(res, 503, error.code, error.message);
+      }
+      throw error;
+    }
+
+    if (telegramChatId !== undefined && telegramChatId !== null) {
+      if (
+        typeof telegramChatId !== "string" ||
+        !/^-?\d{1,20}$/.test(telegramChatId.trim())
+      ) {
+        return fail(
+          res,
+          400,
+          "INVALID_KEY",
+          "telegramChatId must be a numeric Telegram chat id.",
+        );
+      }
+
+      /**
+       * A chat id may belong to exactly ONE account.
+       *
+       * Without this check, two users could claim the same chat id and each would
+       * then receive the other's signals: the second write silently reassigns the
+       * chat and the first user keeps a profile that no longer resolves.
+       */
+      const existing = await persistence.profiles.findByTelegramChatId(
+        telegramChatId.trim(),
+      );
+      if (existing && existing.id !== user.uid) {
+        return fail(
+          res,
+          409,
+          "CHAT_ID_IN_USE",
+          "That Telegram chat is already linked to another SIRGOAT account. " +
+            "Unlink it there first, or use a different chat.",
+        );
+      }
+
+      const profile = (await persistence.profiles.get(user.uid)) ?? {
+        id: user.uid,
+        email: user.email ?? `${user.uid}@sirgoat.internal`,
+        displayName: "SIRGOAT Trader",
+        telegramNotificationsEnabled: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await persistence.profiles.save({
+        ...profile,
+        telegramChatId: telegramChatId.trim(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    const activeProvider = await reasoningGateway.providerFor(user.uid);
+
+    // Status only. No secret is echoed, so a client that intercepts the response
+    // still learns nothing about the stored value.
+    const [openrouterStatus, groqStatus, propdaoStatus] = await Promise.all([
+      credentialVault.getCredentialStatus(user.uid, "openrouter"),
+      credentialVault.getCredentialStatus(user.uid, "groq"),
+      credentialVault.getCredentialStatus(user.uid, "propdao"),
+    ]);
+
+    res.json({
+      success: true,
+      provider: activeProvider,
+      openRouterKeyConfigured: openrouterStatus.configured,
+      openRouterKeyHint: openrouterStatus.maskedHint,
+      groqKeyConfigured: groqStatus.configured,
+      propDaoKeyConfigured: propdaoStatus.configured,
+      propDaoKeyHint: propdaoStatus.maskedHint,
+      ...(await readUserPreferences(user.uid)),
+    });
+  }),
+);
 
 /* ------------------------------------------------------------------ */
 /* USER PREFERENCES (autonomy mode + preferred model)                  */
@@ -2918,20 +3549,25 @@ async function readUserPreferences(userId: string): Promise<{
           .isModelAvailable(userId, profile.aiModel)
           .catch(() => null)
       : null,
-    autonomyExecutable: autonomyMode === 'PROPOSAL' || execution.enabled && execution.authorised,
+    autonomyExecutable:
+      autonomyMode === "PROPOSAL" ||
+      (execution.enabled && execution.authorised),
     autonomyBlockedReason:
-      autonomyMode === 'PROPOSAL'
-        ? ''
+      autonomyMode === "PROPOSAL"
+        ? ""
         : execution.enabled && execution.authorised
-          ? ''
-          : 'Server-side order execution is disabled. Your GOATs will still produce proposals, but nothing is sent to a venue until the deployment enables execution.',
+          ? ""
+          : "Server-side order execution is disabled. Your GOATs will still produce proposals, but nothing is sent to a venue until the deployment enables execution.",
   };
 }
 
-apiRouter.get('/settings/preferences', handle(async (req, res) => {
-  const user = requireUser(req);
-  res.json(await readUserPreferences(user.uid));
-}));
+apiRouter.get(
+  "/settings/preferences",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    res.json(await readUserPreferences(user.uid));
+  }),
+);
 
 /**
  * Writes autonomy mode and/or the preferred model.
@@ -2947,61 +3583,72 @@ apiRouter.get('/settings/preferences', handle(async (req, res) => {
  *     model OpenRouter no longer serves is exactly the failure this app
  *     already shipped once, as a hardcoded default.
  */
-apiRouter.post('/settings/preferences', handle(async (req, res) => {
-  const user = requireUser(req);
-  const body = (req.body ?? {}) as Record<string, unknown>;
+apiRouter.post(
+  "/settings/preferences",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
 
-  const existing = await persistence.profiles.get(user.uid);
-  const profile: UserProfile = existing ?? {
-    id: user.uid,
-    email: user.email ?? `${user.uid}@sirgoat.internal`,
-    displayName: 'SIRGOAT Trader',
-    telegramNotificationsEnabled: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
+    const existing = await persistence.profiles.get(user.uid);
+    const profile: UserProfile = existing ?? {
+      id: user.uid,
+      email: user.email ?? `${user.uid}@sirgoat.internal`,
+      displayName: "SIRGOAT Trader",
+      telegramNotificationsEnabled: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
 
-  if (body.autonomyMode !== undefined) {
-    if (body.autonomyMode !== 'PROPOSAL' && body.autonomyMode !== 'AUTONOMOUS') {
-      return fail(
-        res,
-        400,
-        'INVALID_AUTONOMY_MODE',
-        'autonomyMode must be PROPOSAL or AUTONOMOUS.',
-      );
-    }
-    profile.autonomyMode = body.autonomyMode;
-  }
-
-  if (body.aiModel !== undefined) {
-    if (body.aiModel === null || body.aiModel === '') {
-      delete profile.aiModel;
-    } else {
-      if (!isValidModel(body.aiModel)) {
-        return fail(res, 400, 'INVALID_MODEL', 'That is not a valid model id.');
-      }
-      const model = body.aiModel as string;
-      const available = await reasoningGateway
-        .isModelAvailable(user.uid, model)
-        .catch(() => null);
-
-      if (available === false) {
+    if (body.autonomyMode !== undefined) {
+      if (
+        body.autonomyMode !== "PROPOSAL" &&
+        body.autonomyMode !== "AUTONOMOUS"
+      ) {
         return fail(
           res,
           400,
-          'MODEL_NOT_LISTED',
-          `OpenRouter no longer lists "${model}". Pick another model from the list.`,
+          "INVALID_AUTONOMY_MODE",
+          "autonomyMode must be PROPOSAL or AUTONOMOUS.",
         );
       }
-      profile.aiModel = model;
+      profile.autonomyMode = body.autonomyMode;
     }
-  }
 
-  profile.updatedAt = new Date().toISOString();
-  await persistence.profiles.save(profile);
+    if (body.aiModel !== undefined) {
+      if (body.aiModel === null || body.aiModel === "") {
+        delete profile.aiModel;
+      } else {
+        if (!isValidModel(body.aiModel)) {
+          return fail(
+            res,
+            400,
+            "INVALID_MODEL",
+            "That is not a valid model id.",
+          );
+        }
+        const model = body.aiModel as string;
+        const available = await reasoningGateway
+          .isModelAvailable(user.uid, model)
+          .catch(() => null);
 
-  res.json({ success: true, ...(await readUserPreferences(user.uid)) });
-}));
+        if (available === false) {
+          return fail(
+            res,
+            400,
+            "MODEL_NOT_LISTED",
+            `OpenRouter no longer lists "${model}". Pick another model from the list.`,
+          );
+        }
+        profile.aiModel = model;
+      }
+    }
+
+    profile.updatedAt = new Date().toISOString();
+    await persistence.profiles.save(profile);
+
+    res.json({ success: true, ...(await readUserPreferences(user.uid)) });
+  }),
+);
 
 /* ------------------------------------------------------------------ */
 /* PROPDAO                                                             */
@@ -3027,37 +3674,44 @@ apiRouter.post('/settings/preferences', handle(async (req, res) => {
  * `execution` is a SERVER-SIDE capability statement, not a preference. It
  * cannot be turned on from the client.
  */
-apiRouter.get('/propdao/status', handle(async (req, res) => {
-  const user = requireUser(req);
-  const provider = propDaoFor(user.uid);
+apiRouter.get(
+  "/propdao/status",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const provider = propDaoFor(user.uid);
 
-  const [credential, verification] = await Promise.all([
-    credentialVault.getCredentialStatus(user.uid, 'propdao'),
-    provider.verifyConnection(),
-  ]);
+    const [credential, verification] = await Promise.all([
+      credentialVault.getCredentialStatus(user.uid, "propdao"),
+      provider.verifyConnection(),
+    ]);
 
-  res.json({
-    provider: 'propdao',
-    credential: {
-      configured: credential.configured,
-      /** e.g. "pd_l••••3f2a (27 chars)". Never the secret. */
-      maskedHint: credential.maskedHint,
-      updatedAt: credential.updatedAt,
-      keyId: credential.keyId,
-      needsRotation: credential.needsRotation,
-    },
-    /**
-     * `configured` and `verified` are different and the UI shows both. A saved
-     * key proves only that some text was stored; only a successful `GET /me`
-     * proves it works.
-     */
-    connected: verification.connected,
-    verification: verification.connected === true
-      ? { userId: verification.userId, accountCount: verification.accountCount }
-      : { code: verification.code, message: verification.message },
-    execution: provider.policyStatus(),
-  });
-}));
+    res.json({
+      provider: "propdao",
+      credential: {
+        configured: credential.configured,
+        /** e.g. "pd_l••••3f2a (27 chars)". Never the secret. */
+        maskedHint: credential.maskedHint,
+        updatedAt: credential.updatedAt,
+        keyId: credential.keyId,
+        needsRotation: credential.needsRotation,
+      },
+      /**
+       * `configured` and `verified` are different and the UI shows both. A saved
+       * key proves only that some text was stored; only a successful `GET /me`
+       * proves it works.
+       */
+      connected: verification.connected,
+      verification:
+        verification.connected === true
+          ? {
+              userId: verification.userId,
+              accountCount: verification.accountCount,
+            }
+          : { code: verification.code, message: verification.message },
+      execution: provider.policyStatus(),
+    });
+  }),
+);
 
 /**
  * Accounts this key can see, plus live risk for each.
@@ -3067,56 +3721,64 @@ apiRouter.get('/propdao/status', handle(async (req, res) => {
  * failure degrades that account to `available: false` rather than failing the
  * whole request.
  */
-apiRouter.get('/propdao/accounts', handle(async (req, res) => {
-  const user = requireUser(req);
-  const provider = propDaoFor(user.uid);
+apiRouter.get(
+  "/propdao/accounts",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const provider = propDaoFor(user.uid);
 
-  const accounts = await provider.listAccounts();
-  if (accounts.length === 0) {
+    const accounts = await provider.listAccounts();
+    if (accounts.length === 0) {
+      res.json({
+        accounts: [],
+        configured: (
+          await credentialVault.getCredentialStatus(user.uid, "propdao")
+        ).configured,
+        message: "No PropDAO accounts are available on this key.",
+      });
+      return;
+    }
+
+    const withRisk = await Promise.all(
+      accounts.map(async (account) => {
+        const risk = await provider.risk(account.accountId);
+        return {
+          ...account,
+          risk,
+          positions: await provider.positions(account.accountId),
+          orders: await provider.orders(account.accountId),
+          /** Everything above is real or null; nothing is defaulted to zero. */
+          available: !risk.incomplete || risk.equity !== null,
+        };
+      }),
+    );
+
     res.json({
-      accounts: [],
-      configured: (await credentialVault.getCredentialStatus(user.uid, 'propdao')).configured,
-      message: 'No PropDAO accounts are available on this key.',
+      accounts: withRisk,
+      configured: true,
+      execution: provider.policyStatus(),
     });
-    return;
-  }
-
-  const withRisk = await Promise.all(
-    accounts.map(async (account) => {
-      const risk = await provider.risk(account.accountId);
-      return {
-        ...account,
-        risk,
-        positions: await provider.positions(account.accountId),
-        orders: await provider.orders(account.accountId),
-        /** Everything above is real or null; nothing is defaulted to zero. */
-        available: !risk.incomplete || risk.equity !== null,
-      };
-    }),
-  );
-
-  res.json({
-    accounts: withRisk,
-    configured: true,
-    execution: provider.policyStatus(),
-  });
-}));
+  }),
+);
 
 /** Instruments PropDAO offers, with the LIVE leverage caps. */
-apiRouter.get('/propdao/markets', handle(async (req, res) => {
-  const user = requireUser(req);
-  const markets = await propDaoFor(user.uid).markets();
-  res.json({
-    markets,
-    total: markets.length,
-    /**
-     * The published examples disagree with the live API on leverage caps and
-     * market counts, so this response is explicitly labelled as live data and
-     * the client must not substitute documented values.
-     */
-    source: 'propdao-live',
-  });
-}));
+apiRouter.get(
+  "/propdao/markets",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const markets = await propDaoFor(user.uid).markets();
+    res.json({
+      markets,
+      total: markets.length,
+      /**
+       * The published examples disagree with the live API on leverage caps and
+       * market counts, so this response is explicitly labelled as live data and
+       * the client must not substitute documented values.
+       */
+      source: "propdao-live",
+    });
+  }),
+);
 
 /**
  * Deterministic pre-flight for a proposed trade.
@@ -3129,63 +3791,93 @@ apiRouter.get('/propdao/markets', handle(async (req, res) => {
  * Even here, nothing is executed: the route calls the pure validator, not the
  * gated executor.
  */
-apiRouter.post('/propdao/risk-check', handle(async (req, res) => {
-  const user = requireUser(req);
-  const provider = propDaoFor(user.uid);
+apiRouter.post(
+  "/propdao/risk-check",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const provider = propDaoFor(user.uid);
 
-  const { accountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage } = req.body ?? {};
+    const {
+      accountId,
+      symbol,
+      side,
+      qty,
+      entry,
+      stopLoss,
+      takeProfit,
+      leverage,
+    } = req.body ?? {};
 
-  if (typeof accountId !== 'string' || !accountId) {
-    return fail(res, 400, 'INVALID_REQUEST', 'accountId is required.');
-  }
-  if (typeof symbol !== 'string' || !symbol) {
-    return fail(res, 400, 'INVALID_REQUEST', 'symbol is required.');
-  }
-  if (side !== 'BUY' && side !== 'SELL') {
-    return fail(res, 400, 'INVALID_REQUEST', 'side must be BUY or SELL.');
-  }
-  for (const [label, value] of [['qty', qty], ['entry', entry], ['stopLoss', stopLoss], ['takeProfit', takeProfit]] as const) {
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      return fail(res, 400, 'INVALID_REQUEST', `${label} must be a finite number.`);
+    if (typeof accountId !== "string" || !accountId) {
+      return fail(res, 400, "INVALID_REQUEST", "accountId is required.");
     }
-  }
+    if (typeof symbol !== "string" || !symbol) {
+      return fail(res, 400, "INVALID_REQUEST", "symbol is required.");
+    }
+    if (side !== "BUY" && side !== "SELL") {
+      return fail(res, 400, "INVALID_REQUEST", "side must be BUY or SELL.");
+    }
+    for (const [label, value] of [
+      ["qty", qty],
+      ["entry", entry],
+      ["stopLoss", stopLoss],
+      ["takeProfit", takeProfit],
+    ] as const) {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return fail(
+          res,
+          400,
+          "INVALID_REQUEST",
+          `${label} must be a finite number.`,
+        );
+      }
+    }
 
-  // Ownership is proven against the key's own account list, not the request.
-  const account = await provider.resolveAccount(accountId);
-  if (!account) {
-    return fail(res, 404, 'ACCOUNT_NOT_FOUND', 'That account is not available on your PropDAO key.');
-  }
+    // Ownership is proven against the key's own account list, not the request.
+    const account = await provider.resolveAccount(accountId);
+    if (!account) {
+      return fail(
+        res,
+        404,
+        "ACCOUNT_NOT_FOUND",
+        "That account is not available on your PropDAO key.",
+      );
+    }
 
-  const [risk, markets, positions] = await Promise.all([
-    provider.risk(accountId),
-    provider.markets(),
-    provider.positions(accountId),
-  ]);
+    const [risk, markets, positions] = await Promise.all([
+      provider.risk(accountId),
+      provider.markets(),
+      provider.positions(accountId),
+    ]);
 
-  const result = validateTradeIntent(
-    { symbol, side, qty, entry, stopLoss, takeProfit, leverage },
-    account,
-    risk,
-    markets,
-    positions,
-  );
+    const result = validateTradeIntent(
+      { symbol, side, qty, entry, stopLoss, takeProfit, leverage },
+      account,
+      risk,
+      markets,
+      positions,
+    );
 
-  res.json({
-    ok: result.ok,
-    violations: result.violations,
-    measured: result.measured,
-    limits: DEFAULT_RISK_LIMITS,
-    /** Always included, so the UI can explain a refusal rather than hide it. */
-    execution: provider.policyStatus(),
-  });
-}));
+    res.json({
+      ok: result.ok,
+      violations: result.violations,
+      measured: result.measured,
+      limits: DEFAULT_RISK_LIMITS,
+      /** Always included, so the UI can explain a refusal rather than hide it. */
+      execution: provider.policyStatus(),
+    });
+  }),
+);
 
 /** Disconnects PropDAO: deletes the key and reports what was removed. */
-apiRouter.delete('/propdao/connect', handle(async (req, res) => {
-  const user = requireUser(req);
-  await credentialVault.deleteCredential(user.uid, 'propdao');
-  res.json({ success: true, connected: false });
-}));
+apiRouter.delete(
+  "/propdao/connect",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    await credentialVault.deleteCredential(user.uid, "propdao");
+    res.json({ success: true, connected: false });
+  }),
+);
 
 /**
  * Capability + execution policy for this deployment.
@@ -3195,12 +3887,14 @@ apiRouter.delete('/propdao/connect', handle(async (req, res) => {
  * not public product information, and there is no reason to expose it
  * anonymously. It returns no user data and no secret.
  */
-apiRouter.get('/propdao/capabilities', handle(async (req, res) => {
-  requireUser(req);
-  const provider = propDaoFor(req.user!.uid);
-  res.json(provider.policyStatus());
-}));
-
+apiRouter.get(
+  "/propdao/capabilities",
+  handle(async (req, res) => {
+    requireUser(req);
+    const provider = propDaoFor(req.user!.uid);
+    res.json(provider.policyStatus());
+  }),
+);
 
 /**
  * TELEGRAM BOT CONNECTION
@@ -3219,244 +3913,275 @@ apiRouter.get('/propdao/capabilities', handle(async (req, res) => {
  * The token is used to call Telegram and is discarded. It is never echoed in a
  * response, never logged, and never returned to the browser.
  */
-apiRouter.post('/telegram/connect', handle(async (req, res) => {
-  const user = requireUser(req);
-  const token = normaliseTelegramToken(req.body?.telegramToken);
+apiRouter.post(
+  "/telegram/connect",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const token = normaliseTelegramToken(req.body?.telegramToken);
 
-  if (token === undefined) {
-    return fail(res, 400, 'INVALID_KEY', 'A Telegram bot token from @BotFather is required.');
-  }
+    if (token === undefined) {
+      return fail(
+        res,
+        400,
+        "INVALID_KEY",
+        "A Telegram bot token from @BotFather is required.",
+      );
+    }
 
-  const chatId = typeof req.body?.chatId === 'string' ? req.body.chatId.trim() : '';
-  if (chatId && !/^-?\d{1,20}$/.test(chatId)) {
-    return fail(res, 400, 'INVALID_CHAT_ID', 'chatId must be a numeric Telegram chat id.');
-  }
+    const chatId =
+      typeof req.body?.chatId === "string" ? req.body.chatId.trim() : "";
+    if (chatId && !/^-?\d{1,20}$/.test(chatId)) {
+      return fail(
+        res,
+        400,
+        "INVALID_CHAT_ID",
+        "chatId must be a numeric Telegram chat id.",
+      );
+    }
 
-  const webhookSecret = resolveTelegramWebhookSecret();
-  if (!webhookSecret) {
-    return fail(
-      res,
-      503,
-      'TELEGRAM_NOT_CONFIGURED',
-      'This server has no Telegram webhook secret configured. Set TELEGRAM_WEBHOOK_SECRET before connecting a bot.',
-    );
-  }
+    const webhookSecret = resolveTelegramWebhookSecret();
+    if (!webhookSecret) {
+      return fail(
+        res,
+        503,
+        "TELEGRAM_NOT_CONFIGURED",
+        "This server has no Telegram webhook secret configured. Set TELEGRAM_WEBHOOK_SECRET before connecting a bot.",
+      );
+    }
 
-  const baseUrl = resolvePublicAppOrigin(req);
-  if (!baseUrl) {
-    return fail(
-      res,
-      503,
-      'APP_ORIGIN_NOT_CONFIGURED',
-      'The public URL of this app could not be determined. Set APP_ORIGIN so Telegram can deliver updates.',
-    );
-  }
+    const baseUrl = resolvePublicAppOrigin(req);
+    if (!baseUrl) {
+      return fail(
+        res,
+        503,
+        "APP_ORIGIN_NOT_CONFIGURED",
+        "The public URL of this app could not be determined. Set APP_ORIGIN so Telegram can deliver updates.",
+      );
+    }
 
-  const client = new TelegramBotClient(token);
+    const client = new TelegramBotClient(token);
 
-  /**
-   * Step 1: prove the token is real and learn who this bot is. Done BEFORE any
-   * state is written, so an invalid token leaves the account untouched.
-   */
-  let identity: Awaited<ReturnType<TelegramBotClient['getMe']>>;
-  try {
-    identity = await client.getMe();
-  } catch (err) {
-    return fail(
-      res,
-      400,
-      'TELEGRAM_VERIFY_FAILED',
-      err instanceof Error ? err.message : 'Telegram rejected this bot token.',
-    );
-  }
-
-  const webhookUrl = `${baseUrl}/api/telegram/webhook`;
-
-  /**
-   * Step 2: register the webhook.
-   *
-   * The same deployment secret is used for every user's bot. Telegram sends it
-   * as `X-Telegram-Bot-Api-Secret-Token`, which is how the endpoint proves the
-   * request came from Telegram for a bot we registered. It is not derived per
-   * user: the receiving endpoint has one configured secret, and a derived value
-   * would have to be recomputable from the request, which would defeat it.
-   */
-  try {
-    await client.setWebhook(webhookUrl, webhookSecret);
-  } catch (err) {
-    return fail(
-      res,
-      502,
-      'TELEGRAM_WEBHOOK_FAILED',
-      `The bot token is valid but the webhook could not be registered: ${
-        err instanceof Error ? err.message : 'unknown error'
-      }`,
-    );
-  }
-
-  /**
-   * Step 3: confirm the chat is actually reachable by this bot.
-   *
-   * Only done when the user supplied a chat id. A wrong chat id is the most
-   * common setup failure, and finding out here is far better than discovering
-   * that no alert ever arrives.
-   */
-  let chatVerified = false;
-  let chatUsername: string | undefined;
-
-  if (chatId) {
+    /**
+     * Step 1: prove the token is real and learn who this bot is. Done BEFORE any
+     * state is written, so an invalid token leaves the account untouched.
+     */
+    let identity: Awaited<ReturnType<TelegramBotClient["getMe"]>>;
     try {
-      const chat = await client.verifyChat(chatId);
-      chatVerified = chat.ok;
-      chatUsername = chat.username;
+      identity = await client.getMe();
     } catch (err) {
       return fail(
         res,
         400,
-        'TELEGRAM_CHAT_UNREACHABLE',
-        `The bot cannot message chat ${chatId}. Send /start to your bot first, then reconnect. (${
-          err instanceof Error ? err.message : 'unknown error'
-        })`,
+        "TELEGRAM_VERIFY_FAILED",
+        err instanceof Error
+          ? err.message
+          : "Telegram rejected this bot token.",
       );
     }
-  }
 
-  // Only now is any state persisted.
-  await keyStore.setTelegramToken(user.uid, token);
-  await persistence.keys.setTelegramBot?.(user.uid, {
-    id: identity.id,
-    username: identity.username,
-    verifiedAt: new Date().toISOString(),
-    webhookUrl,
-  });
+    const webhookUrl = `${baseUrl}/api/telegram/webhook`;
 
-  if (chatId) {
-    const profile = (await persistence.profiles.get(user.uid)) ?? {
-      id: user.uid,
-      email: user.email ?? `${user.uid}@sirgoat.internal`,
-      displayName: 'SIRGOAT Trader',
-      telegramNotificationsEnabled: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    const existing = await persistence.profiles.findByTelegramChatId(chatId);
-    if (existing && existing.id !== user.uid) {
+    /**
+     * Step 2: register the webhook.
+     *
+     * The same deployment secret is used for every user's bot. Telegram sends it
+     * as `X-Telegram-Bot-Api-Secret-Token`, which is how the endpoint proves the
+     * request came from Telegram for a bot we registered. It is not derived per
+     * user: the receiving endpoint has one configured secret, and a derived value
+     * would have to be recomputable from the request, which would defeat it.
+     */
+    try {
+      await client.setWebhook(webhookUrl, webhookSecret);
+    } catch (err) {
       return fail(
         res,
-        409,
-        'CHAT_ID_IN_USE',
-        'That Telegram chat is already linked to another SIRGOAT account.',
+        502,
+        "TELEGRAM_WEBHOOK_FAILED",
+        `The bot token is valid but the webhook could not be registered: ${
+          err instanceof Error ? err.message : "unknown error"
+        }`,
       );
     }
 
-    await persistence.profiles.save({
-      ...profile,
-      telegramChatId: chatId,
-      telegramUsername: chatUsername,
-      updatedAt: new Date().toISOString(),
-    });
-  }
+    /**
+     * Step 3: confirm the chat is actually reachable by this bot.
+     *
+     * Only done when the user supplied a chat id. A wrong chat id is the most
+     * common setup failure, and finding out here is far better than discovering
+     * that no alert ever arrives.
+     */
+    let chatVerified = false;
+    let chatUsername: string | undefined;
 
-  res.json({
-    connected: true,
-    bot: {
+    if (chatId) {
+      try {
+        const chat = await client.verifyChat(chatId);
+        chatVerified = chat.ok;
+        chatUsername = chat.username;
+      } catch (err) {
+        return fail(
+          res,
+          400,
+          "TELEGRAM_CHAT_UNREACHABLE",
+          `The bot cannot message chat ${chatId}. Send /start to your bot first, then reconnect. (${
+            err instanceof Error ? err.message : "unknown error"
+          })`,
+        );
+      }
+    }
+
+    // Only now is any state persisted.
+    await keyStore.setTelegramToken(user.uid, token);
+    await persistence.keys.setTelegramBot?.(user.uid, {
       id: identity.id,
       username: identity.username,
-      firstName: identity.firstName,
-    },
-    webhookUrl,
-    chatVerified,
-    /**
-     * Never the token. There is no code path here that can return it, which is
-     * the property that matters.
-     */
-    tokenStored: true,
-  });
-}));
+      verifiedAt: new Date().toISOString(),
+      webhookUrl,
+    });
+
+    if (chatId) {
+      const profile = (await persistence.profiles.get(user.uid)) ?? {
+        id: user.uid,
+        email: user.email ?? `${user.uid}@sirgoat.internal`,
+        displayName: "SIRGOAT Trader",
+        telegramNotificationsEnabled: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const existing = await persistence.profiles.findByTelegramChatId(chatId);
+      if (existing && existing.id !== user.uid) {
+        return fail(
+          res,
+          409,
+          "CHAT_ID_IN_USE",
+          "That Telegram chat is already linked to another SIRGOAT account.",
+        );
+      }
+
+      await persistence.profiles.save({
+        ...profile,
+        telegramChatId: chatId,
+        telegramUsername: chatUsername,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    res.json({
+      connected: true,
+      bot: {
+        id: identity.id,
+        username: identity.username,
+        firstName: identity.firstName,
+      },
+      webhookUrl,
+      chatVerified,
+      /**
+       * Never the token. There is no code path here that can return it, which is
+       * the property that matters.
+       */
+      tokenStored: true,
+    });
+  }),
+);
 
 /** Connection status. Reports what is configured and what was verified. */
-apiRouter.get('/telegram/status', handle(async (req, res) => {
-  const user = requireUser(req);
+apiRouter.get(
+  "/telegram/status",
+  handle(async (req, res) => {
+    const user = requireUser(req);
 
-  const [token, bot, chatId] = await Promise.all([
-    keyStore.getTelegramToken(user.uid),
-    keyStore.getTelegramBot?.(user.uid),
-    persistence.profiles.get(user.uid),
-  ]);
+    const [token, bot, chatId] = await Promise.all([
+      keyStore.getTelegramToken(user.uid),
+      keyStore.getTelegramBot?.(user.uid),
+      persistence.profiles.get(user.uid),
+    ]);
 
-  /**
-   * Reported live against Telegram rather than from the stored record, because
-   * a webhook can be removed by Telegram or by the user at any time. The stored
-   * record would keep claiming "connected" regardless.
-   */
-  let live: { ok: boolean; pendingUpdates?: number; lastErrorMessage?: string; detail?: string } | null =
-    null;
-
-  if (token) {
-    try {
-      const info = await new TelegramBotClient(token).getWebhookInfo();
-      live = {
-        ok: true,
-        pendingUpdates: info.pendingUpdateCount,
-        lastErrorMessage: info.lastErrorMessage,
-      };
-    } catch (err) {
-      live = {
-        ok: false,
-        detail: err instanceof Error ? err.message : 'unknown error',
-      };
-    }
-  }
-
-  res.json({
-    tokenConfigured: Boolean(token),
-    bot: bot ? { id: bot.id, username: bot.username, verifiedAt: bot.verifiedAt } : null,
-    chatId: chatId?.telegramChatId ?? null,
-    webhookSecretConfigured: Boolean(resolveTelegramWebhookSecret()),
-    webhook: live,
     /**
-     * `connected` requires a token AND a live webhook. A stored token with a
-     * failing webhook is not a working connection and must not be reported as
-     * one.
+     * Reported live against Telegram rather than from the stored record, because
+     * a webhook can be removed by Telegram or by the user at any time. The stored
+     * record would keep claiming "connected" regardless.
      */
-    connected: Boolean(token) && live?.ok === true && chatId?.telegramChatId !== undefined,
-  });
-}));
+    let live: {
+      ok: boolean;
+      pendingUpdates?: number;
+      lastErrorMessage?: string;
+      detail?: string;
+    } | null = null;
+
+    if (token) {
+      try {
+        const info = await new TelegramBotClient(token).getWebhookInfo();
+        live = {
+          ok: true,
+          pendingUpdates: info.pendingUpdateCount,
+          lastErrorMessage: info.lastErrorMessage,
+        };
+      } catch (err) {
+        live = {
+          ok: false,
+          detail: err instanceof Error ? err.message : "unknown error",
+        };
+      }
+    }
+
+    res.json({
+      tokenConfigured: Boolean(token),
+      bot: bot
+        ? { id: bot.id, username: bot.username, verifiedAt: bot.verifiedAt }
+        : null,
+      chatId: chatId?.telegramChatId ?? null,
+      webhookSecretConfigured: Boolean(resolveTelegramWebhookSecret()),
+      webhook: live,
+      /**
+       * `connected` requires a token AND a live webhook. A stored token with a
+       * failing webhook is not a working connection and must not be reported as
+       * one.
+       */
+      connected:
+        Boolean(token) &&
+        live?.ok === true &&
+        chatId?.telegramChatId !== undefined,
+    });
+  }),
+);
 
 /** Disconnects the bot: removes the webhook from Telegram and clears state. */
-apiRouter.delete('/telegram/connect', handle(async (req, res) => {
-  const user = requireUser(req);
-  const token = await keyStore.getTelegramToken(user.uid);
+apiRouter.delete(
+  "/telegram/connect",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const token = await keyStore.getTelegramToken(user.uid);
 
-  if (token) {
-    try {
-      await new TelegramBotClient(token).deleteWebhook();
-    } catch (err) {
-      /**
-       * Reported, but the local record is still cleared: leaving a token in
-       * place because Telegram was unreachable would trap the user in a state
-       * they explicitly asked to leave.
-       */
-      console.warn('[telegram] deleteWebhook failed:', err);
+    if (token) {
+      try {
+        await new TelegramBotClient(token).deleteWebhook();
+      } catch (err) {
+        /**
+         * Reported, but the local record is still cleared: leaving a token in
+         * place because Telegram was unreachable would trap the user in a state
+         * they explicitly asked to leave.
+         */
+        console.warn("[telegram] deleteWebhook failed:", err);
+      }
     }
-  }
 
-  await keyStore.setTelegramToken(user.uid, undefined);
-  await keyStore.setTelegramBot?.(user.uid, undefined);
+    await keyStore.setTelegramToken(user.uid, undefined);
+    await keyStore.setTelegramBot?.(user.uid, undefined);
 
-  const profile = await persistence.profiles.get(user.uid);
-  if (profile?.telegramChatId) {
-    await persistence.profiles.save({
-      ...profile,
-      telegramChatId: undefined,
-      telegramUsername: undefined,
-      updatedAt: new Date().toISOString(),
-    });
-  }
+    const profile = await persistence.profiles.get(user.uid);
+    if (profile?.telegramChatId) {
+      await persistence.profiles.save({
+        ...profile,
+        telegramChatId: undefined,
+        telegramUsername: undefined,
+        updatedAt: new Date().toISOString(),
+      });
+    }
 
-  res.json({ connected: false });
-}));
+    res.json({ connected: false });
+  }),
+);
 
 // ---- AI / OpenRouter (user-scoped key) ------------------------------
 
@@ -3465,108 +4190,166 @@ apiRouter.delete('/telegram/connect', handle(async (req, res) => {
  * Never leaks another user's credential: key resolution happens inside the
  * gateway, keyed by the verified uid.
  */
-apiRouter.get('/ai/models', handle(async (req, res) => {
-  const user = requireUser(req);
-  if (!(await reasoningGateway.hasKeyFor(user.uid))) {
-    return fail(
-      res,
-      400,
-      'AI_NOT_CONFIGURED',
-      'Add your OpenRouter API key in Settings → AI Reasoning Engine to load models.',
-    );
-  }
-  const catalogue = await reasoningGateway.listModels(user.uid);
-  res.json({ models: catalogue.models, fetchedAt: catalogue.fetchedAt, source: 'openrouter' });
-}));
+apiRouter.get(
+  "/ai/models",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    if (!(await reasoningGateway.hasKeyFor(user.uid))) {
+      return fail(
+        res,
+        400,
+        "AI_NOT_CONFIGURED",
+        "Add your OpenRouter API key in Settings → AI Reasoning Engine to load models.",
+      );
+    }
+    const catalogue = await reasoningGateway.listModels(user.uid);
+    res.json({
+      models: catalogue.models,
+      fetchedAt: catalogue.fetchedAt,
+      source: "openrouter",
+    });
+  }),
+);
 
 /** Live end-to-end probe of the caller's own key. */
-apiRouter.post('/ai/test', handle(async (req, res) => {
-  const user = requireUser(req);
-  const result = await reasoningGateway.testKeyFor(user.uid);
-  res.json(result);
-}));
+apiRouter.post(
+  "/ai/test",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const result = await reasoningGateway.testKeyFor(user.uid);
+    res.json(result);
+  }),
+);
 
-apiRouter.post('/telegram/test', handle(async (req, res) => {
-  const user = requireUser(req);
-  const { chatId } = req.body ?? {};
-  if (typeof chatId !== 'string' || !/^-?\d{1,20}$/.test(chatId.trim())) {
-    return fail(res, 400, 'INVALID_CHAT_ID', 'chatId must be a numeric Telegram chat id.');
-  }
-  const token = (await keyStore.getTelegramToken(user.uid)) || process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) {
-    return fail(res, 400, 'TELEGRAM_NOT_CONFIGURED', 'No Telegram bot token configured.');
-  }
-  const result = await telegramService.sendTestMessage(chatId.trim(), token);
-  res.json(result);
-}));
+apiRouter.post(
+  "/telegram/test",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const { chatId } = req.body ?? {};
+    if (typeof chatId !== "string" || !/^-?\d{1,20}$/.test(chatId.trim())) {
+      return fail(
+        res,
+        400,
+        "INVALID_CHAT_ID",
+        "chatId must be a numeric Telegram chat id.",
+      );
+    }
+    const token =
+      (await keyStore.getTelegramToken(user.uid)) ||
+      process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) {
+      return fail(
+        res,
+        400,
+        "TELEGRAM_NOT_CONFIGURED",
+        "No Telegram bot token configured.",
+      );
+    }
+    const result = await telegramService.sendTestMessage(chatId.trim(), token);
+    res.json(result);
+  }),
+);
 
 // ---- Skills ----------------------------------------------------------
 
-apiRouter.get('/skills', handle(async (req, res) => {
-  const user = requireUser(req);
-  const skills = await allSkillsFor(user.uid);
-  res.json({ skills, dataMode: marketProvider.dataMode });
-}));
+apiRouter.get(
+  "/skills",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const skills = await allSkillsFor(user.uid);
+    res.json({ skills, dataMode: marketProvider.dataMode });
+  }),
+);
 
-apiRouter.post('/skills', handle(async (req, res) => {
-  const user = requireUser(req);
-  const body = req.body ?? {};
-  if (typeof body !== 'object' || body === null) {
-    return fail(res, 400, 'INVALID_INPUT', 'Body must be an object.');
-  }
-  const b = body as Record<string, unknown>;
-  if (typeof b.name !== 'string' || !b.name.trim() || b.name.length > 100) {
-    return fail(res, 400, 'INVALID_INPUT', 'Skill name is required (max 100 chars).');
-  }
+apiRouter.post(
+  "/skills",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const body = req.body ?? {};
+    if (typeof body !== "object" || body === null) {
+      return fail(res, 400, "INVALID_INPUT", "Body must be an object.");
+    }
+    const b = body as Record<string, unknown>;
+    if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 100) {
+      return fail(
+        res,
+        400,
+        "INVALID_INPUT",
+        "Skill name is required (max 100 chars).",
+      );
+    }
 
-  const skillId = `skill_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const newSkill = {
-    id: skillId,
-    userId: user.uid,
-    name: b.name.trim(),
-    description: typeof b.description === 'string' ? b.description.slice(0, 500) : '',
-    methodology: typeof b.methodology === 'string' ? b.methodology.slice(0, 4000) : '',
-    constraints: typeof b.constraints === 'string' ? b.constraints.slice(0, 1000) : '',
-    preferredTimeframes: Array.isArray(b.preferredTimeframes)
-      ? (b.preferredTimeframes as unknown[]).filter((t): t is string => typeof t === 'string').slice(0, 10)
-      : ['1h'],
-    requiredEvidence: typeof b.requiredEvidence === 'string' ? b.requiredEvidence.slice(0, 1000) : '',
-    invalidationRules: typeof b.invalidationRules === 'string' ? b.invalidationRules.slice(0, 1000) : '',
-    rawMarkdown: typeof b.rawMarkdown === 'string' ? b.rawMarkdown.slice(0, 20000) : undefined,
-    isDefault: false,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
+    const skillId = `skill_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const newSkill = {
+      id: skillId,
+      userId: user.uid,
+      name: b.name.trim(),
+      description:
+        typeof b.description === "string" ? b.description.slice(0, 500) : "",
+      methodology:
+        typeof b.methodology === "string" ? b.methodology.slice(0, 4000) : "",
+      constraints:
+        typeof b.constraints === "string" ? b.constraints.slice(0, 1000) : "",
+      preferredTimeframes: Array.isArray(b.preferredTimeframes)
+        ? (b.preferredTimeframes as unknown[])
+            .filter((t): t is string => typeof t === "string")
+            .slice(0, 10)
+        : ["1h"],
+      requiredEvidence:
+        typeof b.requiredEvidence === "string"
+          ? b.requiredEvidence.slice(0, 1000)
+          : "",
+      invalidationRules:
+        typeof b.invalidationRules === "string"
+          ? b.invalidationRules.slice(0, 1000)
+          : "",
+      rawMarkdown:
+        typeof b.rawMarkdown === "string"
+          ? b.rawMarkdown.slice(0, 20000)
+          : undefined,
+      isDefault: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
 
-  await persistence.skills.save(newSkill);
-  res.json({ skill: newSkill });
-}));
+    await persistence.skills.save(newSkill);
+    res.json({ skill: newSkill });
+  }),
+);
 
-apiRouter.delete('/skills/:id', handle(async (req, res) => {
-  const user = requireUser(req);
-  /**
-   * Check the catalogue by ID FIRST.
-   *
-   * The built-in skills are served from the catalogue rather than from user
-   * storage, so a lookup in storage alone returns nothing and the caller would
-   * get a misleading 404. Immutability of a system skill must hold regardless of
-   * whether it happens to have a stored copy.
-   */
-  if (isSystemOwnedSkillId(req.params.id)) {
-    return fail(res, 400, 'DEFAULT_SKILL', 'Cannot delete system skills.');
-  }
+apiRouter.delete(
+  "/skills/:id",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    /**
+     * Check the catalogue by ID FIRST.
+     *
+     * The built-in skills are served from the catalogue rather than from user
+     * storage, so a lookup in storage alone returns nothing and the caller would
+     * get a misleading 404. Immutability of a system skill must hold regardless of
+     * whether it happens to have a stored copy.
+     */
+    if (isSystemOwnedSkillId(req.params.id)) {
+      return fail(res, 400, "DEFAULT_SKILL", "Cannot delete system skills.");
+    }
 
-  const skill = await persistence.skills.get(req.params.id);
-  if (!skill) return notFound(res);
-  if (skill.isDefault || skill.userId === 'system') {
-    return fail(res, 400, 'DEFAULT_SKILL', 'Cannot delete default system skills.');
-  }
-  if (skill.userId !== user.uid) {
-    return notFound(res); // avoid resource enumeration
-  }
-  await persistence.skills.delete(skill.id);
-  res.json({ success: true, deletedId: skill.id });
-}));
+    const skill = await persistence.skills.get(req.params.id);
+    if (!skill) return notFound(res);
+    if (skill.isDefault || skill.userId === "system") {
+      return fail(
+        res,
+        400,
+        "DEFAULT_SKILL",
+        "Cannot delete default system skills.",
+      );
+    }
+    if (skill.userId !== user.uid) {
+      return notFound(res); // avoid resource enumeration
+    }
+    await persistence.skills.delete(skill.id);
+    res.json({ success: true, deletedId: skill.id });
+  }),
+);
 
 /* ------------------------------------------------------------------ */
 /* System catalogues (Explore)                                        */
@@ -3579,38 +4362,41 @@ apiRouter.delete('/skills/:id', handle(async (req, res) => {
  * caller's uid. The template itself is never written to, so concurrent copies
  * cannot interfere and one user's copy cannot affect another's.
  */
-apiRouter.post('/templates/goats/:id/copy', handle(async (req, res) => {
-  const user = requireUser(req);
-  const template = SYSTEM_GOATS.find((g) => g.id === req.params.id);
+apiRouter.post(
+  "/templates/goats/:id/copy",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const template = SYSTEM_GOATS.find((g) => g.id === req.params.id);
 
-  if (!template) return notFound(res);
+    if (!template) return notFound(res);
 
-  const now = new Date().toISOString();
-  const copy: FundGoat = {
-    ...template,
-    // New identity and a real owner. Spreading the template would otherwise
-    // copy `id: 'system'` and make the copy collide with the template itself.
-    id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    userId: user.uid,
-    name: `${template.name}`,
-    status: 'WATCHING',
-    createdAt: now,
-    updatedAt: now,
-  };
+    const now = new Date().toISOString();
+    const copy: FundGoat = {
+      ...template,
+      // New identity and a real owner. Spreading the template would otherwise
+      // copy `id: 'system'` and make the copy collide with the template itself.
+      id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      userId: user.uid,
+      name: `${template.name}`,
+      status: "WATCHING",
+      createdAt: now,
+      updatedAt: now,
+    };
 
-  await persistence.goats.save(copy);
+    await persistence.goats.save(copy);
 
-  /**
-   * A copy of a SKILL must also be owned by the caller, otherwise the copy would
-   * reference a system record that must stay immutable.
-   */
-  await copyReferencedSkills(user.uid, copy.skillIds);
+    /**
+     * A copy of a SKILL must also be owned by the caller, otherwise the copy would
+     * reference a system record that must stay immutable.
+     */
+    await copyReferencedSkills(user.uid, copy.skillIds);
 
-  await syncSchedule(copy);
-  subscribeToMarkets(copy);
+    await syncSchedule(copy);
+    subscribeToMarkets(copy);
 
-  res.status(201).json({ goat: copy, copiedFrom: template.id });
-}));
+    res.status(201).json({ goat: copy, copiedFrom: template.id });
+  }),
+);
 
 /**
  * Ensures every skill id a GOAT references is usable by its owner.
@@ -3634,7 +4420,11 @@ async function copyReferencedSkills(
     }
 
     const existing = await persistence.skills.get(skillId);
-    if (existing?.isDefault || existing?.userId === 'system' || isSystemOwnedSkillId(skillId)) {
+    if (
+      existing?.isDefault ||
+      existing?.userId === "system" ||
+      isSystemOwnedSkillId(skillId)
+    ) {
       resolved.push(skillId);
       continue;
     }
@@ -3659,25 +4449,28 @@ async function copyReferencedSkills(
 }
 
 /** Copies a skill template into the caller's library. */
-apiRouter.post('/templates/skills/:id/copy', handle(async (req, res) => {
-  const user = requireUser(req);
-  const template = SYSTEM_SKILLS.find((s) => s.id === req.params.id);
+apiRouter.post(
+  "/templates/skills/:id/copy",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const template = SYSTEM_SKILLS.find((s) => s.id === req.params.id);
 
-  if (!template) return notFound(res);
+    if (!template) return notFound(res);
 
-  const now = new Date().toISOString();
-  const copy = {
-    ...template,
-    id: `skill_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    userId: user.uid,
-    isDefault: false,
-    createdAt: now,
-    updatedAt: now,
-  };
+    const now = new Date().toISOString();
+    const copy = {
+      ...template,
+      id: `skill_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      userId: user.uid,
+      isDefault: false,
+      createdAt: now,
+      updatedAt: now,
+    };
 
-  await persistence.skills.save(copy);
-  res.status(201).json({ skill: copy, copiedFrom: template.id });
-}));
+    await persistence.skills.save(copy);
+    res.status(201).json({ skill: copy, copiedFrom: template.id });
+  }),
+);
 
 /** The public shape of a template skill: no owner, no timestamps. */
 function publicTemplateSkill(skill: (typeof SYSTEM_SKILLS)[number]) {
@@ -3727,345 +4520,405 @@ function publicTemplateSkill(skill: (typeof SYSTEM_SKILLS)[number]) {
  *   A GOAT is only resumed when it has NO persisted review at all, so an
  *   established GOAT is never re-run on every page load.
  */
-async function runtimeFor(goat: FundGoat): Promise<ReturnType<typeof ensureGoatRuntime>> {
+async function runtimeFor(
+  goat: FundGoat,
+): Promise<ReturnType<typeof ensureGoatRuntime>> {
   const runtime = await ensureGoatRuntime(goat);
   const state = runtime.getState();
 
-  const needsReview = !state.currentThesis && !state.isEvaluating && goat.status !== 'PAUSED';
+  const needsReview =
+    !state.currentThesis && !state.isEvaluating && goat.status !== "PAUSED";
   if (needsReview) {
     void runtime
-      .wake('Initial market review', 'MANUAL_REEVALUATE', goat.markets[0])
+      .wake("Initial market review", "MANUAL_REEVALUATE", goat.markets[0])
       .catch((err) => {
-        console.error(`[api] resume of initial review failed for ${goat.id}:`, err);
+        console.error(
+          `[api] resume of initial review failed for ${goat.id}:`,
+          err,
+        );
       });
   }
 
   return runtime;
 }
 
-apiRouter.get('/goats', handle(async (req, res) => {
-  const user = requireUser(req);
-  const goats = await persistence.goats.listByUser(user.uid);
+apiRouter.get(
+  "/goats",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goats = await persistence.goats.listByUser(user.uid);
 
-  /**
-   * Await the actor for each GOAT (so hydration lands) but NOT the wake it
-   * may dispatch. A GOAT that was never reviewed starts working here; one
-   * that has is returned with its persisted review intact.
-   */
-  const withState = await Promise.all(
-    goats.map(async (goat) => {
-      try {
-        const runtime = await runtimeFor(goat);
-        return { ...goat, runtimeState: runtime.getState() };
-      } catch (err) {
-        console.error(`[api] failed to load runtime for ${goat.id}:`, err);
-        return { ...goat, runtimeState: null };
-      }
-    }),
-  );
-
-  res.json({ goats: withState, dataMode: marketProvider.dataMode });
-}));
-
-apiRouter.get('/goats/:id', handle(async (req, res) => {
-  const user = requireUser(req);
-  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
-  if (!goat) return notFound(res);
-  const runtime = await runtimeFor(goat);
-  res.json({ goat, runtimeState: runtime.getState(), dataMode: marketProvider.dataMode });
-}));
-
-apiRouter.post('/goats', handle(async (req, res) => {
-  const user = requireUser(req);
-  const input = validateGoatInput(req.body);
-  if (!input) {
-    return fail(res, 400, 'INVALID_INPUT', 'Name, goal, at least one market, and a supported model are required.');
-  }
-
-  // Ownership validation: skillIds must reference defaults or the user's own skills.
-  const skills = await allSkillsFor(user.uid);
-  const knownIds = new Set(skills.map((s) => s.id));
-  const unknownSkills = input.skillIds.filter((id) => !knownIds.has(id));
-  if (unknownSkills.length > 0) {
-    return fail(res, 400, 'UNKNOWN_SKILL', `Unknown skill ids: ${unknownSkills.join(', ')}`);
-  }
-
-  /**
-   * VALIDATE MARKETS AT CREATION, NOT AT FIRST USE.
-   *
-   * A GOAT is only as good as its market list, and the cost of accepting a
-   * dead one is paid forever: every scheduler tick, every tracker check and
-   * every market event re-requests it, fails, and logs. This route was the
-   * only place that could have prevented that, and it accepted any string.
-   *
-   * Known retired symbols (`EUR/USD` and friends) are MIGRATED rather than
-   * rejected, because refusing outright would break every client that still
-   * holds one from an older build — the user gets a working GOAT instead of
-   * an error they cannot act on. Anything with no equivalent is rejected with
-   * the live list named, so the correction is obvious.
-   */
-  const markets = await resolveMarketsForGoat(input.markets);
-  if ('error' in markets) {
-    return fail(res, 400, 'UNKNOWN_MARKET', markets.error);
-  }
-  if (markets.substituted.length > 0) {
-    console.warn(
-      `[api] GOAT create: substituted retired markets ` +
-        `${markets.substituted.map((s) => `${s.from} -> ${s.to}`).join(', ')}`,
-    );
-  }
-
-  const goatId = `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const now = new Date().toISOString();
-  const newGoat: FundGoat = {
-    id: goatId,
-    userId: user.uid,
-    name: input.name,
-    goal: input.goal,
-    markets: markets.resolved,
-    skillIds: input.skillIds.length > 0 ? input.skillIds : ['skill_price_action'],
-    model: await resolveModelForNewGoat(user.uid, input.model, input.modelProvided),
-    status: 'WATCHING',
-    schedule: input.schedule,
-    timeframe: input.timeframe,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await persistence.goats.save(newGoat);
-
-  /** Durable alarm becomes the authoritative schedule. */
-  await syncSchedule(newGoat);
-
-  const runtime = await ensureGoatRuntime(newGoat);
-
-  /**
-   * THE FIRST ANALYSIS MUST NOT BLOCK THIS RESPONSE.
-   *
-   * This route used to `await` a full reasoning run before responding. A model
-   * call takes 15-40 seconds, and the reasoning-off retry can double it, so on
-   * Vercel the whole request blew past the function timeout and the user got
-   * `504 FUNCTION_INVOCATION_TIMEOUT` — for a GOAT that had in fact been
-   * created, scheduled and persisted successfully. The response was lost
-   * while the work completed.
-   *
-   * Worse, a timed-out invocation is indistinguishable from a failed one: the
-   * user retries, and now there are two GOATs.
-   *
-   * So the first analysis is dispatched, not awaited. `wake()` is fire-and-
-   * forget and its result reaches the UI through the normal poll, exactly
-   * like any later wake. The durable scheduler is also already armed by
-   * `syncSchedule` above, so even if this process is frozen the Worker's
-   * alarm re-arms the same analysis — the run is not lost, only its timing is
-   * no longer the request's problem.
-   *
-   * The client is told the GOAT exists and that the first analysis is running,
-   * so the UI can show a pending state instead of an empty one.
-   */
-  void runtime
-    .wake('Initial analysis on deployment', 'MANUAL_REEVALUATE', markets.resolved[0])
-    .catch((err) => {
-      // Already recorded on the runtime state; never surface as an unhandled
-      // rejection from a detached promise.
-      console.error('[api] Initial GOAT analysis failed:', err);
-    });
-
-  res.json({
-    goat: newGoat,
-    runtimeState: runtime.getState(),
-    dataMode: marketProvider.dataMode,
     /**
-     * Explicit, so the UI can show "first analysis running" rather than an
-     * empty state that looks like the GOAT did nothing.
+     * Await the actor for each GOAT (so hydration lands) but NOT the wake it
+     * may dispatch. A GOAT that was never reviewed starts working here; one
+     * that has is returned with its persisted review intact.
      */
-    firstAnalysisPending: true,
-  });
-}));
+    const withState = await Promise.all(
+      goats.map(async (goat) => {
+        try {
+          const runtime = await runtimeFor(goat);
+          return { ...goat, runtimeState: runtime.getState() };
+        } catch (err) {
+          console.error(`[api] failed to load runtime for ${goat.id}:`, err);
+          return { ...goat, runtimeState: null };
+        }
+      }),
+    );
+
+    res.json({ goats: withState, dataMode: marketProvider.dataMode });
+  }),
+);
+
+apiRouter.get(
+  "/goats/:id",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
+    const runtime = await runtimeFor(goat);
+    res.json({
+      goat,
+      runtimeState: runtime.getState(),
+      dataMode: marketProvider.dataMode,
+    });
+  }),
+);
+
+apiRouter.post(
+  "/goats",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const input = validateGoatInput(req.body);
+    if (!input) {
+      return fail(
+        res,
+        400,
+        "INVALID_INPUT",
+        "Name, goal, at least one market, and a supported model are required.",
+      );
+    }
+
+    // Ownership validation: skillIds must reference defaults or the user's own skills.
+    const skills = await allSkillsFor(user.uid);
+    const knownIds = new Set(skills.map((s) => s.id));
+    const unknownSkills = input.skillIds.filter((id) => !knownIds.has(id));
+    if (unknownSkills.length > 0) {
+      return fail(
+        res,
+        400,
+        "UNKNOWN_SKILL",
+        `Unknown skill ids: ${unknownSkills.join(", ")}`,
+      );
+    }
+
+    /**
+     * VALIDATE MARKETS AT CREATION, NOT AT FIRST USE.
+     *
+     * A GOAT is only as good as its market list, and the cost of accepting a
+     * dead one is paid forever: every scheduler tick, every tracker check and
+     * every market event re-requests it, fails, and logs. This route was the
+     * only place that could have prevented that, and it accepted any string.
+     *
+     * Known retired symbols (`EUR/USD` and friends) are MIGRATED rather than
+     * rejected, because refusing outright would break every client that still
+     * holds one from an older build — the user gets a working GOAT instead of
+     * an error they cannot act on. Anything with no equivalent is rejected with
+     * the live list named, so the correction is obvious.
+     */
+    const markets = await resolveMarketsForGoat(input.markets);
+    if ("error" in markets) {
+      return fail(res, 400, "UNKNOWN_MARKET", markets.error);
+    }
+    if (markets.substituted.length > 0) {
+      console.warn(
+        `[api] GOAT create: substituted retired markets ` +
+          `${markets.substituted.map((s) => `${s.from} -> ${s.to}`).join(", ")}`,
+      );
+    }
+
+    const goatId = `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const now = new Date().toISOString();
+    const newGoat: FundGoat = {
+      id: goatId,
+      userId: user.uid,
+      name: input.name,
+      goal: input.goal,
+      markets: markets.resolved,
+      skillIds:
+        input.skillIds.length > 0 ? input.skillIds : ["skill_price_action"],
+      model: await resolveModelForNewGoat(
+        user.uid,
+        input.model,
+        input.modelProvided,
+      ),
+      status: "WATCHING",
+      schedule: input.schedule,
+      timeframe: input.timeframe,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await persistence.goats.save(newGoat);
+
+    /** Durable alarm becomes the authoritative schedule. */
+    await syncSchedule(newGoat);
+
+    const runtime = await ensureGoatRuntime(newGoat);
+
+    /**
+     * THE FIRST ANALYSIS MUST NOT BLOCK THIS RESPONSE.
+     *
+     * This route used to `await` a full reasoning run before responding. A model
+     * call takes 15-40 seconds, and the reasoning-off retry can double it, so on
+     * Vercel the whole request blew past the function timeout and the user got
+     * `504 FUNCTION_INVOCATION_TIMEOUT` — for a GOAT that had in fact been
+     * created, scheduled and persisted successfully. The response was lost
+     * while the work completed.
+     *
+     * Worse, a timed-out invocation is indistinguishable from a failed one: the
+     * user retries, and now there are two GOATs.
+     *
+     * So the first analysis is dispatched, not awaited. `wake()` is fire-and-
+     * forget and its result reaches the UI through the normal poll, exactly
+     * like any later wake. The durable scheduler is also already armed by
+     * `syncSchedule` above, so even if this process is frozen the Worker's
+     * alarm re-arms the same analysis — the run is not lost, only its timing is
+     * no longer the request's problem.
+     *
+     * The client is told the GOAT exists and that the first analysis is running,
+     * so the UI can show a pending state instead of an empty one.
+     */
+    void runtime
+      .wake(
+        "Initial analysis on deployment",
+        "MANUAL_REEVALUATE",
+        markets.resolved[0],
+      )
+      .catch((err) => {
+        // Already recorded on the runtime state; never surface as an unhandled
+        // rejection from a detached promise.
+        console.error("[api] Initial GOAT analysis failed:", err);
+      });
+
+    res.json({
+      goat: newGoat,
+      runtimeState: runtime.getState(),
+      dataMode: marketProvider.dataMode,
+      /**
+       * Explicit, so the UI can show "first analysis running" rather than an
+       * empty state that looks like the GOAT did nothing.
+       */
+      firstAnalysisPending: true,
+    });
+  }),
+);
 
 // ---- Stop / Play / schedule ------------------------------------------
 
-apiRouter.post('/goats/:id/status', handle(async (req, res) => {
-  const user = requireUser(req);
-  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
-  if (!goat) return notFound(res);
+apiRouter.post(
+  "/goats/:id/status",
+  handle(async (req, res) => {
+    const user = requireUser(req);
 
-  const action = req.body?.action;
-  if (action !== 'PAUSE' && action !== 'PLAY') {
-    return fail(res, 400, 'INVALID_ACTION', 'action must be PAUSE or PLAY.');
-  }
+    const action = req.body?.action;
+    if (action !== "PAUSE" && action !== "PLAY") {
+      return fail(res, 400, "INVALID_ACTION", "action must be PAUSE or PLAY.");
+    }
 
-  const pausing = action === 'PAUSE';
-  const now = new Date().toISOString();
-  const updated: FundGoat = {
-    ...goat,
-    status: pausing ? 'PAUSED' : 'WATCHING',
-    updatedAt: now,
-  };
+    let goat: FundGoat & {
+      runtimeState: GoatRuntimeState;
+      schedule: GoatSchedule;
+    };
+    try {
+      goat = await setGoatStatusFor(
+        user.uid,
+        req.params.id,
+        action === "PAUSE",
+      );
+    } catch (err) {
+      if (err instanceof NotFoundError) return notFound(res);
+      throw err;
+    }
 
-  await persistence.goats.save(updated);
+    res.json({
+      goat,
+      status: goat.status,
+      runtimeState: goat.runtimeState,
+      schedule: goat.schedule,
+      dataMode: marketProvider.dataMode,
+    });
+  }),
+);
 
-  /** A paused GOAT must have its alarm cleared, not merely ignored locally. */
-  await syncSchedule(updated);
+apiRouter.patch(
+  "/goats/:id/schedule",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
 
-  // Re-attach so the actor picks up the new status, then apply the action.
-  const runtime = await ensureGoatRuntime(updated);
-  const state = pausing ? runtime.pause() : runtime.play();
+    const hasScheduleField =
+      req.body?.schedule !== undefined && req.body?.schedule !== null;
+    const hasTimeframeField =
+      req.body?.timeframe !== undefined && req.body?.timeframe !== null;
 
-  res.json({
-    goat: updated,
-    status: updated.status,
-    runtimeState: state,
-    schedule: runtime.getConfig().schedule,
-    dataMode: marketProvider.dataMode,
-  });
-}));
+    if (!hasScheduleField && !hasTimeframeField) {
+      return fail(
+        res,
+        400,
+        "INVALID_INPUT",
+        "Provide a schedule, a timeframe, or both.",
+      );
+    }
 
-apiRouter.patch('/goats/:id/schedule', handle(async (req, res) => {
-  const user = requireUser(req);
-  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
-  if (!goat) return notFound(res);
+    const schedule: GoatSchedule = hasScheduleField
+      ? normaliseSchedule(req.body.schedule as GoatSchedule)
+      : normaliseSchedule(goat.schedule);
 
-  const hasScheduleField =
-    req.body?.schedule !== undefined && req.body?.schedule !== null;
-  const hasTimeframeField =
-    req.body?.timeframe !== undefined && req.body?.timeframe !== null;
+    const rawTimeframe = hasTimeframeField ? req.body.timeframe : undefined;
 
-  if (!hasScheduleField && !hasTimeframeField) {
-    return fail(
-      res,
-      400,
-      'INVALID_INPUT',
-      'Provide a schedule, a timeframe, or both.',
+    if (
+      hasTimeframeField &&
+      !TRACKING_TIMEFRAMES.includes(rawTimeframe as never)
+    ) {
+      return fail(
+        res,
+        400,
+        "INVALID_TIMEFRAME",
+        `timeframe must be one of: ${TRACKING_TIMEFRAMES.join(", ")}.`,
+      );
+    }
+
+    let updated: FundGoat;
+    try {
+      updated = await patchGoatScheduleFor(
+        user.uid,
+        req.params.id,
+        schedule,
+        rawTimeframe,
+      );
+    } catch (err) {
+      if (err instanceof NotFoundError) return notFound(res);
+      throw err;
+    }
+
+    const effectiveTimeframe =
+      rawTimeframe !== undefined
+        ? normaliseTrackingTimeframe(rawTimeframe)
+        : updated.timeframe;
+
+    res.json({
+      goat: updated,
+      schedule: updated.schedule,
+      timeframe: effectiveTimeframe,
+      scheduler: scheduler.health(),
+      dataMode: marketProvider.dataMode,
+    });
+  }),
+);
+
+apiRouter.delete(
+  "/goats/:id",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
+
+    // 1. Stop timers/subscriptions and remove the runtime actor.
+    durableObjectRegistry.remove(goat.id);
+    // 2. Clear the durable alarm so a deleted GOAT cannot wake.
+    await scheduler.cancel(goat.id).catch((err) => {
+      console.error("[scheduler] cancel failed:", err);
+    });
+    // 3. Remove persisted data.
+    await persistence.goats.delete(goat.id);
+
+    res.json({ success: true, deletedId: goat.id });
+  }),
+);
+
+apiRouter.post(
+  "/goats/:id/wake",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
+
+    const runtime = await ensureGoatRuntime(goat);
+    const reason =
+      typeof req.body?.reason === "string" && req.body.reason.trim()
+        ? req.body.reason.trim().slice(0, 200)
+        : "Manual user-requested reevaluation";
+    const market =
+      typeof req.body?.market === "string" &&
+      goat.markets.includes(req.body.market)
+        ? req.body.market
+        : goat.markets[0];
+
+    const state = await runtime.wake(reason, "MANUAL_REEVALUATE", market);
+    res.json({ state, dataMode: marketProvider.dataMode });
+  }),
+);
+
+apiRouter.post(
+  "/goats/:id/chat",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const question = req.body?.question;
+    if (typeof question !== "string" || !question.trim()) {
+      return fail(res, 400, "INVALID_INPUT", "Question is required.");
+    }
+    if (question.length > 2000) {
+      return fail(res, 400, "INVALID_INPUT", "Question too long.");
+    }
+
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
+
+    await ensureGoatRuntime(goat);
+    const { context, model } = await buildGoatContext(
+      { goats: persistence.goats, skills: persistence.skills, marketProvider },
+      goat.id,
+      user.uid,
     );
-  }
+    const runtime = durableObjectRegistry.get(goat.id);
+    const enriched = {
+      ...context,
+      activeThesis: runtime?.getState().currentThesis ?? null,
+    };
 
-  const schedule = hasScheduleField
-    ? normaliseSchedule(req.body.schedule as GoatSchedule)
-    : normaliseSchedule(goat.schedule);
-
-  /**
-   * Server-side validation. An unknown timeframe is rejected explicitly here
-   * rather than silently coerced, because the user is choosing a cadence and
-   * silently substituting another one would be misleading.
-   */
-  const timeframe = hasTimeframeField
-    ? req.body.timeframe
-    : goat.timeframe;
-
-  if (
-    hasTimeframeField &&
-    !TRACKING_TIMEFRAMES.includes(timeframe as never)
-  ) {
-    return fail(
-      res,
-      400,
-      'INVALID_TIMEFRAME',
-      `timeframe must be one of: ${TRACKING_TIMEFRAMES.join(', ')}.`,
+    const answer = await reasoningGateway.answerGoatQuestion(
+      question.trim(),
+      enriched,
+      model,
     );
-  }
+    res.json({ answer, dataMode: marketProvider.dataMode });
+  }),
+);
 
-  const updated: FundGoat = {
-    ...goat,
-    schedule,
-    timeframe: normaliseTrackingTimeframe(timeframe),
-    updatedAt: new Date().toISOString(),
-  };
-
-  await persistence.goats.save(updated);
-
-  /** A changed schedule is a new generation; stale alarms are rejected. */
-  await syncSchedule(updated);
-
-  const runtime = await ensureGoatRuntime(updated);
-  runtime.setSchedule(schedule);
-  runtime.updateConfig(updated, await allSkillsFor(user.uid));
-
-  res.json({
-    goat: updated,
-    schedule,
-    timeframe: updated.timeframe,
-    scheduler: scheduler.health(),
-    dataMode: marketProvider.dataMode,
-  });
-}));
-
-
-apiRouter.delete('/goats/:id', handle(async (req, res) => {
-  const user = requireUser(req);
-  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
-  if (!goat) return notFound(res);
-
-  // 1. Stop timers/subscriptions and remove the runtime actor.
-  durableObjectRegistry.remove(goat.id);
-  // 2. Clear the durable alarm so a deleted GOAT cannot wake.
-  await scheduler.cancel(goat.id).catch((err) => {
-    console.error('[scheduler] cancel failed:', err);
-  });
-  // 3. Remove persisted data.
-  await persistence.goats.delete(goat.id);
-
-  res.json({ success: true, deletedId: goat.id });
-}));
-
-apiRouter.post('/goats/:id/wake', handle(async (req, res) => {
-  const user = requireUser(req);
-  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
-  if (!goat) return notFound(res);
-
-  const runtime = await ensureGoatRuntime(goat);
-  const reason =
-    typeof req.body?.reason === 'string' && req.body.reason.trim()
-      ? req.body.reason.trim().slice(0, 200)
-      : 'Manual user-requested reevaluation';
-  const market =
-    typeof req.body?.market === 'string' && goat.markets.includes(req.body.market)
-      ? req.body.market
-      : goat.markets[0];
-
-  const state = await runtime.wake(reason, 'MANUAL_REEVALUATE', market);
-  res.json({ state, dataMode: marketProvider.dataMode });
-}));
-
-apiRouter.post('/goats/:id/chat', handle(async (req, res) => {
-  const user = requireUser(req);
-  const question = req.body?.question;
-  if (typeof question !== 'string' || !question.trim()) {
-    return fail(res, 400, 'INVALID_INPUT', 'Question is required.');
-  }
-  if (question.length > 2000) {
-    return fail(res, 400, 'INVALID_INPUT', 'Question too long.');
-  }
-
-  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
-  if (!goat) return notFound(res);
-
-  await ensureGoatRuntime(goat);
-  const { context, model } = await buildGoatContext(
-    { goats: persistence.goats, skills: persistence.skills, marketProvider },
-    goat.id,
-    user.uid,
-  );
-  const runtime = durableObjectRegistry.get(goat.id);
-  const enriched = { ...context, activeThesis: runtime?.getState().currentThesis ?? null };
-
-  const answer = await reasoningGateway.answerGoatQuestion(question.trim(), enriched, model);
-  res.json({ answer, dataMode: marketProvider.dataMode });
-}));
-
-apiRouter.get('/goats/:id/signals', handle(async (req, res) => {
-  const user = requireUser(req);
-  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
-  if (!goat) return notFound(res);
-  const signals: TradeSignal[] = await persistence.signals.listByGoat(goat.id, 100);
-  res.json({ signals });
-}));
+apiRouter.get(
+  "/goats/:id/signals",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
+    const signals: TradeSignal[] = await persistence.signals.listByGoat(
+      goat.id,
+      100,
+    );
+    res.json({ signals });
+  }),
+);
 
 /** Loads one of a caller-owned GOAT's signals, or 404s without leaking existence. */
 async function ownedSignal(
   req: Parameters<typeof requireUser>[0],
   userId: string,
 ): Promise<{ goat: FundGoat; signal: TradeSignal } | null> {
-  const goat = await persistence.goats.getForUser(String(req.params.id), userId);
+  const goat = await persistence.goats.getForUser(
+    String(req.params.id),
+    userId,
+  );
   if (!goat) return null;
   const signals = await persistence.signals.listByGoat(goat.id, 500);
   const signal = signals.find((s) => s.id === String(req.params.signalId));
@@ -4096,83 +4949,91 @@ async function ownedSignal(
  *     order, so it is never blocked by the policy — but it IS persisted, so
  *     web and Telegram read the same finalised state.
  */
-apiRouter.post('/goats/:id/signals/:signalId/decision', handle(async (req, res) => {
-  const user = requireUser(req);
-  const owned = await ownedSignal(req, user.uid);
-  if (!owned) return notFound(res);
-  const { goat, signal } = owned;
+apiRouter.post(
+  "/goats/:id/signals/:signalId/decision",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const owned = await ownedSignal(req, user.uid);
+    if (!owned) return notFound(res);
+    const { goat, signal } = owned;
 
-  const decision = req.body?.decision;
-  if (decision !== 'ACCEPTED' && decision !== 'REJECTED') {
-    return fail(res, 400, 'INVALID_INPUT', 'decision must be ACCEPTED or REJECTED.');
-  }
+    const decision = req.body?.decision;
+    if (decision !== "ACCEPTED" && decision !== "REJECTED") {
+      return fail(
+        res,
+        400,
+        "INVALID_INPUT",
+        "decision must be ACCEPTED or REJECTED.",
+      );
+    }
 
-  // 1. Write-once, checked SERVER-side against the persisted record.
-  if (signal.decision) {
-    return fail(
-      res,
-      409,
-      'ALREADY_FINALIZED',
-      `This proposal was already ${signal.decision.toLowerCase()} at ${signal.decidedAt ?? 'an earlier time'} and cannot be decided again.`,
-    );
-  }
-
-  // An expired proposal can be rejected (closing it out) but not accepted.
-  const expired = signal.expiresAt
-    ? Date.parse(signal.expiresAt) < Date.now()
-    : false;
-
-  // 2. Acceptance passes through the SAME execution policy the executor uses.
-  if (decision === 'ACCEPTED') {
-    const execution = propDaoFor(user.uid).policyStatus();
-
-    if (!execution.enabled || !execution.authorised) {
+    // 1. Write-once, checked SERVER-side against the persisted record.
+    if (signal.decision) {
       return fail(
         res,
         409,
-        'EXECUTION_DISABLED',
-        `${execution.summary} ${execution.termsSummary}`,
+        "ALREADY_FINALIZED",
+        `This proposal was already ${signal.decision.toLowerCase()} at ${signal.decidedAt ?? "an earlier time"} and cannot be decided again.`,
       );
     }
-    if (expired) {
-      return fail(
-        res,
-        409,
-        'PROPOSAL_EXPIRED',
-        'This proposal has expired. Review the current market before approving a new one.',
-      );
+
+    // An expired proposal can be rejected (closing it out) but not accepted.
+    const expired = signal.expiresAt
+      ? Date.parse(signal.expiresAt) < Date.now()
+      : false;
+
+    // 2. Acceptance passes through the SAME execution policy the executor uses.
+    if (decision === "ACCEPTED") {
+      const execution = propDaoFor(user.uid).policyStatus();
+
+      if (!execution.enabled || !execution.authorised) {
+        return fail(
+          res,
+          409,
+          "EXECUTION_DISABLED",
+          `${execution.summary} ${execution.termsSummary}`,
+        );
+      }
+      if (expired) {
+        return fail(
+          res,
+          409,
+          "PROPOSAL_EXPIRED",
+          "This proposal has expired. Review the current market before approving a new one.",
+        );
+      }
     }
-  }
 
-  const now = new Date().toISOString();
-  const updated: TradeSignal = {
-    ...signal,
-    decision,
-    decidedAt: now,
-    decisionNote:
-      typeof req.body?.note === 'string' && req.body.note.trim()
-        ? req.body.note.trim().slice(0, 500)
-        : undefined,
-    updatedAt: now,
-  };
+    const now = new Date().toISOString();
+    const updated: TradeSignal = {
+      ...signal,
+      decision,
+      decidedAt: now,
+      decisionNote:
+        typeof req.body?.note === "string" && req.body.note.trim()
+          ? req.body.note.trim().slice(0, 500)
+          : undefined,
+      updatedAt: now,
+    };
 
-  const persisted = await persistence.signals.update(updated);
-  if (!persisted) {
-    return fail(res, 404, 'NOT_FOUND', 'That proposal no longer exists.');
-  }
+    const persisted = await persistence.signals.update(updated);
+    if (!persisted) {
+      return fail(res, 404, "NOT_FOUND", "That proposal no longer exists.");
+    }
 
-  res.json({
-    signal: updated,
-    decision,
-    /**
-     * Always returned so the UI can state the truth next to the decision:
-     * a recorded ACCEPTANCE is a user decision record, and whether an ORDER
-     * exists is governed by this object — never by the button press.
-     */
-    execution: propDaoFor(user.uid).policyStatus(),
-    dataMode: marketProvider.dataMode,
-  });
-}));
+    res.json({
+      signal: updated,
+      decision,
+      /**
+       * Always returned so the UI can state the truth next to the decision:
+       * a recorded ACCEPTANCE is a user decision record, and whether an ORDER
+       * exists is governed by this object — never by the button press.
+       */
+      execution: propDaoFor(user.uid).policyStatus(),
+      dataMode: marketProvider.dataMode,
+    });
+  }),
+);
 
 /**
  * PROPOSAL AI ASSISTANT
@@ -4187,163 +5048,184 @@ apiRouter.post('/goats/:id/signals/:signalId/decision', handle(async (req, res) 
  * assistant is READ-ONLY by construction: there is no code path from this
  * route to a proposal mutation or an order.
  */
-apiRouter.post('/goats/:id/signals/:signalId/ask', handle(async (req, res) => {
-  const user = requireUser(req);
-  const owned = await ownedSignal(req, user.uid);
-  if (!owned) return notFound(res);
-  const { goat, signal } = owned;
+apiRouter.post(
+  "/goats/:id/signals/:signalId/ask",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const owned = await ownedSignal(req, user.uid);
+    if (!owned) return notFound(res);
+    const { goat, signal } = owned;
 
-  const question = req.body?.question;
-  if (typeof question !== 'string' || !question.trim()) {
-    return fail(res, 400, 'INVALID_INPUT', 'Question is required.');
-  }
-  if (question.length > 2000) {
-    return fail(res, 400, 'INVALID_INPUT', 'Question too long.');
-  }
+    const question = req.body?.question;
+    if (typeof question !== "string" || !question.trim()) {
+      return fail(res, 400, "INVALID_INPUT", "Question is required.");
+    }
+    if (question.length > 2000) {
+      return fail(res, 400, "INVALID_INPUT", "Question too long.");
+    }
 
-  await ensureGoatRuntime(goat);
-  const { context, model } = await buildGoatContext(
-    { goats: persistence.goats, skills: persistence.skills, marketProvider },
-    goat.id,
-    user.uid,
-  );
-  const runtime = durableObjectRegistry.get(goat.id);
+    await ensureGoatRuntime(goat);
+    const { context, model } = await buildGoatContext(
+      { goats: persistence.goats, skills: persistence.skills, marketProvider },
+      goat.id,
+      user.uid,
+    );
+    const runtime = durableObjectRegistry.get(goat.id);
 
-  const expired = signal.expiresAt
-    ? Date.parse(signal.expiresAt) < Date.now()
-    : false;
+    const expired = signal.expiresAt
+      ? Date.parse(signal.expiresAt) < Date.now()
+      : false;
 
-  const enriched = {
-    ...context,
-    activeThesis: runtime?.getState().currentThesis ?? null,
-    proposal: {
-      // The complete persisted proposal record — facts, not narration.
-      ...signal,
-      expired,
-      sourceGoat: {
-        id: goat.id,
-        name: goat.name,
-        goal: goat.goal,
-        markets: goat.markets,
-        timeframe: goat.timeframe,
-        schedule: goat.schedule,
-        skills: context.skills.map((s) => ({ id: s.id, name: s.name })),
+    const enriched = {
+      ...context,
+      activeThesis: runtime?.getState().currentThesis ?? null,
+      proposal: {
+        // The complete persisted proposal record — facts, not narration.
+        ...signal,
+        expired,
+        sourceGoat: {
+          id: goat.id,
+          name: goat.name,
+          goal: goat.goal,
+          markets: goat.markets,
+          timeframe: goat.timeframe,
+          schedule: goat.schedule,
+          skills: context.skills.map((s) => ({ id: s.id, name: s.name })),
+        },
+        // Execution restrictions travel WITH the proposal so the assistant can
+        // never imply an order is possible when the policy says otherwise.
+        execution: propDaoFor(user.uid).policyStatus(),
+        dataSource: marketProvider.dataMode,
       },
-      // Execution restrictions travel WITH the proposal so the assistant can
-      // never imply an order is possible when the policy says otherwise.
-      execution: propDaoFor(user.uid).policyStatus(),
-      dataSource: marketProvider.dataMode,
-    },
-  };
+    };
 
-  const answer = await reasoningGateway.answerGoatQuestion(
-    question.trim(),
-    enriched,
-    model,
-  );
-  res.json({ answer, dataMode: marketProvider.dataMode });
-}));
+    const answer = await reasoningGateway.answerGoatQuestion(
+      question.trim(),
+      enriched,
+      model,
+    );
+    res.json({ answer, dataMode: marketProvider.dataMode });
+  }),
+);
 
 // ---- Daily market recap ------------------------------------------------
 
-apiRouter.get('/markets/recaps', handle(async (req, res) => {
-  const symbol = String(req.query.symbol ?? '').trim();
-  if (!symbol) {
-    return fail(res, 400, 'INVALID_INPUT', 'symbol is required.');
-  }
+apiRouter.get(
+  "/markets/recaps",
+  handle(async (req, res) => {
+    const symbol = String(req.query.symbol ?? "").trim();
+    if (!symbol) {
+      return fail(res, 400, "INVALID_INPUT", "symbol is required.");
+    }
 
-  const limit = Math.min(
-    90,
-    Math.max(1, parseInt(String(req.query.limit ?? '30'), 10) || 30),
-  );
+    const limit = Math.min(
+      90,
+      Math.max(1, parseInt(String(req.query.limit ?? "30"), 10) || 30),
+    );
 
-  const recaps = await dailyRollup.listRecaps(symbol, limit);
+    const recaps = await dailyRollup.listRecaps(symbol, limit);
 
-  res.json({ symbol, recaps, dataMode: marketProvider.dataMode });
-}));
+    res.json({ symbol, recaps, dataMode: marketProvider.dataMode });
+  }),
+);
 
 /**
  * Forces a daily rollup. Idempotent, so a cron or an operator can call it
  * freely: re-running merges rather than creating a second record for the day.
  */
-apiRouter.post('/markets/rollup', handle(async (_req, res) => {
-  const recaps = await dailyRollup.rollUpAll();
-  res.json({ rolledUp: recaps.length, recaps });
-}));
+apiRouter.post(
+  "/markets/rollup",
+  handle(async (_req, res) => {
+    const recaps = await dailyRollup.rollUpAll();
+    res.json({ rolledUp: recaps.length, recaps });
+  }),
+);
 
 // ---- Backtest ----------------------------------------------------------
 
-apiRouter.post('/backtest/run', handle(async (req, res) => {
-  const user = requireUser(req);
-  const { goatId, market, period } = req.body ?? {};
+apiRouter.post(
+  "/backtest/run",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const { goatId, market, period } = req.body ?? {};
 
-  const goat = goatId
-    ? await persistence.goats.getForUser(String(goatId), user.uid)
-    : (await persistence.goats.listByUser(user.uid))[0];
-  if (!goat) {
-    return fail(res, 400, 'NO_GOAT', 'No GOAT available for backtest.');
-  }
-
-  const skills = (await allSkillsFor(user.uid)).filter((s) => goat.skillIds.includes(s.id));
-
-  /**
-   * AN EXPLICIT MARKET MUST BE HONOURED OR REFUSED — NEVER SUBSTITUTED.
-   *
-   * The previous code fell back to `goat.markets[0]` whenever the requested
-   * market was not in the GOAT's list, so a request for a retired symbol
-   * (`EUR/USD`) silently backtested a completely different market and
-   * returned a confident, meaningless result. A wrong backtest is worse than
-   * no backtest: it is a number the user will act on.
-   */
-  let selectedMarket: string;
-  if (market !== undefined && market !== null && market !== '') {
-    if (typeof market !== 'string') {
-      return fail(res, 400, 'INVALID_MARKET', 'market must be a string.');
+    const goat = goatId
+      ? await persistence.goats.getForUser(String(goatId), user.uid)
+      : (await persistence.goats.listByUser(user.uid))[0];
+    if (!goat) {
+      return fail(res, 400, "NO_GOAT", "No GOAT available for backtest.");
     }
-    if (!goat.markets.includes(market)) {
+
+    const skills = (await allSkillsFor(user.uid)).filter((s) =>
+      goat.skillIds.includes(s.id),
+    );
+
+    /**
+     * AN EXPLICIT MARKET MUST BE HONOURED OR REFUSED — NEVER SUBSTITUTED.
+     *
+     * The previous code fell back to `goat.markets[0]` whenever the requested
+     * market was not in the GOAT's list, so a request for a retired symbol
+     * (`EUR/USD`) silently backtested a completely different market and
+     * returned a confident, meaningless result. A wrong backtest is worse than
+     * no backtest: it is a number the user will act on.
+     */
+    let selectedMarket: string;
+    if (market !== undefined && market !== null && market !== "") {
+      if (typeof market !== "string") {
+        return fail(res, 400, "INVALID_MARKET", "market must be a string.");
+      }
+      if (!goat.markets.includes(market)) {
+        return fail(
+          res,
+          400,
+          "INVALID_MARKET",
+          `This GOAT does not watch "${market}". Its markets are: ${goat.markets.join(", ")}.`,
+        );
+      }
+      selectedMarket = market;
+    } else {
+      selectedMarket = goat.markets[0];
+    }
+
+    if (!selectedMarket) {
       return fail(
         res,
         400,
-        'INVALID_MARKET',
-        `This GOAT does not watch "${market}". Its markets are: ${goat.markets.join(', ')}.`,
+        "NO_MARKET",
+        "The GOAT has no market configured to backtest.",
       );
     }
-    selectedMarket = market;
-  } else {
-    selectedMarket = goat.markets[0];
-  }
 
-  if (!selectedMarket) {
-    return fail(res, 400, 'NO_MARKET', 'The GOAT has no market configured to backtest.');
-  }
+    /**
+     * Reject an unlisted market here rather than deep in the engine, so the
+     * user gets the real reason and a suggestion instead of a 500 carrying an
+     * engine stack message.
+     */
+    await resolveMarketsForGoat([selectedMarket]).catch(() => undefined);
+    if (!marketProvider.getMarketMetadata(selectedMarket)) {
+      return fail(
+        res,
+        400,
+        "MARKET_UNAVAILABLE",
+        `Historical data is unavailable for "${selectedMarket}". Search for it under Markets, or pick another instrument.`,
+      );
+    }
+    const validPeriods = ["24h", "7d", "30d", "90d"];
+    const selectedPeriod = validPeriods.includes(period as string)
+      ? (period as string)
+      : "7d";
 
-  /**
-   * Reject an unlisted market here rather than deep in the engine, so the
-   * user gets the real reason and a suggestion instead of a 500 carrying an
-   * engine stack message.
-   */
-  await resolveMarketsForGoat([selectedMarket]).catch(() => undefined);
-  if (!marketProvider.getMarketMetadata(selectedMarket)) {
-    return fail(
-      res,
-      400,
-      'MARKET_UNAVAILABLE',
-      `Historical data is unavailable for "${selectedMarket}". Search for it under Markets, or pick another instrument.`,
-    );
-  }
-  const validPeriods = ['24h', '7d', '30d', '90d'];
-  const selectedPeriod = validPeriods.includes(period as string) ? (period as string) : '7d';
+    const result = await BacktestEngine.runBacktest({
+      goat,
+      skills,
+      market: selectedMarket,
+      period: selectedPeriod as "24h" | "7d" | "30d" | "90d",
+      provider: marketProvider,
+    });
 
-  const result = await BacktestEngine.runBacktest({
-    goat,
-    skills,
-    market: selectedMarket,
-    period: selectedPeriod as '24h' | '7d' | '30d' | '90d',
-    provider: marketProvider,
-  });
-
-  res.json({ result });
-}));
+    res.json({ result });
+  }),
+);
 
 /* ============================================================================
  * APP-WIDE AI CHATBOT
@@ -4366,16 +5248,16 @@ apiRouter.post('/backtest/run', handle(async (req, res) => {
  *   `chats/{chatId}/messages/{messageId}`.
  */
 
-const CHAT_MODEL = 'apodex/apodex-1.1-mini:free';
+const CHAT_MODEL = "apodex/apodex-1.1-mini:free";
 
 /** A concise, honest system persona for the assistant. */
 const CHAT_SYSTEM_PROMPT =
-  'You are a helpful, concise trading assistant for the SIRGOAT platform. ' +
-  'Speak plainly: describe ideas, definitions and mechanics clearly and briefly. ' +
-  'Never invent live price quotes, funding rates, volumes or news; if the user ' +
-  'asks for a current number you cannot compute, say you do not have live market ' +
-  'data and point them at the Markets tab instead. Do not run GOAT reasoning or ' +
-  'generate trading signals or proposals; answer questions instead.';
+  "You are a helpful, concise trading assistant for the SIRGOAT platform. " +
+  "Speak plainly: describe ideas, definitions and mechanics clearly and briefly. " +
+  "Never invent live price quotes, funding rates, volumes or news; if the user " +
+  "asks for a current number you cannot compute, say you do not have live market " +
+  "data and point them at the Markets tab instead. Do not run GOAT reasoning or " +
+  "generate trading signals or proposals; answer questions instead.";
 
 /** Resolve the chatbot credential: user OpenRouter key from the vault, else the server fallback. */
 async function resolveChatbotCredential(uid: string): Promise<{
@@ -4384,7 +5266,10 @@ async function resolveChatbotCredential(uid: string): Promise<{
 }> {
   const userKey = await keyStore.getOpenRouterKey(uid);
   if (userKey && isPlausibleOpenRouterKey(userKey)) {
-    return { provider: await reasoningGateway.providerFor(uid), key: userKey.trim() };
+    return {
+      provider: await reasoningGateway.providerFor(uid),
+      key: userKey.trim(),
+    };
   }
   if (userKey) {
     console.warn(
@@ -4395,38 +5280,67 @@ async function resolveChatbotCredential(uid: string): Promise<{
   return { provider: await reasoningGateway.providerFor(uid), key: serverKey };
 }
 
-async function sendToModel(key: string, messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<{
+async function sendToModel(
+  key: string,
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+): Promise<{
   content: string;
   model: string;
   usage?: unknown;
 }> {
-  const client = new OpenRouterClient({ apiKey: key, headers: { 'X-Title': 'SIRGOAT' } });
-  return client.complete({ model: CHAT_MODEL, messages, temperature: 0.3, maxTokens: 2000, responseFormat: false });
+  const client = new OpenRouterClient({
+    apiKey: key,
+    headers: { "X-Title": "SIRGOAT" },
+  });
+  return client.complete({
+    model: CHAT_MODEL,
+    messages,
+    temperature: 0.3,
+    maxTokens: 2000,
+    responseFormat: false,
+  });
 }
 
-apiRouter.get('/chats', authMiddleware, async (req, res) => {
+apiRouter.get("/chats", authMiddleware, async (req, res) => {
   const user = requireUser(req);
   try {
     const chats = await persistence.chats.listByUser(user.uid);
-    res.json({ chats: chats.map((c) => ({ id: c.id, title: c.title, lastMessageAt: c.lastMessageAt, updatedAt: c.updatedAt })) });
+    res.json({
+      chats: chats.map((c) => ({
+        id: c.id,
+        title: c.title,
+        lastMessageAt: c.lastMessageAt,
+        updatedAt: c.updatedAt,
+      })),
+    });
   } catch (error) {
-    return fail(res, 500, 'CHATS_UNAVAILABLE', 'Could not load your chat sessions.');
+    return fail(
+      res,
+      500,
+      "CHATS_UNAVAILABLE",
+      "Could not load your chat sessions.",
+    );
   }
 });
 
-apiRouter.post('/chat', authMiddleware, async (req, res) => {
+apiRouter.post("/chat", authMiddleware, async (req, res) => {
   const user = requireUser(req);
   const { message, chatId } = req.body ?? {};
 
-  if (typeof message !== 'string' || message.trim().length === 0) {
-    return fail(res, 400, 'EMPTY_MESSAGE', 'Message is required.');
+  if (typeof message !== "string" || message.trim().length === 0) {
+    return fail(res, 400, "EMPTY_MESSAGE", "Message is required.");
   }
 
   let chat: Chat | null;
   if (chatId) {
     chat = await persistence.chats.getForUser(String(chatId), user.uid);
     if (!chat) {
-      return fail(res, 404, 'CHAT_NOT_FOUND', 'This chat does not exist or is not yours.');
+      return fail(
+        res,
+        404,
+        "CHAT_NOT_FOUND",
+        "This chat does not exist or is not yours.",
+      );
     }
   } else {
     const newChat: Chat = {
@@ -4456,7 +5370,7 @@ apiRouter.post('/chat', authMiddleware, async (req, res) => {
     id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     chatId: chat.id,
     userId: user.uid,
-    role: 'user',
+    role: "user",
     content: message.trim(),
     createdAt: new Date().toISOString(),
   };
@@ -4465,17 +5379,26 @@ apiRouter.post('/chat', authMiddleware, async (req, res) => {
   try {
     const { provider, key } = await resolveChatbotCredential(user.uid);
     if (!key) {
-      return fail(res, 503, 'NO_MODEL_KEY', 'No AI model key is configured for this account. ' + 'Add a key in Settings to start a chat.');
+      return fail(
+        res,
+        503,
+        "NO_MODEL_KEY",
+        "No AI model key is configured for this account. " +
+          "Add a key in Settings to start a chat.",
+      );
     }
 
-    const messages = [...(await persistence.messages.listByChat(chat.id, 40)), { role: 'user' as const, content: message.trim() }];
+    const messages = [
+      ...(await persistence.messages.listByChat(chat.id, 40)),
+      { role: "user" as const, content: message.trim() },
+    ];
     const completion = await sendToModel(key, messages);
 
     const assistantMessage: ChatMessage = {
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       chatId: chat.id,
       userId: user.uid,
-      role: 'assistant',
+      role: "assistant",
       content: completion.content,
       model: completion.model,
       createdAt: new Date().toISOString(),
@@ -4496,41 +5419,64 @@ apiRouter.post('/chat', authMiddleware, async (req, res) => {
       model: completion.model ?? CHAT_MODEL,
     });
   } catch (error) {
-    const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-    return fail(res, 502, 'CHAT_FAILED', `The assistant could not respond: ${code}`);
+    const code = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+    return fail(
+      res,
+      502,
+      "CHAT_FAILED",
+      `The assistant could not respond: ${code}`,
+    );
   }
 });
 
-apiRouter.get('/chat', authMiddleware, async (req, res) => {
+apiRouter.get("/chat", authMiddleware, async (req, res) => {
   const user = requireUser(req);
-  const chatId = typeof req.query.chatId === 'string' ? req.query.chatId : null;
+  const chatId = typeof req.query.chatId === "string" ? req.query.chatId : null;
 
   if (!chatId) {
-    return fail(res, 400, 'CHAT_ID_REQUIRED', 'chatId query parameter is required.');
+    return fail(
+      res,
+      400,
+      "CHAT_ID_REQUIRED",
+      "chatId query parameter is required.",
+    );
   }
 
   const chat = await persistence.chats.getForUser(chatId, user.uid);
   if (!chat) {
-    return fail(res, 404, 'CHAT_NOT_FOUND', 'This chat does not exist or is not yours.');
+    return fail(
+      res,
+      404,
+      "CHAT_NOT_FOUND",
+      "This chat does not exist or is not yours.",
+    );
   }
 
   const messages = await persistence.messages.listByChat(chatId);
   res.json({ chat: { id: chat.id, title: chat.title }, messages });
 });
 
-apiRouter.delete('/chat/:id', authMiddleware, async (req, res) => {
+apiRouter.delete("/chat/:id", authMiddleware, async (req, res) => {
   const user = requireUser(req);
   const chatId = req.params.id;
 
   const chat = await persistence.chats.getForUser(chatId, user.uid);
   if (!chat) {
-    return fail(res, 404, 'CHAT_NOT_FOUND', 'This chat does not exist or is not yours.');
+    return fail(
+      res,
+      404,
+      "CHAT_NOT_FOUND",
+      "This chat does not exist or is not yours.",
+    );
   }
 
   try {
-    await Promise.all([persistence.chats.delete(chatId), persistence.messages.deleteByChat(chatId)]);
+    await Promise.all([
+      persistence.chats.delete(chatId),
+      persistence.messages.deleteByChat(chatId),
+    ]);
     res.json({ ok: true });
   } catch {
-    return fail(res, 500, 'DELETE_FAILED', 'Could not delete the chat.');
+    return fail(res, 500, "DELETE_FAILED", "Could not delete the chat.");
   }
 });

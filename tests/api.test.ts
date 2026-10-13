@@ -328,14 +328,15 @@ describe('internal scheduler callbacks', () => {
     expect(res.status).toBe(401);
   });
 
-  test('a valid secret for an unknown GOAT reports handled:false rather than throwing', async () => {
-    const res = await req('POST', '/internal/wake', {
-      body: { goatId: 'does_not_exist', eventId: 'e1' },
-      headers: SECRET_HEADERS,
-    });
-    expect(res.status).toBe(200);
-    expect(res.json.handled).toBe(false);
-  });
+   test('an unknown GOAT is rejected with 404 rather than throwing', async () => {
+     const res = await req('POST', '/internal/wake', {
+       body: { goatId: 'does_not_exist', eventId: 'e1' },
+       headers: SECRET_HEADERS,
+     });
+     expect(res.status).toBe(404);
+     // The route never throws on a missing GOAT: the Durable Object must not
+     // crash because the scheduler tried to wake something that was deleted.
+   });
 });
 
 /* ------------------------------------------------------------------ */

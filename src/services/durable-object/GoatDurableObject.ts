@@ -1567,6 +1567,15 @@ export class GoatDurableObject {
     return `gen_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   }
 
+  /**
+   * Whether a reasoning run is currently in flight. This is in-memory runtime
+   * state (not persisted), so it can only answer for the process that owns the
+   * actor — which is exactly where this method is used (the scheduler routes).
+   */
+  isEvaluating(): boolean {
+    return this.runtimeState.isEvaluating;
+  }
+
   private newId(prefix: string): string {
     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   }

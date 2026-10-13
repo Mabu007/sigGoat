@@ -30,20 +30,27 @@
  * accidental and naive abuse, not a distributed quota.
  */
 
+/** Intent recognition on free text: "every 5 minutes", "analyse gold", "stop". */
+export type TelegramIntent =
+  | { kind: "schedule"; minutes: number }
+  | { kind: "analyse"; market?: string }
+  | { kind: "stop" };
+
 export type TelegramCommand =
-  | { kind: 'start' }
-  | { kind: 'help' }
-  | { kind: 'status' }
-  | { kind: 'analyse'; market?: string }
-  | { kind: 'create'; args: string }
-  | { kind: 'processes' }
-  | { kind: 'trigger'; processId: string }
-  | { kind: 'pause'; processId: string }
-  | { kind: 'resume'; processId: string }
-  | { kind: 'delete'; processId: string }
-  | { kind: 'connect'; args: string }
-  | { kind: 'unknown'; command: string }
-  | { kind: 'chat'; text: string };
+  | { kind: "start" }
+  | { kind: "help" }
+  | { kind: "status" }
+  | { kind: "analyse"; market?: string }
+  | { kind: "create"; args: string }
+  | { kind: "intent"; intent: TelegramIntent }
+  | { kind: "processes" }
+  | { kind: "trigger"; processId: string }
+  | { kind: "pause"; processId: string }
+  | { kind: "resume"; processId: string }
+  | { kind: "delete"; processId: string }
+  | { kind: "connect"; args: string }
+  | { kind: "unknown"; command: string }
+  | { kind: "chat"; text: string };
 
 /**
  * Longest accepted process id.
@@ -58,7 +65,7 @@ const PROCESS_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** A process id, or null when the argument is not a usable one. */
 export function normaliseProcessId(raw: string): string | null {
-  const trimmed = raw.trim().replace(/^@/, '');
+  const trimmed = raw.trim().replace(/^@/, "");
   if (!trimmed) return null;
   if (trimmed.length > MAX_PROCESS_ID_LENGTH) return null;
   return PROCESS_ID_PATTERN.test(trimmed) ? trimmed : null;
@@ -72,7 +79,7 @@ export function normaliseProcessId(raw: string): string | null {
  */
 function tokenize(text: string): { command: string; args: string } {
   const parts = text.trim().split(/\s+/).filter(Boolean);
-  const raw = parts[0] ?? '';
+  const raw = parts[0] ?? "";
 
   /**
    * Normalise to a bare command name.
@@ -85,17 +92,117 @@ function tokenize(text: string): { command: string; args: string } {
    * `/processes@my_bot` becomes `processes@my_bot` and matches nothing — which
    * is exactly the "commands silently do nothing in a group" symptom.
    */
-  const withoutBot = raw.indexOf('@') === -1 ? raw : raw.slice(0, raw.indexOf('@'));
-  const command = withoutBot.replace(/^\//, '').toLowerCase();
+  const withoutBot =
+    raw.indexOf("@") === -1 ? raw : raw.slice(0, raw.indexOf("@"));
+  const command = withoutBot.replace(/^\//, "").toLowerCase();
 
-  return { command, args: parts.slice(1).join(' ') };
+  return { command, args: parts.slice(1).join(" ") };
 }
 
 /** `processes`, and the `list` alias people reach for first. */
-const LIST_COMMANDS = new Set(['processes', 'list', 'ps']);
+const LIST_COMMANDS = new Set(["processes", "list", "ps"]);
 
 /** `analyse` / `analyze`, both spellings people actually type. */
-const ANALYSE_COMMANDS = new Set(['analyse', 'analyze']);
+const ANALYSE_COMMANDS = new Set(["analyse", "analyze"]);
+
+/**
+ * Detect natural-language intents in free text (messages that are not Telegram
+ * commands). The pattern is deliberately short and literal so it never guesses:
+ *   - "every 5 minutes" / "every 10m" / "every hour" / "every day" /
+ *     "every week" -> schedule the GOAT on that cadence (floored at 5 minutes)
+ *   - "analyse gold" / "analyse xyz:GOLD now" / "analyse"
+ *     -> run a fresh analysis, optionally on a specific market
+ *   - "stop" / "cancel"
+ *     -> pause the GOAT
+ *
+ * Returning null falls through to the normal command parser or the AI gateway.
+ */
+export function parseTelegramIntent(text: string): TelegramIntent | null {
+  const t = text.trim().toLowerCase();
+
+  /** Schedule cadence: "every 5 minutes", "every 10m", "every hour/day/week",
+   * plus multipliers like "every 2 hours" or "every 3 days". Floors at 5
+   * minutes per the cadence contract. */
+  const n = t.match(
+    /\bevery\s+(\d+)\s*(m|min|mins|minutes|hour|hours|day|days|week|weeks)?\b/,
+  );
+  if (n) {
+    const num = Math.max(1, Math.round(Number(n[1])));
+    const unit = (n[2] ?? "minute").toLowerCase();
+    const factor = unit.startsWith("week")
+      ? 60 * 24 * 7
+      : unit.startsWith("day")
+        ? 60 * 24
+        : unit.startsWith("hour")
+          ? 60
+          : 1;
+    return { kind: "schedule", minutes: Math.max(5, num * factor) };
+  }
+  /** Fallback for the singular "every hour/day/week" phrasing. */
+  if (/\bevery\s+hour(s)?\b/.test(t)) return { kind: "schedule", minutes: 60 };
+  if (/\bevery\s+day(s)?\b/.test(t))
+    return { kind: "schedule", minutes: 60 * 24 };
+  if (/\bevery\s+week\w*\b/.test(t))
+    return { kind: "schedule", minutes: 60 * 24 * 7 };
+
+  /** Analyse: "analyse gold", "analyse xyz:GOLD now". The token is captured
+   * as-is and resolved against the venue's catalogue by the router, which is
+   * what makes free-text mentions ("gold", "aapl", "xauusd") actually work. */
+  const m = t.match(/\b(?:analyse|analyze)\s+(\S+)/);
+  if (m) {
+    return { kind: "analyse", market: m[1] };
+  }
+  if (/\b(?:analyse|analyze)\b/.test(t)) return { kind: "analyse" };
+
+  /** Stop / cancel. */
+  if (/\bstop\b/.test(t) || /\bcancel\b/.test(t)) {
+    return { kind: "stop" };
+  }
+
+  return null;
+}
+
+/**
+ * A plausible market symbol: uppercase/alphanumeric, optionally category-tagged
+ * with a colon (e.g. "xyz:GOLD", "BTC/USD"). Rejects whitespace and clearly
+ * natural words so "analyse now" stays a normal question.
+ */
+function looksLikeMarketSymbol(raw: string): boolean {
+  const s = raw.trim();
+  return (
+    s.length >= 3 && !/\s/.test(s) && (s.includes(":") || /^[A-Z0-9]/.test(s))
+  );
+}
+
+/**
+ * Parse the argument of /schedule: "every 5 minutes", "every 2 hours",
+ * "daily", "weekly", "hourly". Returns minutes, or null when the argument is
+ * not usable. Shares its parsing with the natural-language intent so
+ * "/schedule every 2 hours" and "every 2 hours" behave identically.
+ */
+function parseScheduleArgs(args: string): number | null {
+  const t = args.trim();
+  const m = t.match(
+    /\bevery\s+(\d+)\s*(?:m|min|mins|minutes|hour|hours|day|days|week|weeks)?\b/i,
+  );
+  if (m) {
+    const num = Math.max(1, Math.round(Number(m[1])));
+    const unit = (m[2] ?? "minutes").toLowerCase();
+    const factor = unit.startsWith("week")
+      ? 60 * 24 * 7
+      : unit.startsWith("day")
+        ? 60 * 24
+        : unit.startsWith("hour")
+          ? 60
+          : 1;
+    return Math.max(5, num * factor);
+  }
+  const a = args.toLowerCase();
+  if (a === "daily" || a === "every day") return 60 * 24;
+  if (a === "weekly" || a === "every week") return 60 * 24 * 7;
+  if (a === "hourly" || a === "every hour") return 60;
+  return null;
+}
 
 /**
  * Parses a message body into a command.
@@ -105,28 +212,47 @@ const ANALYSE_COMMANDS = new Set(['analyse', 'analyze']);
  */
 export function parseTelegramCommand(text: string): TelegramCommand {
   const trimmed = text.trim();
-  if (!trimmed) return { kind: 'chat', text: trimmed };
+  if (!trimmed) return { kind: "chat", text: trimmed };
 
   // A command must be the FIRST token. Anything else is free text for the AI.
-  if (!trimmed.startsWith('/')) {
-    return { kind: 'chat', text: trimmed };
+  if (!trimmed.startsWith("/")) {
+    // Natural-language shortcuts that are not Telegram commands: "every 5 minutes",
+    // "analyse gold", "stop". These are handled here so the user never pays an AI
+    // call to say what they mean.
+    const intent = parseTelegramIntent(trimmed);
+    if (intent) {
+      return { kind: "intent", intent };
+    }
+    return { kind: "chat", text: trimmed };
   }
 
   const { command, args } = tokenize(trimmed);
 
   // `command` is the bare name; the leading slash is stripped by `tokenize`.
-  if (command === 'start') return { kind: 'start' };
-  if (command === 'help') return { kind: 'help' };
-  if (command === 'status') return { kind: 'status' };
-  if (command === 'connect') return { kind: 'connect', args };
-  if (command === 'create') return { kind: 'create', args };
+  if (command === "start") return { kind: "start" };
+  if (command === "help") return { kind: "help" };
+  if (command === "status") return { kind: "status" };
+  if (command === "connect") return { kind: "connect", args };
+  if (command === "create") return { kind: "create", args };
 
-  if (LIST_COMMANDS.has(command)) return { kind: 'processes' };
+  if (LIST_COMMANDS.has(command)) return { kind: "processes" };
 
   if (ANALYSE_COMMANDS.has(command)) {
     // An optional market; the runtime falls back to the GOAT's first market.
     const market = normaliseProcessId(args);
-    return market ? { kind: 'analyse', market } : { kind: 'analyse' };
+    return market ? { kind: "analyse", market } : { kind: "analyse" };
+  }
+
+  if (command === "schedule") {
+    const minutes = parseScheduleArgs(args);
+    if (minutes === null) {
+      return { kind: "unknown", command: "/schedule" };
+    }
+    return { kind: "intent", intent: { kind: "schedule", minutes } };
+  }
+
+  if (command === "stop") {
+    return { kind: "intent", intent: { kind: "stop" } };
   }
 
   /**
@@ -136,21 +262,21 @@ export function parseTelegramCommand(text: string): TelegramCommand {
    * acting would either target an arbitrary process or silently no-op, and the
    * user would be told neither.
    */
-  const PROCESS_COMMANDS = new Set(['trigger', 'pause', 'resume', 'delete']);
+  const PROCESS_COMMANDS = new Set(["trigger", "pause", "resume", "delete"]);
 
   if (PROCESS_COMMANDS.has(command)) {
     const processId = normaliseProcessId(args);
     if (!processId) {
-      return { kind: 'unknown', command: `/${command} ${args}`.trim() };
+      return { kind: "unknown", command: `/${command} ${args}`.trim() };
     }
 
-    if (command === 'trigger') return { kind: 'trigger', processId };
-    if (command === 'pause') return { kind: 'pause', processId };
-    if (command === 'resume') return { kind: 'resume', processId };
-    return { kind: 'delete', processId };
+    if (command === "trigger") return { kind: "trigger", processId };
+    if (command === "pause") return { kind: "pause", processId };
+    if (command === "resume") return { kind: "resume", processId };
+    return { kind: "delete", processId };
   }
 
-  return { kind: 'unknown', command: trimmed.split(/\s+/)[0] };
+  return { kind: "unknown", command: trimmed.split(/\s+/)[0] };
 }
 
 /* ------------------------------------------------------------------ */
@@ -171,12 +297,14 @@ export class TelegramRateLimiter {
   private readonly maxPerWindow: number;
   private readonly maxChats: number;
 
-  constructor(options: {
-    windowMs?: number;
-    maxPerWindow?: number;
-    maxChats?: number;
-    now?: () => number;
-  } = {}) {
+  constructor(
+    options: {
+      windowMs?: number;
+      maxPerWindow?: number;
+      maxChats?: number;
+      now?: () => number;
+    } = {},
+  ) {
     this.windowMs = options.windowMs ?? 60_000;
     this.maxPerWindow = options.maxPerWindow ?? 10;
     this.maxChats = options.maxChats ?? 5_000;

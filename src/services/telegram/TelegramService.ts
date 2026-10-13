@@ -27,10 +27,16 @@
  * that could reach another user's process.
  */
 
-import { TradeSignal, GoatRuntimeState } from '../../types';
-import type { GoatReasoningContext } from '../ai/OpenRouterClient';
-import type { ReasoningGateway } from '../../server/reasoningGateway';
-import { parseTelegramCommand, type TelegramCommand } from './TelegramCommands';
+import {
+  TradeSignal,
+  GoatRuntimeState,
+  FundGoat,
+  GoatSchedule,
+} from "../../types";
+import { normaliseSchedule } from "../durable-object/GoatDurableObject";
+import type { GoatReasoningContext } from "../ai/OpenRouterClient";
+import type { ReasoningGateway } from "../../server/reasoningGateway";
+import { parseTelegramCommand, type TelegramCommand } from "./TelegramCommands";
 
 export interface TelegramSendMessageResponse {
   ok: boolean;
@@ -73,7 +79,7 @@ export interface TelegramResolution {
    * Forces a full reasoning run (manual "analyse now"). Optional so existing
    * callers/tests that only need chat keep working.
    */
-  requestAnalysis?: (reason: string) => Promise<string>;
+  requestAnalysis?: (reason: string, targetMarket?: string) => Promise<string>;
 }
 
 export interface TelegramUpdateHandlers {
@@ -90,9 +96,7 @@ export interface TelegramUpdateHandlers {
   ) => Promise<TelegramProcessDetail | null>;
 
   /** Every process the chat's owner may act on. */
-  listProcessesForChat?: (
-    chatId: string,
-  ) => Promise<TelegramProcessSummary[]>;
+  listProcessesForChat?: (chatId: string) => Promise<TelegramProcessSummary[]>;
 
   /** Creates a process for the chat's owner. */
   createProcessForChat?: (
@@ -121,6 +125,41 @@ export interface TelegramUpdateHandlers {
   /** The default process for a chat, used by chat and `/status`. */
   resolveGoatForChat: (chatId: string) => Promise<TelegramResolution | null>;
 
+  /**
+   * Resolve a specific GOAT by id for this chat (ownership enforced).
+   * The GOAT must belong to the chat's owner.
+   */
+  resolveGoatByIdForChat?: (
+    chatId: string,
+    goatId: string,
+  ) => Promise<{ resolution: TelegramResolution; goat: FundGoat } | null>;
+
+  /** Change a specific GOAT's schedule for this chat. */
+  changeScheduleForChat?: (
+    chatId: string,
+    goatId: string,
+    schedule: GoatSchedule,
+  ) => Promise<{ ok: boolean; message: string }>;
+
+  /** Pause or resume a specific GOAT for this chat. */
+  pauseGoatForChat?: (
+    chatId: string,
+    goatId: string,
+  ) => Promise<{ ok: boolean; message: string }>;
+
+  /** Resolve a free-text market mention to a provider-listed HIP-3 symbol. */
+  resolveMarketSymbol?: (
+    symbol: string,
+  ) => Promise<{ symbol: string; name: string } | null>;
+
+  /** Run one analysis for a specific GOAT, optionally on another market. */
+  requestAnalysisForChat?: (
+    chatId: string,
+    goatId: string,
+    reason: string,
+    targetMarket?: string,
+  ) => Promise<string>;
+
   getBotTokenForUser: (userId: string) => Promise<string | undefined>;
 }
 
@@ -144,7 +183,7 @@ export class TelegramService {
   /* ---------------------------------------------------------------- */
 
   formatSignalMessage(signal: TradeSignal, goatName: string): string {
-    if (signal.direction === 'NO_TRADE' || signal.status !== 'ACTIONABLE') {
+    if (signal.direction === "NO_TRADE" || signal.status !== "ACTIONABLE") {
       return (
         `🐐 *${goatName.toUpperCase()} · MARKET UPDATE*\n\n` +
         `Market: \`${signal.market}\`\n` +
@@ -154,13 +193,13 @@ export class TelegramService {
       );
     }
 
-    const emoji = signal.direction === 'LONG' ? '🟢' : '🔴';
+    const emoji = signal.direction === "LONG" ? "🟢" : "🔴";
     const orderLabel =
-      signal.orderType === 'LIMIT'
-        ? 'Buy/Sell Limit'
-        : signal.orderType === 'STOP'
-          ? 'Stop Order'
-          : 'Market Reference';
+      signal.orderType === "LIMIT"
+        ? "Buy/Sell Limit"
+        : signal.orderType === "STOP"
+          ? "Stop Order"
+          : "Market Reference";
 
     return (
       `🐐 *${signal.market} · CONDITIONAL SETUP*\n\n` +
@@ -169,10 +208,16 @@ export class TelegramService {
         ? `*Entry Zone:* \`${signal.entryZone.low} - ${signal.entryZone.high}\`\n`
         : signal.entry !== undefined
           ? `*Entry:* \`${signal.entry}\`\n`
-          : '') +
-      (signal.stopLoss !== undefined ? `*Invalidation (Stop):* \`${signal.stopLoss}\`\n` : '') +
-      (signal.takeProfit !== undefined ? `*Target:* \`${signal.takeProfit}\`\n` : '') +
-      (signal.riskReward ? `\n*R:R:* ${signal.riskReward} · *Confidence:* ${signal.confidence}%\n` : `\n*Confidence:* ${signal.confidence}%\n`) +
+          : "") +
+      (signal.stopLoss !== undefined
+        ? `*Invalidation (Stop):* \`${signal.stopLoss}\`\n`
+        : "") +
+      (signal.takeProfit !== undefined
+        ? `*Target:* \`${signal.takeProfit}\`\n`
+        : "") +
+      (signal.riskReward
+        ? `\n*R:R:* ${signal.riskReward} · *Confidence:* ${signal.confidence}%\n`
+        : `\n*Confidence:* ${signal.confidence}%\n`) +
       `\n*Thesis:*\n${signal.thesis.slice(0, 600)}\n\n` +
       `*Confirmation Required:*\n${signal.confirmationRequired.slice(0, 300)}\n\n` +
       `*Why this setup exists:*\n${signal.rationale.slice(0, 600)}\n\n` +
@@ -202,12 +247,10 @@ export class TelegramService {
       `🎯 *${goatName.toUpperCase()} · CONDITION MET*\n\n` +
       `Market: \`${trigger.market}\`\n` +
       `Waiting for: ${trigger.description}\n` +
-      (trigger.formula
-        ? `Condition: \`${trigger.formula}\`\n`
-        : '') +
+      (trigger.formula ? `Condition: \`${trigger.formula}\`\n` : "") +
       (trigger.calculatedValue !== undefined
         ? `Current value: \`${trigger.calculatedValue}\`\n`
-        : '') +
+        : "") +
       `\n_One of your GOAT's wait-for conditions is now satisfied. ` +
       `Re-analysing now — this is not an instruction to trade._`
     );
@@ -215,10 +258,13 @@ export class TelegramService {
 
   formatTrackerTriggeredMessage = this.formatTrackerTriggerMessage;
 
-  async sendTestMessage(chatId: string, botToken?: string): Promise<TelegramSendMessageResponse> {
+  async sendTestMessage(
+    chatId: string,
+    botToken?: string,
+  ): Promise<TelegramSendMessageResponse> {
     const token = botToken || this.fallbackBotToken;
     if (!token || !chatId) {
-      return { ok: false, description: 'Missing Bot Token or Chat ID.' };
+      return { ok: false, description: "Missing Bot Token or Chat ID." };
     }
 
     const text =
@@ -239,24 +285,27 @@ export class TelegramService {
   ): Promise<TelegramSendMessageResponse> {
     const token = botToken || this.fallbackBotToken;
     if (!token || !chatId) {
-      return { ok: false, description: 'No bot token configured.' };
+      return { ok: false, description: "No bot token configured." };
     }
 
     try {
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text,
-          parse_mode: 'Markdown',
-          disable_web_page_preview: true,
-        }),
-      });
+      const res = await fetch(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text,
+            parse_mode: "Markdown",
+            disable_web_page_preview: true,
+          }),
+        },
+      );
       return (await res.json()) as TelegramSendMessageResponse;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'unknown error';
-      console.error('[telegram] sendMessage error:', message);
+      const message = err instanceof Error ? err.message : "unknown error";
+      console.error("[telegram] sendMessage error:", message);
       return { ok: false, description: message };
     }
   }
@@ -273,32 +322,32 @@ export class TelegramService {
    */
   formatHelpMessage(): string {
     return [
-      '🐐 *SIRGOAT commands*',
-      '',
-      '/create <goal> <market> [timeframe]',
-      '   Create a monitoring process. Example:',
-      '   `/create watch xyz:GOLD for a breakout 15m`',
-      '',
-      '/processes',
-      '   List your processes with their ids and status.',
-      '',
-      '/trigger <PROCESS_ID>',
-      '   Run one evaluation now. This spends AI, so it is rate limited.',
-      '',
-      '/pause <PROCESS_ID>',
-      '   Stop evaluating a process. Its alarms are cleared, not just ignored.',
-      '',
-      '/resume <PROCESS_ID>',
-      '   Restart a paused process from its saved thesis.',
-      '',
-      '/analyse [market]',
-      '   Force a full analysis of your default process.',
-      '',
-      '/status',
-      '   Current state of your default process.',
-      '',
-      '_SIRGOAT produces analysis and alerts only. It never places an order._',
-    ].join('\n');
+      "🐐 *SIRGOAT commands*",
+      "",
+      "/create <goal> <market> [timeframe]",
+      "   Create a monitoring process. Example:",
+      "   `/create watch xyz:GOLD for a breakout 15m`",
+      "",
+      "/processes",
+      "   List your processes with their ids and status.",
+      "",
+      "/trigger <PROCESS_ID>",
+      "   Run one evaluation now. This spends AI, so it is rate limited.",
+      "",
+      "/pause <PROCESS_ID>",
+      "   Stop evaluating a process. Its alarms are cleared, not just ignored.",
+      "",
+      "/resume <PROCESS_ID>",
+      "   Restart a paused process from its saved thesis.",
+      "",
+      "/analyse [market]",
+      "   Force a full analysis of your default process.",
+      "",
+      "/status",
+      "   Current state of your default process.",
+      "",
+      "_SIRGOAT produces analysis and alerts only. It never places an order._",
+    ].join("\n");
   }
 
   /**
@@ -312,46 +361,48 @@ export class TelegramService {
   formatProcessesMessage(processes: TelegramProcessSummary[]): string {
     if (processes.length === 0) {
       return (
-        '🐐 *Your processes*\n\n' +
-        'You have no monitoring processes yet.\n' +
-        'Create one with `/create <goal> <market> [timeframe]`.'
+        "🐐 *Your processes*\n\n" +
+        "You have no monitoring processes yet.\n" +
+        "Create one with `/create <goal> <market> [timeframe]`."
       );
     }
 
     const lines = [`🐐 *Your processes* (${processes.length})\n`];
 
     for (const process of processes) {
-      const icon = process.status === 'PAUSED' ? '⏸' : '👁';
+      const icon = process.status === "PAUSED" ? "⏸" : "👁";
       lines.push(
         `${icon} *${process.name}*`,
         `   id: \`${process.id}\``,
-        `   markets: ${process.markets.join(', ')} · timeframe: ${process.timeframe}`,
-        '',
+        `   markets: ${process.markets.join(", ")} · timeframe: ${process.timeframe}`,
+        "",
       );
     }
 
-    lines.push(
-      `_Use /pause, /resume or /trigger with the id above._`,
-    );
+    lines.push(`_Use /pause, /resume or /trigger with the id above._`);
 
-    return lines.join('\n');
+    return lines.join("\n");
   }
 
   /** Small truthful status summary drawn from the runtime state (not fabricated). */
   formatStatusMessage(goatName: string, state: GoatRuntimeState): string {
     const lines = [`🐐 *${goatName.toUpperCase()} · STATUS*\n`];
-    lines.push(`State: ${state.status}${state.isEvaluating ? ' (evaluating…)' : ''}`);
+    lines.push(
+      `State: ${state.status}${state.isEvaluating ? " (evaluating…)" : ""}`,
+    );
     lines.push(`Data source: ${state.dataSource}`);
     lines.push(`Reasoning mode: ${state.reasoningMode}`);
     if (state.currentThesis) {
-      lines.push(`\n*Current thesis* (${state.currentThesis.directionalHypothesis}): ${state.currentThesis.confidence}% confidence`);
+      lines.push(
+        `\n*Current thesis* (${state.currentThesis.directionalHypothesis}): ${state.currentThesis.confidence}% confidence`,
+      );
     } else {
-      lines.push('\nNo active thesis yet.');
+      lines.push("\nNo active thesis yet.");
     }
     if (state.latestSignal) {
       lines.push(`\n${this.formatSignalMessage(state.latestSignal, goatName)}`);
     }
-    return lines.join('\n').slice(0, 4000);
+    return lines.join("\n").slice(0, 4000);
   }
 
   /**
@@ -363,10 +414,10 @@ export class TelegramService {
    */
   formatUnlinkedMessage(): string {
     return (
-      '🐐 Welcome to SIRGOAT!\n\n' +
-      'This chat is not linked to a SIRGOAT account yet.\n' +
-      'Open the SIRGOAT app, connect your bot token and chat id in Settings, then create a process.\n\n' +
-      'Run /help once you are connected.'
+      "🐐 Welcome to SIRGOAT!\n\n" +
+      "This chat is not linked to a SIRGOAT account yet.\n" +
+      "Open the SIRGOAT app, connect your bot token and chat id in Settings, then create a process.\n\n" +
+      "Run /help once you are connected."
     );
   }
 
@@ -374,9 +425,9 @@ export class TelegramService {
   formatUnknownCommandMessage(command: string): string {
     return (
       `I don't know the command \`${command.slice(0, 40)}\`.\n\n` +
-      'Available commands:\n' +
-      '/create · /processes · /trigger · /pause · /resume · /analyse · /status\n\n' +
-      'Run /help for the full list.'
+      "Available commands:\n" +
+      "/create · /processes · /trigger · /pause · /resume · /analyse · /status\n\n" +
+      "Run /help for the full list."
     );
   }
 
@@ -401,7 +452,7 @@ export class TelegramService {
     const parsed = this.parseMessage(update);
 
     if (!parsed) {
-      return { handled: false, reason: 'unsupported_update' };
+      return { handled: false, reason: "unsupported_update" };
     }
 
     const { chatId, text } = parsed;
@@ -416,8 +467,8 @@ export class TelegramService {
         ? await handlers.getBotTokenForUser(resolved.goat.userId)
         : undefined;
     } catch (err) {
-      console.error('[telegram] update resolution failed:', err);
-      return { handled: false, reason: 'resolution_error' };
+      console.error("[telegram] update resolution failed:", err);
+      return { handled: false, reason: "resolution_error" };
     }
 
     /**
@@ -432,7 +483,7 @@ export class TelegramService {
      */
     const sendToken = botToken;
 
-    if (command.kind === 'unknown') {
+    if (command.kind === "unknown") {
       if (sendToken) {
         await this.sendMessage(
           chatId,
@@ -443,17 +494,17 @@ export class TelegramService {
       return { handled: true, command: command.command };
     }
 
-    if (command.kind === 'help') {
+    if (command.kind === "help") {
       if (sendToken) {
         await this.sendMessage(chatId, this.formatHelpMessage(), sendToken);
       }
-      return { handled: true, command: '/help' };
+      return { handled: true, command: "/help" };
     }
 
-    if (command.kind === 'processes') {
+    if (command.kind === "processes") {
       await this.runGuarded(command.kind, async () => {
         if (!handlers.listProcessesForChat) {
-          throw new Error('Listing processes is not available for this chat.');
+          throw new Error("Listing processes is not available for this chat.");
         }
         const processes = await handlers.listProcessesForChat(chatId);
         await this.sendMessage(
@@ -462,18 +513,21 @@ export class TelegramService {
           sendToken,
         );
       });
-      return { handled: true, command: '/processes' };
+      return { handled: true, command: "/processes" };
     }
 
-    if (command.kind === 'create') {
+    if (command.kind === "create") {
       await this.runGuarded(command.kind, async () => {
         if (!handlers.createProcessForChat) {
-          throw new Error('Creating a process is not available for this chat.');
+          throw new Error("Creating a process is not available for this chat.");
         }
-        const result = await handlers.createProcessForChat(chatId, command.args);
+        const result = await handlers.createProcessForChat(
+          chatId,
+          command.args,
+        );
         await this.sendMessage(chatId, result.message, sendToken);
       });
-      return { handled: true, command: '/create' };
+      return { handled: true, command: "/create" };
     }
 
     /**
@@ -483,26 +537,26 @@ export class TelegramService {
      * are identical: there is no way to add a fifth command and forget that.
      */
     if (
-      command.kind === 'trigger' ||
-      command.kind === 'pause' ||
-      command.kind === 'resume' ||
-      command.kind === 'delete'
+      command.kind === "trigger" ||
+      command.kind === "pause" ||
+      command.kind === "resume" ||
+      command.kind === "delete"
     ) {
       await this.runGuarded(command.kind, async () => {
         const processId =
-          command.kind === 'trigger' ||
-          command.kind === 'pause' ||
-          command.kind === 'resume' ||
-          command.kind === 'delete'
+          command.kind === "trigger" ||
+          command.kind === "pause" ||
+          command.kind === "resume" ||
+          command.kind === "delete"
             ? command.processId
-            : '';
+            : "";
 
         const handler =
-          command.kind === 'trigger'
+          command.kind === "trigger"
             ? handlers.triggerProcessForChat
-            : command.kind === 'pause'
+            : command.kind === "pause"
               ? handlers.pauseProcessForChat
-              : command.kind === 'resume'
+              : command.kind === "resume"
                 ? handlers.resumeProcessForChat
                 : undefined;
 
@@ -532,28 +586,28 @@ export class TelegramService {
       return { handled: true, command: `/${command.kind}` };
     }
 
-    if (command.kind === 'start') {
+    if (command.kind === "start") {
       await this.sendTestMessage(chatId, sendToken);
-      return { handled: true, command: '/start' };
+      return { handled: true, command: "/start" };
     }
 
-    if (command.kind === 'status') {
+    if (command.kind === "status") {
       await this.sendMessage(
         chatId,
         this.formatStatusMessage(resolved.goat.name, resolved.state),
         sendToken,
       );
-      return { handled: true, command: '/status' };
+      return { handled: true, command: "/status" };
     }
 
-    if (command.kind === 'analyse') {
+    if (command.kind === "analyse") {
       if (!resolved.requestAnalysis) {
         await this.sendMessage(
           chatId,
-          'Manual analysis is not available for this GOAT right now.',
+          "Manual analysis is not available for this GOAT right now.",
           sendToken,
         );
-        return { handled: true, command: '/analyse' };
+        return { handled: true, command: "/analyse" };
       }
 
       await this.sendMessage(
@@ -564,29 +618,149 @@ export class TelegramService {
 
       try {
         const summary = await resolved.requestAnalysis(
-          'Manual analysis requested from Telegram',
+          "Manual analysis requested from Telegram",
         );
         await this.sendMessage(chatId, summary.slice(0, 4000), sendToken);
       } catch (err) {
         await this.sendMessage(
           chatId,
           `The analysis could not be completed: ${
-            err instanceof Error ? err.message : 'unknown error'
+            err instanceof Error ? err.message : "unknown error"
           }`,
           sendToken,
         );
       }
 
-      return { handled: true, command: '/analyse' };
+      return { handled: true, command: "/analyse" };
     }
 
-    if (command.kind === 'connect') {
+    if (command.kind === "connect") {
       await this.sendMessage(
         chatId,
-        'Bot connection is managed from the SIRGOAT app under Settings → Telegram, where your token is stored securely.',
+        "Bot connection is managed from the SIRGOAT app under Settings → Telegram, where your token is stored securely.",
         sendToken,
       );
-      return { handled: true, command: '/connect' };
+      return { handled: true, command: "/connect" };
+    }
+
+    /**
+     * Natural-language intents: "every 5 minutes", "analyse gold", "stop".
+     *
+     * These are dispatchers, not reasoning: they translate user intent into
+     * one of the owned handlers (schedule, pause/resume, analysis). A chat that
+     * has not linked a GOAT still gets the onboarding text rather than being
+     * answered by the AI.
+     */
+    if (command.kind === "intent") {
+      if (!resolved) {
+        if (sendToken) {
+          await this.sendMessage(
+            chatId,
+            this.formatUnlinkedMessage(),
+            sendToken,
+          );
+        }
+        return { handled: true, command: "intent" };
+      }
+
+      const intent = command.intent;
+      const goatName = resolved.goat.name;
+
+      switch (intent.kind) {
+        case "schedule": {
+          const minutes = intent.minutes;
+          if (!handlers.changeScheduleForChat) {
+            await this.sendMessage(
+              chatId,
+              "Scheduling is not available for this GOAT right now.",
+              sendToken,
+            );
+            return { handled: true, command: "schedule" };
+          }
+          const schedule = normaliseSchedule({
+            mode: "INTERVAL",
+            intervalMinutes: minutes,
+          });
+          const result = await handlers.changeScheduleForChat(
+            chatId,
+            resolved.goat.id,
+            schedule,
+          );
+          await this.sendMessage(chatId, result.message, sendToken);
+          return { handled: true, command: "schedule" };
+        }
+
+        case "stop": {
+          if (!handlers.pauseGoatForChat) {
+            await this.sendMessage(
+              chatId,
+              "Stopping is not available for this GOAT right now.",
+              sendToken,
+            );
+            return { handled: true, command: "stop" };
+          }
+          const result = await handlers.pauseGoatForChat(
+            chatId,
+            resolved.goat.id,
+          );
+          await this.sendMessage(chatId, result.message, sendToken);
+          return { handled: true, command: "stop" };
+        }
+
+        case "analyse": {
+          if (
+            !handlers.requestAnalysisForChat ||
+            !handlers.resolveMarketSymbol
+          ) {
+            await this.sendMessage(
+              chatId,
+              "Manual analysis is not available for this GOAT right now.",
+              sendToken,
+            );
+            return { handled: true, command: "analyse" };
+          }
+
+          const { market } = intent;
+          let targetMarket: string | undefined;
+
+          if (market) {
+            const resolvedMarket = await handlers.resolveMarketSymbol(market);
+            if (resolvedMarket) {
+              targetMarket = resolvedMarket.symbol;
+            }
+          }
+
+          const displayName = targetMarket ?? `*${goatName}*`;
+          await this.sendMessage(
+            chatId,
+            `🔄 Running a fresh analysis${
+              targetMarket ? ` for \`${targetMarket}\`` : ""
+            }… this takes a few seconds.`,
+            sendToken,
+          );
+
+          try {
+            const summary = await handlers.requestAnalysisForChat(
+              chatId,
+              resolved.goat.id,
+              "Manual analysis requested from Telegram" +
+                (targetMarket ? ` on ${targetMarket}` : ""),
+              targetMarket,
+            );
+            await this.sendMessage(chatId, summary.slice(0, 4000), sendToken);
+          } catch (err) {
+            await this.sendMessage(
+              chatId,
+              `The analysis could not be completed: ${
+                err instanceof Error ? err.message : "unknown error"
+              }`,
+              sendToken,
+            );
+          }
+
+          return { handled: true, command: "analyse" };
+        }
+      }
     }
 
     // Canonical chat path — same gateway + context the web chat API uses.
@@ -599,13 +773,14 @@ export class TelegramService {
       );
     } catch (err) {
       answer =
-        err instanceof Error && /timed out|unavailable|failed|invalid/i.test(err.message)
+        err instanceof Error &&
+        /timed out|unavailable|failed|invalid/i.test(err.message)
           ? `I could not answer just now: ${err.message}`
-          : 'I could not process that question. Please try again shortly.';
+          : "I could not process that question. Please try again shortly.";
     }
 
     await this.sendMessage(chatId, answer.slice(0, 4000), sendToken);
-    return { handled: true, command: 'chat' };
+    return { handled: true, command: "chat" };
   }
 
   /**
@@ -622,31 +797,34 @@ export class TelegramService {
     try {
       await fn();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'unknown error';
+      const message = err instanceof Error ? err.message : "unknown error";
       console.error(`[telegram] /${command} failed:`, message);
     }
   }
 
-  private parseMessage(update: unknown): { chatId: string; text: string } | null {
-    if (typeof update !== 'object' || update === null) return null;
+  private parseMessage(
+    update: unknown,
+  ): { chatId: string; text: string } | null {
+    if (typeof update !== "object" || update === null) return null;
     const u = update as Record<string, unknown>;
     const message =
-      typeof u.message === 'object' && u.message !== null
+      typeof u.message === "object" && u.message !== null
         ? (u.message as Record<string, unknown>)
         : null;
     if (!message) return null;
 
     const chat =
-      typeof message.chat === 'object' && message.chat !== null
+      typeof message.chat === "object" && message.chat !== null
         ? (message.chat as Record<string, unknown>)
         : null;
     const chatId =
-      chat !== null && (typeof chat.id === 'number' || typeof chat.id === 'string')
+      chat !== null &&
+      (typeof chat.id === "number" || typeof chat.id === "string")
         ? String(chat.id)
         : null;
     if (!chatId) return null;
 
-    const text = typeof message.text === 'string' ? message.text.trim() : '';
+    const text = typeof message.text === "string" ? message.text.trim() : "";
     return { chatId, text };
   }
 }

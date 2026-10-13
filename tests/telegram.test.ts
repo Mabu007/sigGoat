@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { TelegramService, TelegramResolution } from '../src/services/telegram/TelegramService';
+import { TelegramService, TelegramResolution, TelegramUpdateHandlers } from '../src/services/telegram/TelegramService';
 import type { ReasoningGateway } from '../src/server/reasoningGateway';
 import { GoatReasoningContext } from '../src/services/ai/OpenRouterClient';
 import { GoatRuntimeState, TradeSignal } from '../src/types';
@@ -184,6 +184,148 @@ describe('TelegramService.processUpdate', () => {
     });
     expect(result.handled).toBe(true);
     expect(svc.sent[0].text).toContain('could not');
+  });
+
+  test('/schedule cadence applies to the GOAT', async () => {
+    const svc = new CapturingTelegram();
+    const resolution = makeResolution();
+    let capturedSchedule: any = null;
+    await svc.processUpdate(makeUpdate('/schedule every 5 minutes'), {
+      resolveGoatForChat: async () => resolution,
+      getBotTokenForUser: async () => 'token',
+      changeScheduleForChat: async (chatId, goatId, schedule) => {
+        capturedSchedule = schedule;
+        return {
+          ok: true,
+          message: `Scheduled ${resolution.goat.name} (${goatId}) every ${schedule.intervalMinutes} minutes`,
+        };
+      },
+    });
+    expect(capturedSchedule?.mode).toBe('INTERVAL');
+    expect(capturedSchedule?.intervalMinutes).toBe(5);
+    expect(svc.sent[0].text).toContain('every 5 minutes');
+    expect(svc.sent[0].text).toContain(resolution.goat.name);
+  });
+
+  test('natural language "every N minutes" applies the same schedule', async () => {
+    const svc = new CapturingTelegram();
+    const resolution = makeResolution();
+    let capturedSchedule: any = null;
+    await svc.processUpdate(makeUpdate('every 30 minutes'), {
+      resolveGoatForChat: async () => resolution,
+      getBotTokenForUser: async () => 'token',
+      changeScheduleForChat: async (chatId, goatId, schedule) => {
+        capturedSchedule = schedule;
+        return { ok: true, message: 'ok' };
+      },
+    });
+    expect(capturedSchedule?.intervalMinutes).toBe(30);
+  });
+
+  test('"stop" pauses the GOAT', async () => {
+    const svc = new CapturingTelegram();
+    const resolution = makeResolution();
+    let capturedPaused: boolean | null = null;
+    await svc.processUpdate(makeUpdate('stop'), {
+      resolveGoatForChat: async () => resolution,
+      getBotTokenForUser: async () => 'token',
+      pauseGoatForChat: async (chatId, goatId) => {
+        capturedPaused = true;
+        return {
+          ok: true,
+          message: `${resolution.goat.name} is paused.`,
+        };
+      },
+    });
+    expect(capturedPaused).toBe(true);
+    expect(svc.sent[0].text).toContain('paused');
+    expect(svc.sent[0].text).toContain(resolution.goat.name);
+  });
+
+  test('"analyse" runs a fresh analysis on the GOAT', async () => {
+    const svc = new CapturingTelegram();
+    let capturedReason: string = '';
+    const resolution = makeResolution();
+    const requestAnalysis: TelegramUpdateHandlers['requestAnalysisForChat'] =
+      async (chatId, goatId, reason) => {
+        capturedReason = reason;
+        return `Analysis for ${goatId}: ${reason}`;
+      };
+    await svc.processUpdate(makeUpdate('analyse'), {
+      resolveGoatForChat: async () => resolution,
+      getBotTokenForUser: async () => 'token',
+      resolveMarketSymbol: async () => null,
+      requestAnalysisForChat: requestAnalysis,
+    });
+    expect(capturedReason).toContain('Manual analysis requested from Telegram');
+    expect(svc.sent.length).toBeGreaterThan(1);
+    expect(svc.sent[svc.sent.length - 1].text).toContain(
+      `Analysis for ${resolution.goat.id}`,
+    );
+  });
+
+  test('"analyse gold" resolves the market before analysing', async () => {
+    const svc = new CapturingTelegram();
+    let targetMarket: string | undefined = undefined;
+    const resolution = makeResolution();
+    const requestAnalysis: TelegramUpdateHandlers['requestAnalysisForChat'] =
+      async (_chatId, _goatId, _reason, market) => {
+        targetMarket = market;
+        return `Analysis on ${market}`;
+      };
+    await svc.processUpdate(makeUpdate('analyse gold'), {
+      resolveGoatForChat: async () => resolution,
+      getBotTokenForUser: async () => 'token',
+      resolveMarketSymbol: async (symbol) => {
+        expect(symbol).toBe('gold');
+        return { symbol: 'xyz:GOLD', name: 'Gold' };
+      },
+      requestAnalysisForChat: requestAnalysis,
+    });
+    expect(targetMarket).toBe('xyz:GOLD');
+    expect(svc.sent.length).toBeGreaterThan(1);
+    expect(svc.sent[svc.sent.length - 1].text).toContain('Analysis on xyz:GOLD');
+  });
+
+  test('an unknown market leaves the analysis on the default market', async () => {
+    const svc = new CapturingTelegram();
+    let targetMarket: string | undefined = undefined;
+    const resolution = makeResolution();
+    const requestAnalysis: TelegramUpdateHandlers['requestAnalysisForChat'] =
+      async (_chatId, _goatId, _reason, market) => {
+        targetMarket = market;
+        return `Analysis on ${market ?? 'default market'}`;
+      };
+    await svc.processUpdate(makeUpdate('analyse nonsense'), {
+      resolveGoatForChat: async () => resolution,
+      getBotTokenForUser: async () => 'token',
+      resolveMarketSymbol: async (symbol) => {
+        expect(symbol).toBe('nonsense');
+        return null;
+      },
+      requestAnalysisForChat: requestAnalysis,
+    });
+    expect(targetMarket).toBeUndefined();
+    expect(svc.sent[svc.sent.length - 1].text).toContain('Analysis on default market');
+  });
+
+  test('an intent on an unlinked chat gets onboarding text and fabricates nothing', async () => {
+    const svc = new CapturingTelegram();
+    let resolvedChatId = '';
+    await svc.processUpdate(makeUpdate('every 5 minutes'), {
+      resolveGoatForChat: async () => null,
+      resolveGoatByIdForChat: async (chatId) => {
+        resolvedChatId = chatId;
+        return null;
+      },
+      changeScheduleForChat: async (chatId, _goatId, _schedule) => {
+        throw new Error('must not schedule');
+      },
+      getBotTokenForUser: async () => undefined,
+    });
+    expect(resolvedChatId).toBe('');
+    // Handled truthfully; NOTHING fabricated or sent (no token, no handler was called).
+    expect(svc.sent.length).toBe(0);
   });
 });
 
