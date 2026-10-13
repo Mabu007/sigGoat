@@ -5321,8 +5321,14 @@ function inferChatMarketQueries(message: string): string[] {
 }
 
 function inferChatTimeframe(message: string, goats: FundGoat[]): string {
-  const explicit = message.match(/\b(1m|3m|5m|15m|30m|1h|2h|4h|6h|12h|1d|1w)\b/i)?.[1];
+  const lower = message.toLowerCase();
+  const explicit = lower.match(/\b(1m|3m|5m|15m|30m|1h|2h|4h|6h|12h|1d|1w)\b/i)?.[1];
   if (explicit) return explicit.toLowerCase();
+  const natural = lower.match(/\b(1|3|5|15|30|60)\s*[- ]?\s*(?:min|mins|minute|minutes)\b/);
+  if (natural) return ({ "1": "1m", "3": "3m", "5": "5m", "15": "15m", "30": "30m", "60": "1h" } as Record<string, string>)[natural[1]] || "1h";
+  const hour = lower.match(/\b(1|2|4|6|12)\s*[- ]?\s*(?:hr|hrs|hour|hours)\b/);
+  if (hour) return hour[1] + "h";
+  if (/\bdaily\b/.test(lower)) return "1d";
   return goats.find((goat) => message.toLowerCase().includes(goat.name.toLowerCase()))?.timeframe || "1h";
 }
 
@@ -5863,7 +5869,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     if (isLightConversation(message.trim())) {
       const now = new Date().toISOString();
       const lowerMessage = message.trim().toLowerCase();
-      const reply = /^(thanks|thank you|cheers)[!,.\\s]*$/i.test(lowerMessage)
+      const reply = /^(thanks|thank you|cheers)[!,.\s]*$/i.test(lowerMessage)
         ? "Anytime, G."
         : /^(nice|cool|lol|haha)[!,.\\s]*$/i.test(lowerMessage) ? "😄" : "Hey G, you good?";
       const assistantMessage: ChatMessage = {
@@ -5901,36 +5907,6 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
         if (found.length) { inheritedAsset = found[0]; break; }
       }
     }
-    const lightConversation = isLightConversation(message.trim());
-    const contextualFollowUp = /\b(it|that|this|again|same asset|same market|the chart|the setup|what about|what do you think|analyse|analyze|opportunit|timeframe)\b/i.test(message);
-    const shouldInheritAsset = Boolean(inheritedAsset && !mentionedAssets.length && !lightConversation &&
-      (needsMarketResearch(message.trim()) || contextualFollowUp));
-    const effectiveResearchMessage = shouldInheritAsset
-      ? message.trim() + "\n\nSESSION CONTEXT: The current asset under discussion is " + inheritedAsset + ". Resolve pronouns and timeframe follow-ups against this asset unless the user explicitly names another asset."
-      : message.trim();
-    const researchNeeded = !lightConversation && needsMarketResearch(effectiveResearchMessage);
-
-    if (lightConversation) {
-      const now = new Date().toISOString();
-      const lowerMessage = message.trim().toLowerCase();
-      const greeting = /^(thanks|thank you|cheers)[!,.\s]*$/i.test(lowerMessage)
-        ? "Anytime, G."
-        : /^(nice|cool|lol|haha)[!,.\s]*$/i.test(lowerMessage) ? "😄" : "Hey G, you good?";
-      const assistantMessage: ChatMessage = {
-        id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
-        chatId: chat.id, userId: user.uid, role: "assistant", content: greeting,
-        model: activeModel, createdAt: now,
-      };
-      await Promise.all([
-        persistence.messages.create(chat.id, assistantMessage),
-        persistence.chats.update(chat.id, { updatedAt: now, lastMessageAt: now }),
-      ]);
-      emit({ type: "delta", content: greeting });
-      emit({ type: "done", chat: { id: chat.id, title: chat.title }, message: assistantMessage, userMessage, model: activeModel });
-      res.end();
-      return;
-    }
-
     const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim(), activeModel) : Promise.resolve(chat.title);
     const title = needsTitle ? await titlePromise : chat.title;
     if (needsTitle && title && title !== "New chat") {
