@@ -326,4 +326,77 @@ describe('BacktestEngine — deterministic fixture scenarios', () => {
       expect(trades[1].timestamp).toBeGreaterThan(lastExit);
     }
   });
+
+  test('summary average win/loss reconciles with each trade actual dollar risk', async () => {
+    const result = await BacktestEngine.runBacktest({
+      goat: makeGoat(),
+      skills: SKILLS,
+      market: 'EUR/USD',
+      period: '30d',
+      provider: new PaperMarketDataProvider({ enableTicks: false }),
+      startingBalance: 10_000,
+    });
+    const wins = result.trades.filter((trade) => trade.outcome === 'WIN');
+    const losses = result.trades.filter((trade) => trade.outcome === 'LOSS');
+    if (wins.length > 0) {
+      expect(result.averageWin).toBeCloseTo(
+        wins.reduce((sum, trade) => sum + (trade.pnlDollars ?? 0), 0) / wins.length,
+        2,
+      );
+    }
+    if (losses.length > 0) {
+      expect(result.averageLoss).toBeCloseTo(
+        losses.reduce((sum, trade) => sum + Math.abs(trade.pnlDollars ?? 0), 0) / losses.length,
+        2,
+      );
+    }
+    expect(result.equityCurve.every((point) => point.equity >= 0)).toBe(true);
+  });
+
+  test('selected minimum risk/reward skill constraint filters historical setups', async () => {
+    const highRrSkill: TradingSkill = {
+      id: 'skill_min_rr_3',
+      userId: 'user_1',
+      name: 'Minimum 3R',
+      description: 'Require at least 3R.',
+      methodology: '',
+      constraints: 'MINIMUM_RR_3_TO_1',
+      preferredTimeframes: ['1h'],
+      requiredEvidence: '',
+      invalidationRules: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const result = await BacktestEngine.runBacktest({
+      goat: makeGoat(),
+      skills: [highRrSkill],
+      market: 'EUR/USD',
+      period: '7d',
+      provider: new PaperMarketDataProvider({ enableTicks: false }),
+    });
+    expect(result.trades).toHaveLength(0);
+  });
+
+  test('spread-constrained skills fail closed when historical quotes have no bid/ask', async () => {
+    const spreadSkill: TradingSkill = {
+      id: 'skill_spread',
+      userId: 'user_1',
+      name: 'Tight Spread',
+      description: 'Require verified spread data.',
+      methodology: '',
+      constraints: 'SPREAD_UNDER_2_BPS',
+      preferredTimeframes: ['1h'],
+      requiredEvidence: '',
+      invalidationRules: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await expect(BacktestEngine.runBacktest({
+      goat: makeGoat(),
+      skills: [spreadSkill],
+      market: 'EUR/USD',
+      period: '7d',
+      provider: new PaperMarketDataProvider({ enableTicks: false }),
+    })).rejects.toThrow(/historical candles do not include verified bid\/ask spread data/i);
+  });
 });
