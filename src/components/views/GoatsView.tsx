@@ -1974,7 +1974,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                       <span className={`rounded-full border px-2 py-0.5 text-[9px] font-mono font-bold uppercase ${inspectedGoat.deploymentState === 'DRAFT' ? 'border-line bg-sunken text-fg-subtle' : inspectedState?.lastError && /(openrouter|model|provider|api key|credential|reasoning)/i.test(inspectedState.lastError) ? 'border-negative/40 bg-negative-soft text-negative' : 'border-positive/40 bg-positive-soft text-positive'}`}>
                         {inspectedGoat.deploymentState === 'DRAFT'
                           ? 'DRAFT'
-                          : inspectedState?.lastError && /(openrouter|model|provider|api key|credential|reasoning)/i.test(inspectedState.lastError)
+                          : inspectedState?.reasoningMode === 'DEMO' || (inspectedState?.lastError && /(openrouter|model|provider|api key|credential|reasoning)/i.test(inspectedState.lastError))
                             ? 'AI NOT CONNECTED'
                             : inspectedState?.status || inspectedGoat.status}
                       </span>
@@ -2025,6 +2025,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
           {inspectedGoat.deploymentState !== 'DRAFT' &&
             !inspectedState?.lastError &&
+            inspectedState?.reasoningMode !== 'DEMO' &&
             (inspectedState?.isEvaluating ||
               (!inspectedState?.currentThesis && inspectedGoat.status !== 'PAUSED')) && (
               <section className="rounded-2xl border border-accent/30 bg-accent-soft/40 p-4">
@@ -2042,7 +2043,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               </section>
             )}
 
-          {inspectedState?.lastError && (
+          {(inspectedState?.lastError || inspectedState?.reasoningMode === 'DEMO') && (
             <section
               role="alert"
               className="rounded-2xl border border-negative/40 bg-negative-soft p-4"
@@ -2051,12 +2052,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-negative" />
                 <div className="min-w-0">
                   <h3 className="text-xs font-bold text-negative">
-                    {/(openrouter|model|provider|api key|credential|reasoning)/i.test(inspectedState.lastError)
+                    {inspectedState.reasoningMode === 'DEMO' || /(openrouter|model|provider|api key|credential|reasoning)/i.test(inspectedState.lastError ?? '')
                       ? 'AI not connected'
                       : 'GOAT needs attention'}
                   </h3>
                   <p className="mt-1 break-words text-xs leading-relaxed text-fg-muted">
-                    {inspectedState.lastError}
+                    {inspectedState.reasoningMode === 'DEMO'
+                      ? (inspectedState.lastError || 'No usable AI provider credential is connected. This is demo output, not an AI-generated market analysis. Connect your provider in Settings and run a fresh review.')
+                      : inspectedState.lastError}
                   </p>
                   <p className="mt-2 text-[10px] text-fg-subtle">
                     No new actionable proposal will be trusted until the issue is resolved and a fresh review succeeds.
