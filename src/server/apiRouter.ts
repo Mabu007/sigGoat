@@ -5313,7 +5313,7 @@ function inferChatMarketQueries(message: string): string[] {
     [/\b(sui)\b/i, ["SUI"]],
   ];
   for (const [pattern, terms] of aliases) if (pattern.test(message)) terms.forEach(add);
-  const ignored = new Set(["AI", "GOAT", "GOATS", "USD", "USDT", "USDC", "API", "UTC", "LIVE", "BUY", "SELL", "NOW", "THE", "AND", "FOR", "FROM", "WITH", "WHAT", "WHICH"]);
+  const ignored = new Set(["AI", "GOAT", "GOATS", "USD", "USDT", "USDC", "API", "UTC", "LIVE", "BUY", "SELL", "NOW", "THE", "AND", "FOR", "FROM", "WITH", "WHAT", "WHICH", "ANY", "ARE", "IS", "DO", "CAN", "MAY", "YOU", "YOUR", "ME", "IT", "IF", "THIS", "THAT", "TODAY", "SOME", "ALL", "THERE", "HOW", "ABOUT", "THINK", "LOOK", "SHOW", "TELL", "PLEASE", "COULD", "WOULD", "SHOULD", "THINK", "OPPORTUNITIES"]);
   for (const match of message.matchAll(/\b[A-Z][A-Z0-9]{1,9}\b/g)) {
     if (!ignored.has(match[0])) add(match[0]);
   }
