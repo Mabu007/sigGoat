@@ -5,7 +5,7 @@
  *
  * This is NOT a production scheduler: the timers live in one process and are
  * lost on restart or redeploy. It exists so `npm run dev` works with no
- * Cloudflare account, and so the Durable Object path can be introduced
+ * Firebase Admin credentials, and so the Firebase scheduler is used in production
  * without a big-bang cutover.
  *
  * `kind` is reported by /api/settings/status, so a deployment that is
