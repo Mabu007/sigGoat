@@ -19,8 +19,10 @@ export interface HardConstraints {
   limitOrdersOnly: boolean;
   /** Only trade in the stated direction of the thesis bias; no counter-trend proposals. */
   noCounterTrend: boolean;
-  /** Maximum allowed spread in pips (0 = no spread constraint). */
+  /** Maximum allowed spread in pips; requires a provider-defined pipSize. */
   maxSpreadPips: number;
+  /** Maximum relative spread in basis points (0 = no constraint). */
+  maxSpreadBps: number;
   /** List of constraint tokens that produced these constraints (for observability). */
   enforcedTokens: string[];
 }
@@ -32,6 +34,7 @@ export const PLATFORM_DEFAULT_CONSTRAINTS: HardConstraints = {
   limitOrdersOnly: false,
   noCounterTrend: false,
   maxSpreadPips: 0,
+  maxSpreadBps: 0,
   enforcedTokens: [],
 };
 
@@ -43,6 +46,7 @@ export function aggregateHardConstraints(skills: TradingSkill[]): HardConstraint
     limitOrdersOnly: PLATFORM_DEFAULT_CONSTRAINTS.limitOrdersOnly,
     noCounterTrend: PLATFORM_DEFAULT_CONSTRAINTS.noCounterTrend,
     maxSpreadPips: PLATFORM_DEFAULT_CONSTRAINTS.maxSpreadPips,
+    maxSpreadBps: PLATFORM_DEFAULT_CONSTRAINTS.maxSpreadBps,
     enforcedTokens: [],
   };
 
@@ -87,6 +91,16 @@ export function aggregateHardConstraints(skills: TradingSkill[]): HardConstraint
         break;
       default:
         break;
+    }
+
+    const bpsMatch = upper.match(/^SPREAD_UNDER_(\d+(?:_\d+)*)_BPS$/);
+    if (bpsMatch) {
+      const bps = Number(bpsMatch[1].replace(/_/g, '.'));
+      if (Number.isFinite(bps) && bps > 0) {
+        constraints.maxSpreadBps = constraints.maxSpreadBps === 0 ? bps : Math.min(constraints.maxSpreadBps, bps);
+        constraints.enforcedTokens.push(token);
+      }
+      continue;
     }
 
     const spreadMatch = upper.match(/^SPREAD_UNDER_(\d+(?:_\d+)*)_PIPS?$/);
