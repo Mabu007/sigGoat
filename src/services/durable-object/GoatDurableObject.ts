@@ -372,6 +372,8 @@ export class GoatDurableObject {
    * slow routine cadence rather than the aggressive retry interval.
    */
   private lastInvalidMarketAtMs = 0;
+  /** Hydration completes before API reads decide whether an initial review is needed. */
+  private readonly hydrationPromise: Promise<void>;
 
   constructor(goat: FundGoat, skills: TradingSkill[], options: GoatDurableObjectOptions) {
     this.id = goat.id;
@@ -424,7 +426,7 @@ export class GoatDurableObject {
      * state in when it resolves. `runtimeState` is valid (and honest about
      * being un-hydrated) immediately, and becomes accurate a tick later.
      */
-    void this.hydrateFromPersistence();
+    this.hydrationPromise = this.hydrateFromPersistence();
 
     /**
      * Warm the research cache up front so the first wake does not pay for it.
@@ -459,6 +461,11 @@ export class GoatDurableObject {
   /* ---------------------------------------------------------------- */
   /* Public surface                                                    */
   /* ---------------------------------------------------------------- */
+
+  /** Await persisted thesis/signal restoration before making lifecycle decisions. */
+  async ready(): Promise<void> {
+    await this.hydrationPromise;
+  }
 
   getState(): GoatRuntimeState {
     return { ...this.runtimeState };
@@ -635,7 +642,9 @@ export class GoatDurableObject {
 
     const market = targetMarket || this.goatConfig.markets[0] || '';
     if (!market) {
-      throw new Error('GOAT has no market configured.');
+      this.recordFailure('GOAT has no market configured.');
+      this.runtimeState.isEvaluating = false;
+      return this.runtimeState;
     }
 
     try {
@@ -704,11 +713,17 @@ export class GoatDurableObject {
                 ? `Removed from this GOAT's watch list. Remaining markets: ${remaining.join(', ')}.`
                 : 'It is the only configured market; it stays configured but the GOAT cannot run until a valid market is set.'),
           );
+          this.runtimeState.status = 'WATCHING';
+          this.runtimeState.lastError = `Market "${market}" is not available from the data provider.`;
           this.runtimeState.dormancyReason =
             `Market "${market}" is not available from the data provider. ` +
             (remaining.length > 0
               ? 'The other configured markets continue to be watched.'
               : 'Edit this GOAT to watch a listed market.');
+          await this.recordWakeEvent(
+            reason, triggerType, market, 'ERROR', this.runtimeState.dormancyReason,
+            'ERROR', generationId,
+          );
           return this.runtimeState;
         }
 
@@ -839,7 +854,9 @@ export class GoatDurableObject {
 
       // ---- Stage 5: thesis --------------------------------------------
       const nowStr = new Date().toISOString();
-      const thesisId = this.runtimeState.currentThesis?.id || this.newId('ths');
+      // Every review is a new thesis version. Reusing an ID made old proposals
+      // indistinguishable from the latest thesis and allowed stale approvals.
+      const thesisId = this.newId('ths');
       const trackers: TrackerCondition[] = reasoningResult.thesis.trackers
         .slice(0, MAX_TRACKERS)
         .map((t, idx) =>
@@ -893,7 +910,7 @@ export class GoatDurableObject {
         trackers,
         confidence: reasoningResult.thesis.confidence,
         status: reasoningResult.proposal.decision === 'ACTIONABLE' ? 'CONFIRMED' : 'TRACKING',
-        createdAt: this.runtimeState.currentThesis?.createdAt || nowStr,
+        createdAt: nowStr,
         updatedAt: nowStr,
       };
 
