@@ -452,6 +452,7 @@ export function Chatbot() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [chatModel, setChatModel] = useState<string | null>(null);
+  const [streamStatus, setStreamStatus] = useState('SirGOAT is on it…');
   const [renameTarget, setRenameTarget] = useState<ChatItem | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
@@ -742,6 +743,7 @@ export function Chatbot() {
 
 
       setIsSending(true);
+      setStreamStatus('SirGOAT is on it…');
 
       setError(null);
 
@@ -820,7 +822,9 @@ export function Chatbot() {
           const payload = line.slice(5).trim();
           if (!payload) return;
           const event = JSON.parse(payload);
-          if (event.type === 'delta' && typeof event.content === 'string') {
+          if (event.type === 'status' && typeof event.message === 'string') {
+            setStreamStatus(event.message);
+          } else if (event.type === 'delta' && typeof event.content === 'string') {
             streamedContent += event.content;
             setMessages((prev) => {
               const exists = prev.some((item) => item.id === streamId);
@@ -881,6 +885,7 @@ export function Chatbot() {
       } finally {
 
         setIsSending(false);
+        setStreamStatus('SirGOAT is on it…');
 
       }
 
@@ -1499,9 +1504,7 @@ export function Chatbot() {
 
                   <p className="mt-1 max-w-xs text-[11px] leading-relaxed text-fg-muted">
 
-                    Questions about markets, your GOATs, or trading ideas. I don't
-
-                    have live prices — check the Markets tab for those.
+                    Markets, your GOATs, trading ideas, or anything you want to think through. I’ll pull the relevant data when it’s needed.
 
                   </p>
 
@@ -1597,7 +1600,7 @@ export function Chatbot() {
 
                   <Loader2 size={13} className="animate-spin" aria-hidden="true" />
 
-                  <span>Assistant is typing…</span>
+                  <span>{streamStatus}</span>
 
                 </div>
 
