@@ -273,6 +273,9 @@ export class SignalGate {
       riskReward: `1:${rrValue.toFixed(1)}`,
       rationale: proposal.rationale ?? '',
       status: 'ACTIONABLE',
+      // A proposal is a short-lived snapshot of market conditions. Acceptance
+      // must not remain available indefinitely if no newer thesis is written.
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     };
 
     return {
