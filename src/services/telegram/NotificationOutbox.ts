@@ -53,7 +53,7 @@ import type { Firestore } from 'firebase-admin/firestore';
  * token, the chat secret, or any API key.
  */
 
-export type NotificationKind = 'SIGNAL' | 'TRACKER_TRIGGERED' | 'GOAT_ALERT';
+export type NotificationKind = 'SIGNAL' | 'TRACKER_TRIGGERED' | 'GOAT_ALERT' | 'MARKET_REVIEW';
 
 export type NotificationStatus =
   | 'PENDING'
