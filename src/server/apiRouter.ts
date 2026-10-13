@@ -329,25 +329,19 @@ export const notificationOutbox = new NotificationOutbox({
 /**
  * AUTHORITATIVE SCHEDULER
  *
- * In production this is the Cloudflare Durable Object, whose alarms are durable
- * and survive restarts and redeploys. With no Worker configured (local dev, or
- * a single-process deploy) it falls back to in-process timers, and that fact is
- * reported by /api/settings/status so it can never be mistaken for the durable
- * path.
- *
- * The fallback is what makes local development work with no Cloudflare account.
+ * In production this is the Firebase scheduler, whose due times and leases are
+ * stored in Firestore. Local development falls back to in-process timers; this
+ * backend is reported by /api/settings/status and is not a production guarantee.
  */
 const firebaseBundle = getFirebaseAdmin();
 const firebaseScheduler = firebaseBundle ? new FirebaseScheduler(firebaseBundle.firestore) : null;
 
 /**
- * Called when an in-process alarm fires. With a Durable Object scheduler this
- * is never used, because that actor arms no local timers.
+ * Called when a local-development timer fires.
  */
 /**
- * Synchronous counterparts for the in-process scheduler fallback (local
- * development only: it is used when DURABLE_SCHEDULER_URL is not configured,
- * so Node timers must finish before the alarm handler returns).
+ * Synchronous counterparts for the in-process scheduler fallback used only in
+ * local development.
  *
  * They perform the same decide-then-run sequence as the background paths, but
  * execute the run inline so nothing is deferred behind ctx.waitUntil.
@@ -485,8 +479,7 @@ if (firebaseScheduler) {
 const scheduler: WakeScheduler = firebaseScheduler ?? inProcessScheduler!;
 
 /**
- * Routes locally-ingested events to the same handler the Cloudflare runtime
- * calls.
+ * Routes locally-ingested market events through the in-process runtime.
  *
  * This was also missing: `onEvent()` had no listener, so a candle finalized by
  * the in-process ingestion service produced no wake at all. Without it the
@@ -1374,7 +1367,7 @@ function marketEventDedup(eventId: string): boolean {
 }
 
 /**
- * Mirrors the in-process subscription table into the Cloudflare runtime.
+ * Mirrors the in-process subscription table into the shared ingestion layer.
  *
  * Failure is non-fatal by design: the in-process path still works, and the
  * status endpoint reports the durable sync count so an unreachable Worker is
@@ -1922,7 +1915,7 @@ async function runTrackerCheckInBackground(goatId: string): Promise<void> {
 /**
  * Shared-secret auth for internal endpoints.
  *
- * These are called by the Cloudflare Durable Object, which has no user session
+ * These internal handlers run without a user session
  * and cannot present a Firebase ID token. The secret authenticates the
  * WORKER, not a user, and every handler below still resolves the GOAT through
  * the application persistence layer and its owner — so an internal caller can
@@ -3087,7 +3080,7 @@ function timingSafeStringEqual(a: string, b: string): boolean {
 /* ------------------------------------------------------------------ */
 /**
  * Everything ABOVE this line is public and must carry its OWN authentication:
- *   - /internal/*  -> shared scheduler secret (DURABLE_SCHEDULER_SECRET)
+ *   - /internal/*  -> shared cron secret (CRON_SECRET)
  *   - /telegram/webhook -> Telegram secret
  *   - everything else -> carries no user data
  *
