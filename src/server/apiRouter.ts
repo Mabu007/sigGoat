@@ -5571,7 +5571,7 @@ async function resolveChatModel(userId: string, requested?: unknown): Promise<st
 }
 
 function isLightConversation(message: string): boolean {
-  return /^\s*(hey|hello|hi|yo|hiya|sup|good morning|good afternoon|good evening|thanks|thank you|cheers|nice|cool|lol|haha|how are you|how you doing|you good)[!,.\s?]*$/i.test(message.trim());
+  return /^\s*(hey|hello|hi|yo|hiya|sup|good morning|good afternoon|good evening|thanks|thank you|cheers|nice|cool|lol|haha|how are you|how you doing|you good)[!,. \s]*$/i.test(message.trim());
 }
 
 function needsMarketResearch(message: string): boolean {
