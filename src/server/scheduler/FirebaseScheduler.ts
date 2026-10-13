@@ -5,7 +5,7 @@ import type { FiredWake, ScheduleRequest, SchedulerHealth, WakeScheduler } from 
 export class FirebaseScheduler implements WakeScheduler {
   readonly kind = 'firebase' as const;
   private readonly schedules;
-  private readonly processed = new Map<string, number>();
+  private readonly processed = new Map<string, { eventId: string; at: number }>();
   private lastSyncAt?: number;
   private lastError?: string;
 
@@ -49,11 +49,11 @@ export class FirebaseScheduler implements WakeScheduler {
 
   decide(goatId: string, event: FiredWake): { allowed: true } | { allowed: false; reason: string } {
     const previous = this.processed.get(goatId);
-    if (previous === event.firedAt) return { allowed: false, reason: 'duplicate event' };
-    this.processed.set(goatId, event.firedAt);
+    if (previous?.eventId === event.eventId) return { allowed: false, reason: 'duplicate event' };
+    this.processed.set(goatId, { eventId: event.eventId, at: event.firedAt });
     if (this.processed.size > 5000) {
       const cutoff = this.now() - 24 * 60 * 60_000;
-      for (const [id, at] of this.processed) if (at < cutoff) this.processed.delete(id);
+      for (const [id, record] of this.processed) if (record.at < cutoff) this.processed.delete(id);
     }
     return { allowed: true };
   }
@@ -86,6 +86,49 @@ export class FirebaseScheduler implements WakeScheduler {
       if (event) claimed.push(event);
     }
     return claimed;
+  }
+
+  async claimDueTrackerChecks(nowMs = this.now(), limit = 40): Promise<FiredWake[]> {
+    const dueIso = new Date(nowMs).toISOString();
+    const snapshot = await this.schedules.where('nextTrackerCheckAt', '<=', dueIso).limit(limit).get();
+    const claimed: FiredWake[] = [];
+    for (const doc of snapshot.docs) {
+      const event = await this.db.runTransaction(async transaction => {
+        const fresh = await transaction.get(doc.ref);
+        if (!fresh.exists) return null;
+        const row = fresh.data()!;
+        if (row.paused || typeof row.nextTrackerCheckAt !== 'string' || row.nextTrackerCheckAt > dueIso) return null;
+        if (typeof row.leaseUntilMs === 'number' && row.leaseUntilMs > nowMs) return null;
+        const scheduledAt = row.nextTrackerCheckAt as string;
+        const generationId = String(row.generationId ?? '');
+        transaction.update(doc.ref, {
+          leaseUntilMs: nowMs + 4 * 60_000,
+          claimedAt: new Date(nowMs).toISOString(),
+        });
+        return {
+          goatId: String(row.goatId ?? doc.id),
+          eventId: `${doc.id}:tracker:${generationId}:${scheduledAt}`,
+          generationId,
+          reason: 'Firebase scheduled tracker check',
+          firedAt: Date.parse(scheduledAt) || nowMs,
+        } satisfies FiredWake;
+      });
+      if (event) claimed.push(event);
+    }
+    return claimed;
+  }
+
+  async completeTrackerCheck(goatId: string, generationId: string, nextTrackerCheckAt: string | null): Promise<void> {
+    const ref = this.schedules.doc(goatId);
+    await this.db.runTransaction(async transaction => {
+      const snapshot = await transaction.get(ref);
+      if (!snapshot.exists || snapshot.data()?.generationId !== generationId) return;
+      transaction.update(ref, {
+        nextTrackerCheckAt,
+        leaseUntilMs: 0,
+        updatedAt: new Date(this.now()).toISOString(),
+      });
+    });
   }
 
   async complete(goatId: string, generationId: string, nextWakeAt: string | null, nextTrackerCheckAt: string | null): Promise<void> {
