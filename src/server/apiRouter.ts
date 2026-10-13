@@ -1917,6 +1917,18 @@ apiRouter.get(
     let trackerChecks = 0;
     let stale = 0;
     let failed = 0;
+    let outboxReclaimed = 0;
+    let notificationsDelivered = 0;
+    let notificationFailures = 0;
+    try {
+      outboxReclaimed = await notificationOutbox.reclaimStale();
+      const delivery = await notificationOutbox.drain(10);
+      notificationsDelivered = delivery.delivered;
+      notificationFailures = delivery.failed;
+    } catch (error) {
+      notificationFailures += 1;
+      console.error('[firebase-cron] Telegram outbox sweep failed:', error);
+    }
 
     const processWake = async (event: FiredWake) => {
       try {
@@ -1976,6 +1988,9 @@ apiRouter.get(
       trackerDue: trackerDue.length,
       stale,
       failed,
+      outboxReclaimed,
+      notificationsDelivered,
+      notificationFailures,
       scheduler: firebaseScheduler.health(),
     });
   }),
