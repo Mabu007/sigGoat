@@ -604,8 +604,13 @@ async function setGoatStatusFor(
     throw new NotFoundError();
   }
 
+  const deployingDraft = !paused && goat.deploymentState === 'DRAFT';
+  const resolvedModel = deployingDraft
+    ? await resolveModelForNewGoat(userId, goat.model, false)
+    : goat.model;
   const updated: FundGoat = {
     ...goat,
+    model: resolvedModel,
     status: paused ? "PAUSED" : "WATCHING",
     deploymentState: paused ? (goat.deploymentState ?? 'DEPLOYED') : 'DEPLOYED',
     updatedAt: new Date().toISOString(),
@@ -4502,11 +4507,13 @@ apiRouter.post(
       goal: input.goal,
       markets: markets.resolved,
       skillIds: input.skillIds,
-      model: await resolveModelForNewGoat(
-        user.uid,
-        input.model,
-        input.modelProvided,
-      ),
+      model: input.deploymentState === 'DRAFT' && !input.modelProvided
+        ? LEGACY_DEFAULT_MODEL
+        : await resolveModelForNewGoat(
+            user.uid,
+            input.model,
+            input.modelProvided,
+          ),
       status: input.deploymentState === 'DRAFT' ? "PAUSED" : "WATCHING",
       deploymentState: input.deploymentState,
       schedule: input.schedule,
