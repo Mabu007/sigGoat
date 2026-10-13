@@ -601,6 +601,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     useState<FundGoat | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [showScheduleEditor, setShowScheduleEditor] =
     useState(false);
 
@@ -707,6 +708,30 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       );
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const handleClearReviewHistory = async (goatId: string) => {
+    if (!goatId || isClearingHistory) return;
+    if (!window.confirm('Delete this GOAT\'s market review history? This cannot be undone.')) return;
+
+    setIsClearingHistory(true);
+    setActionError('');
+    try {
+      const headers = await getApiAuthHeaders();
+      const response = await fetch(`/api/goats/${encodeURIComponent(goatId)}/history`, {
+        method: 'DELETE',
+        headers,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload?.error === 'string' ? payload.error : 'Could not delete review history.');
+      }
+      await refreshGoats();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Could not delete review history.');
+    } finally {
+      setIsClearingHistory(false);
     }
   };
 
@@ -2368,6 +2393,16 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               )}
             </Disclosure>
 
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void handleClearReviewHistory(inspectedGoat.id)}
+                disabled={isClearingHistory || !(inspectedState?.recentWakeEvents?.length)}
+                className="rounded-lg border border-negative/30 px-3 py-1.5 text-[10px] font-semibold text-negative hover:bg-negative-soft disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {isClearingHistory ? 'Deleting history…' : 'Delete review history'}
+              </button>
+            </div>
             <Disclosure
               open={showMarketReviews}
               onToggle={() => setShowMarketReviews(v => !v)}
@@ -2376,7 +2411,6 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               icon={<Calendar className="h-3.5 w-3.5" />}
             >
               {(inspectedState?.recentWakeEvents ?? [])
-                .filter(event => event.triggerType === 'SESSION_OPEN')
                 .map(event => (
                   <button
                     key={event.id}
@@ -2386,7 +2420,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-bold text-fg">
-                          Session Review
+                          {event.triggerType.replaceAll('_', ' ')}
                         </span>
 
                         <span className="rounded-md bg-raised px-1.5 py-0.5 text-[9px] font-mono text-accent-text">
