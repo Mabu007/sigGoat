@@ -65,7 +65,7 @@ export interface FiredWake {
 }
 
 export interface SchedulerHealth {
-  kind: 'durable-object' | 'in-process' | 'disabled';
+  kind: 'firebase' | 'durable-object' | 'in-process' | 'disabled';
   /** Set when kind is 'durable-object'. */
   endpoint?: string;
   /** Last successful sync, epoch ms. */
