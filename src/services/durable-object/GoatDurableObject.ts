@@ -827,6 +827,22 @@ export class GoatDurableObject {
         .catch(() => false);
       this.runtimeState.reasoningMode = hasAiKey ? 'AI' : 'DEMO';
 
+      if (!hasAiKey) {
+        const message =
+          'AI not connected: add a valid OpenRouter/provider API key in Settings before deploying this GOAT.';
+        this.recordFailure(message);
+        await this.recordWakeEvent(
+          reason,
+          triggerType,
+          market,
+          'ERROR',
+          message,
+          'ERROR',
+          generationId,
+        );
+        return this.runtimeState;
+      }
+
       let reasoningResult: ReasoningResult;
       try {
         reasoningResult = await this.reasoning.evaluateGoat(reasoningContext, this.goatConfig.model);
