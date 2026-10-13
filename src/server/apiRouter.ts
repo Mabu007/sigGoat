@@ -4388,23 +4388,25 @@ apiRouter.post(
       id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       userId: user.uid,
       name: `${template.name}`,
+      markets: template.markets.slice(0, 1),
       status: "WATCHING",
       createdAt: now,
       updatedAt: now,
     };
+    const canonicalCopy = migrateGoatMarkets(copy) ?? copy;
 
-    await persistence.goats.save(copy);
+    await persistence.goats.save(canonicalCopy);
 
     /**
      * A copy of a SKILL must also be owned by the caller, otherwise the copy would
      * reference a system record that must stay immutable.
      */
-    await copyReferencedSkills(user.uid, copy.skillIds);
+    await copyReferencedSkills(user.uid, canonicalCopy.skillIds);
 
-    await syncSchedule(copy);
-    subscribeToMarkets(copy);
+    await syncSchedule(canonicalCopy);
+    subscribeToMarkets(canonicalCopy);
 
-    res.status(201).json({ goat: copy, copiedFrom: template.id });
+    res.status(201).json({ goat: canonicalCopy, copiedFrom: template.id });
   }),
 );
 
