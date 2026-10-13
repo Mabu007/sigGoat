@@ -5298,6 +5298,8 @@ async function fetchChatNews(query: string): Promise<Array<{ title: string; sour
 function inferChatMarketQueries(message: string): string[] {
   const queries: string[] = [];
   const add = (value: string) => { if (!queries.some((q) => q.toLowerCase() === value.toLowerCase())) queries.push(value); };
+  // Preserve explicit Hyperliquid namespaces, e.g. xyz:JPY, as exact instrument queries.
+  for (const match of message.matchAll(/\b(xyz:[A-Z0-9]{2,16})\b/gi)) add(match[1]);
   const aliases: Array<[RegExp, string[]]> = [
     [/\b(gold|xau|xauusd|xyz:gold|paxg)\b/i, ["gold", "xyz:GOLD", "XAU"]],
     [/\b(bitcoin|btc|xbt)\b/i, ["BTC", "Bitcoin"]],
@@ -5587,7 +5589,8 @@ const CHAT_SYSTEM_PROMPT =
   "DEFAULT ANSWER SHAPE: Lead with the answer or your actual take in plain language. Usually use 1-3 short paragraphs. Do not automatically produce a report with numbered sections, tables, 'bottom line', 'gaps and caveats', or generic disclaimers. Use headings, bullets, and tables only when they make a complex research answer easier to scan or the user asks for detail. Do not repeat the user's question. Ask one focused follow-up only when a genuinely important detail is missing. " +
   "DEPTH CONTROL: Casual chat gets a casual, short reply. 'What do you think about EUR?' gets a concise view plus the key evidence and level/condition that would change the view. 'Research', 'analyse in detail', 'compare', 'backtest', or multi-part requests warrant a deeper evidence-led answer. For trading analysis, be decisive about what the evidence suggests while separating observation from inference and uncertainty; do not hide behind generic financial disclaimers. " +
   "SESSION CONTINUITY: Treat this as one ongoing conversation. Resolve follow-ups such as 'it', 'that', 'again', 'the chart', and timeframe changes from the most recent relevant asset discussed in this session, unless the user names a different asset. Never make the user repeat an asset or timeframe already established. Use the market evidence injected into the current turn; if it contains a fresh quote or candles, do not claim you lack live data. If a tool was not called or returned no result, state that precise limitation instead of implying the whole system lacks access. " +
-  "DATA AND RESEARCH: Use the backend's on-demand Hyperliquid instrument discovery, live quote retrieval, historical OHLCV candles, internet news, and authenticated SIRGOAT state. Search/fetch every asset the user asks about; use historical data when relevant; inspect saved GOAT configuration, skills, theses, activity, and proposals for GOAT questions. A greeting does not need market research. Never pretend to have fetched data that is absent. Never fabricate a listing, price, funding, open interest, volume, candle, news item, source, or timestamp. State LIVE versus PAPER accurately, and mention a data gap only when it materially affects the answer. " +
+  "TRADING UNIVERSE — HARD RULE: SIRGOAT trades and researches instruments listed on Hyperliquid only, especially the XYZ HIP-3 markets such as xyz:EUR, xyz:GBP, xyz:JPY, xyz:GOLD, xyz:SILVER, xyz:CL and listed indices. Never frame a question as if the user is trading external spot FX, a broker feed, EUR/USD, EUR/GBP, or another outside venue. Do not offer to fetch data from another source. When the user names a conventional pair or a vague currency/asset that does not exactly identify a supported Hyperliquid symbol, do not guess and do not fetch a loosely matched symbol: ask one short confirmation question using the venue's actual symbol. Example: 'Do you mean Hyperliquid's xyz:JPY market?' for USD/JPY; 'Do you mean xyz:EUR?' for 'the euro'. For a pair without a clear equivalent, ask whether they mean one of the actual listed instruments, e.g. xyz:EUR or xyz:GBP. Never present xyz:JPY as a spot EUR/JPY or claim the listed instrument is identical to spot FX. If the user confirms a symbol that was just suggested by you, treat that as confirmation, resolve the exact symbol, fetch its current Hyperliquid quote and candles, and answer the original question without asking again. A confirmation like 'yes', 'yeah', 'that one', or 'do that' only confirms the immediately preceding instrument clarification; do not apply it to unrelated questions. " +
+  "DATA AND RESEARCH: Use the backend's on-demand Hyperliquid instrument discovery, live quote retrieval, historical OHLCV candles, relevant news context, and authenticated SIRGOAT state. Search/fetch every confirmed asset the user asks about; use historical data when relevant; inspect saved GOAT configuration, skills, theses, activity, and proposals for GOAT questions. A greeting does not need market research. Never pretend to have fetched data that is absent. Never fabricate a listing, price, funding, open interest, volume, candle, news item, source, or timestamp. State LIVE versus PAPER accurately, and mention a data gap only when it materially affects the answer. " +
   "When researching, plan what evidence is needed, inspect retrieved data, identify material gaps, use available follow-up research, then synthesize a clear view. For complex trading questions, include the strongest bullish and bearish case, important confirmation/invalidation conditions, and risk only where relevant. Never expose another user's data or credentials. Never execute trades, create/accept proposals, or alter GOAT settings from chat.";
 
 /** Resolve the chatbot credential: user OpenRouter key from the vault, else the server fallback. */
@@ -5909,12 +5912,37 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       }
     }
     const contextualFollowUp = /\b(it|that|this|again|same asset|same market|the chart|the setup|what about|what do you think|analyse|analyze|opportunit|timeframe)\b/i.test(message);
+    const affirmative = /^(yes|yeah|yep|yup|correct|that's right|that one|do that|please|go ahead|sure|exactly)[!. ,]*$/i.test(message.trim());
+    const lastAssistantMessage = [...historyBeforeReply].reverse().find((item) => item.role === "assistant")?.content || "";
+    const pendingSymbol = lastAssistantMessage.match(/\b(?:do you mean|mean|confirm(?:ing)?|are you referring to)\s+(?:Hyperliquid(?:'s)?\s+)?(xyz:[A-Z0-9]{2,16})\??/i)?.[1];
+    const confirmedSymbol = affirmative && pendingSymbol ? pendingSymbol.toUpperCase().replace("XYZ:", "xyz:") : "";
+    const requestedPair = message.match(/\b(EUR|USD|GBP|JPY|AUD|NZD|CAD|CHF)\s*[/]\s*(EUR|USD|GBP|JPY|AUD|NZD|CAD|CHF)\b/i);
+    const bareCurrency = /\b(euro|eur|pound|sterling|gbp|yen|jpy)\b/i.test(message) &&
+      /\b(price|quote|market|chart|buy|sell|trade|trading|analysis|analyse|analyze|situation|think|look|doing|opportunit|support|resistance|trend|right now|live)\b/i.test(message) &&
+      !/\bxyz:(EUR|GBP|JPY)\b/i.test(message);
+    let clarificationPrompt = "";
+    if (!confirmedSymbol && requestedPair) {
+      const left = requestedPair[1].toUpperCase(), right = requestedPair[2].toUpperCase();
+      const currency = left === "USD" ? right : right === "USD" ? left : "";
+      if (currency && ["EUR", "GBP", "JPY"].includes(currency)) {
+        const symbol = "xyz:" + currency;
+        clarificationPrompt = "The user named conventional pair " + left + "/" + right + ", not an exact Hyperliquid ticker. Do not fetch market data yet. Ask exactly one short clarification: 'Do you mean Hyperliquid's " + symbol + " market?' Do not discuss external spot FX or suggest another data provider.";
+      } else {
+        clarificationPrompt = "The user named conventional pair " + left + "/" + right + " with no direct exact ticker established. Do not fetch market data or guess. Ask which listed Hyperliquid instrument they mean, naming only plausible supported symbols such as xyz:EUR or xyz:GBP if relevant. Do not discuss external spot FX or another data provider.";
+      }
+    } else if (!confirmedSymbol && bareCurrency) {
+      const symbol = /\b(euro|eur)\b/i.test(message) ? "xyz:EUR" : /\b(pound|sterling|gbp)\b/i.test(message) ? "xyz:GBP" : "xyz:JPY";
+      clarificationPrompt = "The user referred vaguely to a currency rather than an exact ticker. Do not fetch data yet. Ask exactly one short confirmation: 'Do you mean Hyperliquid's " + symbol + " market?' Do not discuss external spot FX or another data provider.";
+    }
     const shouldInheritAsset = Boolean(inheritedAsset && !mentionedAssets.length &&
       (needsMarketResearch(message.trim()) || contextualFollowUp));
-    const effectiveResearchMessage = shouldInheritAsset
-      ? message.trim() + "\n\nSESSION CONTEXT: The current asset under discussion is " + inheritedAsset + ". Resolve pronouns and timeframe follow-ups against this asset unless the user explicitly names another asset."
-      : message.trim();
-    researchNeeded = needsMarketResearch(effectiveResearchMessage);
+    let effectiveResearchMessage = confirmedSymbol
+      ? message.trim() + "\n\nUSER CONFIRMED the immediately preceding clarification. The exact Hyperliquid instrument is " + confirmedSymbol + ". Fetch this instrument now and answer the original question."
+      : shouldInheritAsset
+        ? message.trim() + "\n\nSESSION CONTEXT: The current asset under discussion is " + inheritedAsset + ". Resolve pronouns and timeframe follow-ups against this asset unless the user explicitly names another asset."
+        : message.trim();
+    if (clarificationPrompt) effectiveResearchMessage += "\n\nMANDATORY HYPERLIQUID CLARIFICATION: " + clarificationPrompt;
+    researchNeeded = !clarificationPrompt && (Boolean(confirmedSymbol) || needsMarketResearch(effectiveResearchMessage));
     const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim(), activeModel) : Promise.resolve(chat.title);
     const title = needsTitle ? await titlePromise : chat.title;
     if (needsTitle && title && title !== "New chat") {
@@ -5932,7 +5960,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     emit({ type: "status", message: researchNeeded ? "Research complete. Streaming the analysis…" : "Replying…" });
     const history = await persistence.messages.listByChat(chat.id, 40);
     const modelMessages = [
-      { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + researchContext },
+      { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + (clarificationPrompt ? "CLARIFICATION TURN: " + clarificationPrompt + " Do not claim you fetched any data. Keep the response short and ask for confirmation." : "") + "\n\n" + researchContext },
       ...history.map((item) => ({ role: item.role, content: item.content })),
     ];
 
