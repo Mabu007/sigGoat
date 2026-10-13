@@ -52,6 +52,15 @@ describe('aggregateHardConstraints', () => {
     expect(aggregateHardConstraints([skill('s2', 'SPREAD_UNDER_1_5_PIPS')]).maxSpreadPips).toBe(1.5);
   });
 
+  test('parses basis-point spread limits and keeps the strictest limit', () => {
+    const c = aggregateHardConstraints([
+      skill('wide', 'SPREAD_UNDER_5_BPS'),
+      skill('tight', 'SPREAD_UNDER_2_BPS'),
+    ]);
+    expect(c.maxSpreadBps).toBe(2);
+    expect(c.enforcedTokens).toContain('SPREAD_UNDER_2_BPS');
+  });
+
   test('tightest spread constraint wins across skills', () => {
     const c = aggregateHardConstraints([
       skill('a', 'SPREAD_UNDER_5_PIPS'),
