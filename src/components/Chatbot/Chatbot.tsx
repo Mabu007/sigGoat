@@ -452,6 +452,9 @@ export function Chatbot() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [chatModel, setChatModel] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<ChatItem | null>(null);
+  const [renameTitle, setRenameTitle] = useState('');
+  const [isRenaming, setIsRenaming] = useState(false);
 
 
 
@@ -636,29 +639,41 @@ export function Chatbot() {
 
 
 
-  const renameChat = useCallback(async (chat: ChatItem) => {
-    const proposed = window.prompt('Rename chat', chat.title);
-    if (proposed === null) return;
-    const title = proposed.trim();
-    if (!title || title === chat.title) return;
+  const renameChat = useCallback((chat: ChatItem) => {
+    setRenameTarget(chat);
+    setRenameTitle(chat.title);
+    setError(null);
+  }, []);
+
+  const saveChatRename = useCallback(async () => {
+    if (!renameTarget || isRenaming) return;
+    const title = renameTitle.trim();
+    if (!title) {
+      setError('Give this conversation a name first.');
+      return;
+    }
     if (title.length > 80) {
       setError('Chat titles must be 80 characters or fewer.');
       return;
     }
+    setIsRenaming(true);
     setError(null);
     try {
-      const res = await fetch(`/api/chats/${encodeURIComponent(chat.id)}`, {
+      const res = await fetch(`/api/chats/${encodeURIComponent(renameTarget.id)}`, {
         method: 'PATCH',
         headers: { ...(await loadAuthHeaders()), 'Content-Type': 'application/json' },
         body: JSON.stringify({ title }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error?.message ?? 'Could not rename this chat.');
-      setChats((prev) => prev.map((item) => item.id === chat.id ? { ...item, title: data?.chat?.title ?? title } : item));
+      setChats((prev) => prev.map((item) => item.id === renameTarget.id ? { ...item, title: data?.chat?.title ?? title } : item));
+      setRenameTarget(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not rename this chat.');
+    } finally {
+      setIsRenaming(false);
     }
-  }, [loadAuthHeaders]);
+  }, [isRenaming, loadAuthHeaders, renameTarget, renameTitle]);
 
   const deleteChat = useCallback(
 
@@ -1707,6 +1722,83 @@ export function Chatbot() {
         </div>
 
       </div>
+
+      {renameTarget && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-4 backdrop-blur-[3px]"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !isRenaming) setRenameTarget(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sirgoat-rename-title"
+            className="w-full max-w-sm overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl"
+          >
+            <div className="flex items-start gap-3 border-b border-line px-5 py-4">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent-text">
+                <Pencil size={16} aria-hidden="true" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 id="sirgoat-rename-title" className="text-sm font-semibold text-fg">Rename conversation</h2>
+                <p className="mt-1 text-xs leading-relaxed text-fg-muted">Give this chat a name you'll recognize later.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRenameTarget(null)}
+                disabled={isRenaming}
+                className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40"
+                aria-label="Close rename dialog"
+              >
+                <X size={16} aria-hidden="true" />
+              </button>
+            </div>
+            <form
+              className="space-y-4 px-5 py-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveChatRename();
+              }}
+            >
+              <div>
+                <label htmlFor="sirgoat-rename-input" className="mb-1.5 block text-xs font-medium text-fg-muted">Conversation name</label>
+                <input
+                  id="sirgoat-rename-input"
+                  autoFocus
+                  maxLength={80}
+                  value={renameTitle}
+                  onChange={(event) => setRenameTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape' && !isRenaming) setRenameTarget(null);
+                  }}
+                  placeholder="e.g. Gold breakout analysis"
+                  className="w-full rounded-xl border border-line bg-sunken px-3 py-2.5 text-sm text-fg outline-none transition-colors placeholder:text-fg-subtle focus:border-focus focus:ring-2 focus:ring-accent/15"
+                />
+                <p className="mt-1.5 text-right text-[10px] text-fg-subtle">{renameTitle.length}/80</p>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRenameTarget(null)}
+                  disabled={isRenaming}
+                  className="rounded-xl border border-line px-3 py-2 text-xs font-medium text-fg transition-colors hover:bg-raised disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isRenaming || !renameTitle.trim() || renameTitle.trim() === renameTarget.title}
+                  className="inline-flex items-center gap-2 rounded-xl bg-accent px-3.5 py-2 text-xs font-semibold text-accent-fg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {isRenaming && <Loader2 size={13} className="animate-spin" aria-hidden="true" />}
+                  Save name
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
     </div>
 
