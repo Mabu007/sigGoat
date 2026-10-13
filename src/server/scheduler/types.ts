@@ -1,34 +1,13 @@
 /**
- * WAKE SCHEDULER BOUNDARY
- * ======================
- * The application owns persistence, market data and AI. It does NOT need to
- * own a timer.
+ * FIREBASE-BACKED WAKE SCHEDULER BOUNDARY
+ * =======================================
+ * Firestore owns the authoritative due times, schedule generations and leases.
+ * A server-side cron invocation claims due work, executes it in the Node runtime,
+ * and advances the schedule after the work completes. In-process timers exist
+ * only as a local-development fallback.
  *
- * `WakeScheduler` is the seam that lets a Cloudflare Durable Object own the
- * authoritative schedule state (durable, alarm-backed, survives restarts and
- * redeploys) while this application remains the Vercel host that actually does
- * the work.
- *
- * WHY THIS SHAPE
- *
- * A Durable Object cannot run `firebase-admin` (it needs Node `crypto`/gRPC,
- * unavailable on the Workers runtime). Rather than forcing Node-only code into
- * the DO, or inventing a second source of truth, the DO is given exactly two
- * jobs:
- *
- *   1. remember when each GOAT is next due (durable storage)
- *   2. when an alarm fires, POST an authenticated callback to the Vercel app
- *
- * All data, all AI and all persistence stay on the Vercel side. The DO holds
- * scheduling state only, which is precisely the state that belongs to it.
- *
- * IDEMPOTENCY
- *
- * Alarms can be delivered more than once (at-least-once delivery, retries,
- * a redeploy racing an in-flight alarm). Every wake therefore carries an
- * `eventId` and a `generationId`; `decide()` is the single place that decides
- * whether a wake may proceed, so duplicate suppression cannot be bypassed by
- * adding a new trigger path.
+ * Every wake carries an event id and generation id so retries are idempotent
+ * and a superseded schedule cannot execute stale work.
  */
 
 export type WakeReasonKind =
@@ -65,9 +44,7 @@ export interface FiredWake {
 }
 
 export interface SchedulerHealth {
-  kind: 'firebase' | 'durable-object' | 'in-process' | 'disabled';
-  /** Set when kind is 'durable-object'. */
-  endpoint?: string;
+  kind: 'firebase' | 'in-process' | 'disabled';
   /** Last successful sync, epoch ms. */
   lastSyncAt?: number;
   /** Consecutive sync failures; the app keeps working without the DO. */
@@ -81,8 +58,8 @@ export interface WakeScheduler {
   /**
    * Publish (or clear) the authoritative next-wake time for a GOAT.
    *
-   * MUST be safe to call repeatedly: publishing the same generation is a
-   * no-op, so a retried request cannot create a second alarm.
+   * MUST be safe to call repeatedly: publishing an unchanged generation is
+   * a no-op, so a retried request cannot create duplicate scheduled work.
    */
   sync(request: ScheduleRequest): Promise<void>;
 
