@@ -213,7 +213,7 @@ export function isEphemeralRuntime(): boolean {
  * (symbol, timeframe) per TTL, fanned out to every GOAT and persisted so a
  * restart does not start from an empty chart.
  *
- * This is the substrate a Cloudflare Durable Object would hold (durable,
+ * Shared market state is cached by market, not GOAT, because indicator computation
  * per-key derived market state). It is deliberately keyed by MARKET, not by
  * GOAT, because the expensive thing — indicator computation over candles — is
  * identical for every GOAT watching the same pair.
@@ -248,7 +248,7 @@ export const marketStateStore = new MarketStateStore(marketProvider, {
  * finalizer that converts completed sessions into durable summaries BEFORE
  * pruning their minutes.
  *
- * On Vercel this in-process instance is the same logic the Cloudflare
+ * This shared service handles the current API process. Its candle cache is ephemeral; durable GOAT state and schedule state are stored in Firestore. The former Worker runtime was removed. Both
  * `MarketDataDO` runs; the DO is the durable owner in production and this
  * service is what serves a self-hosted or development deployment. Both
  * implement identical rules, so behaviour does not fork between environments.
