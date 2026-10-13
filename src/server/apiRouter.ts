@@ -1001,14 +1001,21 @@ export async function reconcileRuntime(): Promise<{
 
   const subscriptions: IngestionSubscription[] = [];
   for (const goat of goats) {
-    if (goat.status === "PAUSED") continue;
-    for (const instrument of goat.markets) {
-      subscriptions.push({
-        subscriberId: goat.id,
-        instrument,
-        eventTypes: ["CANDLE_FINALIZED", "SESSION_FINALIZED", "DATA_STALE"],
+    const migrated = migrateGoatMarkets(goat);
+    const canonicalGoat = migrated ?? goat;
+    if (migrated) {
+      await persistence.goats.save(migrated).catch((err) => {
+        console.error(`[api] failed to persist market migration for ${goat.id}:`, err);
       });
     }
+    if (canonicalGoat.status === "PAUSED") continue;
+    const instrument = canonicalGoat.markets[0];
+    if (!instrument) continue;
+    subscriptions.push({
+      subscriberId: canonicalGoat.id,
+      instrument,
+      eventTypes: ["CANDLE_FINALIZED", "SESSION_FINALIZED", "DATA_STALE"],
+    });
   }
 
   const restored = marketIngestion.rebuildSubscriptions(subscriptions);
@@ -2121,17 +2128,23 @@ apiRouter.post(
     const subscriptions: IngestionSubscription[] = [];
 
     for (const goat of goats) {
-      // A stopped GOAT is never subscribed: dormancy waits for events, stopping
-      // means it does not run its workflow at all.
-      if (goat.status === "PAUSED") continue;
-
-      for (const instrument of goat.markets) {
-        subscriptions.push({
-          subscriberId: goat.id,
-          instrument,
-          eventTypes: ["CANDLE_FINALIZED", "SESSION_FINALIZED", "DATA_STALE"],
+      // Normalize legacy records before rebuilding durable subscriptions.
+      const migrated = migrateGoatMarkets(goat);
+      const canonicalGoat = migrated ?? goat;
+      if (migrated) {
+        await persistence.goats.save(migrated).catch((err) => {
+          console.error(`[api] failed to persist market migration for ${goat.id}:`, err);
         });
       }
+      // A stopped GOAT is never subscribed.
+      if (canonicalGoat.status === "PAUSED") continue;
+      const instrument = canonicalGoat.markets[0];
+      if (!instrument) continue;
+      subscriptions.push({
+        subscriberId: canonicalGoat.id,
+        instrument,
+        eventTypes: ["CANDLE_FINALIZED", "SESSION_FINALIZED", "DATA_STALE"],
+      });
     }
 
     const restored = marketIngestion.rebuildSubscriptions(subscriptions);
