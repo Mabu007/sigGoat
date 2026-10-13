@@ -616,6 +616,8 @@ export interface BacktestTrade {
 
   pnlPips: number;
   pnlPct: number;
+  /** Realized gross PnL in account currency using the actual affordable risk for this trade. */
+  pnlDollars?: number;
 
   outcome:
     | 'WIN'
