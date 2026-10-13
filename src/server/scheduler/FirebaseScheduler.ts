@@ -72,7 +72,7 @@ export class FirebaseScheduler implements WakeScheduler {
         const scheduledAt = row.nextWakeAt as string;
         const generationId = String(row.generationId ?? '');
         transaction.update(doc.ref, {
-          leaseUntilMs: nowMs + 4 * 60_000,
+          leaseUntilMs: nowMs + 5 * 60_000,
           claimedAt: new Date(nowMs).toISOString(),
         });
         return {
@@ -102,7 +102,7 @@ export class FirebaseScheduler implements WakeScheduler {
         const scheduledAt = row.nextTrackerCheckAt as string;
         const generationId = String(row.generationId ?? '');
         transaction.update(doc.ref, {
-          leaseUntilMs: nowMs + 4 * 60_000,
+          leaseUntilMs: nowMs + 5 * 60_000,
           claimedAt: new Date(nowMs).toISOString(),
         });
         return {
