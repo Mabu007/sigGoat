@@ -794,8 +794,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     setIsChatOpen(false);
   };
 
-  const handleCreateSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateSubmit = async (e?: React.FormEvent, deploy = false) => {
+    e?.preventDefault();
 
     if (!name.trim() || !goal.trim() || !selectedMarkets.length) {
       setCreateError(
@@ -804,14 +804,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       return;
     }
 
-    if (!selectedModel) {
+    if (deploy && !selectedModel) {
       setCreateError(
-        'Select a live reasoning model before deploying the GOAT.'
+        'Select a live reasoning model before deploying the GOAT. You can save a draft without starting it.'
       );
       return;
     }
 
-    if (selectedModelIsUnavailable) {
+    if (deploy && selectedModelIsUnavailable) {
       setCreateError(
         'The selected model is no longer listed by OpenRouter. Choose a currently available model.'
       );
@@ -828,6 +828,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
         markets: selectedMarkets,
         skillIds: selectedSkillIds,
         model: selectedModel,
+        deploymentState: deploy ? 'DEPLOYED' : 'DRAFT',
         schedule: buildSchedule(),
       });
 
@@ -2347,7 +2348,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               open={showMarketReviews}
               onToggle={() => setShowMarketReviews(v => !v)}
               title="Market Review History"
-              subtitle="Session-open reviews"
+              subtitle="Persistent market review history"
               icon={<Calendar className="h-3.5 w-3.5" />}
             >
               {(inspectedState?.recentWakeEvents ?? [])
@@ -2704,7 +2705,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               )}
 
               <form
-                onSubmit={handleCreateSubmit}
+                onSubmit={e => handleCreateSubmit(e, false)}
                 className="space-y-5 text-xs"
               >
                 {/* Identity */}
@@ -3142,7 +3143,16 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                     </button>
 
                     <button
-                      type="submit"
+                      type="button"
+                      onClick={() => void handleCreateSubmit(undefined, false)}
+                      disabled={isCreating}
+                      className="rounded-xl border border-line px-4 py-2 text-xs font-bold text-fg-muted hover:bg-sunken disabled:opacity-40"
+                    >
+                      {isCreating ? 'Saving...' : 'Save Draft'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleCreateSubmit(undefined, true)}
                       disabled={
                         isCreating ||
                         modelState !== 'ready' ||
@@ -3154,12 +3164,12 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                       {isCreating ? (
                         <>
                           <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                          Deploying...
+                          Creating...
                         </>
                       ) : (
                         <>
                           <Zap className="h-3.5 w-3.5" />
-                          Deploy GOAT
+                          Create & Deploy
                         </>
                       )}
                     </button>
