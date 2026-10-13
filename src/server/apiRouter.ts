@@ -4859,6 +4859,21 @@ apiRouter.patch(
 );
 
 apiRouter.delete(
+  "/goats/:id/history",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
+
+    await persistence.wakeEvents.deleteByGoat(goat.id);
+    const runtime = durableObjectRegistry.get(goat.id);
+    runtime?.clearReviewHistory();
+
+    res.json({ success: true, goatId: goat.id, cleared: 'review-history' });
+  }),
+);
+
+apiRouter.delete(
   "/goats/:id",
   handle(async (req, res) => {
     const user = requireUser(req);
