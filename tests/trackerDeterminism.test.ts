@@ -308,6 +308,29 @@ describe('condition plan progression', () => {
   });
 });
 
+describe('range conditions', () => {
+  test('WITHIN_RANGE uses both inclusive bounds, never a one-sided comparison', () => {
+    const candles = uptrend(120);
+    const inside = evaluateTracker(tracker({
+      operator: 'WITHIN_RANGE',
+      rangeLow: 1.10,
+      rangeHigh: 1.15,
+      indicatorParams: { indicator: 'PRICE' },
+    }), candles);
+    const outside = evaluateTracker(tracker({
+      operator: 'WITHIN_RANGE',
+      rangeLow: 1.20,
+      rangeHigh: 1.30,
+      indicatorParams: { indicator: 'PRICE' },
+    }), candles);
+
+    expect(inside.verdict).toBe('TRIGGERED');
+    expect(inside.shouldWake).toBe(true);
+    expect(outside.verdict).toBe('UNMET');
+    expect(outside.shouldWake).toBe(false);
+  });
+});
+
 describe('tracker data gating', () => {
   test('an unsupported indicator is UNEVALUABLE and never executed', () => {
     const result = evaluateTracker(
