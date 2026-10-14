@@ -1447,7 +1447,13 @@ export class GoatRuntime {
     // the same candle can be retried without claiming an unpersisted hit.
     const thesis = this.runtimeState.currentThesis;
     if (!thesis || !this.thesisRepo) {
-      this.runtimeState.trackers = before;
+      this.runtimeState.trackers = before.map((tracker) => ({ ...tracker }));
+      if (thesis) {
+        this.runtimeState.currentThesis = {
+          ...thesis,
+          trackers: before.map((tracker) => ({ ...tracker })),
+        };
+      }
       this.runtimeState.lastError = 'Tracker state could not be persisted because no current thesis repository is available.';
       return false;
     }
@@ -1461,7 +1467,11 @@ export class GoatRuntime {
       await this.thesisRepo.save(updatedThesis);
       this.runtimeState.currentThesis = updatedThesis;
     } catch (err) {
-      this.runtimeState.trackers = before;
+      this.runtimeState.trackers = before.map((tracker) => ({ ...tracker }));
+      this.runtimeState.currentThesis = {
+        ...thesis,
+        trackers: before.map((tracker) => ({ ...tracker })),
+      };
       this.runtimeState.lastError =
         `Tracker state could not be persisted: ${err instanceof Error ? err.message : 'unknown error'}`;
       console.error(`[goat ${this.id}] failed to persist tracker state:`, err);
