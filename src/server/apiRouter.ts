@@ -101,7 +101,6 @@ import {
   TRACKING_TIMEFRAMES,
   isTrackingTimeframe,
   normaliseTrackingTimeframe,
-  pollIntervalForTimeframe,
   type TrackingTimeframe,
 } from "../services/market-data/trackingTimeframes";
 import { DailyMarketRollup } from "../services/daily-rolling/DailyMarketRollup";
