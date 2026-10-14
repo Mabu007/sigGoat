@@ -32,7 +32,7 @@
 
 import type { KeyStore } from '../repositories';
 import type { CredentialVault, CredentialProviderId } from './CredentialVault';
-import { isPlausibleOpenRouterKey } from '../credentialValidation';
+import { isPlausibleOpenRouterKey, isPlausibleSpaceBunnyKey } from '../credentialValidation';
 
 /** The slice of `CredentialVault` this adapter needs. */
 export type VaultStore = Pick<CredentialVault, 'getCredential' | 'saveCredential'>;
@@ -112,6 +112,12 @@ export function createVaultBackedKeyStore(
     setGroqKey: async (userId, key) => {
       await vault.saveCredential(userId, 'groq', key);
     },
+
+    getSpaceBunnyKey: async (userId) => {
+      const key = await read(userId, 'spacebunny', () => legacy.getSpaceBunnyKey?.(userId));
+      return key && isPlausibleSpaceBunnyKey(key) ? key : undefined;
+    },
+    setSpaceBunnyKey: async (userId, key) => { await vault.saveCredential(userId, 'spacebunny', key); },
 
     getTelegramToken: async (userId) =>
       read(userId, 'telegram', () => legacy.getTelegramToken(userId)),
