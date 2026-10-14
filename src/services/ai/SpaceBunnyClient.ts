@@ -43,8 +43,7 @@ export class SpaceBunnyClient {
           model: model || SPACE_BUNNY_MODEL,
           messages,
           max_tokens: maxTokens,
-          temperature: 0.1,
-          ...(json ? { response_format: { type: 'json_object' } } : {}),
+          temperature: json ? 0.1 : 0.2,
         }),
         signal: controller.signal,
       });
