@@ -35,10 +35,6 @@ gcloud secrets add-iam-policy-binding sirgoat-cron-secret \
   --member="serviceAccount:sirgoat-runtime@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
   --role="roles/secretmanager.secretAccessor"
 
-# Permit Cloud Scheduler's service account to invoke the private service.
-gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
-  --member="serviceAccount:sirgoat-scheduler@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
-  --role="roles/cloudscheduler.serviceAgent"
 ```
 
 If the project has not previously used Cloud Scheduler, allow its service agent to finish provisioning before creating the job.
