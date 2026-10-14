@@ -143,8 +143,12 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
 
   const loadAccountDetails = () => run(async () => {
     if (!accountId) throw new Error("Select a PropDAO account first.");
-    const payload = await request("/api/propdao/accounts/" + encodeURIComponent(accountId) + "/details");
-    setAccountDetails(payload);
+    const [payload, challengeData] = await Promise.all([
+      request("/api/propdao/accounts/" + encodeURIComponent(accountId) + "/details"),
+      request("/api/propdao/challenges").catch(() => ({ challenges: [], markets: [] })),
+    ]);
+    const fullData = { ...payload, challenges: challengeData.challenges ?? [], markets: challengeData.markets ?? [] };
+    setAccountDetails(fullData);
     return { action: { type: "propdao_account", status: fullData.completeness ?? "partial", title: "PropDAO account details", ...fullData } };
   }, "PropDAO account data refreshed");
 
