@@ -5694,7 +5694,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   const now = new Date();
   const lower = userMessage.toLowerCase();
   const lowerMessage = userMessage.toLowerCase();
-  const includeUserState = /\b(goat|my agent|my setup|my proposal|my signal|my strategy|my portfolio|my account|my trades|my activity)\b/i.test(userMessage);
+  const includeUserState = /\b(goat|my agent|my setup|my proposal|my signal|my strategy|my portfolio|my account|my trades|my activity)\b/i.test(userMessage);\n  const includePropDao = /\b(propdao|my account|account balance|balance|equity|drawdown|challenge rules|account rules|open positions|open orders|closed trades|funded account|trading account)\b/i.test(userMessage);
   const includeNews = inferChatMarketQueries(userMessage).length > 0 || /\b(news|why|latest|what happened|fundamental|economic|calendar|macro|research|compare|event|fed|ecb|cpi|nfp|today|current|currently|right now|market conditions)\b/i.test(userMessage);
   const newsQueries: string[] = [];
   if (/\b(gold|xau|paxg)\b/i.test(userMessage)) newsQueries.push("gold price market Federal Reserve latest");
@@ -5820,6 +5820,62 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   } else {
     sections.push("USER'S SIRGOAT STATE: no GOATs were returned for this account, or the state store was unavailable. Do not invent any.");
   }
+  }
+
+  if (includePropDao) {
+    try {
+      const provider = propDaoFor(userId);
+      const [verification, accounts, propMarkets, challenges] = await Promise.all([
+        provider.verifyConnection(),
+        provider.listAccounts(),
+        provider.markets(),
+        provider.challenges(),
+      ]);
+      if (!verification.connected) {
+        sections.push("PROPDAO ACCOUNT CONTEXT: no verified PropDAO connection is available for this user. Do not invent balances, account rules, positions, or orders. Explain that they need to connect and verify their own PropDAO API key in Settings.");
+      } else {
+        const accountSnapshots = await Promise.all(accounts.slice(0, 5).map(async (account) => {
+          const [risk, positions, orders, trades] = await Promise.all([
+            provider.risk(account.accountId),
+            provider.positions(account.accountId),
+            provider.orders(account.accountId),
+            provider.trades(account.accountId, 30),
+          ]);
+          return {
+            accountId: account.accountId,
+            status: account.status,
+            challengeId: account.challengeId,
+            rules: account.rules,
+            balance: risk.balance,
+            equity: risk.equity,
+            drawdownFloor: risk.floorUsd,
+            drawdownFloorKind: risk.floorKind,
+            remainingRiskRoomUsd: risk.roomUsd,
+            remainingRiskRoomPct: risk.roomPct,
+            breached: risk.breached,
+            openPositionCount: risk.openPositions,
+            incompleteRiskSnapshot: risk.incomplete,
+            positions,
+            openOrders: orders,
+            recentClosedTrades: trades,
+          };
+        }));
+        sections.push(
+          "LIVE PROPDAO ACCOUNT CONTEXT (provider API data fetched at " + now.toISOString() + "; null means the provider did not supply a value, not zero):\n" +
+          JSON.stringify({
+            connected: true,
+            providerIdentity: { userId: verification.userId, accountCount: verification.accountCount },
+            accounts: accountSnapshots,
+            markets: propMarkets,
+            challengeCatalogue: challenges,
+            source: "PropDAO authenticated API",
+          }).slice(0, 24000),
+        );
+      }
+    } catch (error) {
+      sections.push("PROPDAO ACCOUNT CONTEXT: the authenticated PropDAO data request failed for this turn. Do not invent account details. State that the live account lookup failed and ask the user to refresh the connection.");
+      console.error("[chat] PropDAO context lookup failed:", error instanceof Error ? error.message : "unknown error");
+    }
   }
 
   const marketNames = new Set<string>();
