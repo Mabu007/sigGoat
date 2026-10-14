@@ -92,7 +92,7 @@ export interface GoatRuntimeOptions {
   /** Injectable clock for deterministic tests. */
   now?: () => number;
   /**
-   * External durable scheduler.
+   * External Firestore-backed scheduler.
    *
    * When supplied, this actor does NOT arm in-process timers: the scheduler
    * owns the wake schedule and calls back into the API. This is what makes
@@ -1484,7 +1484,7 @@ export class GoatRuntime {
    * A PAUSED GOAT never arms a timer at all.
    */
   private scheduleRoutineCheck(delayMs?: number, respectSchedule = false): void {
-    // A durable scheduler owns the schedule; a local timer here would be a
+    // The Firestore-backed scheduler owns the schedule; a local timer here would be a
     // competing source of truth that dies with the process.
     if (this.scheduler) return;
     if (this.stopped || this.paused) return;
