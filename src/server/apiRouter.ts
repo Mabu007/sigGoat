@@ -1103,7 +1103,7 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
         persistence,
         policyStatus: () => propDaoFor(goat.userId).policyStatus(),
         executeSignal: async (ownedGoat, candidate, profile) => {
-          if (!profile.autoTradeAccountId || !Number.isFinite(profile.autoTradeQty) || !profile.autoTradeQty || profile.autoTradeQty <= 0) {
+          if (!profile.autoTradeAccountId || typeof profile.autoTradeQty !== "number" || !Number.isFinite(profile.autoTradeQty) || profile.autoTradeQty <= 0) {
             return { submitted: false, message: "Automatic trading is missing an owned PropDAO account or fixed quantity." };
           }
           const provider = propDaoFor(ownedGoat.userId);
@@ -6156,6 +6156,9 @@ apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
       { id: "deploy_goat", label: "Deploy a GOAT", endpoint: "POST /api/chat/actions/goats/:id/deploy", confirmationRequired: true, available: true },
       { id: "create_trade_proposal", label: "Generate a trade proposal", endpoint: "POST /api/chat/actions/goats/:id/research", confirmationRequired: false, available: true },
       { id: "execute_trade", label: "Submit a risk-checked order", endpoint: "POST /api/chat/actions/execute-trade", confirmationRequired: true, available: Boolean(execution.enabled && execution.authorised), blockedReason: execution.enabled && execution.authorised ? null : execution.summary },
+      { id: "backtest", label: "Run a historical GOAT backtest", endpoint: "POST /api/backtest/run", confirmationRequired: false, available: true },
+      { id: "propdao_account", label: "Read PropDAO account details", endpoint: "GET /api/propdao/accounts/:id/details", confirmationRequired: false, available: true },
+      { id: "proposal_decision", label: "Accept or reject a proposal", endpoint: "POST /api/goats/:id/signals/:signalId/decision", confirmationRequired: true, available: true },
     ],
     execution,
   });
