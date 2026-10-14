@@ -250,6 +250,33 @@ describe('tracker event drives the wake', () => {
     expect(gateway.calls).toBe(1);
   });
 
+  test('level conditions are rechecked on the same candle during five-minute polling', async () => {
+    const gateway = makeGateway();
+    const a = actor(gateway);
+    armTrackers(a, [
+      {
+        id: 'price_level',
+        description: 'Price above 1.20',
+        type: 'INDICATOR',
+        market: 'EUR/USD',
+        operator: 'GREATER_THAN',
+        targetValue: 1.20,
+        indicatorParams: { indicator: 'PRICE' },
+        isTriggered: false,
+      },
+    ]);
+
+    const first = await a.evaluateTrackersNow(liveSnapshot(1.2, 50));
+    expect(first).toBe(false);
+    expect(gateway.calls).toBe(0);
+
+    // Same candle timestamps, new quote/close values on the next poll.
+    const second = await a.evaluateTrackersNow(liveSnapshot(1.201, 50));
+    expect(second).toBe(true);
+    expect(gateway.calls).toBe(1);
+    expect(a.getState().trackers[0].status).toBe('HIT');
+  });
+
   test('all conditions hit on one candle are persisted before one AI wake', async () => {
     const gateway = makeGateway();
     const a = actor(gateway);
