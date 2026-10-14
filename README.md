@@ -299,7 +299,7 @@ src/
   services/agent/SkillConstraints.ts  # token parsing from skills
   services/ai/OpenRouterClient.ts # LLM client; DEMO fallback; chat answering
   services/market-data/           # MarketDataProvider boundary + PAPER provider
-  services/goat-runtime/        # legacy-named in-process GOAT actor: wake pipeline
+  services/goat-runtime/           # per-GOAT runtime: wake pipeline
   services/backtest/              # no-lookahead historical replay
   services/telegram/              # webhook updates + outbound messages
   server/                         # auth, repositories (firestore/file/memory), API router
