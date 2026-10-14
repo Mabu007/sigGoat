@@ -209,6 +209,7 @@ if (marketProvider.dataMode === "PAPER") {
  */
 export function isEphemeralRuntime(): boolean {
   if (process.env.VERCEL) return true;
+  if (process.env.K_SERVICE || process.env.K_REVISION || process.env.CLOUD_RUN_JOB) return true;
   if (process.env.AWS_LAMBDA_FUNCTION_NAME) return true;
   if (process.env.FUNCTION_TARGET) return true; // Google Cloud Functions
   if (process.env.NETLIFY) return true;
