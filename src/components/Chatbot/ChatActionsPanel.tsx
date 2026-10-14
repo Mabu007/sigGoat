@@ -33,6 +33,7 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
   const [autoTradeAccountId, setAutoTradeAccountId] = useState("");
   const [autoTradeQty, setAutoTradeQty] = useState("0.01");
   const [backtestPeriod, setBacktestPeriod] = useState("7d");
+  const [backtestMarket, setBacktestMarket] = useState("");
   const [startingBalance, setStartingBalance] = useState("10000");
   const [riskPerTradePct, setRiskPerTradePct] = useState("1.5");
   const [result, setResult] = useState<any>(null);
@@ -138,12 +139,12 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
 
   const deployGoat = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/deploy", { confirmed: false }), "Review the deployment confirmation card");
 
-  const confirmDeployGoat = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/deploy", { confirmed: true }), "Deployment request submitted");
+  const confirmDeployGoat = () => run(async () => { const payload = await post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/deploy", { confirmed: true }); await refreshContext(); return payload; }, "Deployment request submitted");
 
   const createProposal = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/research", { reason: "Market review requested from SIRGOAT chat" }), "GOAT review completed");
 
   const runBacktest = () => run(() => post("/api/backtest/run", {
-    goatId, market: market || undefined, period: backtestPeriod,
+    goatId, market: backtestMarket || undefined, period: backtestPeriod,
     startingBalance: Number(startingBalance), riskPerTradePct: Number(riskPerTradePct),
   }), "Backtest completed");
 
@@ -256,17 +257,17 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
         {mode === "backtest" && <div className={cardClass}>
           <div className="mb-2 flex items-center gap-2"><BarChart3 size={15} /><p className="text-[11px] font-semibold">Run a real GOAT backtest</p></div>
           <label className="mb-1 block text-[10px]">GOAT</label>
-          <select className={fieldClass} value={goatId} onChange={(e) => { setGoatId(e.target.value); const selected = goats.find((g) => g.id === e.target.value); const first = Array.isArray(selected?.markets) ? String((selected?.markets as unknown[])[0] ?? "") : ""; if (first) setMarket(first); }}>
+          <select className={fieldClass} value={goatId} onChange={(e) => { setGoatId(e.target.value); const selected = goats.find((g) => g.id === e.target.value); const first = Array.isArray(selected?.markets) ? String((selected?.markets as unknown[])[0] ?? "") : ""; setBacktestMarket(first); }}>
             {goats.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
           <label className="mb-1 mt-2 block text-[10px]">Market watched by this GOAT</label>
-          <select className={fieldClass} value={market} onChange={(e) => setMarket(e.target.value)}>
+          <select className={fieldClass} value={backtestMarket || (Array.isArray(goats.find((g) => g.id === goatId)?.markets) ? String((goats.find((g) => g.id === goatId)?.markets as unknown[])[0] ?? "") : "")} onChange={(e) => setBacktestMarket(e.target.value)}>
             {(Array.isArray(goats.find((g) => g.id === goatId)?.markets) ? goats.find((g) => g.id === goatId)?.markets as string[] : []).map((value) => <option key={value} value={value}>{value}</option>)}
           </select>
           <label className="mb-1 mt-2 block text-[10px]">Historical period</label>
           <select className={fieldClass} value={backtestPeriod} onChange={(e) => setBacktestPeriod(e.target.value)}>{["24h", "7d", "30d", "90d"].map((value) => <option key={value} value={value}>{value}</option>)}</select>
           <div className="mt-2 grid grid-cols-2 gap-2"><div><label className="mb-1 block text-[10px]">Starting balance</label><input className={fieldClass} type="number" min="1" value={startingBalance} onChange={(e) => setStartingBalance(e.target.value)} /></div><div><label className="mb-1 block text-[10px]">Risk per trade (%)</label><input className={fieldClass} type="number" min="0.1" max="10" step="0.1" value={riskPerTradePct} onChange={(e) => setRiskPerTradePct(e.target.value)} /></div></div>
-          <button className={buttonClass + " mt-3"} disabled={loading || !goatId || !market || Number(startingBalance) <= 0 || Number(riskPerTradePct) <= 0 || Number(riskPerTradePct) > 10} onClick={() => void runBacktest()}><BarChart3 size={13} /> Run historical replay</button>
+          <button className={buttonClass + " mt-3"} disabled={loading || !goatId || !(backtestMarket || (Array.isArray(goats.find((g) => g.id === goatId)?.markets) && (goats.find((g) => g.id === goatId)?.markets as string[]).length)) || Number(startingBalance) <= 0 || Number(riskPerTradePct) <= 0 || Number(riskPerTradePct) > 10} onClick={() => void runBacktest()}><BarChart3 size={13} /> Run historical replay</button>
           <p className="mt-2 text-[10px] text-fg-subtle">Uses the backend agent-driven historical replay. Production refuses simulated data and reports when live history or an AI key is unavailable.</p>
         </div>}
         {mode === "account" && <div className={cardClass}>
