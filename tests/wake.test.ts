@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { GoatDurableObject } from '../src/services/durable-object/GoatDurableObject';
+import { GoatRuntime } from '../src/services/goat-runtime/GoatRuntime';
 import type { ReasoningGateway } from '../src/server/reasoningGateway';
 import { PaperMarketDataProvider, PAPER_DATA_MODE } from '../src/services/market-data/PaperMarketDataProvider';
 import { MarketDataProvider } from '../src/services/market-data/MarketDataProvider';
@@ -74,11 +74,11 @@ class FailingProvider implements MarketDataProvider {
   }
 }
 
-let actor: GoatDurableObject | undefined;
+let actor: GoatRuntime | undefined;
 
 function makeActor(gw: ReasoningGateway, provider?: MarketDataProvider) {
   const persistence = new InMemoryPersistence();
-  const instance = new GoatDurableObject(makeGoat(), SKILLS, {
+  const instance = new GoatRuntime(makeGoat(), SKILLS, {
     reasoning: gw,
     marketProvider: provider ?? new PaperMarketDataProvider({ enableTicks: false }),
     signals: persistence.signals,
