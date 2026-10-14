@@ -3,7 +3,7 @@ import {
   msUntilNextScheduledTime,
   normaliseSchedule,
   describeSchedule,
-} from '../src/services/durable-object/GoatDurableObject';
+} from '../src/services/goat-runtime/GoatRuntime';
 import {
   normaliseTrackingTimeframe,
   pollIntervalForTimeframe,
