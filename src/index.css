@@ -576,3 +576,81 @@
     padding-top: env(safe-area-inset-top, 0px);
   }
 }
+
+
+/* Screen-level finish shared by every existing view. */
+@layer components {
+  main h1 {
+    font-weight: 700;
+    letter-spacing: -0.035em;
+  }
+
+  main h2, main h3 {
+    letter-spacing: -0.025em;
+  }
+
+  main h1 + p,
+  main h2 + p,
+  main h3 + p {
+    line-height: 1.65;
+  }
+
+  main table {
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  main thead th {
+    background: color-mix(in srgb, var(--color-raised) 88%, var(--color-surface));
+    color: var(--color-fg-muted);
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.075em;
+    text-transform: uppercase;
+  }
+
+  main tbody tr {
+    transition: background-color 120ms ease;
+  }
+
+  main tbody tr:hover {
+    background-color: color-mix(in srgb, var(--color-raised) 78%, transparent);
+  }
+
+  main input:not([type='checkbox']):not([type='radio']),
+  main select,
+  main textarea {
+    border-radius: 0.7rem;
+  }
+
+  main button:focus-visible,
+  header button:focus-visible,
+  nav button:focus-visible {
+    outline-offset: 3px;
+  }
+
+  main .rounded-lg.border,
+  main .rounded-xl.border,
+  main .rounded-2xl.border {
+    border-color: var(--color-line);
+  }
+
+  main .bg-surface {
+    background-color: var(--color-surface);
+  }
+
+  main .bg-raised {
+    background-color: var(--color-raised);
+  }
+
+  .premium-shell main > div > header,
+  .premium-shell main > header {
+    margin-bottom: 1.35rem;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  main button:not(:disabled):active {
+    transform: translateY(0) scale(0.985);
+  }
+}
