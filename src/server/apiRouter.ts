@@ -5179,17 +5179,8 @@ apiRouter.post(
         );
       }
 
-      // 2. Acceptance passes through the SAME execution policy the executor uses.
-      const execution = propDaoFor(user.uid).policyStatus();
-
-      if (!execution.enabled || !execution.authorised) {
-        return fail(
-          res,
-          409,
-          "EXECUTION_DISABLED",
-          `${execution.summary} ${execution.termsSummary}`,
-        );
-      }
+      // Accepting a proposal is a persisted decision, not an order submission.
+      // The separate order tool rechecks provider policy and deterministic risk.
       if (expired) {
         return fail(
           res,
