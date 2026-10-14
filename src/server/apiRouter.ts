@@ -54,7 +54,7 @@ import {
   DEFAULT_RISK_LIMITS,
   validateTradeIntent,
 } from "../services/propdao/PropRiskValidator";
-import { durableObjectRegistry } from "../services/durable-object/DurableObjectRegistry";
+import { goatRuntimeRegistry } from "../services/goat-runtime/GoatRuntimeRegistry";
 import { hyperliquidProvider } from "../services/market-data/hyperliquid/HyperliquidMarketDataProvider";
 import {
   DEFAULT_MARKET_UNIVERSE,
@@ -95,7 +95,7 @@ import {
   msUntilNextScheduledTime,
   normaliseSchedule,
   describeSchedule,
-} from "../services/durable-object/GoatDurableObject";
+} from "../services/goat-runtime/GoatRuntime";
 import {
   TRACKING_TIMEFRAMES,
   isTrackingTimeframe,
@@ -373,8 +373,8 @@ async function runScheduledWakeSync(
     return;
   }
 
-  const runtime = durableObjectRegistry.get(goatId)
-    ? durableObjectRegistry.get(goatId)!
+  const runtime = goatRuntimeRegistry.get(goatId)
+    ? goatRuntimeRegistry.get(goatId)!
     : await ensureGoatRuntime(goat);
 
   try {
@@ -529,7 +529,7 @@ function ensureGoatRuntime(goat: FundGoat) {
     skills.filter((s) => canonicalGoat.skillIds.includes(s.id)),
   );
   return attached.then((attachedSkills) =>
-    durableObjectRegistry.getOrCreate(canonicalGoat, attachedSkills, runtimeOptions),
+    goatRuntimeRegistry.getOrCreate(canonicalGoat, attachedSkills, runtimeOptions),
   );
 }
 
@@ -935,7 +935,7 @@ export async function restoreRuntimes(): Promise<void> {
      */
     await marketProvider.getSymbols().catch(() => {
       // A provider outage must not stop restart recovery; GOATs restore and
-      // their listeners retry the catalogue (see GoatDurableObject).
+      // their listeners retry the catalogue (see GoatRuntime).
     });
 
     const goats = await persistence.goats.listAll();
@@ -1065,7 +1065,7 @@ async function notifyGoatMarketReview(
   if (created) await notificationOutbox.deliverOne(id);
 }
 
-durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
+goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
   if (signal.direction === "NO_TRADE" || signal.status !== "ACTIONABLE") return;
 
   /**
@@ -1152,7 +1152,7 @@ durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
  * tracker firing on the SAME bar is delivered once, while the same tracker
  * legitimately firing on a later bar is a new notification.
  */
-durableObjectRegistry.onTrackerTriggered(async (goat, report) => {
+goatRuntimeRegistry.onTrackerTriggered(async (goat, report) => {
   try {
     const { id, created } = await notificationOutbox.enqueue({
       goatId: goat.id,
@@ -1235,7 +1235,7 @@ export async function routeMarketEvent(event: MarketEvent): Promise<{
        * session-finalized notice for a market it does not trade must not cost
        * a model call.
        */
-      const runtime = durableObjectRegistry.get(goatId);
+      const runtime = goatRuntimeRegistry.get(goatId);
       const hasRelevantTracker = Boolean(
         runtime
           ?.getState()
@@ -1286,7 +1286,7 @@ export async function routeMarketEvent(event: MarketEvent): Promise<{
       }
 
       const active =
-        durableObjectRegistry.get(goatId) ?? (await ensureGoatRuntime(goat));
+        goatRuntimeRegistry.get(goatId) ?? (await ensureGoatRuntime(goat));
 
       await active.wake(
         `Market event: ${event.type} on ${event.instrument}`,
@@ -1707,7 +1707,7 @@ async function decideScheduledWake(
    * actor exists and has set isEvaluating when a run was accepted but has not
    * yet returned.
    */
-  const actor = durableObjectRegistry.get(goatId);
+  const actor = goatRuntimeRegistry.get(goatId);
   if (actor?.isEvaluating()) {
     return { status: "evaluating", nextAt: null, reason: "already evaluating" };
   }
@@ -1748,8 +1748,8 @@ async function runScheduledWakeInBackground(
     const goat = await persistence.goats.get(goatId);
     if (!goat || goat.status === "PAUSED") return; // user paused mid-flight
 
-    const runtime = durableObjectRegistry.get(goatId)
-      ? durableObjectRegistry.get(goatId)!
+    const runtime = goatRuntimeRegistry.get(goatId)
+      ? goatRuntimeRegistry.get(goatId)!
       : await ensureGoatRuntime(goat);
     await runtime.ready();
 
@@ -1816,7 +1816,7 @@ async function decideTrackerCheck(
     return { handled: false, nextAt: null, reason: "paused" };
   }
 
-  const actor = durableObjectRegistry.get(goatId);
+  const actor = goatRuntimeRegistry.get(goatId);
   if (actor?.isEvaluating()) {
     return {
       handled: false,
@@ -1885,8 +1885,8 @@ async function runTrackerCheckInBackground(goatId: string): Promise<void> {
     );
     if (!isUsableMarketState(state) || !state.quote) return;
 
-    const runtime = durableObjectRegistry.get(goatId)
-      ? durableObjectRegistry.get(goatId)!
+    const runtime = goatRuntimeRegistry.get(goatId)
+      ? goatRuntimeRegistry.get(goatId)!
       : await ensureGoatRuntime(goat);
     await runtime.ready();
 
@@ -2098,7 +2098,7 @@ apiRouter.get("/settings/status", async (_req, res) => {
     platform: {
       authMode: mode,
       persistenceMode: persistence.mode,
-      activeActors: durableObjectRegistry.getAll().length,
+      activeActors: goatRuntimeRegistry.getAll().length,
       /**
        * When auth is not 'firebase', tell the operator exactly which variable
        * is missing instead of leaving them guessing.
@@ -4689,7 +4689,7 @@ apiRouter.post(
       const saved = await persistence.wakeEvents.update(updated);
       if (!saved) return notFound(res);
     }
-    durableObjectRegistry.get(goat.id)?.markWakeEventRead(updated.id, updated.readAt ?? Date.now());
+    goatRuntimeRegistry.get(goat.id)?.markWakeEventRead(updated.id, updated.readAt ?? Date.now());
     res.json({ event: updated, read: true });
   }),
 );
@@ -4705,7 +4705,7 @@ apiRouter.delete(
       persistence.wakeEvents.deleteByGoat(goat.id),
       notificationOutbox.store.deleteByGoat(goat.id, 'MARKET_REVIEW'),
     ]);
-    const runtime = durableObjectRegistry.get(goat.id);
+    const runtime = goatRuntimeRegistry.get(goat.id);
     runtime?.clearReviewHistory();
 
     res.json({ success: true, goatId: goat.id, cleared: 'review-history' });
@@ -4720,7 +4720,7 @@ apiRouter.delete(
     if (!goat) return notFound(res);
 
     // 1. Stop timers/subscriptions and remove the runtime actor.
-    durableObjectRegistry.remove(goat.id);
+    goatRuntimeRegistry.remove(goat.id);
     // 2. Clear the durable alarm so a deleted GOAT cannot wake.
     await scheduler.cancel(goat.id).catch((err) => {
       console.error("[scheduler] cancel failed:", err);
@@ -4789,7 +4789,7 @@ apiRouter.post(
       persistence.signals.listByGoat(goat.id, 10),
       persistence.wakeEvents.listByGoat(goat.id, 10),
     ]);
-    const runtime = durableObjectRegistry.get(goat.id);
+    const runtime = goatRuntimeRegistry.get(goat.id);
     const enriched = {
       ...context,
       activeThesis: runtime?.getState().currentThesis ?? recentTheses[0] ?? null,
@@ -5112,7 +5112,7 @@ apiRouter.post(
       goat.id,
       user.uid,
     );
-    const runtime = durableObjectRegistry.get(goat.id);
+    const runtime = goatRuntimeRegistry.get(goat.id);
 
     const expired = signal.expiresAt
       ? Date.parse(signal.expiresAt) < Date.now()
