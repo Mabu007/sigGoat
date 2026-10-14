@@ -3825,6 +3825,7 @@ apiRouter.get(
       challenges,
       markets,
       connected: verification.connected,
+      identity: verification.connected ? { userId: verification.userId, accountCount: verification.accountCount } : null,
       fetchedAt: new Date().toISOString(),
       source: "propdao-api",
     });
