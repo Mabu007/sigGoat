@@ -3,6 +3,7 @@ import type { GoatReasoningContext } from '../ai/OpenRouterClient';
 import type { ReasoningResult } from '../agent/contracts';
 import type { MarketDataProvider } from '../market-data/MarketDataProvider';
 import { evaluateTracker } from '../tracker-sdk/DeterministicTrackerEvaluator';
+import { warmupFor } from '../tracker-sdk/indicatorSeries';
 import { aggregateHardConstraints } from '../agent/SkillConstraints';
 
 export type AgentBacktestPeriod = '24h' | '7d' | '30d' | '90d';
@@ -212,7 +213,20 @@ export class AgentBacktestEngine {
       for (const tracker of activeTrackers) {
         if (tracker.isTriggered || tracker.status === 'HIT') continue;
         const cross = tracker.operator === 'CROSS_ABOVE' || tracker.operator === 'CROSS_BELOW';
-        const ev = evaluateTracker(tracker, candles.slice(0, index + 1), {
+        const indicator = tracker.indicatorParams?.indicator ?? 'PRICE';
+        const period = tracker.indicatorParams?.period ?? 14;
+        const warmup = warmupFor(
+          indicator,
+          period,
+          tracker.indicatorParams?.fastPeriod,
+          tracker.indicatorParams?.slowPeriod,
+        ).required;
+        // The evaluator needs only the indicator's convergence window plus
+        // two bars for crossover comparison. Bounding this slice avoids an
+        // O(total-history squared) replay cost on 30d/90d datasets.
+        const historyLimit = Math.min(1600, Math.max(120, warmup + 2));
+        const historyStart = Math.max(0, index + 1 - historyLimit);
+        const ev = evaluateTracker(tracker, candles.slice(historyStart, index + 1), {
           lastProcessedCandleMs: cross ? tracker.lastEvaluatedCandleMs : undefined,
           allowFormingCandle: false,
         });
