@@ -148,6 +148,7 @@ export class AgentBacktestEngine {
     replayEvents.push({ time: candles[initialIndex].time, type: 'INITIAL_REVIEW', summary: initial.investigation.summary + ' Thesis: ' + initial.thesis.summary });
     activeTrackers = trackersFrom(initial, market, runId, candles[initialIndex].time);
     activeThesis = thesisFrom(goat, market, initial, activeTrackers, candles[initialIndex].time);
+    for (const tracker of activeTrackers) replayEvents.push({ time: candles[initialIndex].time, type: 'TRACKER_ARMED', summary: tracker.description });
     lastReasoningAt = initialIndex;
     const captured = new Set<string>();
 
