@@ -1145,7 +1145,12 @@ STEP 3 — BUILD TRACKERS
   Use "type":"PRICE_LEVEL" when the condition is about raw price rather than
   an indicator. Use "type":"BREAKOUT" for a session or swing extreme break.
 
-  RULES FOR TRACKERS:
+     Example range condition:
+     { "type":"INDICATOR", "indicator":"RSI", "period":14,
+       "operator":"WITHIN_RANGE", "rangeLow":40, "rangeHigh":60,
+       "description":"RSI(14) is between 40 and 60" }
+
+RULES FOR TRACKERS:
   - Every tracker MUST be falsifiable and numeric.
   - If you specify an "indicator", you MUST supply "targetValue".
   - Base every targetValue on a supplied number (quote, candles or a
