@@ -333,25 +333,26 @@ export const SettingsView: React.FC = () => {
       // exactly what will be stored.
       const pendingKey = provider === 'groq' ? groqKey.trim() : provider === 'spacebunny' ? spaceBunnyKey.trim() : openRouterKey.trim();
 
-      if (pendingKey) {
-        const saveRes = await fetch('/api/settings/keys', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...headers },
-          body: JSON.stringify({
-            provider,
-            ...(provider === 'groq' ? { groqKey: pendingKey } : provider === 'spacebunny' ? { spaceBunnyKey: pendingKey } : { openRouterKey: pendingKey }),
-          }),
-        });
-        if (!saveRes.ok) {
-          const body = await saveRes.json().catch(() => null);
-          setTestResult({ ok: false, message: body?.error?.message || 'Could not save the key before testing.' });
-          return;
-        }
-        setOpenRouterKey('');
-        setGroqKey('');
-        setSpaceBunnyKey('');
-        await loadKeyStatus();
+      // Persist the selected provider before probing it, even when its key
+      // was already saved. Otherwise switching providers and pressing Test
+      // would silently probe the previous provider's credential.
+      const saveRes = await fetch('/api/settings/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({
+          provider,
+          ...(pendingKey ? (provider === 'groq' ? { groqKey: pendingKey } : provider === 'spacebunny' ? { spaceBunnyKey: pendingKey } : { openRouterKey: pendingKey }) : {}),
+        }),
+      });
+      if (!saveRes.ok) {
+        const body = await saveRes.json().catch(() => null);
+        setTestResult({ ok: false, message: body?.error?.message || 'Could not save the provider before testing.' });
+        return;
       }
+      setOpenRouterKey('');
+      setGroqKey('');
+      setSpaceBunnyKey('');
+      await loadKeyStatus();
 
       const res = await fetch('/api/ai/test', {
         method: 'POST',
