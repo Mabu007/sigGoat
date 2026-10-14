@@ -1005,8 +1005,21 @@ export class GoatRuntime {
       const spreadBps = hasBook && Number.isFinite(quote.mid) && quote.mid > 0
         ? (quote.spread / quote.mid) * 10_000
         : undefined;
+      const gatedReasoningResult: ReasoningResult = preservePlan
+        ? {
+            ...reasoningResult,
+            proposal: {
+              ...reasoningResult.proposal,
+              // Never approve a proposal whose trigger sequence disagrees with
+              // the immutable conditions actually being monitored.
+              triggerSequence: tradePlan,
+              confirmationRequired: existingThesis?.confirmationConditions?.join('; ')
+                || tradePlan.join('; '),
+            },
+          }
+        : reasoningResult;
       const gateResult = SignalGate.validate({
-        reasoningResult,
+        reasoningResult: gatedReasoningResult,
         thesis: newThesis,
         market,
         quote,
