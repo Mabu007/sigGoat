@@ -6008,6 +6008,117 @@ apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
   });
 });
 
+/**
+ * Deploy a caller-owned GOAT only after the client has explicitly confirmed
+ * the structured deployment card. Ownership and scheduler availability are
+ * revalidated here; a client-side card is never the authorization boundary.
+ */
+apiRouter.post("/chat/actions/goats/:id/deploy", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  if (req.body?.confirmed !== true) {
+    return res.status(200).json({
+      action: { type: "deploy_goat", status: "confirmation_required", goatId: req.params.id,
+        title: "Deploy this GOAT?", message: "Deployment starts its schedule and initial market review.",
+        confirmationRequired: true },
+    });
+  }
+  try {
+    const deployed = await setGoatStatusFor(user.uid, req.params.id, false);
+    res.json({ action: { type: "deploy_goat", status: "completed", title: "GOAT deployed",
+      goat: deployed, dataMode: marketProvider.dataMode } });
+  } catch (error) {
+    if (error instanceof NotFoundError) return notFound(res);
+    return fail(res, 409, "GOAT_DEPLOY_FAILED", error instanceof Error ? error.message : "Could not deploy this GOAT.");
+  }
+}));
+
+/** Ask a caller-owned GOAT for a fresh review and return the persisted proposals. */
+apiRouter.post("/chat/actions/goats/:id/research", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!goat) return notFound(res);
+  try {
+    const runtime = await ensureGoatRuntime(goat);
+    const requestedMarket = typeof req.body?.market === "string" && goat.markets.includes(req.body.market)
+      ? req.body.market : goat.markets[0];
+    const state = await runtime.wake(
+      typeof req.body?.reason === "string" && req.body.reason.trim()
+        ? req.body.reason.trim().slice(0, 200) : "Chat-requested market review",
+      "MANUAL_REEVALUATE",
+      requestedMarket,
+    );
+    const signals = await persistence.signals.listByGoat(goat.id, 20);
+    res.json({ action: { type: "create_trade_proposal", status: "completed",
+      title: "GOAT market review complete", goat: { id: goat.id, name: goat.name },
+      runtimeState: state, signals: signals.slice(0, 10), dataMode: marketProvider.dataMode } });
+  } catch (error) {
+    console.error("[chat/actions] GOAT research failed", error);
+    return fail(res, 502, "GOAT_RESEARCH_FAILED", "The GOAT could not complete its market review.");
+  }
+}));
+
+/**
+ * Two-phase trade action. Phase one returns a structured confirmation card
+ * only after deterministic risk validation. Phase two requires an explicit
+ * confirmed=true and re-runs the full risk checks immediately before writing.
+ * The provider's own execution policy remains the final gate.
+ */
+apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const body = req.body ?? {};
+  const { accountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage } = body;
+  if (typeof accountId !== "string" || !accountId ||
+      typeof symbol !== "string" || !symbol ||
+      (side !== "BUY" && side !== "SELL") ||
+      ![qty, entry, stopLoss, takeProfit].every((v) => typeof v === "number" && Number.isFinite(v)) ||
+      (leverage !== undefined && (typeof leverage !== "number" || !Number.isFinite(leverage)))) {
+    return fail(res, 400, "INVALID_TRADE_INTENT",
+      "accountId, symbol, BUY/SELL side, finite qty/entry/stopLoss/takeProfit, and optional finite leverage are required.");
+  }
+  const provider = propDaoFor(user.uid);
+  const account = await provider.resolveAccount(accountId);
+  if (!account) return fail(res, 404, "ACCOUNT_NOT_FOUND", "That account is not available on your PropDAO key.");
+
+  const [risk, markets, positions] = await Promise.all([
+    provider.risk(accountId), provider.markets(), provider.positions(accountId),
+  ]);
+  const riskCheck = validateTradeIntent(
+    { symbol, side, qty, entry, stopLoss, takeProfit, leverage },
+    account, risk, markets, positions,
+  );
+  const execution = provider.policyStatus();
+  if (!riskCheck.ok) {
+    return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+      title: "Trade blocked by risk controls", riskCheck, execution } });
+  }
+
+  const suppliedIntentId = typeof body.intentId === "string" && /^[A-Za-z0-9_-]{8,120}$/.test(body.intentId)
+    ? body.intentId : "";
+  const intentId = suppliedIntentId || ("sirgoat_" + Date.now() + "_" + Math.random().toString(36).slice(2, 12));
+  if (body.confirmed !== true) {
+    return res.json({ action: { type: "execute_trade", status: "confirmation_required",
+      title: "Confirm trade order", confirmationRequired: true, intentId,
+      order: { accountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage: leverage ?? null, orderType: "limit" },
+      riskCheck, execution,
+      message: execution.enabled && execution.authorised
+        ? "Review the order and risk measurements. Confirming will recheck risk immediately before submission."
+        : execution.summary + " The order will not be submitted while execution is disabled or unauthorised." } });
+  }
+
+  const result = await provider.executeOrder(accountId, {
+    symbol, side, qty, orderType: "limit", intentId,
+    limitPrice: entry, sl: stopLoss, tp: takeProfit,
+    ...(typeof leverage === "number" ? { leverage } : {}),
+    tif: "gtc",
+  });
+  if (!result.executed) {
+    return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+      title: "Order not submitted", intentId, code: result.code, message: result.message, riskCheck, execution } });
+  }
+  res.json({ action: { type: "execute_trade", status: "completed",
+    title: "Order submitted", intentId, result: result.result, riskCheck, execution } });
+}));
+
 apiRouter.get("/chats", authMiddleware, async (req, res) => {
   const user = requireUser(req);
   try {
