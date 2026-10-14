@@ -72,6 +72,10 @@ describe('AgentBacktestEngine', () => {
     expect(backtest.provenance.timeframe).toBe('5m');
     expect(backtest.dataSource).toBe('LIVE');
     expect(backtest.totalSignals).toBeGreaterThan(0);
+    expect(backtest.agentReplay?.engine).toBe('AGENT_HISTORICAL_REPLAY');
+    expect(backtest.agentReplay?.conditionHits).toBeGreaterThan(0);
+    expect(backtest.agentReplay?.events.some(event => event.type === 'TRACKER_ARMED')).toBe(true);
+    expect(backtest.agentReplay?.events.some(event => event.type === 'SIGNAL_CAPTURED')).toBe(true);
     expect(backtest.trades.every(trade => trade.market === 'TEST/USD')).toBe(true);
   });
 
