@@ -40,7 +40,7 @@ export class SpaceBunnyClient {
         method: 'POST',
         headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
-          model: SPACE_BUNNY_MODEL,
+          model: model || SPACE_BUNNY_MODEL,
           messages,
           max_tokens: maxTokens,
           temperature: 0.1,
