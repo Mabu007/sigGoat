@@ -2800,7 +2800,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   </h3>
 
                   <p className="text-[10px] text-fg-subtle">
-                    Give it the objective. The GOAT handles the reasoning loop.
+                    Write its job description. Skills add specialist methods and constraints.
                   </p>
                 </div>
               </div>
@@ -2842,14 +2842,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 {/* Goal */}
                 <div>
                   <label className="mb-1.5 block font-semibold text-fg-muted">
-                    Strategic Objective
+                    Job Description
                   </label>
 
                   <textarea
                     value={goal}
                     onChange={e => setGoal(e.target.value)}
                     rows={4}
-                    placeholder="Describe what you want the GOAT to investigate and find."
+                    placeholder="Describe its mission, how it should investigate markets, what evidence matters, and what a high-quality setup looks like."
                     className="w-full resize-none rounded-xl border border-line bg-sunken p-3 text-fg outline-none placeholder:text-fg-subtle focus:border-focus"
                   />
 
