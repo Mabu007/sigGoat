@@ -47,6 +47,7 @@ export const BacktestView: React.FC = () => {
   const [selectedPeriod, setSelectedPeriod] =
     useState<'24h' | '7d' | '30d' | '90d'>('7d');
   const [startingBalance, setStartingBalance] = useState<number>(10000);
+  const [riskPerTradePct, setRiskPerTradePct] = useState<number>(1.5);
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -71,6 +72,7 @@ export const BacktestView: React.FC = () => {
           market: selectedMarket,
           period: selectedPeriod,
           startingBalance,
+          riskPerTradePct,
         }),
       });
 
@@ -131,7 +133,7 @@ export const BacktestView: React.FC = () => {
             </h1>
 
             <p className="text-xs text-fg-muted mt-0.5">
-              Replay a deterministic historical strategy using this GOAT's hard risk constraints. This is not a replay of the LLM's exact decisions.
+              Replay this GOAT's initial AI review, historical condition tracking, AI reassessments and trade lifecycle using historical 5-minute prices only. Historical news is excluded.
             </p>
           </div>
         </div>
@@ -145,11 +147,11 @@ export const BacktestView: React.FC = () => {
           </h2>
 
           <p className="text-[11px] text-fg-subtle mt-1">
-            Choose a GOAT, market, period and starting balance.
+            Choose a GOAT, market, period, starting balance and per-trade risk.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           {/* GOAT */}
           <div>
             <label className="block text-[11px] font-semibold text-fg-muted mb-1.5">
@@ -232,6 +234,21 @@ export const BacktestView: React.FC = () => {
               className="w-full bg-sunken border border-line rounded-xl px-3 py-2.5 text-sm text-fg font-mono focus:outline-none focus:border-focus"
             />
           </div>
+          {/* RISK */}
+          <div>
+            <label className="block text-[11px] font-semibold text-fg-muted mb-1.5">
+              Risk per trade (%)
+            </label>
+            <input
+              type="number"
+              min="0.1"
+              max="10"
+              step="0.1"
+              value={riskPerTradePct}
+              onChange={e => setRiskPerTradePct(Math.min(10, Math.max(0.1, Number(e.target.value) || 1.5)))}
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2.5 text-sm text-fg font-mono focus:outline-none focus:border-focus"
+            />
+          </div>
         </div>
 
         {errorMsg && (
@@ -261,7 +278,7 @@ export const BacktestView: React.FC = () => {
           </button>
 
           <span className="text-[10px] text-fg-subtle">
-            Historical replay uses only information available at each point in time.
+            AI is called on initial review and tracker hits. Historical 5m OHLC only; no news. Multiple positions can overlap.
           </span>
         </div>
       </section>
