@@ -461,7 +461,7 @@ async function runTrackerCheckSync(
 let inProcessScheduler: InProcessScheduler | null = null;
 
 if (firebaseScheduler) {
-  console.log("[api] Firebase-backed GOAT scheduler active; Vercel Cron dispatches due reviews.");
+  console.log("[api] Firebase-backed GOAT scheduler active; Cloud Scheduler dispatches due reviews.");
 } else {
   inProcessScheduler = new InProcessScheduler(async (wake) => {
     await runScheduledWakeSync(wake.goatId, wake.eventId, wake.reason);
@@ -1793,7 +1793,7 @@ function isoNow(ms: number | null): string | null {
  * Decide whether a tracker check should run, using state reads only, without
  * doing the deterministic evaluation.
  *
- * A PAUSED GOAT does not consume the tracker's eventId, so the DO will
+ * A PAUSED GOAT does not consume the tracker's eventId, so the scheduler will
  * re-arm it. If a reasoning run is already in flight, the deterministic check
  * is skipped for this cycle: the reasoner will consume the same market state
  * when it runs, and we avoid hammering the reasoning path from the (up to
