@@ -248,7 +248,7 @@ Cloud Scheduler (every minute; OIDC + x-cron-secret)
    TELEGRAM_BOT_TOKEN=                 # optional platform fallback
    ```
 
-   Generate a secret with `openssl rand -hex 32`. The same `CRON_SECRET` must be set in GitHub repository secrets. Never enable `SIGNALGOAT_ALLOW_DEV_AUTH` in production.
+   Generate a secret with `openssl rand -hex 32`. The same `CRON_SECRET` must be available to Cloud Run via Secret Manager and set in the Cloud Scheduler request header. Never enable `SIGNALGOAT_ALLOW_DEV_AUTH` in production.
 
 3. Configure the private Cloud Run scheduler service and Cloud Scheduler job using [docs/CLOUD_RUN_SCHEDULER.md](docs/CLOUD_RUN_SCHEDULER.md). Keep the old dispatcher active only during the cutover; disable it after the Cloud Scheduler job and end-to-end GOAT/Telegram checks pass.
 
