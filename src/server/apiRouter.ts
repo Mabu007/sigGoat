@@ -6000,9 +6000,9 @@ apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
     tools: [
       { id: "market_research", label: "Research a market", endpoint: "POST /api/chat/actions/market-research", confirmationRequired: false, available: true },
       { id: "create_goat", label: "Create a GOAT", endpoint: "POST /api/goats", confirmationRequired: true, available: true },
-      { id: "deploy_goat", label: "Deploy or wake a GOAT", endpoint: "POST /api/goats/:id/status or POST /api/goats/:id/wake", confirmationRequired: true, available: true },
-      { id: "create_trade_proposal", label: "Generate a trade proposal", endpoint: "POST /api/goats/:id/wake then GET /api/goats/:id/signals", confirmationRequired: false, available: true },
-      { id: "execute_trade", label: "Approve trade proposal", endpoint: "POST /api/goats/:id/signals/:signalId/decision", confirmationRequired: true, available: Boolean(execution.enabled && execution.authorised), blockedReason: execution.enabled && execution.authorised ? null : execution.summary },
+      { id: "deploy_goat", label: "Deploy a GOAT", endpoint: "POST /api/chat/actions/goats/:id/deploy", confirmationRequired: true, available: true },
+      { id: "create_trade_proposal", label: "Generate a trade proposal", endpoint: "POST /api/chat/actions/goats/:id/research", confirmationRequired: false, available: true },
+      { id: "execute_trade", label: "Submit a risk-checked order", endpoint: "POST /api/chat/actions/execute-trade", confirmationRequired: true, available: Boolean(execution.enabled && execution.authorised), blockedReason: execution.enabled && execution.authorised ? null : execution.summary },
     ],
     execution,
   });
