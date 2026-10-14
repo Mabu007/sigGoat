@@ -599,6 +599,11 @@ async function setGoatStatusFor(
   if (!goat) {
     throw new NotFoundError();
   }
+  if (!paused && scheduler.kind === "disabled") {
+    throw new Error(
+      "Cannot deploy this GOAT because Firebase scheduling is unavailable. Configure Firebase/Firestore before deployment.",
+    );
+  }
 
   const deployingDraft = !paused && goat.deploymentState === 'DRAFT';
   // Preserve a model the user chose while saving the draft. Only resolve a
