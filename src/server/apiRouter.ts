@@ -5694,7 +5694,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   const now = new Date();
   const lower = userMessage.toLowerCase();
   const lowerMessage = userMessage.toLowerCase();
-  const includeUserState = /\b(goat|my agent|my setup|my proposal|my signal|my strategy|my portfolio|my account|my trades|my activity)\b/i.test(userMessage);\n  const includePropDao = /\b(propdao|my account|account balance|balance|equity|drawdown|challenge rules|account rules|open positions|open orders|closed trades|funded account|trading account)\b/i.test(userMessage);
+  const includeUserState = /\b(goat|my agent|my setup|my proposal|my signal|my strategy|my portfolio|my account|my trades|my activity)\b/i.test(userMessage);\n  const includePropDao = /\b(propdao|my account|account balance|balance|equity|drawdown|challenge|account rules|positions|orders|closed trades|funded account|prop account|trading account|auto[- ]?trading|auto[- ]?trade)\b/i.test(userMessage);
   const includeNews = inferChatMarketQueries(userMessage).length > 0 || /\b(news|why|latest|what happened|fundamental|economic|calendar|macro|research|compare|event|fed|ecb|cpi|nfp|today|current|currently|right now|market conditions)\b/i.test(userMessage);
   const newsQueries: string[] = [];
   if (/\b(gold|xau|paxg)\b/i.test(userMessage)) newsQueries.push("gold price market Federal Reserve latest");
@@ -5825,11 +5825,12 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   if (includePropDao) {
     try {
       const provider = propDaoFor(userId);
-      const [verification, accounts, propMarkets, challenges] = await Promise.all([
+      const [verification, accounts, propMarkets, challenges, profile] = await Promise.all([
         provider.verifyConnection(),
         provider.listAccounts(),
         provider.markets(),
         provider.challenges(),
+        persistence.profiles.get(userId).catch(() => null),
       ]);
       if (!verification.connected) {
         sections.push("PROPDAO ACCOUNT CONTEXT: no verified PropDAO connection is available for this user. Do not invent balances, account rules, positions, or orders. Explain that they need to connect and verify their own PropDAO API key in Settings.");
@@ -5865,6 +5866,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
           JSON.stringify({
             connected: true,
             providerIdentity: { userId: verification.userId, accountCount: verification.accountCount },
+            automation: { autonomyMode: profile?.autonomyMode ?? "PROPOSAL", autoTradeEnabled: profile?.autoTradeEnabled === true, autoTradeAccountId: profile?.autoTradeAccountId ?? null, autoTradeQty: profile?.autoTradeQty ?? null, executionPolicy: provider.policyStatus() },
             accounts: accountSnapshots,
             markets: propMarkets,
             challengeCatalogue: challenges,
