@@ -2292,7 +2292,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
               <div className="flex flex-wrap gap-x-5 gap-y-2 border-t border-line/70 pt-3 text-[10px] text-fg-subtle">
                 <span>
-                  Timeframe:{' '}
+                  Indicator timeframe:{' '}
                   <strong className="font-mono text-fg-muted">
                     {inspectedState?.currentThesis
                       ?.relevantTimeframe || '—'}
