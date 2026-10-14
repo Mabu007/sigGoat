@@ -72,7 +72,6 @@ import {
   isUsableMarketState,
 } from "../services/market-data/MarketStateStore";
 import { FileMarketStatePersistence } from "../services/market-data/FileMarketStatePersistence";
-import { BacktestEngine } from "../services/backtest/BacktestEngine";
 import { AgentBacktestEngine } from "../services/backtest/AgentBacktestEngine";
 import { DEFAULT_SKILLS } from "../data/defaultSkills";
 import { SYSTEM_GOATS } from "../data/systemGoats";
