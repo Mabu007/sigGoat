@@ -17,8 +17,8 @@ const fieldClass = "w-full rounded-lg border border-line bg-sunken px-3 py-2 tex
 const buttonClass = "inline-flex items-center justify-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-accent-fg disabled:cursor-not-allowed disabled:opacity-50";
 const secondaryClass = "inline-flex items-center justify-center gap-1.5 rounded-lg border border-line px-3 py-2 text-xs font-medium text-fg hover:bg-raised disabled:opacity-50";
 
-export function ChatActionsPanel({ getAuthHeaders, onClose, onResult }: ChatActionsPanelProps) {
-  const [mode, setMode] = useState<ActionMode>("research");
+export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMode = "research" }: ChatActionsPanelProps) {
+  const [mode, setMode] = useState<ActionMode>(initialMode);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
