@@ -26,7 +26,9 @@ interface KeyStatus {
   openRouterKeyConfigured: boolean;
   openRouterKeyInvalid?: boolean;
   groqKeyConfigured?: boolean;
-  provider?: 'openrouter' | 'groq';
+  spaceBunnyKeyConfigured?: boolean;
+  spaceBunnyKeyHint?: string;
+  provider?: AiProvider;
   telegramTokenConfigured: boolean;
   serverKeyFallback: boolean;
   /** False when the vault cannot encrypt at all — see the warning below. */
@@ -43,7 +45,7 @@ interface UserPreferences {
   autonomyBlockedReason: string;
 }
 
-type AiProvider = 'openrouter' | 'groq';
+type AiProvider = 'openrouter' | 'groq' | 'spacebunny';
 
 interface TelegramStatusResponse {
   tokenConfigured: boolean;
@@ -61,6 +63,7 @@ interface TelegramStatusResponse {
  */
 const OPENROUTER_KEY_SHAPE = /^sk-(?:or-v\d+-)?[A-Za-z0-9_-]{32,}$/;
 const GROQ_KEY_SHAPE = /^gsk_[A-Za-z0-9_-]{20,}$/;
+const SPACE_BUNNY_KEY_SHAPE = /^sb_live_[A-Za-z0-9_-]{16,}$/;
 const TELEGRAM_TOKEN_SHAPE = /^\d{5,20}:[A-Za-z0-9_-]{30,}$/;
 
 /**
@@ -76,13 +79,14 @@ function validateProviderKey(raw: string, provider: AiProvider): string | null {
   if (!value) return null;
 
   if (provider === 'groq') {
-    if (!GROQ_KEY_SHAPE.test(value)) {
-      return 'That does not look like a Groq API key. Expected something like gsk_… (console.groq.com/keys). Choose the OpenRouter provider if you have an OpenRouter key.';
-    }
+    if (!GROQ_KEY_SHAPE.test(value)) return 'That does not look like a Groq API key. Expected gsk_… from console.groq.com/keys.';
     return null;
   }
-
-  if (!OPENROUTER_KEY_SHAPE.test(value)) {
+  if (provider === 'spacebunny') {
+    if (!SPACE_BUNNY_KEY_SHAPE.test(value)) return 'That does not look like a Space Bunny API key. Expected sb_live_… from spacebunnymodel.com/get-api-key.';
+    return null;
+  }
+  if (!OPENROUTER_KEY_SHAPE.test(value) {
     return 'That does not look like an OpenRouter API key. Expected something like sk-or-v1-… (openrouter.ai/keys → Create new key).';
   }
   return null;
@@ -105,6 +109,7 @@ export const SettingsView: React.FC = () => {
   const [provider, setProvider] = useState<AiProvider>('openrouter');
   const [openRouterKey, setOpenRouterKey] = useState('');
   const [groqKey, setGroqKey] = useState('');
+  const [spaceBunnyKey, setSpaceBunnyKey] = useState('');
   const [telegramToken, setTelegramToken] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
   const [telegramStatus, setTelegramStatus] = useState<TelegramStatusResponse | null>(null);
@@ -189,7 +194,9 @@ export const SettingsView: React.FC = () => {
         headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
       });
       if (!res.ok) return;
-      setKeyStatus((await res.json()) as KeyStatus);
+      const status = (await res.json()) as KeyStatus;
+      setKeyStatus(status);
+      if (status.provider === 'openrouter' || status.provider === 'groq' || status.provider === 'spacebunny') setProvider(status.provider);
     } catch (err) {
       console.warn('Unable to read key status:', err);
     }
@@ -235,7 +242,9 @@ export const SettingsView: React.FC = () => {
   const hasSavedKey =
     provider === 'groq'
       ? (keyStatus?.groqKeyConfigured ?? false)
-      : (keyStatus?.openRouterKeyConfigured ?? false);
+      : provider === 'spacebunny'
+        ? (keyStatus?.spaceBunnyKeyConfigured ?? false)
+        : (keyStatus?.openRouterKeyConfigured ?? false);
 
   const handleSaveKeys = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -247,6 +256,7 @@ export const SettingsView: React.FC = () => {
     const shapeError =
       validateProviderKey(openRouterKey, 'openrouter') ??
       validateProviderKey(groqKey, 'groq') ??
+      validateProviderKey(spaceBunnyKey, 'spacebunny') ??
       (telegramToken.trim() && !TELEGRAM_TOKEN_SHAPE.test(telegramToken.trim())
         ? 'That does not look like a Telegram bot token. Expected the value from @BotFather, like 123456789:AA…'
         : null);
@@ -267,6 +277,7 @@ export const SettingsView: React.FC = () => {
           // never wipe an existing stored secret.
           ...(openRouterKey.trim() ? { openRouterKey: openRouterKey.trim() } : {}),
           ...(groqKey.trim() ? { groqKey: groqKey.trim() } : {}),
+          ...(spaceBunnyKey.trim() ? { spaceBunnyKey: spaceBunnyKey.trim() } : {}),
           ...(telegramToken.trim() ? { telegramToken: telegramToken.trim() } : {}),
           ...(telegramChatId.trim() ? { telegramChatId: telegramChatId.trim() } : {}),
         }),
@@ -282,6 +293,8 @@ export const SettingsView: React.FC = () => {
       setKeyStatus((prev) => ({
         openRouterKeyConfigured: body?.openRouterKeyConfigured ?? prev?.openRouterKeyConfigured ?? false,
         groqKeyConfigured: body?.groqKeyConfigured ?? prev?.groqKeyConfigured ?? false,
+        spaceBunnyKeyConfigured: body?.spaceBunnyKeyConfigured ?? prev?.spaceBunnyKeyConfigured ?? false,
+        spaceBunnyKeyHint: body?.spaceBunnyKeyHint ?? prev?.spaceBunnyKeyHint,
         provider: body?.provider ?? provider,
         telegramTokenConfigured: Boolean(telegramToken.trim()) || (prev?.telegramTokenConfigured ?? false),
         serverKeyFallback: prev?.serverKeyFallback ?? false,
@@ -291,6 +304,7 @@ export const SettingsView: React.FC = () => {
       // into a screenshot or a later shoulder-surf.
       setOpenRouterKey('');
       setGroqKey('');
+      setSpaceBunnyKey('');
       setTelegramToken('');
       setTestResult({ ok: true, message: 'Saved. Your GOATs will use these credentials on the next reasoning run.' });
       /**
@@ -317,8 +331,7 @@ export const SettingsView: React.FC = () => {
 
       // Persist first when a key is typed but unsaved, so the test exercises
       // exactly what will be stored.
-      const pendingKey =
-        provider === 'groq' ? groqKey.trim() : openRouterKey.trim();
+      const pendingKey = provider === 'groq' ? groqKey.trim() : provider === 'spacebunny' ? spaceBunnyKey.trim() : openRouterKey.trim();
 
       if (pendingKey) {
         const saveRes = await fetch('/api/settings/keys', {
@@ -326,7 +339,7 @@ export const SettingsView: React.FC = () => {
           headers: { 'Content-Type': 'application/json', ...headers },
           body: JSON.stringify({
             provider,
-            ...(provider === 'groq' ? { groqKey: pendingKey } : { openRouterKey: pendingKey }),
+            ...(provider === 'groq' ? { groqKey: pendingKey } : provider === 'spacebunny' ? { spaceBunnyKey: pendingKey } : { openRouterKey: pendingKey }),
           }),
         });
         if (!saveRes.ok) {
@@ -336,6 +349,7 @@ export const SettingsView: React.FC = () => {
         }
         setOpenRouterKey('');
         setGroqKey('');
+        setSpaceBunnyKey('');
         await loadKeyStatus();
       }
 
@@ -813,6 +827,31 @@ export const SettingsView: React.FC = () => {
               )}
               <span>{testResult.message}</span>
             </div>
+          ) : (
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor="spacebunny-key" className="font-semibold text-fg-muted">AI Model API Key (Space Bunny)</label>
+              {hasSavedKey ? (
+                <span className="text-[10px] text-positive flex items-center gap-1 font-mono"><CheckCircle className="w-3 h-3" /> Your key is saved</span>
+              ) : (
+                <span className="text-[10px] text-accent-text flex items-center gap-1 font-mono"><AlertCircle className="w-3 h-3" /> Not configured</span>
+              )}
+            </div>
+            <input id="spacebunny-key" name="spacebunny-api-key" type="password" autoComplete="off" spellCheck={false}
+              value={spaceBunnyKey} onChange={e => setSpaceBunnyKey(e.target.value)}
+              placeholder={hasSavedKey ? 'Saved — type a new key to replace it' : 'sb_live_...'}
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus" />
+            <p className="text-[10px] text-fg-muted mt-1">
+              Uses Space Bunny Alpha through its OpenAI-compatible API. Your key is encrypted server-side and never sent back to the browser. Create a key at{' '}
+              <a href="https://spacebunnymodel.com/get-api-key" target="_blank" rel="noreferrer" className="underline text-accent-text">spacebunnymodel.com/get-api-key</a>.
+              The hosted API is prepaid; check Space Bunny's current pricing before use.
+            </p>
+            <div className="mt-3 border-t border-line pt-3">
+              <ModelPicker getApiAuthHeaders={getApiAuthHeaders} value={preferences.aiModel} onChange={handleModelChange}
+                disabled={isSavingPreferences} label="Reasoning model" error={preferencesError}
+                reloadKey={keyStatus?.spaceBunnyKeyConfigured} />
+            </div>
+          </div>
           )}
 
           {saveError && (
@@ -924,7 +963,7 @@ export const SettingsView: React.FC = () => {
             <span className="block font-semibold text-fg-muted mb-1.5">
               Reasoning provider
             </span>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {(
                 [
                   {
@@ -937,6 +976,7 @@ export const SettingsView: React.FC = () => {
                     label: 'Groq',
                     hint: 'Fast Llama/Qwen models, own key',
                   },
+                  { id: 'spacebunny' as const, label: 'Space Bunny', hint: 'Space Bunny Alpha, own key' },
                 ]
               ).map((option) => {
                 const selected = provider === option.id;
@@ -1046,7 +1086,7 @@ export const SettingsView: React.FC = () => {
               />
             </div>
           </div>
-          ) : (
+          ) : provider === 'groq' ? (
           <div>
             <div className="flex items-center justify-between mb-1">
               <label htmlFor="groq-key" className="font-semibold text-fg-muted">
