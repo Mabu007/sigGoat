@@ -809,13 +809,12 @@ export interface UserProfile {
 }
 
 /**
- * How much authority a user's GOATs have over their own orders.
+ * Proposal acceptance preference.
  *
- * `PROPOSAL` is the default and the reason the word "proposal" is in the
- * product: nothing reaches a venue without a human decision. `AUTONOMOUS`
- * removes that step but NOT the risk gate — every order still passes
- * `PropRiskValidator` and the PropDAO execution policy, and the execution
- * feature flag still has to be on server-side.
+ * `PROPOSAL` waits for human approval. `AUTONOMOUS` allows automatic proposal
+ * acceptance. Unattended PropDAO order submission is a separate explicit
+ * `autoTradeEnabled` opt-in and still passes the deterministic risk validator
+ * and the server-side PropDAO execution policy.
  */
 export type AutonomyMode = 'PROPOSAL' | 'AUTONOMOUS';
 
