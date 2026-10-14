@@ -151,6 +151,29 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
     }), "Execution response received");
   };
 
+  const prepareSignalOrder = (signal: any) => {
+    const supported = propMarkets.some((item) => item.id === signal.market);
+    const hasLevels = typeof signal.entry === "number" && Number.isFinite(signal.entry) &&
+      typeof signal.stopLoss === "number" && Number.isFinite(signal.stopLoss) &&
+      typeof signal.takeProfit === "number" && Number.isFinite(signal.takeProfit) &&
+      (signal.direction === "LONG" || signal.direction === "SHORT");
+    if (!supported || !hasLevels) {
+      setError(!supported
+        ? "This proposal's market is not an exact match for a supported PropDAO instrument. It cannot be routed to an order automatically."
+        : "This proposal does not have complete numeric entry, stop-loss, and take-profit levels.");
+      return;
+    }
+    setSymbol(signal.market);
+    setSide(signal.direction === "LONG" ? "BUY" : "SELL");
+    setEntry(String(signal.entry));
+    setStopLoss(String(signal.stopLoss));
+    setTakeProfit(String(signal.takeProfit));
+    setResult(null);
+    setError("");
+    setNotice("Proposal levels copied into the order form. Confirm the quantity and run risk checks before any order submission.");
+    setMode("trade");
+  };
+
   const tabs: Array<{ id: ActionMode; label: string }> = [
     { id: "research", label: "Research" }, { id: "create-goat", label: "Create GOAT" },
     { id: "deploy-goat", label: "Deploy" }, { id: "proposal", label: "Proposal" }, { id: "trade", label: "Trade order" },
@@ -186,7 +209,7 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
           {result.execution && <div className="mt-2 rounded-lg border border-line p-2 text-[10px]"><p className="font-semibold">Execution policy: {result.execution.enabled && result.execution.authorised ? "enabled" : "blocked"}</p><p className="mt-1 text-fg-muted">{result.execution.summary}</p></div>}
           {result.type === "execute_trade" && result.status === "confirmation_required" && <div className="mt-3 flex flex-wrap gap-2"><button className={buttonClass} disabled={loading || !(result.execution?.enabled && result.execution?.authorised)} onClick={() => void confirmTrade()}><ShieldCheck size={13} /> Explicitly confirm order</button><button className={secondaryClass} onClick={() => setResult(null)}>Cancel</button></div>}
           {result.type === "deploy_goat" && result.status === "confirmation_required" && <div className="mt-3 flex gap-2"><button className={buttonClass} disabled={loading} onClick={() => void confirmDeployGoat()}>Confirm deployment</button><button className={secondaryClass} onClick={() => setResult(null)}>Cancel</button></div>}
-          {Array.isArray(result.signals) && <div className="mt-2 space-y-2">{result.signals.map((signal: any) => <div key={signal.id} className="rounded-lg border border-line p-2 text-[10px]"><p className="font-semibold">{signal.market} · {signal.direction} · {signal.status}</p><p className="mt-1">Entry: {signal.entry ?? signal.entryZone ?? "—"} · SL: {signal.stopLoss ?? "—"} · TP: {signal.takeProfit ?? "—"}</p><p className="mt-1 text-fg-muted">{signal.rationale ?? signal.thesis ?? ""}</p></div>)}</div>}
+          {Array.isArray(result.signals) && <div className="mt-2 space-y-2">{result.signals.length === 0 && <p className="rounded-lg bg-sunken p-2 text-[10px] text-fg-muted">No fresh actionable proposals were returned. Do not force a trade.</p>}{result.signals.map((signal: any) => <div key={signal.id} className="rounded-lg border border-line p-2 text-[10px]"><p className="font-semibold">{signal.market} · {signal.direction} · {signal.status}</p><p className="mt-1">Entry: {signal.entry ?? signal.entryZone ?? "—"} · SL: {signal.stopLoss ?? "—"} · TP: {signal.takeProfit ?? "—"}</p><p className="mt-1 text-fg-muted">{signal.rationale ?? signal.thesis ?? ""}</p><button type="button" className={secondaryClass + " mt-2"} onClick={() => prepareSignalOrder(signal)} disabled={!propMarkets.some((item) => item.id === signal.market) || typeof signal.entry !== "number" || typeof signal.stopLoss !== "number" || typeof signal.takeProfit !== "number" || !["LONG", "SHORT"].includes(signal.direction)}>Prepare risk-checked order</button></div>)}</div>}
           {result.goat && <p className="mt-2 text-[10px] text-fg-muted">GOAT: {String(result.goat.name ?? result.goat.id ?? "created")}{result.goat.id ? " · " + String(result.goat.id) : ""}</p>}
           {result.result && <pre className="mt-2 overflow-auto whitespace-pre-wrap rounded-lg bg-sunken p-2 text-[10px]">{JSON.stringify(result.result, null, 2)}</pre>}
           {result.status === "blocked" && result.message && <p className="mt-2 text-[10px] text-negative">{result.message}</p>}
