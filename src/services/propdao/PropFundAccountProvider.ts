@@ -356,6 +356,28 @@ export class PropFundAccountProvider {
     }
   }
 
+  /** Provider-published challenge catalogue, read through the connected key. */
+  async challenges(): Promise<Array<Record<string, unknown>>> {
+    const client = await this.client();
+    if (!client) return [];
+    try {
+      return await client.challenges();
+    } catch {
+      return [];
+    }
+  }
+
+  /** Full provider account state for an account proven to belong to this key. */
+  async accountDetails(accountId: string): Promise<Record<string, unknown> | null> {
+    const client = await this.client();
+    if (!client || !(await this.resolveAccount(accountId))) return null;
+    try {
+      return await client.accountState(accountId);
+    } catch {
+      return null;
+    }
+  }
+
   /* ---------------------------------------------------------------- */
   /* Execution — every path below is gated                           */
   /* ---------------------------------------------------------------- */
