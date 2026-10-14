@@ -3655,7 +3655,8 @@ apiRouter.get(
           risk,
           positions: await provider.positions(account.accountId),
           orders: await provider.orders(account.accountId),
-          /** Everything above is real or null; nothing is defaulted to zero. */
+          trades: await provider.trades(account.accountId, 100),
+          /** Everything above is provider-backed; missing values are never defaulted to zero. */
           available: !risk.incomplete || risk.equity !== null,
         };
       }),
@@ -3665,6 +3666,56 @@ apiRouter.get(
       accounts: withRisk,
       configured: true,
       execution: provider.policyStatus(),
+    });
+  }),
+);
+
+/** Full detail for one account visible to the caller's PropDAO key. */
+apiRouter.get(
+  "/propdao/accounts/:id/details",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const provider = propDaoFor(user.uid);
+    const account = await provider.resolveAccount(req.params.id);
+    if (!account) return notFound(res);
+    const [details, risk, positions, orders, trades] = await Promise.all([
+      provider.accountDetails(account.accountId),
+      provider.risk(account.accountId),
+      provider.positions(account.accountId),
+      provider.orders(account.accountId),
+      provider.trades(account.accountId, 100),
+    ]);
+    res.json({
+      account,
+      details,
+      risk,
+      positions,
+      orders,
+      trades,
+      execution: provider.policyStatus(),
+      fetchedAt: new Date().toISOString(),
+      completeness: details === null || risk.incomplete ? "partial" : "complete",
+    });
+  }),
+);
+
+/** Provider challenge catalogue and constraints, when exposed by PropDAO. */
+apiRouter.get(
+  "/propdao/challenges",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const provider = propDaoFor(user.uid);
+    const [challenges, markets, verification] = await Promise.all([
+      provider.challenges(),
+      provider.markets(),
+      provider.verifyConnection(),
+    ]);
+    res.json({
+      challenges,
+      markets,
+      connected: verification.connected,
+      fetchedAt: new Date().toISOString(),
+      source: "propdao-api",
     });
   }),
 );
