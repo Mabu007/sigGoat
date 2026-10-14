@@ -1102,6 +1102,69 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
       {
         persistence,
         policyStatus: () => propDaoFor(goat.userId).policyStatus(),
+        executeSignal: async (ownedGoat, candidate, profile) => {
+          if (!profile.autoTradeAccountId || !Number.isFinite(profile.autoTradeQty) || !profile.autoTradeQty || profile.autoTradeQty <= 0) {
+            return { submitted: false, message: "Automatic trading is missing an owned PropDAO account or fixed quantity." };
+          }
+          const provider = propDaoFor(ownedGoat.userId);
+          const execution = provider.policyStatus();
+          if (!execution.enabled || !execution.authorised) {
+            return { submitted: false, message: execution.summary + " " + execution.termsSummary };
+          }
+          if (candidate.direction !== "LONG" && candidate.direction !== "SHORT") {
+            return { submitted: false, message: "The proposal direction cannot be converted into an order." };
+          }
+          if (![candidate.entry, candidate.stopLoss, candidate.takeProfit].every((value) => typeof value === "number" && Number.isFinite(value))) {
+            return { submitted: false, message: "The proposal is missing numeric entry, stop-loss, or take-profit levels." };
+          }
+          const current = await marketStateStore.getState(candidate.market, "1h");
+          if (!isUsableMarketState(current) || !current.quote) {
+            return { submitted: false, message: "Current market data is unavailable or stale; no automatic order was sent." };
+          }
+          const currentPrice = current.quote.mid;
+          const invalidated = candidate.direction === "LONG"
+            ? currentPrice <= candidate.stopLoss! || currentPrice >= candidate.takeProfit!
+            : currentPrice >= candidate.stopLoss! || currentPrice <= candidate.takeProfit!;
+          if (invalidated) return { submitted: false, message: "The proposal's stop or target has already been crossed." };
+
+          const account = await provider.resolveAccount(profile.autoTradeAccountId);
+          if (!account) return { submitted: false, message: "The configured account is not available on this user's PropDAO key." };
+          const [risk, markets, positions] = await Promise.all([
+            provider.risk(account.accountId),
+            provider.markets(),
+            provider.positions(account.accountId),
+          ]);
+          // Never infer a cross-venue symbol mapping. Auto-trading only uses an exact provider symbol match.
+          if (!markets.some((item) => item.symbol === candidate.market)) {
+            return { submitted: false, message: "The proposal's market is not an exact PropDAO instrument symbol. No automatic symbol substitution is allowed." };
+          }
+          const side = candidate.direction === "LONG" ? "BUY" : "SELL";
+          const riskCheck = validateTradeIntent({
+            symbol: candidate.market,
+            side,
+            qty: profile.autoTradeQty,
+            entry: candidate.entry!,
+            stopLoss: candidate.stopLoss!,
+            takeProfit: candidate.takeProfit!,
+          }, account, risk, markets, positions, DEFAULT_RISK_LIMITS);
+          if (!riskCheck.ok) {
+            return { submitted: false, message: "PropDAO risk validation blocked automatic execution: " + riskCheck.violations.join("; ") };
+          }
+          const intentId = "sirgoat_auto_" + candidate.id.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
+          const outcome = await provider.executeOrder(account.accountId, {
+            symbol: candidate.market,
+            side,
+            qty: profile.autoTradeQty,
+            orderType: "limit",
+            intentId,
+            limitPrice: candidate.entry!,
+            sl: candidate.stopLoss!,
+            tp: candidate.takeProfit!,
+            tif: "gtc",
+          });
+          if (!outcome.executed) return { submitted: false, intentId, message: outcome.message };
+          return { submitted: true, orderId: outcome.result.orderId, intentId, message: "PropDAO accepted the order request." };
+        },
       },
       goat,
       signal,
