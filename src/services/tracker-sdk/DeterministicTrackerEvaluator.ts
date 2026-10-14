@@ -389,8 +389,18 @@ export function evaluateTracker(
     evaluatedCandleMs: null as number | null,
   };
 
+  // A crossover is evaluated on the latest CLOSED bar. If the provider
+  // includes a forming candle, exclude it instead of declaring the condition
+  // unevaluable forever while the current bar keeps the same timestamp.
+  const isCross = tracker.operator === 'CROSS_ABOVE' || tracker.operator === 'CROSS_BELOW';
+  const newestInput = candles.length ? candles[candles.length - 1] : null;
+  const evaluationCandles =
+    isCross && newestInput?.finalized === false
+      ? candles.slice(0, -1)
+      : candles;
+
   // ---- 1. cursor: a bar already evaluated must not evaluate again ----
-  const newest = candles.length ? candles[candles.length - 1] : null;
+  const newest = evaluationCandles.length ? evaluationCandles[evaluationCandles.length - 1] : null;
   const newestMs = newest ? newest.time : null;
 
   if (
@@ -411,10 +421,6 @@ export function evaluateTracker(
   const usedFormingCandle = Boolean(newest && newest.finalized === false);
 
   if (usedFormingCandle && !options.allowFormingCandle) {
-    /**
-     * The newest bar may still move. Reading a crossover off it produces a
-     * fire that then un-fires on the next tick, which is worse than waiting.
-     */
     return {
       ...base,
       verdict: 'UNEVALUABLE',
@@ -449,7 +455,7 @@ export function evaluateTracker(
   }
 
   const period = tracker.indicatorParams?.period;
-  const series = resolve(indicator, period, candles);
+  const series = resolve(indicator, period, evaluationCandles);
 
   // ---- 4. warmup gate: UNAVAILABLE is NOT false ----------------------
   if (!series.available) {
@@ -572,7 +578,7 @@ function describeIndicator(indicator: string, period?: number): string {
 }
 
 /**
- * Evaluates a set of trackers and returns the FIRST trigger.
+ * Evaluates all pending trackers and reports the first trigger as a convenience.
  *
  * Evaluates every still-pending condition against the same candle snapshot.
  * Callers may aggregate all transitions and issue a single wake after every
