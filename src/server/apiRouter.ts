@@ -5344,6 +5344,17 @@ apiRouter.post(
         `Historical data is unavailable for "${selectedMarket}". Search for it under Markets, or pick another instrument.`,
       );
     }
+    // Production backtests must never report metrics from the simulated PAPER feed.
+    // Local/test runs can still opt into PAPER explicitly for deterministic fixtures.
+    if (process.env.NODE_ENV === "production" && marketProvider.dataMode !== "LIVE") {
+      return fail(
+        res,
+        503,
+        "LIVE_HISTORICAL_DATA_REQUIRED",
+        "Backtesting is disabled because this deployment is not connected to a live historical market-data provider. No simulated prices or fabricated performance metrics will be returned.",
+      );
+    }
+
     const validPeriods = ["24h", "7d", "30d", "90d"];
     const selectedPeriod = validPeriods.includes(period as string)
       ? (period as string)
