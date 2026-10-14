@@ -134,12 +134,13 @@ import {
   RotateCw,
 
   AlertCircle,
-
+  ShieldCheck,
 } from 'lucide-react';
 
 
 
-import { useAuth } from '../../context/AuthContext';\nimport { ChatActionsPanel } from './ChatActionsPanel';
+import { useAuth } from '../../context/AuthContext';
+import { ChatActionsPanel } from './ChatActionsPanel';
 
 
 
