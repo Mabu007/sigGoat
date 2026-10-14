@@ -5835,18 +5835,20 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
       if (!verification.connected) {
         sections.push("PROPDAO ACCOUNT CONTEXT: no verified PropDAO connection is available for this user. Do not invent balances, account rules, positions, or orders. Explain that they need to connect and verify their own PropDAO API key in Settings.");
       } else {
-        const accountSnapshots = await Promise.all(accounts.slice(0, 5).map(async (account) => {
-          const [risk, positions, orders, trades] = await Promise.all([
+        const accountSnapshots = await Promise.all(accounts.slice(0, 5).map(async (account, index) => {
+          const [risk, positions, orders, trades, fullProviderState] = await Promise.all([
             provider.risk(account.accountId),
             provider.positions(account.accountId),
             provider.orders(account.accountId),
             provider.trades(account.accountId, 30),
+            index < 3 ? provider.accountDetails(account.accountId) : Promise.resolve(null),
           ]);
           return {
             accountId: account.accountId,
             status: account.status,
             challengeId: account.challengeId,
             rules: account.rules,
+            fullProviderState,
             balance: risk.balance,
             equity: risk.equity,
             drawdownFloor: risk.floorUsd,
