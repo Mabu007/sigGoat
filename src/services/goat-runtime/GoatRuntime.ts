@@ -293,7 +293,10 @@ function describeTrackerFormula(directive: TrackerDirective): string {
             ? `${directive.period ?? 20}-bar ${directive.indicator === 'SWING_HIGH' ? 'high' : 'low'}`
             : directive.indicator;
 
-    return `${label} ${directive.operator ?? 'REACHED'} ${directive.targetValue ?? 'level'}`;
+    const target = directive.operator === 'WITHIN_RANGE' && directive.rangeLow !== undefined && directive.rangeHigh !== undefined
+      ? `${directive.rangeLow}–${directive.rangeHigh}`
+      : directive.targetValue ?? 'level';
+    return `${label} ${directive.operator ?? 'REACHED'} ${target}`;
   }
 
   return `${directive.type} ${directive.operator ?? 'CONDITION'} ${directive.targetValue ?? 'level'}`;
@@ -1691,6 +1694,8 @@ export class GoatRuntime {
       type: directive.type,
       market,
       targetValue: directive.targetValue,
+      rangeLow: directive.rangeLow,
+      rangeHigh: directive.rangeHigh,
       operator: directive.operator,
       indicatorParams,
       formulaDescription: describeTrackerFormula(directive),
