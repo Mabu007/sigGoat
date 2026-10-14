@@ -162,7 +162,7 @@ price tick regardless.
 
 | Route | Purpose |
 |---|---|
-| `POST /api/goats/:id/status` | `{ action: 'PAUSE' \| 'PLAY' }` — Stop/Play. |
+| `POST /api/goats/:id/status` | `{ action: 'PAUSE' \| 'PLAY' \| 'STOP' }` — Pause preserves state; Stop requires confirmation in the UI, cancels schedules and clears runtime records while preserving the GOAT as a draft; Play/Deploy resumes or starts a fresh review. |
 | `PATCH /api/goats/:id/schedule` | Change the analysis interval. |
 | `POST /api/goats` | Creates a GOAT draft. Deploy explicitly with `POST /api/goats/:id/status` and `{ action: 'PLAY' }`; deployment starts the first market review. |
 
