@@ -2330,7 +2330,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               </div>
 
               <span className="text-[10px] font-mono text-fg-subtle">
-                {inspectedState?.trackers?.length ?? 0} active
+                {(inspectedState?.trackers ?? []).filter(condition => !condition.isTriggered).length} pending · {inspectedState?.trackers?.length ?? 0} total
               </span>
             </div>
 
@@ -2378,14 +2378,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
                     <span
                       className={`rounded-md px-2 py-0.5 text-[9px] font-mono ${
-                        condition.isTriggered
+                        (condition.status ?? (condition.isTriggered ? 'HIT' : 'PENDING')) === 'HIT'
                           ? 'bg-positive-soft text-positive'
-                          : 'bg-raised text-fg-muted'
+                          : (condition.status ?? 'PENDING') === 'UNEVALUABLE'
+                            ? 'bg-info-soft text-info'
+                            : 'bg-raised text-fg-muted'
                       }`}
                     >
-                      {condition.isTriggered
-                        ? 'TRIGGERED'
-                        : 'WAITING'}
+                      {condition.status ?? (condition.isTriggered ? 'HIT' : 'PENDING')}
                     </span>
 
                     <ChevronRight className="h-3.5 w-3.5 text-fg-subtle" />
