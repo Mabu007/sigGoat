@@ -344,8 +344,15 @@ export interface TrackerCondition {
   indicatorParams?: TrackerIndicatorParams;
   currentCalculatedValue?: number;
   formulaDescription?: string;
+  /** Immutable condition definition; status records progress without rewriting the rule. */
+  status?: 'PENDING' | 'UNEVALUABLE' | 'HIT' | 'INVALIDATED' | 'EXPIRED';
   isTriggered: boolean;
   triggeredAt?: number;
+  /** Last candle cursor successfully considered by the deterministic evaluator. */
+  lastEvaluatedCandleMs?: number;
+  lastEvaluatedAt?: number;
+  previousCalculatedValue?: number;
+  lastEvaluationReason?: string;
 }
 
 export interface TradingSkill {
