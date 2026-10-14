@@ -4608,14 +4608,64 @@ apiRouter.post(
 
 // ---- Stop / Play / schedule ------------------------------------------
 
+/**
+ * STOP is a reset, not a pause: invalidate in-flight work, cancel durable
+ * schedules, remove process-local subscriptions, and delete all derived
+ * runtime records while preserving the user's GOAT configuration as a draft.
+ */
+async function stopAndResetGoatFor(userId: string, goatId: string): Promise<FundGoat> {
+  const goat = await persistence.goats.getForUser(goatId, userId);
+  if (!goat) throw new NotFoundError();
+
+  const reset: FundGoat = {
+    ...goat,
+    status: "PAUSED",
+    deploymentState: "DRAFT",
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Persist the lifecycle change first so even a concurrent cron claim sees
+  // the new generation/status and refuses to start another wake.
+  await persistence.goats.save(reset);
+  marketIngestion.unsubscribeAll(goat.id);
+  goatRuntimeRegistry.remove(goat.id);
+  await scheduler.cancel(goat.id);
+
+  await Promise.all([
+    persistence.signals.deleteByGoat(goat.id),
+    persistence.theses.deleteByGoat(goat.id),
+    persistence.wakeEvents.deleteByGoat(goat.id),
+    notificationOutbox.store.deleteByGoat(goat.id),
+  ]);
+
+  return reset;
+}
+
 apiRouter.post(
   "/goats/:id/status",
   handle(async (req, res) => {
     const user = requireUser(req);
 
     const action = req.body?.action;
+    if (action === "STOP") {
+      try {
+        const goat = await stopAndResetGoatFor(user.uid, req.params.id);
+        res.json({
+          goat,
+          status: goat.status,
+          runtimeState: null,
+          schedule: goat.schedule,
+          dataMode: marketProvider.dataMode,
+          reset: true,
+        });
+      } catch (err) {
+        if (err instanceof NotFoundError) return notFound(res);
+        throw err;
+      }
+      return;
+    }
     if (action !== "PAUSE" && action !== "PLAY") {
-      return fail(res, 400, "INVALID_ACTION", "action must be PAUSE or PLAY.");
+      return fail(res, 400, "INVALID_ACTION", "action must be PAUSE, PLAY, or STOP.");
     }
 
     let goat: FundGoat & {
