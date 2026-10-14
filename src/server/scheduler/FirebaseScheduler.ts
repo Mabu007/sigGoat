@@ -1,7 +1,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import type { FiredWake, ScheduleRequest, SchedulerHealth, WakeScheduler } from './types';
 
-/** Firestore owns due times and leases; Vercel Cron runs the Node/AI workflow. */
+/** Firestore owns due times and leases; Cloud Scheduler dispatches the Cloud Run Node/AI workflow. */
 export class FirebaseScheduler implements WakeScheduler {
   readonly kind = 'firebase' as const;
   private readonly schedules;
