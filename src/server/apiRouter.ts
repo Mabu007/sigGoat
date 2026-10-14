@@ -1797,7 +1797,7 @@ function isoNow(ms: number | null): string | null {
  * re-arm it. If a reasoning run is already in flight, the deterministic check
  * is skipped for this cycle: the reasoner will consume the same market state
  * when it runs, and we avoid hammering the reasoning path from the (up to
- * 4x/hour) tracker cadence. The eventId is not consumed either, so the DO
+ * 4x/hour) tracker cadence. The eventId is not consumed either, so the scheduler
  * will re-arm this check.
  *
  * Market validity is also asserted here: a GOAT persisted against a retired
