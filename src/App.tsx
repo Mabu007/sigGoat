@@ -61,7 +61,7 @@ const MainApp: React.FC = () => {
   );
 
   return (
-    <div className="flex min-h-screen flex-col bg-canvas text-fg md:flex-row">
+    <div className="premium-shell flex min-h-screen flex-col text-fg md:flex-row">
       <Navigation activeTab={activeTab} onSelect={navigate} />
 
       <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-16 md:pb-0">
@@ -73,7 +73,7 @@ const MainApp: React.FC = () => {
           lastUpdatedMs={lastUpdatedMs}
         />
 
-        <main className="mx-auto w-full max-w-6xl flex-1 px-3 py-4 sm:px-6 sm:py-6">
+        <main className="mx-auto w-full max-w-7xl flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
           {activeTab === 'markets' && <QuotesView />}
 
           {activeTab === 'goats' && (

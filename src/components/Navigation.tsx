@@ -61,7 +61,7 @@ export function BrandMark({ compact = false }: { compact?: boolean }) {
     <span className="flex items-center gap-2 select-none">
       <span
         aria-hidden="true"
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg"
+        className="premium-brand-icon flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-accent-fg"
       >
         <svg viewBox="0 0 24 24" fill="none" className="h-[18px] w-[18px]">
           <path
@@ -75,7 +75,7 @@ export function BrandMark({ compact = false }: { compact?: boolean }) {
         </svg>
       </span>
       {!compact && (
-        <span className="text-[15px] font-semibold tracking-tight text-fg">
+        <span className="text-[15px] font-bold tracking-[0.11em] text-fg">
           SIR<span className="text-accent-text">GOAT</span>
         </span>
       )}
@@ -94,9 +94,9 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
       {/* Desktop sidebar */}
       <nav
         aria-label="Main"
-        className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line bg-surface md:flex"
+        className="premium-sidebar sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line md:flex"
       >
-        <div className="flex h-14 items-center border-b border-line px-4">
+        <div className="flex h-[68px] items-center border-b border-line px-5">
           <BrandMark />
         </div>
 
@@ -110,7 +110,7 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
                   type="button"
                   onClick={() => onSelect(item.id)}
                   aria-current={active ? 'page' : undefined}
-                  className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors ${
+                  className={`premium-nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium transition-colors ${
                     active
                       ? 'bg-accent-soft text-accent-text'
                       : 'text-fg-muted hover:bg-raised hover:text-fg'
@@ -124,7 +124,7 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
           })}
         </ul>
 
-        <div className="border-t border-line p-3">
+        <div className="border-t border-line p-4">
           <p className="text-[11px] leading-relaxed text-fg-subtle">
             SIRGOAT runs research, analysis and backtests for prop-firm funded
             accounts. Trades are submitted for approval — execution is driven by
@@ -138,7 +138,7 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
           indicator on devices that have one — a hardcoded padding did not. */}
       <nav
         aria-label="Main"
-        className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-surface/95 backdrop-blur-lg md:hidden"
+        className="premium-header fixed inset-x-0 bottom-0 z-40 border-t border-line md:hidden"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
       >
         <ul className="mx-auto grid max-w-lg grid-cols-5">
