@@ -463,7 +463,7 @@ async function runTrackerCheckSync(
 let inProcessScheduler: InProcessScheduler | null = null;
 
 if (firebaseScheduler) {
-  console.log("[api] Firebase-backed GOAT scheduler active; Cloud Scheduler dispatches due reviews.");
+  console.log("[api] Firebase-backed GOAT scheduler active; Cloudflare Worker Cron dispatches due reviews.");
 } else if (process.env.NODE_ENV !== "production" && !isEphemeralRuntime()) {
   inProcessScheduler = new InProcessScheduler(async (wake) => {
     await runScheduledWakeSync(wake.goatId, wake.eventId, wake.reason);
@@ -652,7 +652,7 @@ async function setGoatStatusFor(
  * Firestore-backed scheduling is separate and survives API cold starts.
  */
 function subscribeToMarkets(goat: FundGoat): void {
-  // The Cloud Run dispatcher checks trackers directly from Firestore due times;
+  // The serverless cron dispatcher checks trackers directly from Firestore due times;
   // it must not start process-local market ingestion loops.
   if (process.env.SIRGOAT_SCHEDULER_ONLY === "true") return;
 
@@ -1598,14 +1598,18 @@ function scheduleGeneration(goat: FundGoat): string {
  * 1m timeframe is not polled every millisecond and a 4h timeframe is not
  * polled every 5 seconds.
  */
+const DEFAULT_TRACKER_CHECK_INTERVAL_MS = 5 * 60_000;
+
 function computeNextTrackerCheckAt(
   goat: FundGoat,
   from: number = Date.now(),
 ): number | null {
-  if (goat.status === "PAUSED") return null;
+  if (goat.status === "PAUSED" || goat.deploymentState === "DRAFT") return null;
 
-  const timeframe = normaliseTrackingTimeframe(goat.timeframe);
-  return from + pollIntervalForTimeframe(timeframe);
+  // Tracker cadence is deliberately independent of the AI reasoning cadence
+  // and the selected candle timeframe. The cron dispatcher ticks every minute,
+  // but each GOAT is only due for deterministic condition evaluation every 5m.
+  return from + DEFAULT_TRACKER_CHECK_INTERVAL_MS;
 }
 
 function computeNextWakeAfterRun(goat: FundGoat, scheduledAt: number): number | null {
