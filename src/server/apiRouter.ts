@@ -5886,7 +5886,8 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
       }
     }));
     sections.push(
-      "ON-DEMAND HYPERLIQUID RESEARCH RESULTS (historical candles oldest-to-newest; unavailable fields are not zero):\\n" +
+      "ON-DEMAND HYPERLIQUID RESEARCH RESULTS (historical candles oldest-to-newest; unavailable fields are not zero):
+" +
       JSON.stringify({ fetchedAt: now.toISOString(), timeframe, requestedCandleCount: candleCount, results: quotes }).slice(0, 30000),
     );
   } else {
@@ -6400,7 +6401,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     // This is routing only: the model cannot bypass the authenticated tool APIs.
     const actionText = message.trim().toLowerCase();
     let requestedActionMode: "create-goat" | "deploy-goat" | "proposal" | "trade" | "backtest" | "account" | null = null;
-    if (/\b(backtest|back test|historical replay|test my strategy)\b/.test(actionText)) {
+    if (/\b(auto[- ]?trading|auto[- ]?trade)\b/.test(actionText)) {\n      requestedActionMode = "proposal";\n    } else if (/\b(backtest|back test|historical replay|test my strategy)\b/.test(actionText)) {
       requestedActionMode = "backtest";
     } else if (/\b(propdao|account balance|challenge rules|open positions|open orders|closed trades|funded account status)\b/.test(actionText)) {
       requestedActionMode = "account";
