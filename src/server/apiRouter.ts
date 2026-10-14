@@ -5697,13 +5697,22 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
     }));
     searchResults.flat().forEach((item) => addMarket({ symbol: item.symbol, name: item.name || item.symbol }));
   }
-  const matchingSymbols = [...discovered.values()].filter((item) => {
-    const text = (item.symbol + " " + item.name).toLowerCase();
-    return marketQueries.some((query) => {
-      const q = query.toLowerCase();
-      return text === q || text.includes(q) || item.symbol.toLowerCase().endsWith(":" + q);
-    });
-  }).slice(0, 6);
+  // Discovery results are already provider-filtered. Keep exact ticker matches
+  // first, then relevant alias/name matches; do not discard a valid provider
+  // result merely because the venue formats its display name differently.
+  const queryTerms = marketQueries.map((query) => query.toLowerCase());
+  const matchingSymbols = [...discovered.values()]
+    .map((item) => {
+      const symbol = item.symbol.toLowerCase();
+      const name = item.name.toLowerCase();
+      const exact = queryTerms.some((q) => symbol === q || symbol.endsWith(":" + q));
+      const relevant = queryTerms.some((q) => name.includes(q) || symbol.includes(q));
+      return { item, score: exact ? 0 : relevant ? 1 : 2 };
+    })
+    .filter((entry) => entry.score < 2)
+    .sort((a, b) => a.score - b.score || a.item.symbol.localeCompare(b.item.symbol))
+    .slice(0, 6)
+    .map((entry) => entry.item);
   if (matchingSymbols.length) {
     const timeframe = inferChatTimeframe(userMessage, matchedGoats);
     const candleCount = inferChatCandleCount(userMessage, timeframe);
@@ -5744,7 +5753,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   }
 
   sections.push(
-    "HOW TO USE THIS EVIDENCE: Answer the user's actual question. For market questions, explain the latest observed price, timestamp, 24h change/funding/open-interest only when those fields are provided, relevant news, and bullish/bearish scenarios with confirmation and invalidation. If quote data is stale, missing, or PAPER, say so. For GOAT questions, refer to the user's actual saved goal, skills, thesis, activity and proposals above. Clearly distinguish facts from your interpretation. Never claim certainty, never fabricate data, and never execute trades or create/accept a proposal from chat.",
+    "HOW TO USE THIS EVIDENCE: Answer the user's actual question. For market questions, explain the latest observed price, timestamp, 24h change/funding/open-interest only when those fields are provided, relevant news, and bullish/bearish scenarios with confirmation and invalidation. If quote data is stale, missing, or PAPER, say so. For GOAT questions, refer to the user's actual saved goal, skills, thesis, activity and proposals above. Clearly distinguish facts from your interpretation. Never claim certainty or fabricate data. Chat is an orchestration surface, but do not claim any trade, GOAT creation/deployment, or other state change has happened unless a dedicated authenticated server action actually completed it; request explicit confirmation before any live trade and respect all risk and execution gates.",
   );
   return sections.join("\n\n");
 }
@@ -5774,10 +5783,10 @@ const CHAT_SYSTEM_PROMPT =
   "CONVERSATION STYLE: For a simple greeting like 'hey', reply only 'Hey G, you good?' (or a similarly natural one-line greeting if the conversation context calls for it). For thanks, reply briefly. Match the user's casual tone without forced slang, excessive emojis, fake intimacy, or overdoing the JARVIS act. Remember the conversation and avoid repeating context the user already knows. " +
   "DEFAULT ANSWER SHAPE: Lead with the answer or your actual take in plain language. Usually use 1-3 short paragraphs. Do not automatically produce a report with numbered sections, tables, 'bottom line', 'gaps and caveats', or generic disclaimers. Use headings, bullets, and tables only when they make a complex research answer easier to scan or the user asks for detail. Do not repeat the user's question. Ask one focused follow-up only when a genuinely important detail is missing. " +
   "DEPTH CONTROL: Casual chat gets a casual, short reply. 'What do you think about EUR?' gets a concise view plus the key evidence and level/condition that would change the view. 'Research', 'analyse in detail', 'compare', 'backtest', or multi-part requests warrant a deeper evidence-led answer. For trading analysis, be decisive about what the evidence suggests while separating observation from inference and uncertainty; do not hide behind generic financial disclaimers. " +
-  "SESSION CONTINUITY: Treat this as one ongoing conversation. Resolve follow-ups such as 'it', 'that', 'again', 'the chart', and timeframe changes from the most recent relevant asset discussed in this session, unless the user names a different asset. Never make the user repeat an asset or timeframe already established. Use the market evidence injected into the current turn; if it contains a fresh quote or candles, do not claim you lack live data. If a tool was not called or returned no result, state that precise limitation instead of implying the whole system lacks access. " +
+  "SESSION CONTINUITY: Treat this as one ongoing conversation. Resolve follow-ups such as 'it', 'that', 'again', 'the chart', and timeframe changes from the most recent relevant asset discussed in this session, unless the user names a different asset. Never make the user repeat an asset or timeframe already established. MARKET-DATA GROUNDING IS MANDATORY: Before answering any question about an asset, inspect ON-DEMAND HYPERLIQUID RESEARCH RESULTS in this turn. If a matching result contains a quote, you HAVE that quote and must discuss it directly; never say you lack access to live market data in that case. Start with the actual returned price/mid, 24h change, and quote timestamp when available. Distinguish LIVE from PAPER using the returned dataMode. If candles are present, use them for trend/technical analysis. If the requested asset is not listed, say that exact asset was not found on Hyperliquid, then name the closest actually-listed relevant instrument from the supplied market universe and offer to analyse it; never pretend an unsupported instrument is available. If discovery or quote retrieval failed, describe that specific failure—not a general lack of market access. Never invent a price or silently substitute a different asset. " +
   "TRADING UNIVERSE — HARD RULE: SIRGOAT trades and researches instruments listed on Hyperliquid only, especially the XYZ HIP-3 markets such as xyz:EUR, xyz:GBP, xyz:JPY, xyz:GOLD, xyz:SILVER, xyz:CL and listed indices. Never frame a question as if the user is trading external spot FX, a broker feed, EUR/USD, EUR/GBP, or another outside venue. Do not offer to fetch data from another source. When the user names a conventional pair or a vague currency/asset that does not exactly identify a supported Hyperliquid symbol, do not guess and do not fetch a loosely matched symbol: ask one short confirmation question using the venue's actual symbol. Example: 'Do you mean Hyperliquid's xyz:JPY market?' for USD/JPY; 'Do you mean xyz:EUR?' for 'the euro'. For a pair without a clear equivalent, ask whether they mean one of the actual listed instruments, e.g. xyz:EUR or xyz:GBP. Never present xyz:JPY as a spot EUR/JPY or claim the listed instrument is identical to spot FX. If the user confirms a symbol that was just suggested by you, treat that as confirmation, resolve the exact symbol, fetch its current Hyperliquid quote and candles, and answer the original question without asking again. A confirmation like 'yes', 'yeah', 'that one', or 'do that' only confirms the immediately preceding instrument clarification; do not apply it to unrelated questions. " +
   "DATA AND RESEARCH: Use the backend's on-demand Hyperliquid instrument discovery, live quote retrieval, historical OHLCV candles, relevant news context, and authenticated SIRGOAT state. Search/fetch every confirmed asset the user asks about; use historical data when relevant; inspect saved GOAT configuration, skills, theses, activity, and proposals for GOAT questions. A greeting does not need market research. Never pretend to have fetched data that is absent. Never fabricate a listing, price, funding, open interest, volume, candle, news item, source, or timestamp. State LIVE versus PAPER accurately, and mention a data gap only when it materially affects the answer. " +
-  "When researching, plan what evidence is needed, inspect retrieved data, identify material gaps, use available follow-up research, then synthesize a clear view. For complex trading questions, include the strongest bullish and bearish case, important confirmation/invalidation conditions, and risk only where relevant. Never expose another user's data or credentials. Never execute trades, create/accept proposals, or alter GOAT settings from chat.";
+  "When researching, plan what evidence is needed, inspect retrieved data, identify material gaps, use available follow-up research, then synthesize a clear view. For complex trading questions, include the strongest bullish and bearish case, important confirmation/invalidation conditions, and risk only where relevant. Never expose another user's data or credentials. ACTION ORCHESTRATION: When the user asks to create a GOAT, deploy a GOAT, generate a trade proposal, or submit an order, the chat interface opens the matching structured action card. Treat that card and the authenticated server action endpoints as the only route for state changes. Never claim an action completed until the endpoint returns a completed result. GOAT creation saves a draft; deployment requires a separate explicit confirmation. Order submission requires a separate explicit confirmation, a fresh server-side deterministic risk check, an owned PropDAO account, and the provider execution policy to allow it. If execution is disabled or unauthorised, say so plainly and do not suggest that an order was placed. Never execute trades or alter GOAT settings based only on model text.";
 
 /** Resolve the chatbot credential: user OpenRouter key from the vault, else the server fallback. */
 async function resolveChatbotCredential(uid: string): Promise<{
@@ -5943,6 +5952,184 @@ async function runChatResearchLoop(
     }).slice(0, 18000);
 }
 
+/**
+ * Explicit, authenticated market-research tool for SIRGOAT chat.
+ *
+ * The chat model may explain the returned evidence, but it does not get to
+ * invent quotes or trigger state changes. This endpoint reuses the same
+ * provider-backed research pipeline as chat and returns a typed tool result
+ * suitable for interactive cards.
+ */
+apiRouter.post("/chat/actions/market-research", authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  const query = typeof req.body?.query === "string" ? req.body.query.trim() : "";
+  if (!query) return fail(res, 400, "INVALID_QUERY", "A market or asset query is required.");
+  if (query.length > 1000) return fail(res, 400, "QUERY_TOO_LONG", "Market queries must be 1,000 characters or fewer.");
+
+  try {
+    const evidence = await buildChatResearchContext(user.uid, query);
+    const failed = /RESEARCH ERROR|QUOTE RETRIEVAL FAILED|DISCOVERY FAILED/i.test(evidence);
+    res.json({
+      action: {
+        id: "market_research_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+        type: "market_research",
+        status: failed ? "partial" : "completed",
+        title: "Hyperliquid market research",
+        query,
+        dataMode: marketProvider.dataMode,
+        generatedAt: new Date().toISOString(),
+        evidence,
+      },
+    });
+  } catch (error) {
+    console.error("[chat/actions] market research failed", error);
+    return fail(res, 502, "MARKET_RESEARCH_FAILED", "Market research failed. No market facts were generated.");
+  }
+});
+
+/**
+ * Discover the server-side tools SIRGOAT can safely orchestrate. Existing
+ * resource routes remain the source of truth for creation, deployment,
+ * proposal decisions and execution policy; this route never advertises a
+ * capability as executable unless the deployment policy confirms it.
+ */
+apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  const execution = propDaoFor(user.uid).policyStatus();
+  res.json({
+    tools: [
+      { id: "market_research", label: "Research a market", endpoint: "POST /api/chat/actions/market-research", confirmationRequired: false, available: true },
+      { id: "create_goat", label: "Create a GOAT", endpoint: "POST /api/goats", confirmationRequired: true, available: true },
+      { id: "deploy_goat", label: "Deploy a GOAT", endpoint: "POST /api/chat/actions/goats/:id/deploy", confirmationRequired: true, available: true },
+      { id: "create_trade_proposal", label: "Generate a trade proposal", endpoint: "POST /api/chat/actions/goats/:id/research", confirmationRequired: false, available: true },
+      { id: "execute_trade", label: "Submit a risk-checked order", endpoint: "POST /api/chat/actions/execute-trade", confirmationRequired: true, available: Boolean(execution.enabled && execution.authorised), blockedReason: execution.enabled && execution.authorised ? null : execution.summary },
+    ],
+    execution,
+  });
+});
+
+/**
+ * Deploy a caller-owned GOAT only after the client has explicitly confirmed
+ * the structured deployment card. Ownership and scheduler availability are
+ * revalidated here; a client-side card is never the authorization boundary.
+ */
+apiRouter.post("/chat/actions/goats/:id/deploy", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  if (req.body?.confirmed !== true) {
+    return res.status(200).json({
+      action: { type: "deploy_goat", status: "confirmation_required", goatId: req.params.id,
+        title: "Deploy this GOAT?", message: "Deployment starts its schedule and initial market review.",
+        confirmationRequired: true },
+    });
+  }
+  try {
+    const deployed = await setGoatStatusFor(user.uid, req.params.id, false);
+    res.json({ action: { type: "deploy_goat", status: "completed", title: "GOAT deployed",
+      goat: deployed, dataMode: marketProvider.dataMode } });
+  } catch (error) {
+    if (error instanceof NotFoundError) return notFound(res);
+    return fail(res, 409, "GOAT_DEPLOY_FAILED", error instanceof Error ? error.message : "Could not deploy this GOAT.");
+  }
+}));
+
+/** Ask a caller-owned GOAT for a fresh review and return the persisted proposals. */
+apiRouter.post("/chat/actions/goats/:id/research", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!goat) return notFound(res);
+  try {
+    const runtime = await ensureGoatRuntime(goat);
+    const requestedMarket = typeof req.body?.market === "string" && goat.markets.includes(req.body.market)
+      ? req.body.market : goat.markets[0];
+    const state = await runtime.wake(
+      typeof req.body?.reason === "string" && req.body.reason.trim()
+        ? req.body.reason.trim().slice(0, 200) : "Chat-requested market review",
+      "MANUAL_REEVALUATE",
+      requestedMarket,
+    );
+    const storedSignals = await persistence.signals.listByGoat(goat.id, 100);
+    const latestThesisId = state.currentThesis?.id;
+    const signals = storedSignals.filter((signal) => {
+      const expiry = signal.expiresAt ? Date.parse(signal.expiresAt) : Date.parse(signal.createdAt) + 60 * 60_000;
+      return Boolean(latestThesisId) && signal.thesisId === latestThesisId &&
+        signal.status === "ACTIONABLE" && !signal.decision && expiry > Date.now();
+    });
+    res.json({ action: { type: "create_trade_proposal", status: "completed",
+      title: "GOAT market review complete", goat: { id: goat.id, name: goat.name },
+      runtimeState: state, signals: signals.slice(0, 10), dataMode: marketProvider.dataMode,
+      message: signals.length ? "Fresh actionable proposals are listed below." : "The latest review produced no fresh actionable proposal. Do not force a trade." } });
+  } catch (error) {
+    console.error("[chat/actions] GOAT research failed", error);
+    return fail(res, 502, "GOAT_RESEARCH_FAILED", "The GOAT could not complete its market review.");
+  }
+}));
+
+/**
+ * Two-phase trade action. Phase one returns a structured confirmation card
+ * only after deterministic risk validation. Phase two requires an explicit
+ * confirmed=true and re-runs the full risk checks immediately before writing.
+ * The provider's own execution policy remains the final gate.
+ */
+apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const body = req.body ?? {};
+  const { accountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage } = body;
+  if (typeof accountId !== "string" || !accountId ||
+      typeof symbol !== "string" || !symbol ||
+      (side !== "BUY" && side !== "SELL") ||
+      ![qty, entry, stopLoss, takeProfit].every((v) => typeof v === "number" && Number.isFinite(v)) ||
+      (leverage !== undefined && (typeof leverage !== "number" || !Number.isFinite(leverage)))) {
+    return fail(res, 400, "INVALID_TRADE_INTENT",
+      "accountId, symbol, BUY/SELL side, finite qty/entry/stopLoss/takeProfit, and optional finite leverage are required.");
+  }
+  const provider = propDaoFor(user.uid);
+  const account = await provider.resolveAccount(accountId);
+  if (!account) return fail(res, 404, "ACCOUNT_NOT_FOUND", "That account is not available on your PropDAO key.");
+
+  const [risk, markets, positions] = await Promise.all([
+    provider.risk(accountId), provider.markets(), provider.positions(accountId),
+  ]);
+  const riskCheck = validateTradeIntent(
+    { symbol, side, qty, entry, stopLoss, takeProfit, leverage },
+    account, risk, markets, positions,
+  );
+  const execution = provider.policyStatus();
+  if (!riskCheck.ok) {
+    return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+      title: "Trade blocked by risk controls", riskCheck, execution } });
+  }
+
+  const suppliedIntentId = typeof body.intentId === "string" && /^[A-Za-z0-9_-]{8,120}$/.test(body.intentId)
+    ? body.intentId : "";
+  if (body.confirmed === true && !suppliedIntentId) {
+    return fail(res, 400, "PREFLIGHT_REQUIRED",
+      "Run risk preflight first, then confirm using the intentId returned in its confirmation card.");
+  }
+  const intentId = suppliedIntentId || ("sirgoat_" + Date.now() + "_" + Math.random().toString(36).slice(2, 12));
+  if (body.confirmed !== true) {
+    return res.json({ action: { type: "execute_trade", status: "confirmation_required",
+      title: "Confirm trade order", confirmationRequired: true, intentId,
+      order: { accountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage: leverage ?? null, orderType: "limit" },
+      riskCheck, execution,
+      message: execution.enabled && execution.authorised
+        ? "Review the order and risk measurements. Confirming will recheck risk immediately before submission."
+        : execution.summary + " The order will not be submitted while execution is disabled or unauthorised." } });
+  }
+
+  const result = await provider.executeOrder(accountId, {
+    symbol, side, qty, orderType: "limit", intentId,
+    limitPrice: entry, sl: stopLoss, tp: takeProfit,
+    ...(typeof leverage === "number" ? { leverage } : {}),
+    tif: "gtc",
+  });
+  if (!result.executed) {
+    return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+      title: "Order not submitted", intentId, code: result.code, message: result.message, riskCheck, execution } });
+  }
+  res.json({ action: { type: "execute_trade", status: "completed",
+    title: "Order submitted", intentId, result: result.result, riskCheck, execution } });
+}));
+
 apiRouter.get("/chats", authMiddleware, async (req, res) => {
   const user = requireUser(req);
   try {
@@ -6053,6 +6240,25 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     res.flushHeaders?.();
     const emit = (event: Record<string, unknown>) => res.write("data: " + JSON.stringify(event) + "\n\n");
     emit({ type: "status", message: "Getting ready…" });
+
+    // Natural-language requests open the corresponding structured action card.
+    // This is routing only: the model cannot bypass the authenticated tool APIs.
+    const actionText = message.trim().toLowerCase();
+    let requestedActionMode: "create-goat" | "deploy-goat" | "proposal" | "trade" | null = null;
+    if (/\b(create|make|build|set up|design)\b[\s\S]{0,80}\b(goat|agent)\b/.test(actionText)) {
+      requestedActionMode = "create-goat";
+    } else if (/\b(deploy|activate|start|play)\b[\s\S]{0,80}\b(goat|agent)\b/.test(actionText)) {
+      requestedActionMode = "deploy-goat";
+    } else if (/\b(execute|place|submit|enter)\b[\s\S]{0,80}\b(trade|order)\b/.test(actionText)) {
+      requestedActionMode = "trade";
+    } else if (/\b(create|generate|research|review|find|prepare)\b[\s\S]{0,80}\b(proposal|signal|trade setup|trade idea)\b/.test(actionText) ||
+               /\b(ask|tell)\b[\s\S]{0,60}\b(my goat|my agent)\b[\s\S]{0,60}\b(research|review|analyse|analyze)\b/.test(actionText)) {
+      requestedActionMode = "proposal";
+    }
+    if (requestedActionMode) {
+      emit({ type: "action_suggestion", mode: requestedActionMode,
+        message: "I’ve opened the matching action card. Review the details there; deployment and order submission require explicit confirmation." });
+    }
 
     // Fast path: social messages do not resolve credentials, query model catalogues,
     // fetch market/news data, read GOAT state, or invoke an LLM.

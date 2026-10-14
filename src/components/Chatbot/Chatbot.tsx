@@ -134,12 +134,13 @@ import {
   RotateCw,
 
   AlertCircle,
-
+  ShieldCheck,
 } from 'lucide-react';
 
 
 
 import { useAuth } from '../../context/AuthContext';
+import { ChatActionsPanel, type ActionMode } from './ChatActionsPanel';
 
 
 
@@ -413,6 +414,10 @@ export function Chatbot() {
   const { currentUser, getApiAuthHeaders } = useAuth();
 
   const [isOpen, setIsOpen] = useState(false);
+
+  const [showActions, setShowActions] = useState(false);
+
+  const [actionMode, setActionMode] = useState<ActionMode>('research');
 
   const [chats, setChats] = useState<ChatItem[]>([]);
 
@@ -808,6 +813,13 @@ export function Chatbot() {
           const event = JSON.parse(payload);
           if (event.type === 'status' && typeof event.message === 'string') {
             setStreamStatus(event.message);
+          } else if (event.type === 'action_suggestion' && typeof event.mode === 'string') {
+            const allowedModes: ActionMode[] = ['create-goat', 'deploy-goat', 'proposal', 'trade'];
+            if (allowedModes.includes(event.mode as ActionMode)) {
+              setActionMode(event.mode as ActionMode);
+              setShowActions(true);
+              setStreamStatus(typeof event.message === 'string' ? event.message : 'Opening the requested action card…');
+            }
           } else if (event.type === 'delta' && typeof event.content === 'string') {
             streamedContent += event.content;
             setMessages((prev) => {
@@ -1162,7 +1174,7 @@ export function Chatbot() {
 
     >
 
-    <div className="flex h-full w-full max-w-full flex-col overflow-hidden bg-surface shadow-2xl">
+    <div className="relative flex h-full w-full max-w-full flex-col overflow-hidden bg-surface shadow-2xl">
 
 
 
@@ -1254,21 +1266,25 @@ export function Chatbot() {
 
           </div>
 
-          <button
-
-            type="button"
-
-            onClick={() => setIsOpen(false)}
-
-            className="rounded p-1 text-fg-subtle hover:bg-raised hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-
-            aria-label="Close assistant"
-
-          >
-
-            <X size={16} aria-hidden="true" />
-
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowActions((value) => !value)}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${showActions ? "border-accent bg-accent/10 text-accent-text" : "border-line text-fg-muted hover:bg-raised hover:text-fg"}`}
+              aria-expanded={showActions}
+              aria-label="Open SIRGOAT action centre"
+            >
+              <ShieldCheck size={13} aria-hidden="true" /> Actions
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsOpen(false)}
+              className="rounded p-1 text-fg-subtle hover:bg-raised hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              aria-label="Close assistant"
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
 
         </div>
 
@@ -1754,6 +1770,14 @@ export function Chatbot() {
             </form>
 
           </div>
+
+          {showActions && (
+            <ChatActionsPanel
+              getAuthHeaders={loadAuthHeaders}
+              initialMode={actionMode}
+              onClose={() => setShowActions(false)}
+            />
+          )}
 
         </div>
 
