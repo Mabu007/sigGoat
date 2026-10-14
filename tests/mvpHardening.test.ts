@@ -431,7 +431,7 @@ describe('creating a GOAT does not block on a model call', () => {
 
 describe('pausing a GOAT abandons in-flight work', () => {
   const runtime = fs.readFileSync(
-    path.join(import.meta.dir, '..', 'src', 'services', 'durable-object', 'GoatDurableObject.ts'),
+    path.join(import.meta.dir, '..', 'src', 'services', 'goat-runtime', 'GoatRuntime.ts'),
     'utf8',
   );
 
