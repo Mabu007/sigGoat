@@ -73,6 +73,7 @@ import {
 } from "../services/market-data/MarketStateStore";
 import { FileMarketStatePersistence } from "../services/market-data/FileMarketStatePersistence";
 import { BacktestEngine } from "../services/backtest/BacktestEngine";
+import { AgentBacktestEngine } from "../services/backtest/AgentBacktestEngine";
 import { DEFAULT_SKILLS } from "../data/defaultSkills";
 import { SYSTEM_GOATS } from "../data/systemGoats";
 import { SYSTEM_SKILLS, isSystemOwnedSkillId } from "../data/systemSkills";
@@ -5363,15 +5364,40 @@ apiRouter.post(
       ? (period as string)
       : "7d";
 
-    const result = await BacktestEngine.runBacktest({
+    if (!(await reasoningGateway.hasKeyFor(user.uid))) {
+      return fail(
+        res,
+        400,
+        "AI_KEY_REQUIRED",
+        "Agent-driven backtesting requires a working AI credential in Settings. No deterministic or demo strategy will be substituted.",
+      );
+    }
+
+    const startingBalance = req.body?.startingBalance === undefined
+      ? 10000
+      : Number(req.body.startingBalance);
+    const riskPerTradePct = req.body?.riskPerTradePct === undefined
+      ? 1.5
+      : Number(req.body.riskPerTradePct);
+    if (!Number.isFinite(startingBalance) || startingBalance <= 0) {
+      return fail(res, 400, "INVALID_STARTING_BALANCE", "startingBalance must be greater than zero.");
+    }
+    if (!Number.isFinite(riskPerTradePct) || riskPerTradePct <= 0 || riskPerTradePct > 10) {
+      return fail(res, 400, "INVALID_RISK_PERCENT", "riskPerTradePct must be greater than zero and at most 10.");
+    }
+
+    const result = await AgentBacktestEngine.runBacktest({
       goat,
       skills,
       market: selectedMarket,
       period: selectedPeriod as "24h" | "7d" | "30d" | "90d",
       provider: marketProvider,
+      startingBalance,
+      riskPerTradePct,
+      reason: (context, model) => reasoningGateway.evaluateGoat(context, model),
     });
 
-    res.json({ result });
+    res.json({ result, engine: "AGENT_HISTORICAL_REPLAY" });
   }),
 );
 
