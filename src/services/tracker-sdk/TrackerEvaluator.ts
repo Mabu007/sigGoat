@@ -172,7 +172,8 @@ function compare(
     case 'LESS_THAN':
       return value < target;
     case 'WITHIN_RANGE':
-      return value >= target;
+      // A scalar target is not a range; range conditions are handled explicitly.
+      return false;
     default:
       return false;
   }
@@ -409,8 +410,11 @@ export class TrackerEvaluator {
     }
 
     const target = tracker.targetValue;
+    const isRange = tracker.operator === 'WITHIN_RANGE' &&
+      tracker.rangeLow !== undefined &&
+      tracker.rangeHigh !== undefined;
 
-    if (target === undefined) {
+    if (target === undefined && !isRange) {
       return TrackerEvaluator.buildReport(
         tracker,
         false,
@@ -420,9 +424,13 @@ export class TrackerEvaluator {
       );
     }
 
-    const isTriggered = compare(tracker.operator, value, target);
+    const isTriggered = isRange
+      ? value >= tracker.rangeLow! && value <= tracker.rangeHigh!
+      : target !== undefined && compare(tracker.operator, value, target);
     const label = formatIndicatorLabel(indicator, period);
-    const formula = `${label} ${tracker.operator ?? 'REACHED'} ${target}`;
+    const formula = isRange
+      ? `${label} WITHIN_RANGE ${tracker.rangeLow}–${tracker.rangeHigh}`
+      : `${label} ${tracker.operator ?? 'REACHED'} ${target}`;
 
     const eventReason = isTriggered
       ? `${formula} — met (current: ${value})`
