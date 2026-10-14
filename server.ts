@@ -6,7 +6,7 @@ import { createServer as createViteServer } from 'vite';
 import { createApp } from './src/server/app';
 import { createViteGuard } from './src/server/devViteGuard';
 import { appPersistence, restoreRuntimes, seedDefaultSkills } from './src/server/apiRouter';
-import { durableObjectRegistry } from './src/services/durable-object/DurableObjectRegistry';
+import { goatRuntimeRegistry } from './src/services/goat-runtime/GoatRuntimeRegistry';
 import { hyperliquidProvider } from './src/services/market-data/hyperliquid/HyperliquidMarketDataProvider';
 import { marketStateStore } from './src/server/apiRouter';
 
@@ -73,7 +73,7 @@ async function listen(app: ReturnType<typeof createApp>, port: number) {
   const shutdown = (signal: string) => {
     console.log(`\n[server] ${signal} received — shutting down…`);
     // Stop every GOAT actor timer/subscription first.
-    for (const goat of durableObjectRegistry.getAll()) {
+    for (const goat of goatRuntimeRegistry.getAll()) {
       goat.destroy();
     }
     // Stop every market-data polling loop (provider + shared state store).
