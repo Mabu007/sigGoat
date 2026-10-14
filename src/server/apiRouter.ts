@@ -3528,14 +3528,11 @@ async function readUserPreferences(userId: string): Promise<{
           .catch(() => null)
       : null,
     autonomyExecutable:
-      autonomyMode === "PROPOSAL" ||
-      (execution.enabled && execution.authorised),
+      profile?.autoTradeEnabled !== true || (execution.enabled && execution.authorised),
     autonomyBlockedReason:
-      autonomyMode === "PROPOSAL"
+      profile?.autoTradeEnabled !== true || (execution.enabled && execution.authorised)
         ? ""
-        : execution.enabled && execution.authorised
-          ? ""
-          : "Server-side order execution is disabled. Your GOATs will still produce proposals, but nothing is sent to a venue until the deployment enables execution.",
+        : "Automatic order submission is blocked by the server-side PropDAO execution policy. GOATs can still research and auto-accept proposals, but no order will be sent until execution is authorised.",
   };
 }
 
