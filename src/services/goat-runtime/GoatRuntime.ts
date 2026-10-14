@@ -44,10 +44,11 @@ import { GoatReasoningContext } from '../ai/OpenRouterClient';
 import { SignalGate } from '../agent/SignalGate';
 import { aggregateHardConstraints, HardConstraints } from '../agent/SkillConstraints';
 import {
-  TrackerEvaluator,
-  TrackerEvaluationReport,
-  IndicatorSnapshot,
+  computeIndicatorSnapshot,
+  type TrackerEvaluationReport,
+  type IndicatorSnapshot,
 } from '../tracker-sdk/TrackerEvaluator';
+import { evaluateTracker } from '../tracker-sdk/DeterministicTrackerEvaluator';
 import { SessionSchedule } from '../tracker-sdk/SessionSchedule';
 import { analyzeMarketStructure, calculateRSI, calculateEMA, calculateATR } from '../tracker-sdk/indicators';
 import { ReasoningGateway } from '../../server/reasoningGateway';
@@ -915,11 +916,21 @@ export class GoatRuntime {
       // Every review is a new thesis version. Reusing an ID made old proposals
       // indistinguishable from the latest thesis and allowed stale approvals.
       const thesisId = this.newId('ths');
-      const trackers: TrackerCondition[] = reasoningResult.thesis.trackers
+      const proposedTrackers: TrackerCondition[] = reasoningResult.thesis.trackers
         .slice(0, MAX_TRACKERS)
-        .map((t, idx) =>
-          this.buildTrackerCondition(t, market, idx),
-        );
+        .map((t, idx) => this.buildTrackerCondition(t, market, idx));
+
+      // Routine/triggered research updates the thesis, not the active condition
+      // definitions. Keep the current plan until every condition has reached a
+      // terminal state; an explicit manual re-evaluation starts a new plan.
+      const activePlan = this.runtimeState.trackers;
+      const preservePlan =
+        triggerType !== 'MANUAL_REEVALUATE' &&
+        activePlan.length > 0 &&
+        activePlan.some((condition) => !condition.isTriggered);
+      const trackers: TrackerCondition[] = preservePlan
+        ? activePlan.map((condition) => ({ ...condition }))
+        : proposedTrackers;
 
       /**
        * STEP 2 output: the ordered wait-for plan.
@@ -1346,66 +1357,107 @@ export class GoatRuntime {
     indicators: IndicatorSnapshot | undefined,
   ): Promise<boolean> {
     const matchingTrackers = this.runtimeState.trackers.filter(
-      (t) => !t.isTriggered && (t.market === quote.symbol || !t.market),
+      (tracker) =>
+        !tracker.isTriggered &&
+        tracker.status !== 'HIT' &&
+        tracker.status !== 'INVALIDATED' &&
+        tracker.status !== 'EXPIRED' &&
+        (tracker.market === quote.symbol || !tracker.market),
     );
     if (!matchingTrackers.length) return false;
 
+    const before = this.runtimeState.trackers.map((tracker) => ({ ...tracker }));
+    const marketIndicators = indicators ?? computeIndicatorSnapshot(quote, candles);
+    const reports: TrackerEvaluationReport[] = [];
+    let changed = false;
+
+    // Evaluate EVERY active condition against the same candle snapshot before
+    // waking the agent. Multiple conditions that transition on one bar are all
+    // marked and persisted; none disappear because an earlier one fired.
     for (const tracker of matchingTrackers) {
-      const report = TrackerEvaluator.evaluate(tracker, quote, candles, indicators);
+      const evaluation = evaluateTracker(tracker, candles, {
+        lastProcessedCandleMs: tracker.lastEvaluatedCandleMs,
+      });
 
-      if (report.isTriggered) {
-        const previous = {
-          isTriggered: tracker.isTriggered,
-          triggeredAt: tracker.triggeredAt,
-          currentCalculatedValue: tracker.currentCalculatedValue,
-        };
-        tracker.isTriggered = true;
-        tracker.triggeredAt = this.now();
-        tracker.currentCalculatedValue = report.calculatedValue;
+      if (evaluation.reason.includes('was already evaluated')) continue;
 
-        // Persist the one-shot transition BEFORE notification or reevaluation.
-        // Otherwise a cold restart restores the old untriggered tracker and
-        // emits the same trigger again.
-        const thesis = this.runtimeState.currentThesis;
-        if (thesis && this.thesisRepo) {
-          const updatedThesis: MarketThesis = {
-            ...thesis,
-            trackers: this.runtimeState.trackers.map((item) => ({ ...item })),
-            updatedAt: new Date().toISOString(),
-          };
-          try {
-            await this.thesisRepo.save(updatedThesis);
-            this.runtimeState.currentThesis = updatedThesis;
-          } catch (err) {
-            Object.assign(tracker, previous);
-            this.runtimeState.lastError =
-              `Tracker trigger could not be persisted: ${err instanceof Error ? err.message : 'unknown error'}`;
-            console.error(`[goat ${this.id}] failed to persist tracker trigger:`, err);
-            return false;
-          }
-        } else {
-          Object.assign(tracker, previous);
-          this.runtimeState.lastError = 'Tracker trigger could not be persisted because no current thesis repository is available.';
-          return false;
-        }
+      tracker.lastEvaluatedAt = this.now();
+      tracker.lastEvaluationReason = evaluation.reason;
+      changed = true;
 
-        /**
-         * Alert the user FIRST: this is the "your wait-for condition just
-         * hit" notification. The follow-up reasoning run happens after.
-         */
-        this.notifyTrackerTrigger(report);
-
-        await this.wake(
-          `Tracker triggered: ${report.eventReason}`,
-          'TRACKER_TRIGGERED',
-          quote.symbol,
-          { ...report.marketContext, trackerFormula: report.formulaDescription },
-        );
-        return true;
+      if (evaluation.verdict === 'UNEVALUABLE') {
+        tracker.status = 'UNEVALUABLE';
+        continue;
       }
+
+      tracker.status = 'PENDING';
+      if (evaluation.evaluatedCandleMs != null) {
+        tracker.lastEvaluatedCandleMs = evaluation.evaluatedCandleMs;
+      }
+      tracker.previousCalculatedValue = evaluation.previousValue ?? undefined;
+      tracker.currentCalculatedValue = evaluation.calculatedValue ?? undefined;
+
+      if (!evaluation.shouldWake) continue;
+
+      tracker.status = 'HIT';
+      tracker.isTriggered = true;
+      tracker.triggeredAt = this.now();
+      reports.push({
+        isTriggered: true,
+        tracker: { ...tracker },
+        calculatedValue: evaluation.calculatedValue ?? undefined,
+        marketContext: { ...marketIndicators, spread: quote.spread },
+        eventReason: evaluation.reason,
+        formulaDescription: tracker.formulaDescription ?? tracker.description,
+        evaluatedCandleMs: evaluation.evaluatedCandleMs,
+      });
     }
 
-    return false;
+    if (!changed) return false;
+
+    // Persist all value/status transitions in one thesis write before sending
+    // alerts or invoking the model. On failure, roll back the in-memory view so
+    // the same candle can be retried without claiming an unpersisted hit.
+    const thesis = this.runtimeState.currentThesis;
+    if (!thesis || !this.thesisRepo) {
+      this.runtimeState.trackers = before;
+      this.runtimeState.lastError = 'Tracker state could not be persisted because no current thesis repository is available.';
+      return false;
+    }
+
+    const updatedThesis: MarketThesis = {
+      ...thesis,
+      trackers: this.runtimeState.trackers.map((item) => ({ ...item })),
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      await this.thesisRepo.save(updatedThesis);
+      this.runtimeState.currentThesis = updatedThesis;
+    } catch (err) {
+      this.runtimeState.trackers = before;
+      this.runtimeState.lastError =
+        `Tracker state could not be persisted: ${err instanceof Error ? err.message : 'unknown error'}`;
+      console.error(`[goat ${this.id}] failed to persist tracker state:`, err);
+      return false;
+    }
+
+    if (reports.length === 0) return false;
+
+    // Deliver a distinct condition-hit alert for every condition that fired,
+    // then perform ONE AI re-evaluation for the whole market event.
+    for (const report of reports) this.notifyTrackerTrigger(report);
+    const reasons = reports.map((report) => report.eventReason);
+    await this.wake(
+      `Tracker condition(s) hit: ${reasons.join(' | ')}`,
+      'TRACKER_TRIGGERED',
+      quote.symbol,
+      {
+        ...reports[0].marketContext,
+        trackerFormula: reports.map((report) => report.formulaDescription),
+        triggeredTrackerIds: reports.map((report) => report.tracker.id),
+      },
+    );
+    return true;
   }
 
   private notifyTrackerTrigger(report: TrackerEvaluationReport): void {
