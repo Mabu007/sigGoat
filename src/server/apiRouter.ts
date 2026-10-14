@@ -6286,8 +6286,12 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     // Natural-language requests open the corresponding structured action card.
     // This is routing only: the model cannot bypass the authenticated tool APIs.
     const actionText = message.trim().toLowerCase();
-    let requestedActionMode: "create-goat" | "deploy-goat" | "proposal" | "trade" | null = null;
-    if (/\b(create|make|build|set up|design)\b[\s\S]{0,80}\b(goat|agent)\b/.test(actionText)) {
+    let requestedActionMode: "create-goat" | "deploy-goat" | "proposal" | "trade" | "backtest" | "account" | null = null;
+    if (/\b(backtest|back test|historical replay|test my strategy)\b/.test(actionText)) {
+      requestedActionMode = "backtest";
+    } else if (/\b(propdao|account balance|challenge rules|open positions|open orders|closed trades|funded account status)\b/.test(actionText)) {
+      requestedActionMode = "account";
+    } else if (/\b(create|make|build|set up|design)\b[\s\S]{0,80}\b(goat|agent)\b/.test(actionText)) {
       requestedActionMode = "create-goat";
     } else if (/\b(deploy|activate|start|play)\b[\s\S]{0,80}\b(goat|agent)\b/.test(actionText)) {
       requestedActionMode = "deploy-goat";
