@@ -306,7 +306,23 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
           {result.type === "deploy_goat" && result.status === "confirmation_required" && <div className="mt-3 flex gap-2"><button className={buttonClass} disabled={loading} onClick={() => void confirmDeployGoat()}>Confirm deployment</button><button className={secondaryClass} onClick={() => setResult(null)}>Cancel</button></div>}
           {Array.isArray(result.signals) && <div className="mt-2 space-y-2">{result.signals.length === 0 && <p className="rounded-lg bg-sunken p-2 text-[10px] text-fg-muted">No fresh actionable proposals were returned. Do not force a trade.</p>}{result.signals.map((signal: any) => <div key={signal.id} className="rounded-lg border border-line p-2 text-[10px]"><p className="font-semibold">{signal.market} · {signal.direction} · {signal.status}</p><p className="mt-1">Entry: {signal.entry ?? signal.entryZone ?? "—"} · SL: {signal.stopLoss ?? "—"} · TP: {signal.takeProfit ?? "—"}</p><p className="mt-1 text-fg-muted">{signal.rationale ?? signal.thesis ?? ""}</p><div className="mt-2 flex flex-wrap gap-1.5"><button type="button" className={secondaryClass} onClick={() => void decideSignal(signal, "ACCEPTED")} disabled={loading || Boolean(signal.decision) || signal.status !== "ACTIONABLE"}>Accept proposal</button><button type="button" className={secondaryClass} onClick={() => void decideSignal(signal, "REJECTED")} disabled={loading || Boolean(signal.decision)}>Reject</button><button type="button" className={secondaryClass} onClick={() => prepareSignalOrder(signal)} disabled={!propMarkets.some((item) => item.id === signal.market) || typeof signal.entry !== "number" || typeof signal.stopLoss !== "number" || typeof signal.takeProfit !== "number" || !["LONG", "SHORT"].includes(signal.direction)}>Prepare risk-checked order</button></div></div>)}</div>}
           {result.goat && <p className="mt-2 text-[10px] text-fg-muted">GOAT: {String(result.goat.name ?? result.goat.id ?? "created")}{result.goat.id ? " · " + String(result.goat.id) : ""}</p>}
-          {result.result && <pre className="mt-2 overflow-auto whitespace-pre-wrap rounded-lg bg-sunken p-2 text-[10px]">{JSON.stringify(result.result, null, 2)}</pre>}
+          {result.result && typeof result.result.winRate === "number" && <div className="mt-2 space-y-2">
+            <p className="text-[11px] font-semibold">Backtest performance · {result.result.market} · {result.result.period}</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{[
+              ["Win rate", String(result.result.winRate) + "%"],
+              ["Profit factor", result.result.profitFactor === null ? "N/A" : String(result.result.profitFactor)],
+              ["Max drawdown", String(result.result.maxDrawdown) + "%"],
+              ["Net P/L", String(result.result.netDollarPnl)],
+              ["Avg. R:R", String(result.result.averageRR)],
+              ["Closed trades", String(result.result.filledSignals)],
+            ].map(([label, value]) => <div key={label} className="rounded-lg bg-sunken p-2"><p className="text-[10px] text-fg-subtle">{label}</p><p className="mt-1 text-xs font-semibold">{value}</p></div>)}</div>
+            <p className="text-[10px] text-fg-subtle">Data: {result.result.dataSource} · candles used: {result.result.provenance?.candlesUsed ?? "unknown"} · costs: {result.result.costModel?.totalCosts ?? "unknown"}</p>
+            <p className="text-[10px] font-semibold">Trade log ({result.result.trades?.length ?? 0})</p>
+            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-sunken p-2 text-[10px]">{JSON.stringify(result.result.trades ?? [], null, 2)}</pre>
+            <p className="text-[10px] font-semibold">Equity curve sample</p>
+            <pre className="max-h-28 overflow-auto whitespace-pre-wrap rounded-lg bg-sunken p-2 text-[10px]">{JSON.stringify((result.result.equityCurve ?? []).filter((_point: any, index: number, all: any[]) => index === 0 || index === all.length - 1 || index % Math.max(1, Math.floor(all.length / 8)) === 0), null, 2)}</pre>
+          </div>}
+          {result.result && typeof result.result.winRate !== "number" && <pre className="mt-2 overflow-auto whitespace-pre-wrap rounded-lg bg-sunken p-2 text-[10px]">{JSON.stringify(result.result, null, 2)}</pre>}
           {result.status === "blocked" && result.message && <p className="mt-2 text-[10px] text-negative">{result.message}</p>}
         </div>}
       </div>
