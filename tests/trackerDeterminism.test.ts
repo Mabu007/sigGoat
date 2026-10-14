@@ -276,6 +276,61 @@ describe('crossover detection', () => {
   });
 });
 
+describe('condition plan progression', () => {
+  test('evaluates all pending conditions and never re-arms a hit crossover', () => {
+    const candles = uptrend(120);
+    const result = evaluateTrackers([
+      tracker({
+        id: 'already-hit',
+        isTriggered: true,
+        status: 'HIT',
+        operator: 'CROSS_ABOVE',
+        targetValue: 1.10,
+        indicatorParams: { indicator: 'EMA', period: 20 },
+      }),
+      tracker({
+        id: 'price-a',
+        operator: 'LESS_THAN',
+        targetValue: 1.20,
+        indicatorParams: { indicator: 'PRICE' },
+      }),
+      tracker({
+        id: 'price-b',
+        operator: 'LESS_THAN',
+        targetValue: 1.30,
+        indicatorParams: { indicator: 'PRICE' },
+      }),
+    ], candles);
+
+    expect(result.evaluations.map((item) => item.trackerId)).toEqual(['price-a', 'price-b']);
+    expect(result.evaluations.every((item) => item.shouldWake)).toBe(true);
+    expect(result.fired?.trackerId).toBe('price-a');
+  });
+});
+
+describe('range conditions', () => {
+  test('WITHIN_RANGE uses both inclusive bounds, never a one-sided comparison', () => {
+    const candles = uptrend(120);
+    const inside = evaluateTracker(tracker({
+      operator: 'WITHIN_RANGE',
+      rangeLow: 1.10,
+      rangeHigh: 1.15,
+      indicatorParams: { indicator: 'PRICE' },
+    }), candles);
+    const outside = evaluateTracker(tracker({
+      operator: 'WITHIN_RANGE',
+      rangeLow: 1.20,
+      rangeHigh: 1.30,
+      indicatorParams: { indicator: 'PRICE' },
+    }), candles);
+
+    expect(inside.verdict).toBe('TRIGGERED');
+    expect(inside.shouldWake).toBe(true);
+    expect(outside.verdict).toBe('UNMET');
+    expect(outside.shouldWake).toBe(false);
+  });
+});
+
 describe('tracker data gating', () => {
   test('an unsupported indicator is UNEVALUABLE and never executed', () => {
     const result = evaluateTracker(

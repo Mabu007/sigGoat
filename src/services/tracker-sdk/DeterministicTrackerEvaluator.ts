@@ -157,13 +157,9 @@ export function compareLevel(
     case 'EQUAL_TO':
       return value === target;
     case 'WITHIN_RANGE':
-      /**
-       * `WITHIN_RANGE` is genuinely ambiguous in the legacy schema: it was
-       * read as a bare `value >= target`. It is treated here as the STRUCTURAL
-       * zone test used by the existing `STRUCTURE` tracker type, and a bare
-       * level comparison is used when no zone is supplied.
-       */
-      return value >= target;
+      // A scalar target cannot describe a range. The caller must use the
+      // explicit rangeLow/rangeHigh path in evaluateTracker.
+      return false;
     default:
       return false;
   }
@@ -389,8 +385,18 @@ export function evaluateTracker(
     evaluatedCandleMs: null as number | null,
   };
 
+  // A crossover is evaluated on the latest CLOSED bar. If the provider
+  // includes a forming candle, exclude it instead of declaring the condition
+  // unevaluable forever while the current bar keeps the same timestamp.
+  const isCross = tracker.operator === 'CROSS_ABOVE' || tracker.operator === 'CROSS_BELOW';
+  const newestInput = candles.length ? candles[candles.length - 1] : null;
+  const evaluationCandles =
+    isCross && newestInput?.finalized === false
+      ? candles.slice(0, -1)
+      : candles;
+
   // ---- 1. cursor: a bar already evaluated must not evaluate again ----
-  const newest = candles.length ? candles[candles.length - 1] : null;
+  const newest = evaluationCandles.length ? evaluationCandles[evaluationCandles.length - 1] : null;
   const newestMs = newest ? newest.time : null;
 
   if (
@@ -411,10 +417,6 @@ export function evaluateTracker(
   const usedFormingCandle = Boolean(newest && newest.finalized === false);
 
   if (usedFormingCandle && !options.allowFormingCandle) {
-    /**
-     * The newest bar may still move. Reading a crossover off it produces a
-     * fire that then un-fires on the next tick, which is worse than waiting.
-     */
     return {
       ...base,
       verdict: 'UNEVALUABLE',
@@ -449,7 +451,7 @@ export function evaluateTracker(
   }
 
   const period = tracker.indicatorParams?.period;
-  const series = resolve(indicator, period, candles);
+  const series = resolve(indicator, period, evaluationCandles);
 
   // ---- 4. warmup gate: UNAVAILABLE is NOT false ----------------------
   if (!series.available) {
@@ -500,13 +502,24 @@ export function evaluateTracker(
         : crossedBelow(previousValue, calculatedValue, tracker.targetValue)
       : false;
 
+  const inRange =
+    tracker.operator === 'WITHIN_RANGE' &&
+    tracker.rangeLow !== undefined &&
+    tracker.rangeHigh !== undefined &&
+    calculatedValue >= tracker.rangeLow &&
+    calculatedValue <= tracker.rangeHigh;
   const levelSatisfied =
-    tracker.targetValue !== undefined
-      ? compareLevel(tracker.operator, calculatedValue, tracker.targetValue)
-      : false;
+    tracker.operator === 'WITHIN_RANGE'
+      ? inRange
+      : tracker.targetValue !== undefined
+        ? compareLevel(tracker.operator, calculatedValue, tracker.targetValue)
+        : false;
 
+  const hasValidTarget = tracker.operator === 'WITHIN_RANGE'
+    ? tracker.rangeLow !== undefined && tracker.rangeHigh !== undefined
+    : tracker.targetValue !== undefined;
   const satisfied =
-    tracker.targetValue === undefined
+    !hasValidTarget
       ? false
       : needsPrevious
         ? crossed
@@ -543,12 +556,12 @@ export function evaluateTracker(
     usedFormingCandle,
     reason:
       verdict === 'TRIGGERED'
-        ? `${label} ${tracker.operator ?? 'REACHED'} ${tracker.targetValue} — met ` +
+        ? `${label} ${tracker.operator ?? 'REACHED'} ${tracker.operator === 'WITHIN_RANGE' ? `${tracker.rangeLow}–${tracker.rangeHigh}` : tracker.targetValue} — met ` +
           `(previous ${previousValue ?? 'n/a'}, current ${calculatedValue}).`
         : verdict === 'SATISFIED'
-          ? `${label} ${tracker.operator ?? 'REACHED'} ${tracker.targetValue} — ` +
+          ? `${label} ${tracker.operator ?? 'REACHED'} ${tracker.operator === 'WITHIN_RANGE' ? `${tracker.rangeLow}–${tracker.rangeHigh}` : tracker.targetValue} — ` +
             `condition already satisfied on an earlier candle; no transition.`
-          : `${label} ${tracker.operator ?? 'REACHED'} ${tracker.targetValue} — not yet ` +
+          : `${label} ${tracker.operator ?? 'REACHED'} ${tracker.operator === 'WITHIN_RANGE' ? `${tracker.rangeLow}–${tracker.rangeHigh}` : tracker.targetValue} — not yet ` +
             `(previous ${previousValue ?? 'n/a'}, current ${calculatedValue}).`,
   };
 }
@@ -572,11 +585,12 @@ function describeIndicator(indicator: string, period?: number): string {
 }
 
 /**
- * Evaluates a set of trackers and returns the FIRST trigger.
+ * Evaluates all pending trackers and reports the first trigger as a convenience.
  *
- * Returns at most one trigger: the downstream effect of a trigger is a
- * reasoning wake that REPLACES the tracker list, so evaluating the rest would
- * produce stale verdicts against a list that no longer exists.
+ * Evaluates every still-pending condition against the same candle snapshot.
+ * Callers may aggregate all transitions and issue a single wake after every
+ * hit is persisted. A condition is one-shot: once HIT, it is never re-armed by
+ * a later candle; a new condition plan gets new tracker IDs.
  */
 export function evaluateTrackers(
   trackers: readonly TrackerCondition[],
@@ -592,8 +606,8 @@ export function evaluateTrackers(
   const unevaluable: TrackerEvaluation[] = [];
 
   for (const tracker of trackers) {
-    if (tracker.isTriggered && tracker.operator !== 'CROSS_ABOVE' && tracker.operator !== 'CROSS_BELOW') {
-      // Already fired; a level condition that stays true is not re-fired.
+    if (tracker.isTriggered || tracker.status === 'HIT' || tracker.status === 'INVALIDATED' || tracker.status === 'EXPIRED') {
+      // Condition plans are monotonic. A completed condition cannot fire again.
       continue;
     }
 

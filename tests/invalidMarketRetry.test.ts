@@ -11,7 +11,7 @@
  * from a previous provider:
  *
  *   1. `restoreRuntimes` never rewrote stale persisted markets;
- *   2. `GoatDurableObject.attachMarketListeners` opened a poll loop for the
+ *   2. `GoatRuntime.attachMarketListeners` opened a poll loop for the
  *      symbol regardless of whether the venue listed it;
  *   3. a wake that failed on the symbol kept it in the watch list and
  *      retried it on every scheduled tick.
@@ -28,9 +28,9 @@ import os from 'os';
 import path from 'path';
 
 import {
-  GoatDurableObject,
+  GoatRuntime,
   isUnlistedMarketError,
-} from '../src/services/durable-object/GoatDurableObject';
+} from '../src/services/goat-runtime/GoatRuntime';
 import { MarketStateStore } from '../src/services/market-data/MarketStateStore';
 import {
   MarketDataUnavailableError,
@@ -85,7 +85,7 @@ const NOT_LISTED = (symbol: string) =>
 class FakeProvider implements MarketDataProvider {
   readonly name = 'fake-provider';
   /**
-   * PAPER on purpose: `GoatDurableObject` prewarms the NEWS service only for
+   * PAPER on purpose: `GoatRuntime` prewarms the NEWS service only for
    * LIVE providers, and a unit test must not reach the network.
    */
   readonly dataMode: DataMode = 'PAPER';
@@ -200,7 +200,7 @@ describe('subscription guard: no poll loop for an unlisted market', () => {
     provider.listed.add('BTC');
 
     const store = new MarketStateStore(provider, { pollIntervalMs: 60_000 });
-    const goat = new GoatDurableObject(goatConfig(['EUR/USD', 'BTC']), [] as TradingSkill[], {
+    const goat = new GoatRuntime(goatConfig(['EUR/USD', 'BTC']), [] as TradingSkill[], {
       reasoning: reasoningStub,
       marketProvider: provider,
       marketStateStore: store,
@@ -223,7 +223,7 @@ describe('subscription guard: no poll loop for an unlisted market', () => {
   test('a GOAT watching ONLY unlisted markets starts no poll loop at all', async () => {
     const provider = new FakeProvider(); // nothing listed
     const store = new MarketStateStore(provider, { pollIntervalMs: 60_000 });
-    const goat = new GoatDurableObject(goatConfig(['EUR/USD', 'GBP/USD']), [], {
+    const goat = new GoatRuntime(goatConfig(['EUR/USD', 'GBP/USD']), [], {
       reasoning: reasoningStub,
       marketProvider: provider,
       marketStateStore: store,
@@ -252,7 +252,7 @@ describe('subscription guard: no poll loop for an unlisted market', () => {
 
     const store = new MarketStateStore(provider, { pollIntervalMs: 60_000 });
     const config = goatConfig(['EUR/USD', 'BTC']);
-    const goat = new GoatDurableObject(config, [], {
+    const goat = new GoatRuntime(config, [], {
       reasoning: reasoningStub,
       marketProvider: provider,
       marketStateStore: store,
@@ -285,7 +285,7 @@ describe('subscription guard: no poll loop for an unlisted market', () => {
     provider.catalogueReady = false; // boot: cache not populated yet
 
     const store = new MarketStateStore(provider, { pollIntervalMs: 60_000 });
-    const goat = new GoatDurableObject(goatConfig(['EUR/USD', 'BTC']), [], {
+    const goat = new GoatRuntime(goatConfig(['EUR/USD', 'BTC']), [], {
       reasoning: reasoningStub,
       marketProvider: provider,
       marketStateStore: store,
@@ -316,7 +316,7 @@ describe('wake path: a stale symbol is retired, not retried', () => {
     provider.listed.add('xyz:EUR');
 
     const store = new MarketStateStore(provider, { pollIntervalMs: 60_000 });
-    const goat = new GoatDurableObject(goatConfig(['EUR/USD', 'BTC']), [], {
+    const goat = new GoatRuntime(goatConfig(['EUR/USD', 'BTC']), [], {
       reasoning: reasoningStub,
       marketProvider: provider,
       marketStateStore: store,

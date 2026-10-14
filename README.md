@@ -1,4 +1,4 @@
-# SignalGOAT
+# SIRGOAT
 
 Personal AI market-analysis agents ("GOATs") that perform evidence-based market
 reasoning, deterministic conditional-setup validation, historical backtesting,
@@ -61,7 +61,7 @@ where per-GOAT polling would have made 48. Counters are exposed at
 A provider outage keeps the last good snapshot and flags it `degraded`; reasoning
 refuses to run on degraded data so stale prices cannot become a thesis.
 
-Scheduled reviews and GOAT runtime records are backed by Firebase/Firestore; GitHub Actions calls the authenticated cron endpoint to dispatch due work.
+Scheduled reviews and GOAT runtime records are backed by Firebase/Firestore. Cloudflare Workers Cron dispatches the authenticated SIRGOAT endpoint every minute while Firebase/Firestore stores durable GOAT state; see [the Cloudflare Worker scheduler runbook](docs/CLOUDFLARE_WORKER_SCHEDULER.md).
 
 ## Bring-your-own OpenRouter key (BYOK)
 
@@ -162,9 +162,9 @@ price tick regardless.
 
 | Route | Purpose |
 |---|---|
-| `POST /api/goats/:id/status` | `{ action: 'PAUSE' \| 'PLAY' }` — Stop/Play. |
+| `POST /api/goats/:id/status` | `{ action: 'PAUSE' \| 'PLAY' \| 'STOP' }` — Pause preserves state; Stop requires confirmation in the UI, cancels schedules and clears runtime records while preserving the GOAT as a draft; Play/Deploy resumes or starts a fresh review. |
 | `PATCH /api/goats/:id/schedule` | Change the analysis interval. |
-| `POST /api/goats` | Deploys **and immediately runs the first analysis**, so the response already contains the first thesis, state, plan and trackers. |
+| `POST /api/goats` | Creates a GOAT draft. Deploy explicitly with `POST /api/goats/:id/status` and `{ action: 'PLAY' }`; deployment starts the first market review. |
 
 ## Chatting with a GOAT
 
@@ -218,53 +218,44 @@ mode**. Nothing pretends to be real:
 
 ## Hosting
 
-**Vercel runs the app and AI workflow. Firebase/Firestore is the durable source of truth. GitHub Actions dispatches scheduled work to the authenticated API. Cloudflare Workers and Durable Objects are not used.**
+**Firebase/Firestore is the durable state layer. Cloudflare Workers Cron dispatches scheduled work; the existing SIRGOAT API executes the canonical Node-based GOAT pipeline.** This avoids Firebase Functions and Cloud Run. The Worker is a lightweight scheduler/dispatcher, not a second copy of the signal engine.
 
 ```
-Vercel UI + API
-  ├── Firebase Auth
-  ├── Firestore: GOATs, schedules, theses, signals, trackers, review history,
-  │              Telegram outbox, chats and messages
-  ├── OpenRouter / user-selected AI provider
-  └── Telegram delivery
-        ▲
-GitHub Actions (every 5 minutes)
-  └── POST /api/internal/cron
-        ├── claims due GOAT schedules using Firestore leases
-        ├── runs scheduled AI reviews
-        └── evaluates deterministic trackers
+Cloudflare Worker Cron (every minute)
+  └── authenticated GET /api/internal/cron on the deployed SIRGOAT API
+        ├── Firebase/Firestore leases and schedule generations
+        ├── market data + indicator evaluation
+        ├── AI research only for due reviews or condition hits
+        ├── SignalGate validation and persistence
+        └── Telegram notification outbox
 ```
 
-### Vercel setup
+### Configure the API host
 
-1. Import the repository and deploy with the committed `vercel.json`.
-2. Configure the Firebase Admin service account. Recommended environment variable:
+Set these server-side environment variables on the existing API host:
 
-   ```
-   FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=<base64 of the Firebase service-account JSON>
-   CRON_SECRET=<long random secret>
-   APP_ORIGIN=https://your-production-domain
-   OPENROUTER_API_KEY=                 # optional platform fallback
-   TELEGRAM_BOT_TOKEN=                 # optional platform fallback
-   ```
+```bash
+FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=<base64 Firebase service-account JSON>
+CRON_SECRET=<long random secret>
+APP_ORIGIN=https://your-production-domain
+OPENROUTER_API_KEY=                 # optional platform fallback
+TELEGRAM_BOT_TOKEN=                 # optional platform fallback
+```
 
-   Generate a secret with `openssl rand -hex 32`. The same `CRON_SECRET` must be set in GitHub repository secrets. Never enable `SIGNALGOAT_ALLOW_DEV_AUTH` in production.
+Generate a secret with `openssl rand -hex 32`. Never expose `CRON_SECRET` through a `VITE_*` variable or commit its value.
 
-3. In GitHub repository settings, add:
-   - **Variable** `SIRGOAT_API_URL`: the deployed app base URL, without a trailing slash.
-   - **Secret** `CRON_SECRET`: the same value configured in Vercel.
+### Deploy the free Cloudflare scheduler
 
-   The `.github/workflows/goat-scheduler.yml` workflow runs every five minutes and can also be started manually. This is the minimum dependable cadence of this scheduler; intervals shorter than five minutes are not guaranteed by GitHub Actions cron.
-
-4. Configure Firebase Authentication's authorized domains to include your Vercel/custom domain and local development domains. Public `VITE_FIREBASE_*` web configuration is compiled into the frontend; Admin credentials remain server-side.
+Follow [the Firebase + Cloudflare Worker runbook](docs/CLOUDFLARE_WORKER_SCHEDULER.md). Configure the Worker's `SIRGOAT_API_ORIGIN` to the deployed API base URL and set its `CRON_SECRET` to the same secret configured on the API host. The GitHub Actions dispatcher remains only as a temporary fallback; disable it after the Worker dispatch and full GOAT/Telegram path are verified.
 
 ### Persistence and scheduling
 
-- Firestore stores GOAT configuration, deployment state, schedules, theses, proposals, review events, chat records and the Telegram notification outbox.
-- A GOAT is saved as a draft until explicitly deployed. Deployment starts an immediate market review; later runs follow its persisted schedule.
-- Firestore leases and schedule generations suppress overlapping and stale cron dispatches. A completed run advances its next due time.
-- Telegram market-review recaps are queued before delivery and deduplicated. Opening a review history item marks it read; unclicked entries remain unread.
-- In-process timers are a local-development fallback only. Production must have Firebase Admin configured and the GitHub scheduler workflow variables/secrets set.
+- A GOAT is saved as a draft until explicitly deployed. Deployment starts an immediate market review; later AI runs follow its persisted user-selected schedule.
+- Deterministic tracker checks use the separate persisted `nextTrackerCheckAt` clock. A Worker tick is not permission to call AI for every GOAT.
+- Conditions are immutable within a plan: routine and tracker-triggered reviews update thesis/research but do not replace outstanding condition definitions. Each condition's evaluation cursor, last value, and hit status are persisted. An explicit manual re-evaluation can create a new plan; once every condition is terminal, the next routine review can start the next plan.
+- Firestore leases and schedule generations suppress overlapping and stale dispatches. A completed run advances its next due time.
+- Telegram notifications are queued and deduplicated through the Firestore-backed outbox.
+- In-process timers are for local development only. Production scheduling requires working Firebase Admin/Firestore credentials and the Cloudflare Worker secrets.
 
 ### Health checks
 
@@ -274,7 +265,7 @@ GET /api/settings/status
 GET /api/markets/ingestion
 ```
 
-Check the deployment logs and the GitHub Actions **GOAT Scheduler** workflow to confirm scheduled dispatches are running. A successful deployment alone does not prove that cron credentials or Firebase access are configured.
+A successful Worker deployment alone does not prove Firebase access, market data, AI credentials, or Telegram delivery. Verify a real GOAT end to end before removing the fallback dispatcher.
 
 ## Secrets policy
 
@@ -303,7 +294,7 @@ src/
   services/agent/SkillConstraints.ts  # token parsing from skills
   services/ai/OpenRouterClient.ts # LLM client; DEMO fallback; chat answering
   services/market-data/           # MarketDataProvider boundary + PAPER provider
-  services/durable-object/        # per-GOAT actor: wake pipeline + scheduler
+  services/goat-runtime/           # per-GOAT runtime: wake pipeline
   services/backtest/              # no-lookahead historical replay
   services/telegram/              # webhook updates + outbound messages
   server/                         # auth, repositories (firestore/file/memory), API router

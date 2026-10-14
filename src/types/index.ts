@@ -340,12 +340,22 @@ export interface TrackerCondition {
   type: TrackerConditionType;
   market: string;
   targetValue?: number;
+  /** Required bounds when operator is WITHIN_RANGE. */
+  rangeLow?: number;
+  rangeHigh?: number;
   operator?: TrackerOperator;
   indicatorParams?: TrackerIndicatorParams;
   currentCalculatedValue?: number;
   formulaDescription?: string;
+  /** Immutable condition definition; status records progress without rewriting the rule. */
+  status?: 'PENDING' | 'UNEVALUABLE' | 'HIT' | 'INVALIDATED' | 'EXPIRED';
   isTriggered: boolean;
   triggeredAt?: number;
+  /** Last candle cursor successfully considered by the deterministic evaluator. */
+  lastEvaluatedCandleMs?: number;
+  lastEvaluatedAt?: number;
+  previousCalculatedValue?: number;
+  lastEvaluationReason?: string;
 }
 
 export interface TradingSkill {
@@ -663,6 +673,12 @@ export interface BacktestProvenance {
   rejectedCandles: number;
 }
 
+export interface BacktestReplayEvent {
+  time: number;
+  type: 'INITIAL_REVIEW' | 'TRACKER_ARMED' | 'CONDITION_HIT' | 'AI_REASSESSMENT' | 'SIGNAL_CAPTURED' | 'ORDER_FILLED' | 'TRADE_CLOSED' | 'ORDER_EXPIRED';
+  summary: string;
+}
+
 export interface BacktestResult {
   id: string;
   goatId: string;
@@ -736,6 +752,14 @@ export interface BacktestResult {
    * would be unable to.
    */
   trades: BacktestTrade[];
+
+  /** Present for the AI-driven replay engine; absent on legacy/imported results. */
+  agentReplay?: {
+    engine: 'AGENT_HISTORICAL_REPLAY';
+    aiWakeCount: number;
+    conditionHits: number;
+    events: BacktestReplayEvent[];
+  };
 
   createdAt: string;
 }

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { GoatDurableObject } from '../src/services/durable-object/GoatDurableObject';
+import { GoatRuntime } from '../src/services/goat-runtime/GoatRuntime';
 import type { ReasoningGateway } from '../src/server/reasoningGateway';
 import { PaperMarketDataProvider } from '../src/services/market-data/PaperMarketDataProvider';
 import { InMemoryPersistence } from '../src/server/repositories';
@@ -40,10 +40,10 @@ function makeGateway(
 function makeObject(
   gateway: ReasoningGateway,
   options?: Partial<{ baseCheckIntervalMs: number }>,
-): { actor: GoatDurableObject; persistence: InMemoryPersistence } {
+): { actor: GoatRuntime; persistence: InMemoryPersistence } {
   const persistence = new InMemoryPersistence();
   const provider = new PaperMarketDataProvider({ enableTicks: false });
-  const actor = new GoatDurableObject(makeGoat(), SKILLS, {
+  const actor = new GoatRuntime(makeGoat(), SKILLS, {
     reasoning: gateway,
     marketProvider: provider,
     signals: persistence.signals,
@@ -55,8 +55,8 @@ function makeObject(
   return { actor, persistence };
 }
 
-describe('GoatDurableObject wake pipeline', () => {
-  let actor: GoatDurableObject;
+describe('GoatRuntime wake pipeline', () => {
+  let actor: GoatRuntime;
   let persistence: InMemoryPersistence;
 
   beforeEach(() => {
@@ -151,7 +151,7 @@ describe('GoatDurableObject wake pipeline', () => {
     let signalled: unknown = null;
     const persistence = new InMemoryPersistence();
     const provider = new PaperMarketDataProvider({ enableTicks: false });
-    const a = new GoatDurableObject(makeGoat(), SKILLS, {
+    const a = new GoatRuntime(makeGoat(), SKILLS, {
       reasoning: gateway,
       marketProvider: provider,
       signals: persistence.signals,
@@ -213,7 +213,7 @@ describe('GoatDurableObject wake pipeline', () => {
     };
 
     const persistence = new InMemoryPersistence();
-    const a = new GoatDurableObject(makeGoat(), [looSkill], {
+    const a = new GoatRuntime(makeGoat(), [looSkill], {
       reasoning: gateway,
       marketProvider: new PaperMarketDataProvider({ enableTicks: false }),
       signals: persistence.signals,
@@ -322,7 +322,7 @@ describe('GoatDurableObject wake pipeline', () => {
     const persistence = new InMemoryPersistence();
     const provider = new PaperMarketDataProvider({ enableTicks: false });
     let signalled = false;
-    actor = new GoatDurableObject(makeGoat(), SKILLS, {
+    actor = new GoatRuntime(makeGoat(), SKILLS, {
       reasoning: gateway,
       marketProvider: provider,
       signals: persistence.signals,

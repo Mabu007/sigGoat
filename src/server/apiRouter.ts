@@ -54,7 +54,7 @@ import {
   DEFAULT_RISK_LIMITS,
   validateTradeIntent,
 } from "../services/propdao/PropRiskValidator";
-import { durableObjectRegistry } from "../services/durable-object/DurableObjectRegistry";
+import { goatRuntimeRegistry } from "../services/goat-runtime/GoatRuntimeRegistry";
 import { hyperliquidProvider } from "../services/market-data/hyperliquid/HyperliquidMarketDataProvider";
 import {
   DEFAULT_MARKET_UNIVERSE,
@@ -72,7 +72,7 @@ import {
   isUsableMarketState,
 } from "../services/market-data/MarketStateStore";
 import { FileMarketStatePersistence } from "../services/market-data/FileMarketStatePersistence";
-import { BacktestEngine } from "../services/backtest/BacktestEngine";
+import { AgentBacktestEngine } from "../services/backtest/AgentBacktestEngine";
 import { DEFAULT_SKILLS } from "../data/defaultSkills";
 import { SYSTEM_GOATS } from "../data/systemGoats";
 import { SYSTEM_SKILLS, isSystemOwnedSkillId } from "../data/systemSkills";
@@ -89,18 +89,18 @@ import {
   OpenRouterClient,
 } from "../services/ai/OpenRouterClient";
 import { FirebaseScheduler } from "./scheduler/FirebaseScheduler";
+import { DisabledScheduler } from "./scheduler/DisabledScheduler";
 import type { WakeScheduler, FiredWake } from "./scheduler/types";
 import { InProcessScheduler } from "./scheduler/InProcessScheduler";
 import {
   msUntilNextScheduledTime,
   normaliseSchedule,
   describeSchedule,
-} from "../services/durable-object/GoatDurableObject";
+} from "../services/goat-runtime/GoatRuntime";
 import {
   TRACKING_TIMEFRAMES,
   isTrackingTimeframe,
   normaliseTrackingTimeframe,
-  pollIntervalForTimeframe,
   type TrackingTimeframe,
 } from "../services/market-data/trackingTimeframes";
 import { DailyMarketRollup } from "../services/daily-rolling/DailyMarketRollup";
@@ -176,7 +176,7 @@ const reasoningGateway = new UserScopedReasoningGateway(keyStore);
  * There is deliberately NO automatic fallback to the PAPER provider. Silently
  * swapping in simulated prices would mean a feed outage quietly turns the app
  * into fiction while the UI still says "LIVE". Instead a provider outage
- * surfaces as an explicit failure — GOATDurableObject already records
+ * surfaces as an explicit failure — GoatRuntime already records
  * "Market data unavailable" and backs off — and `dataMode` on every response
  * reports what is actually serving.
  *
@@ -208,6 +208,7 @@ if (marketProvider.dataMode === "PAPER") {
  */
 export function isEphemeralRuntime(): boolean {
   if (process.env.VERCEL) return true;
+  if (process.env.K_SERVICE || process.env.K_REVISION || process.env.CLOUD_RUN_JOB) return true;
   if (process.env.AWS_LAMBDA_FUNCTION_NAME) return true;
   if (process.env.FUNCTION_TARGET) return true; // Google Cloud Functions
   if (process.env.NETLIFY) return true;
@@ -373,8 +374,8 @@ async function runScheduledWakeSync(
     return;
   }
 
-  const runtime = durableObjectRegistry.get(goatId)
-    ? durableObjectRegistry.get(goatId)!
+  const runtime = goatRuntimeRegistry.get(goatId)
+    ? goatRuntimeRegistry.get(goatId)!
     : await ensureGoatRuntime(goat);
 
   try {
@@ -461,8 +462,8 @@ async function runTrackerCheckSync(
 let inProcessScheduler: InProcessScheduler | null = null;
 
 if (firebaseScheduler) {
-  console.log("[api] Firebase-backed GOAT scheduler active; Vercel Cron dispatches due reviews.");
-} else {
+  console.log("[api] Firebase-backed GOAT scheduler active; Cloudflare Worker Cron dispatches due reviews.");
+} else if (process.env.NODE_ENV !== "production" && !isEphemeralRuntime()) {
   inProcessScheduler = new InProcessScheduler(async (wake) => {
     await runScheduledWakeSync(wake.goatId, wake.eventId, wake.reason);
   });
@@ -470,9 +471,15 @@ if (firebaseScheduler) {
     await runTrackerCheckSync(wake.goatId, wake.eventId);
   };
   console.warn("[api] Firebase Admin unavailable — using in-process timers for local development only.");
+} else {
+  console.error("[api] Firebase Admin unavailable on a production/ephemeral host; scheduling is disabled to avoid volatile runtime state.");
 }
 
-const scheduler: WakeScheduler = firebaseScheduler ?? inProcessScheduler!;
+const scheduler: WakeScheduler = firebaseScheduler
+  ?? inProcessScheduler
+  ?? new DisabledScheduler(
+    "Firebase Admin is unavailable. Configure Firebase/Firestore before deploying or scheduling GOATs.",
+  );
 
 /**
  * Routes locally-ingested market events through the in-process runtime.
@@ -529,7 +536,7 @@ function ensureGoatRuntime(goat: FundGoat) {
     skills.filter((s) => canonicalGoat.skillIds.includes(s.id)),
   );
   return attached.then((attachedSkills) =>
-    durableObjectRegistry.getOrCreate(canonicalGoat, attachedSkills, runtimeOptions),
+    goatRuntimeRegistry.getOrCreate(canonicalGoat, attachedSkills, runtimeOptions),
   );
 }
 
@@ -550,6 +557,11 @@ async function patchGoatScheduleFor(
   const goat = await persistence.goats.getForUser(goatId, userId);
   if (!goat) {
     throw new NotFoundError();
+  }
+  if (goat.deploymentState === 'DEPLOYED' && scheduler.kind === "disabled") {
+    throw new Error(
+      "Cannot change this GOAT's schedule because Firebase scheduling is unavailable. Configure Firebase/Firestore first.",
+    );
   }
 
   const resolvedTimeframe =
@@ -591,6 +603,11 @@ async function setGoatStatusFor(
   const goat = await persistence.goats.getForUser(goatId, userId);
   if (!goat) {
     throw new NotFoundError();
+  }
+  if (!paused && scheduler.kind === "disabled") {
+    throw new Error(
+      "Cannot deploy this GOAT because Firebase scheduling is unavailable. Configure Firebase/Firestore before deployment.",
+    );
   }
 
   const deployingDraft = !paused && goat.deploymentState === 'DRAFT';
@@ -634,6 +651,10 @@ async function setGoatStatusFor(
  * Firestore-backed scheduling is separate and survives API cold starts.
  */
 function subscribeToMarkets(goat: FundGoat): void {
+  // The serverless cron dispatcher checks trackers directly from Firestore due times;
+  // it must not start process-local market ingestion loops.
+  if (process.env.SIRGOAT_SCHEDULER_ONLY === "true") return;
+
   /**
    * A PAUSED GOAT IS UNSUBSCRIBED.
    *
@@ -935,7 +956,7 @@ export async function restoreRuntimes(): Promise<void> {
      */
     await marketProvider.getSymbols().catch(() => {
       // A provider outage must not stop restart recovery; GOATs restore and
-      // their listeners retry the catalogue (see GoatDurableObject).
+      // their listeners retry the catalogue (see GoatRuntime).
     });
 
     const goats = await persistence.goats.listAll();
@@ -1065,7 +1086,7 @@ async function notifyGoatMarketReview(
   if (created) await notificationOutbox.deliverOne(id);
 }
 
-durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
+goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
   if (signal.direction === "NO_TRADE" || signal.status !== "ACTIONABLE") return;
 
   /**
@@ -1152,7 +1173,7 @@ durableObjectRegistry.onGlobalSignal(async (goat, signal) => {
  * tracker firing on the SAME bar is delivered once, while the same tracker
  * legitimately firing on a later bar is a new notification.
  */
-durableObjectRegistry.onTrackerTriggered(async (goat, report) => {
+goatRuntimeRegistry.onTrackerTriggered(async (goat, report) => {
   try {
     const { id, created } = await notificationOutbox.enqueue({
       goatId: goat.id,
@@ -1235,7 +1256,7 @@ export async function routeMarketEvent(event: MarketEvent): Promise<{
        * session-finalized notice for a market it does not trade must not cost
        * a model call.
        */
-      const runtime = durableObjectRegistry.get(goatId);
+      const runtime = goatRuntimeRegistry.get(goatId);
       const hasRelevantTracker = Boolean(
         runtime
           ?.getState()
@@ -1286,7 +1307,7 @@ export async function routeMarketEvent(event: MarketEvent): Promise<{
       }
 
       const active =
-        durableObjectRegistry.get(goatId) ?? (await ensureGoatRuntime(goat));
+        goatRuntimeRegistry.get(goatId) ?? (await ensureGoatRuntime(goat));
 
       await active.wake(
         `Market event: ${event.type} on ${event.instrument}`,
@@ -1576,14 +1597,18 @@ function scheduleGeneration(goat: FundGoat): string {
  * 1m timeframe is not polled every millisecond and a 4h timeframe is not
  * polled every 5 seconds.
  */
+const DEFAULT_TRACKER_CHECK_INTERVAL_MS = 5 * 60_000;
+
 function computeNextTrackerCheckAt(
   goat: FundGoat,
   from: number = Date.now(),
 ): number | null {
-  if (goat.status === "PAUSED") return null;
+  if (goat.status === "PAUSED" || goat.deploymentState === "DRAFT") return null;
 
-  const timeframe = normaliseTrackingTimeframe(goat.timeframe);
-  return from + pollIntervalForTimeframe(timeframe);
+  // Tracker cadence is deliberately independent of the AI reasoning cadence
+  // and the selected candle timeframe. The cron dispatcher ticks every minute,
+  // but each GOAT is only due for deterministic condition evaluation every 5m.
+  return from + DEFAULT_TRACKER_CHECK_INTERVAL_MS;
 }
 
 function computeNextWakeAfterRun(goat: FundGoat, scheduledAt: number): number | null {
@@ -1669,9 +1694,9 @@ async function syncSchedule(goat: FundGoat): Promise<void> {
  * Returning the decision in tens of milliseconds is what fixes the silent
  * loss of scheduled analysis. The cron endpoint claims a due event before
  * starting the longer AI workflow, so its lease and generation prevent duplicate work.
- * so the DO always timed out, recorded a failed delivery, and retried with a
+ * so the old actor callback always timed out, recorded a failed delivery, and retried with a
  * deduped eventId that produced no work and no re-arm. Acking immediately
- * lets the DO re-arm on a fixed cadence while the run executes in the
+ * lets the scheduler re-arm on a fixed cadence while the run executes in the
  * background via ctx.waitUntil.
  *
  * The decision applies the same dedupe gate as every other trigger path, plus
@@ -1695,7 +1720,7 @@ async function decideScheduledWake(
 
   /**
    * A wake for a PAUSED GOAT is not a duplicate. We must not consume the
-   * alarm's eventId, because the DO will re-arm it and the user has asked for
+   * alarm's eventId, because the scheduler will re-arm it and the user has asked for
    * the schedule to stop.
    */
   if (goat.status === "PAUSED") {
@@ -1707,7 +1732,7 @@ async function decideScheduledWake(
    * actor exists and has set isEvaluating when a run was accepted but has not
    * yet returned.
    */
-  const actor = durableObjectRegistry.get(goatId);
+  const actor = goatRuntimeRegistry.get(goatId);
   if (actor?.isEvaluating()) {
     return { status: "evaluating", nextAt: null, reason: "already evaluating" };
   }
@@ -1748,8 +1773,8 @@ async function runScheduledWakeInBackground(
     const goat = await persistence.goats.get(goatId);
     if (!goat || goat.status === "PAUSED") return; // user paused mid-flight
 
-    const runtime = durableObjectRegistry.get(goatId)
-      ? durableObjectRegistry.get(goatId)!
+    const runtime = goatRuntimeRegistry.get(goatId)
+      ? goatRuntimeRegistry.get(goatId)!
       : await ensureGoatRuntime(goat);
     await runtime.ready();
 
@@ -1793,11 +1818,11 @@ function isoNow(ms: number | null): string | null {
  * Decide whether a tracker check should run, using state reads only, without
  * doing the deterministic evaluation.
  *
- * A PAUSED GOAT does not consume the tracker's eventId, so the DO will
+ * A PAUSED GOAT does not consume the tracker's eventId, so the scheduler will
  * re-arm it. If a reasoning run is already in flight, the deterministic check
  * is skipped for this cycle: the reasoner will consume the same market state
  * when it runs, and we avoid hammering the reasoning path from the (up to
- * 4x/hour) tracker cadence. The eventId is not consumed either, so the DO
+ * 4x/hour) tracker cadence. The eventId is not consumed either, so the scheduler
  * will re-arm this check.
  *
  * Market validity is also asserted here: a GOAT persisted against a retired
@@ -1816,7 +1841,7 @@ async function decideTrackerCheck(
     return { handled: false, nextAt: null, reason: "paused" };
   }
 
-  const actor = durableObjectRegistry.get(goatId);
+  const actor = goatRuntimeRegistry.get(goatId);
   if (actor?.isEvaluating()) {
     return {
       handled: false,
@@ -1863,7 +1888,19 @@ async function decideTrackerCheck(
     };
   }
 
-  return { handled: true, nextAt: isoOrNull(computeNextTrackerCheckAt(goat)) };
+  // The previous implementation fetched valid market state but returned
+  // without ever evaluating it. This made scheduled tracker checks look healthy
+  // while no condition could actually wake the GOAT.
+  const runtime = goatRuntimeRegistry.get(goatId)
+    ?? await ensureGoatRuntime(goat);
+  await runtime.ready();
+  const triggered = await runtime.evaluateTrackersNow(state);
+
+  return {
+    handled: true,
+    nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+    reason: triggered ? "condition hit; AI reevaluation started" : "conditions evaluated; no hit",
+  };
 }
 
 /**
@@ -1885,8 +1922,8 @@ async function runTrackerCheckInBackground(goatId: string): Promise<void> {
     );
     if (!isUsableMarketState(state) || !state.quote) return;
 
-    const runtime = durableObjectRegistry.get(goatId)
-      ? durableObjectRegistry.get(goatId)!
+    const runtime = goatRuntimeRegistry.get(goatId)
+      ? goatRuntimeRegistry.get(goatId)!
       : await ensureGoatRuntime(goat);
     await runtime.ready();
 
@@ -2098,7 +2135,7 @@ apiRouter.get("/settings/status", async (_req, res) => {
     platform: {
       authMode: mode,
       persistenceMode: persistence.mode,
-      activeActors: durableObjectRegistry.getAll().length,
+      activeActors: goatRuntimeRegistry.getAll().length,
       /**
        * When auth is not 'firebase', tell the operator exactly which variable
        * is missing instead of leaving them guessing.
@@ -4362,7 +4399,7 @@ function publicTemplateSkill(skill: (typeof SYSTEM_SKILLS)[number]) {
  *
  *   On a serverless host there is no long-lived process to do background
  *   work. The GOAT's first analysis is dispatched (not awaited — see
- *   `POST /goats`, which used to time out at 60s), and the durable alarm is
+ *   `POST /goats`, which used to time out at 60s), and the persisted Firestore schedule is
  *   the intended safety net. That net has to work, but it is external
  *   infrastructure: if it is unreachable, the analysis simply never runs and
  *   the user's GOAT sits unreviewed forever with no indication why.
@@ -4571,14 +4608,67 @@ apiRouter.post(
 
 // ---- Stop / Play / schedule ------------------------------------------
 
+/**
+ * STOP is a reset, not a pause: invalidate in-flight work, cancel durable
+ * schedules, remove process-local subscriptions, and delete all derived
+ * runtime records while preserving the user's GOAT configuration as a draft.
+ */
+async function stopAndResetGoatFor(userId: string, goatId: string): Promise<FundGoat> {
+  const goat = await persistence.goats.getForUser(goatId, userId);
+  if (!goat) throw new NotFoundError();
+
+  const reset: FundGoat = {
+    ...goat,
+    status: "PAUSED",
+    deploymentState: "DRAFT",
+    activeThesisId: undefined,
+    lastWakeReason: undefined,
+    lastWakeTime: undefined,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Persist the lifecycle change first so even a concurrent cron claim sees
+  // the new generation/status and refuses to start another wake.
+  await persistence.goats.save(reset);
+  marketIngestion.unsubscribeAll(goat.id);
+  goatRuntimeRegistry.remove(goat.id);
+  await scheduler.cancel(goat.id);
+
+  await Promise.all([
+    persistence.signals.deleteByGoat(goat.id),
+    persistence.theses.deleteByGoat(goat.id),
+    persistence.wakeEvents.deleteByGoat(goat.id),
+    notificationOutbox.store.deleteByGoat(goat.id),
+  ]);
+
+  return reset;
+}
+
 apiRouter.post(
   "/goats/:id/status",
   handle(async (req, res) => {
     const user = requireUser(req);
 
     const action = req.body?.action;
+    if (action === "STOP") {
+      try {
+        const goat = await stopAndResetGoatFor(user.uid, req.params.id);
+        res.json({
+          goat,
+          status: goat.status,
+          runtimeState: null,
+          schedule: goat.schedule,
+          dataMode: marketProvider.dataMode,
+          reset: true,
+        });
+      } catch (err) {
+        if (err instanceof NotFoundError) return notFound(res);
+        throw err;
+      }
+      return;
+    }
     if (action !== "PAUSE" && action !== "PLAY") {
-      return fail(res, 400, "INVALID_ACTION", "action must be PAUSE or PLAY.");
+      return fail(res, 400, "INVALID_ACTION", "action must be PAUSE, PLAY, or STOP.");
     }
 
     let goat: FundGoat & {
@@ -4689,7 +4779,7 @@ apiRouter.post(
       const saved = await persistence.wakeEvents.update(updated);
       if (!saved) return notFound(res);
     }
-    durableObjectRegistry.get(goat.id)?.markWakeEventRead(updated.id, updated.readAt ?? Date.now());
+    goatRuntimeRegistry.get(goat.id)?.markWakeEventRead(updated.id, updated.readAt ?? Date.now());
     res.json({ event: updated, read: true });
   }),
 );
@@ -4705,7 +4795,7 @@ apiRouter.delete(
       persistence.wakeEvents.deleteByGoat(goat.id),
       notificationOutbox.store.deleteByGoat(goat.id, 'MARKET_REVIEW'),
     ]);
-    const runtime = durableObjectRegistry.get(goat.id);
+    const runtime = goatRuntimeRegistry.get(goat.id);
     runtime?.clearReviewHistory();
 
     res.json({ success: true, goatId: goat.id, cleared: 'review-history' });
@@ -4720,8 +4810,8 @@ apiRouter.delete(
     if (!goat) return notFound(res);
 
     // 1. Stop timers/subscriptions and remove the runtime actor.
-    durableObjectRegistry.remove(goat.id);
-    // 2. Clear the durable alarm so a deleted GOAT cannot wake.
+    goatRuntimeRegistry.remove(goat.id);
+    // 2. Clear the persisted Firestore schedule so a deleted GOAT cannot wake.
     await scheduler.cancel(goat.id).catch((err) => {
       console.error("[scheduler] cancel failed:", err);
     });
@@ -4789,7 +4879,7 @@ apiRouter.post(
       persistence.signals.listByGoat(goat.id, 10),
       persistence.wakeEvents.listByGoat(goat.id, 10),
     ]);
-    const runtime = durableObjectRegistry.get(goat.id);
+    const runtime = goatRuntimeRegistry.get(goat.id);
     const enriched = {
       ...context,
       activeThesis: runtime?.getState().currentThesis ?? recentTheses[0] ?? null,
@@ -5112,7 +5202,7 @@ apiRouter.post(
       goat.id,
       user.uid,
     );
-    const runtime = durableObjectRegistry.get(goat.id);
+    const runtime = goatRuntimeRegistry.get(goat.id);
 
     const expired = signal.expiresAt
       ? Date.parse(signal.expiresAt) < Date.now()
@@ -5257,20 +5347,56 @@ apiRouter.post(
         `Historical data is unavailable for "${selectedMarket}". Search for it under Markets, or pick another instrument.`,
       );
     }
+    // Production backtests must never report metrics from the simulated PAPER feed.
+    // Local/test runs can still opt into PAPER explicitly for deterministic fixtures.
+    if (process.env.NODE_ENV === "production" && marketProvider.dataMode !== "LIVE") {
+      return fail(
+        res,
+        503,
+        "LIVE_HISTORICAL_DATA_REQUIRED",
+        "Backtesting is disabled because this deployment is not connected to a live historical market-data provider. No simulated prices or fabricated performance metrics will be returned.",
+      );
+    }
+
     const validPeriods = ["24h", "7d", "30d", "90d"];
     const selectedPeriod = validPeriods.includes(period as string)
       ? (period as string)
       : "7d";
 
-    const result = await BacktestEngine.runBacktest({
+    if (!(await reasoningGateway.hasKeyFor(user.uid))) {
+      return fail(
+        res,
+        400,
+        "AI_KEY_REQUIRED",
+        "Agent-driven backtesting requires a working AI credential in Settings. No deterministic or demo strategy will be substituted.",
+      );
+    }
+
+    const startingBalance = req.body?.startingBalance === undefined
+      ? 10000
+      : Number(req.body.startingBalance);
+    const riskPerTradePct = req.body?.riskPerTradePct === undefined
+      ? 1.5
+      : Number(req.body.riskPerTradePct);
+    if (!Number.isFinite(startingBalance) || startingBalance <= 0) {
+      return fail(res, 400, "INVALID_STARTING_BALANCE", "startingBalance must be greater than zero.");
+    }
+    if (!Number.isFinite(riskPerTradePct) || riskPerTradePct <= 0 || riskPerTradePct > 10) {
+      return fail(res, 400, "INVALID_RISK_PERCENT", "riskPerTradePct must be greater than zero and at most 10.");
+    }
+
+    const result = await AgentBacktestEngine.runBacktest({
       goat,
       skills,
       market: selectedMarket,
       period: selectedPeriod as "24h" | "7d" | "30d" | "90d",
       provider: marketProvider,
+      startingBalance,
+      riskPerTradePct,
+      reason: (context, model) => reasoningGateway.evaluateGoat(context, model),
     });
 
-    res.json({ result });
+    res.json({ result, engine: "AGENT_HISTORICAL_REPLAY" });
   }),
 );
 

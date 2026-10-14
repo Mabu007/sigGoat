@@ -1,10 +1,11 @@
 /**
  * TRACKING TIMEFRAMES
  * ===================
- * The timeframe a user selects for MARKET TRACKING — the cadence at which
- * conditions (trackers) are observed. It is not a limit on what the AI may
- * reason about: the wake pipeline still reads 1h candles for the reasoning
- * context regardless, and multi-timeframe reasoning stays possible later.
+ * The candle timeframe used to calculate tracked indicator values. The
+ * production scheduler checks condition state every five minutes regardless
+ * of this resolution; crossovers are evaluated on closed bars while level
+ * conditions can be rechecked against the current bar. AI reasoning cadence is
+ * a separate persisted schedule.
  *
  * Server-side validation is authoritative. The frontend is untrusted input.
  */
@@ -68,11 +69,9 @@ export function candleCountForTimeframe(
 }
 
 /**
- * A poll cadence proportional to the bar size, clamped to a sane range.
- *
- * Polling a 4h candle every 5s is pure waste; polling a 1m candle every 5s is
- * the point. This keeps tracker latency reasonable while capping provider
- * traffic regardless of the chosen timeframe.
+ * Local in-process market ingestion cadence, proportional to bar size. The
+ * production Firestore scheduler uses its own five-minute condition-check
+ * cadence and does not rely on these process-local polling intervals.
  */
 export function pollIntervalForTimeframe(
   timeframe: TrackingTimeframe,

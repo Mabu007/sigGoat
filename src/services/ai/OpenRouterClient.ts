@@ -1106,6 +1106,19 @@ STEP 3 — BUILD TRACKERS
   "thesis.trackers". A tracker is an INDICATOR EXPRESSION: one specific
   indicator, one specific value, one comparison.
 
+   IMMUTABLE ACTIVE CONDITION PLAN
+   - If the context contains an active thesis with pending trackers, treat
+     those exact conditions as an immutable monitoring plan.
+   - Routine reviews and tracker-triggered reviews must not redesign, retarget,
+     remove, or reorder pending conditions. The runtime preserves stored
+     definitions and only updates measured values, evaluation cursors, and
+     states (PENDING / UNEVALUABLE / HIT).
+   - A condition that has hit remains HIT. Never re-arm it in the same plan.
+   - Only propose a fresh plan when no active plan remains, or when the user
+     explicitly requests a manual re-evaluation/reset.
+   - Runtime condition state is authoritative; SignalGate is authoritative for
+     whether any proposed signal is actionable.
+
   Fields per tracker:
     "type"        : use "INDICATOR" for any indicator-value condition
     "indicator"   : RSI | EMA | SMA | ATR | MACD | MACD_HISTOGRAM |
@@ -1113,8 +1126,10 @@ STEP 3 — BUILD TRACKERS
     "period"      : indicator period, e.g. 20 for EMA(20), 14 for RSI(14)
     "operator"    : CROSS_ABOVE | CROSS_BELOW | GREATER_THAN |
                    LESS_THAN | WITHIN_RANGE
-    "targetValue" : the exact number the indicator must reach
-    "description" : the same condition written in plain English
+    "targetValue" : the exact number the indicator must reach (except WITHIN_RANGE)
+    "rangeLow"    : inclusive lower bound, required for WITHIN_RANGE
+     "rangeHigh"   : inclusive upper bound, required for WITHIN_RANGE
+     "description" : the same condition written in plain English
 
   Valid examples:
     { "type":"INDICATOR", "indicator":"EMA", "period":20,
@@ -1132,9 +1147,15 @@ STEP 3 — BUILD TRACKERS
   Use "type":"PRICE_LEVEL" when the condition is about raw price rather than
   an indicator. Use "type":"BREAKOUT" for a session or swing extreme break.
 
-  RULES FOR TRACKERS:
+     Example range condition:
+     { "type":"INDICATOR", "indicator":"RSI", "period":14,
+       "operator":"WITHIN_RANGE", "rangeLow":40, "rangeHigh":60,
+       "description":"RSI(14) is between 40 and 60" }
+
+RULES FOR TRACKERS:
   - Every tracker MUST be falsifiable and numeric.
-  - If you specify an "indicator", you MUST supply "targetValue".
+  - For every operator except WITHIN_RANGE, an indicator requires targetValue.
+   - WITHIN_RANGE requires numeric rangeLow and rangeHigh, with low <= high; never treat one scalar target as a range.
   - Base every targetValue on a supplied number (quote, candles or a
     supplied indicator). Never invent a level.
   - Provide 2 to 6 trackers covering the sequence in your plan.
@@ -1326,7 +1347,7 @@ Name: ${truncate(
     200,
   )}
 
-Goal:
+Job description:
 ${truncate(
   context.goatGoal,
   1_000,

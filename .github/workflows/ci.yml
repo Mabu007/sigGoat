@@ -5,9 +5,31 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  verify:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --include=dev --no-audit --no-fund
+      - name: Typecheck
+        run: npm run lint
+
+  tests:
+    name: Test suite
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -22,9 +44,37 @@ jobs:
         uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         run: npm ci --include=dev --no-audit --no-fund
-      - name: Typecheck
-        run: npm run lint
-      - name: Test
+      - name: Test suite
         run: bun test
+
+  production-build:
+    name: Production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --include=dev --no-audit --no-fund
       - name: Build
         run: npm run build
+
+  worker-bundle:
+    name: Cloudflare Worker bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Validate Cloudflare Worker bundle
+        run: npx --yes wrangler@4 deploy --dry-run

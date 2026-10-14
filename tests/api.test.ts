@@ -229,6 +229,31 @@ describe('API ownership and authorization', () => {
     expect(foreignChat.status).toBe(404);
   });
 
+  test('STOP pauses scheduling, clears derived data, and preserves the GOAT as a draft', async () => {
+    const goatId = await createGoat('user_stop', 'Resettable GOAT');
+
+    const stopped = await req('POST', `/goats/${goatId}/status`, {
+      userId: 'user_stop',
+      body: { action: 'STOP' },
+    });
+
+    expect(stopped.status).toBe(200);
+    expect(stopped.json.reset).toBe(true);
+    expect(stopped.json.goat.status).toBe('PAUSED');
+    expect(stopped.json.goat.deploymentState).toBe('DRAFT');
+    expect(stopped.json.runtimeState).toBeNull();
+
+    const persisted = await req('GET', `/goats/${goatId}`, { userId: 'user_stop' });
+    expect(persisted.status).toBe(200);
+    expect(persisted.json.goat.name).toBe('Resettable GOAT');
+    expect(persisted.json.goat.status).toBe('PAUSED');
+    expect(persisted.json.goat.deploymentState).toBe('DRAFT');
+
+    const signals = await req('GET', `/goats/${goatId}/signals`, { userId: 'user_stop' });
+    expect(signals.status).toBe(200);
+    expect(signals.json.signals).toEqual([]);
+  });
+
   test('cross-user delete is blocked; owner delete succeeds and removes the GOAT', async () => {
     const goatId = await createGoat('user_g');
 

@@ -1,17 +1,17 @@
 /**
  * GOAT RUNTIME REGISTRY
  * ======================
- * Keeps exactly one GoatDurableObject instance per GOAT id in this process.
+ * Keeps exactly one GoatRuntime instance per GOAT id in this process.
  * Destroying an instance (delete/stop) fully removes its timers and
  * subscriptions — no orphaned runtime jobs.
  */
 
-import { GoatDurableObject, GoatDurableObjectOptions } from './GoatDurableObject';
+import { GoatRuntime, GoatRuntimeOptions } from './GoatRuntime';
 import { FundGoat, TradingSkill, TradeSignal } from '../../types';
 import type { TrackerEvaluationReport } from '../tracker-sdk/TrackerEvaluator';
 
-class DurableObjectRegistry {
-  private instances: Map<string, GoatDurableObject> = new Map();
+class GoatRuntimeRegistry {
+  private instances: Map<string, GoatRuntime> = new Map();
 
   private signalCallbacks: Set<(goat: FundGoat, signal: TradeSignal) => void> = new Set();
 
@@ -19,19 +19,19 @@ class DurableObjectRegistry {
     (goat: FundGoat, report: TrackerEvaluationReport) => void
   > = new Set();
 
-  get(goatId: string): GoatDurableObject | undefined {
+  get(goatId: string): GoatRuntime | undefined {
     return this.instances.get(goatId);
   }
 
   getOrCreate(
     goat: FundGoat,
     skills: TradingSkill[],
-    options: GoatDurableObjectOptions,
-  ): GoatDurableObject {
+    options: GoatRuntimeOptions,
+  ): GoatRuntime {
     let instance = this.instances.get(goat.id);
 
     if (!instance) {
-      instance = new GoatDurableObject(goat, skills, {
+      instance = new GoatRuntime(goat, skills, {
         ...options,
         onSignal: (signalGoat, signal) => this.notifySignal(signalGoat, signal),
         onTrackerTriggered: (trackerGoat, report) =>
@@ -45,7 +45,7 @@ class DurableObjectRegistry {
     return instance;
   }
 
-  getAll(): GoatDurableObject[] {
+  getAll(): GoatRuntime[] {
     return Array.from(this.instances.values());
   }
 
@@ -98,4 +98,4 @@ class DurableObjectRegistry {
   }
 }
 
-export const durableObjectRegistry = new DurableObjectRegistry();
+export const goatRuntimeRegistry = new GoatRuntimeRegistry();

@@ -1,34 +1,54 @@
 # SIRGOAT Deployment Status
 
-## Current architecture
+## Target architecture
 
-- **Application:** Vercel (web UI and Node.js API).
-- **Authentication:** Firebase Authentication.
-- **Durable application state:** Firebase Admin / Firestore.
-- **Scheduled work:** GitHub Actions workflow `.github/workflows/goat-scheduler.yml` calls `GET /api/internal/cron` every five minutes using a shared `CRON_SECRET`.
-- **AI:** User-selected model/provider through the reasoning gateway.
-- **Telegram:** Firestore-backed notification outbox with idempotency and retry state.
+- **Web UI and user-facing API:** existing deployment host.
+- **Identity:** Firebase Authentication.
+- **Durable state:** Firebase/Firestore, including GOATs, schedule generations, leases, theses, immutable condition plans, signals, wake history, and the Telegram outbox.
+- **Serverless scheduling:** Cloudflare Workers Cron Trigger every minute.
+- **Execution:** the existing SIRGOAT API's authenticated `/api/internal/cron` route runs the canonical Node pipeline. The Worker dispatches this route rather than maintaining a fork of the reasoning/signal code.
+- **AI and delivery:** existing user-selected AI provider and Telegram outbox.
 
-Cloudflare Workers, Durable Object scheduler callbacks, Worker bindings and Wrangler deployment are no longer part of the runtime. Legacy Worker source, Worker-specific tests, the Cloudflare scheduler adapter, Wrangler configuration and the Durable Objects deployment guide have been removed.
+No Firebase Functions or Cloud Run service is required. Cloudflare Durable Objects are not required. Firestore remains the sole durable scheduler state; the Worker has no local timer or state dependency.
 
-## Production configuration
+## GOAT execution contract
 
-Required for persistent production GOAT state and scheduled runs:
+1. Creating a GOAT saves a draft. It does not start research until deployment.
+2. Deployment requests an initial market review immediately.
+3. The review creates a thesis and a bounded set of deterministic conditions using supported indicator/operator definitions.
+4. Tracker checks are separate from AI reasoning. They compute indicator values from ordered candle data and do not call AI unless one or more conditions transition to HIT.
+5. Every condition is evaluated on the same snapshot. All hits are persisted before one consolidated AI wake; a completed condition is never re-armed.
+6. Routine reviews follow the user's configured interval/time/manual/tracker-only schedule. Routine and tracker-triggered research preserve the active condition definitions while any remain pending.
+7. SignalGate remains authoritative. Actionable signals are persisted only after the thesis and signal writes succeed.
+8. Telegram notifications are sent through the existing Firestore-backed idempotent outbox.
 
+## Required configuration
+
+API host:
 - `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64` (or another supported Firebase Admin credential configuration)
-- `CRON_SECRET` in Vercel environment variables
-- GitHub repository variable `SIRGOAT_API_URL`
-- GitHub repository secret `CRON_SECRET` with the same value as Vercel
+- `CRON_SECRET`
+- AI/Telegram platform fallback credentials only if desired; per-user credentials remain supported.
 
-Optional configuration includes `APP_ORIGIN`, the platform fallback AI key and the platform fallback Telegram bot credentials. Individual users can connect their own supported credentials through Settings.
+Cloudflare Worker:
+- Secret `SIRGOAT_API_ORIGIN`: the deployed API base URL, without a trailing slash.
+- Secret `CRON_SECRET`: exactly the same secret configured on the API host.
+- Cron trigger: `* * * * *`.
 
-## Operational caveats
+Follow [CLOUDFLARE_WORKER_SCHEDULER.md](CLOUDFLARE_WORKER_SCHEDULER.md) for deployment and cutover.
 
-- GitHub Actions scheduled workflows run on a five-minute cadence here; intervals below five minutes are not guaranteed.
-- A green Vercel deployment does not verify that Firebase credentials or GitHub scheduler secrets are configured correctly.
-- The production GOAT data repositories use Firestore only when Firebase Admin credentials are valid. Check `GET /api/settings/status` and the deployed function logs.
-- A scheduled run requires a deployed GOAT, a valid schedule, accessible market data and an available AI provider. Errors should be surfaced in the GOAT runtime state and review history.
+## Cutover safety
 
-## Validation
+Keep the GitHub Actions dispatcher enabled until the Worker has been deployed and manually tested. Verify:
+- initial market review and thesis persist after deployment;
+- `nextTrackerCheckAt` advances after a tracker pass;
+- unmet conditions do not call AI;
+- all simultaneously hit conditions remain marked HIT;
+- routine reviews respect the selected AI interval;
+- SignalGate rejects invalid proposals;
+- Telegram notifications are delivered once and retry safely.
 
-The latest CI workflow run should be checked separately from the Vercel deployment status. Do not treat a deployment success alone as evidence that typecheck, tests and production behavior have passed.
+Then disable `.github/workflows/goat-scheduler.yml` to avoid two permanent dispatchers.
+
+## Validation status
+
+Code and configuration have been updated in the migration pull request. Automated CI has not yet produced a usable passing result, and no live Cloudflare/Firebase deployment has been verified. Treat production cutover as incomplete until the checks above pass.

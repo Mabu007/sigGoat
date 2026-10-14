@@ -47,7 +47,7 @@ export interface SchedulerHealth {
   kind: 'firebase' | 'in-process' | 'disabled';
   /** Last successful sync, epoch ms. */
   lastSyncAt?: number;
-  /** Consecutive sync failures; the app keeps working without the DO. */
+  /** Consecutive sync failures; the app keeps working without a persistent process. */
   consecutiveFailures?: number;
   lastError?: string;
 }
