@@ -28,3 +28,5 @@ jobs:
         run: bun test
       - name: Build
         run: npm run build
+      - name: Validate Cloudflare Worker bundle
+        run: npx --yes wrangler@4 deploy --dry-run
