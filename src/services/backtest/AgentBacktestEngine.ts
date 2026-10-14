@@ -166,6 +166,17 @@ export class AgentBacktestEngine {
         else if (index > item.signalIndex && t.orderType === 'STOP' &&
           (t.direction === 'LONG' ? candle.high >= t.plannedEntry : candle.low <= t.plannedEntry)) fill = t.plannedEntry;
         if (fill !== null) {
+          const validFillGeometry = t.direction === 'LONG'
+            ? fill > t.stopLoss && fill < t.takeProfit
+            : fill < t.stopLoss && fill > t.takeProfit;
+          if (!validFillGeometry) {
+            t.outcome = 'INVALIDATED_BEFORE_FILL';
+            t.reason += ' Entry gapped beyond valid stop/target geometry before the order could be safely filled.';
+            t.executionPath?.push('Order invalidated: next-candle fill price broke the proposal geometry.');
+            replayEvents.push({ time: candle.time, type: 'ORDER_EXPIRED', summary: t.direction + ' order invalidated by a gap at ' + fill });
+            pending.splice(j, 1);
+            continue;
+          }
           t.entryPrice = fill;
           t.executionPath?.push('Entry filled at ' + fill + ' on ' + new Date(candle.time).toISOString());
           open.push({ trade: t, entryIndex: index, riskDollars: item.riskDollars });
