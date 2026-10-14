@@ -1385,15 +1385,27 @@ export class GoatRuntime {
     // waking the agent. Multiple conditions that transition on one bar are all
     // marked and persisted; none disappear because an earlier one fired.
     for (const tracker of matchingTrackers) {
-      const newestCandleMs = candles.length ? candles[candles.length - 1].time : null;
+      const isCross =
+        tracker.operator === 'CROSS_ABOVE' || tracker.operator === 'CROSS_BELOW';
+      const latestInput = candles.length ? candles[candles.length - 1] : null;
+      const latestEvaluable = isCross && latestInput?.finalized === false
+        ? candles[candles.length - 2]
+        : latestInput;
+      const newestCandleMs = latestEvaluable?.time ?? null;
+
+      // Level conditions are checked on every five-minute tracker pass, even
+      // when the selected candle timeframe has not rolled. Crossovers are only
+      // evaluated once per newly closed candle to avoid intrabar false crosses.
       if (
+        isCross &&
         newestCandleMs != null &&
         tracker.lastEvaluatedCandleMs != null &&
         newestCandleMs <= tracker.lastEvaluatedCandleMs
       ) continue;
 
       const evaluation = evaluateTracker(tracker, candles, {
-        lastProcessedCandleMs: tracker.lastEvaluatedCandleMs,
+        lastProcessedCandleMs: isCross ? tracker.lastEvaluatedCandleMs : undefined,
+        allowFormingCandle: !isCross,
       });
 
       tracker.lastEvaluatedAt = this.now();
