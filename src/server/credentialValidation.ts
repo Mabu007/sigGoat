@@ -41,12 +41,14 @@ const OPENROUTER_KEY_PATTERN = /^sk-(?:or-v\d+-)?[A-Za-z0-9_-]{32,}$/;
  * becoming a confusing 401 from a provider the user never configured.
  */
 const GROQ_KEY_PATTERN = /^gsk_[A-Za-z0-9_-]{20,}$/;
+const SPACE_BUNNY_KEY_PATTERN = /^sb_live_[A-Za-z0-9_-]{16,}$/;
 
 /** Telegram bot tokens are `<botId>:<35 char secret>`. */
 const TELEGRAM_TOKEN_PATTERN = /^\d{5,20}:[A-Za-z0-9_-]{30,}$/;
 
 const MAX_OPENROUTER_KEY_LENGTH = 256;
 const MAX_GROQ_KEY_LENGTH = 256;
+const MAX_SPACE_BUNNY_KEY_LENGTH = 256;
 const MAX_TELEGRAM_TOKEN_LENGTH = 256;
 
 export interface NormalisedOpenRouterKey {
@@ -141,6 +143,19 @@ export function isPlausibleGroqKey(value: string | undefined): boolean {
   return typeof value === 'string' && GROQ_KEY_PATTERN.test(value.trim());
 }
 
+export function normaliseSpaceBunnyKey(value: unknown): { key: string | undefined } {
+  if (value === undefined || value === null) return { key: undefined };
+  if (typeof value !== 'string') throw new CredentialValidationError('The Space Bunny API key must be text.');
+  const trimmed = value.trim();
+  if (!trimmed) return { key: undefined };
+  if (trimmed.length > MAX_SPACE_BUNNY_KEY_LENGTH || !SPACE_BUNNY_KEY_PATTERN.test(trimmed)) {
+    throw new CredentialValidationError('That does not look like a Space Bunny API key. Expected a key beginning with sb_live_ from spacebunnymodel.com/get-api-key.');
+  }
+  return { key: trimmed };
+}
+export function isPlausibleSpaceBunnyKey(value: string | undefined): boolean {
+  return typeof value === 'string' && value.trim().length <= MAX_SPACE_BUNNY_KEY_LENGTH && SPACE_BUNNY_KEY_PATTERN.test(value.trim());
+}
 export function normaliseTelegramToken(value: unknown): string | undefined {
   if (value === undefined || value === null) {
     return undefined;
