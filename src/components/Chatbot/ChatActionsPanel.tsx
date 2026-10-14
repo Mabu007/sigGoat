@@ -133,10 +133,23 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
     accountId, symbol, side, qty: Number(qty), entry: Number(entry), stopLoss: Number(stopLoss), takeProfit: Number(takeProfit), leverage: Number(leverage),
   }), "Risk checks completed");
 
-  const confirmTrade = () => run(() => post("/api/chat/actions/execute-trade", {
-    accountId, symbol, side, qty: Number(qty), entry: Number(entry), stopLoss: Number(stopLoss), takeProfit: Number(takeProfit), leverage: Number(leverage),
-    confirmed: true, intentId: result?.intentId,
-  }), "Execution response received");
+  const confirmTrade = () => {
+    const preview = result?.order;
+    const unchanged = preview &&
+      preview.accountId === accountId && preview.symbol === symbol && preview.side === side &&
+      preview.qty === Number(qty) && preview.entry === Number(entry) &&
+      preview.stopLoss === Number(stopLoss) && preview.takeProfit === Number(takeProfit) &&
+      preview.leverage === (leverage ? Number(leverage) : null);
+    if (!unchanged) {
+      setError("The order details changed after preflight. Run risk checks again to create a new confirmation card.");
+      setResult(null);
+      return;
+    }
+    return run(() => post("/api/chat/actions/execute-trade", {
+      accountId, symbol, side, qty: Number(qty), entry: Number(entry), stopLoss: Number(stopLoss), takeProfit: Number(takeProfit), leverage: Number(leverage),
+      confirmed: true, intentId: result?.intentId,
+    }), "Execution response received");
+  };
 
   const tabs: Array<{ id: ActionMode; label: string }> = [
     { id: "research", label: "Research" }, { id: "create-goat", label: "Create GOAT" },
