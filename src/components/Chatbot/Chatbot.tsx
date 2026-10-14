@@ -413,7 +413,11 @@ export function Chatbot() {
 
   const { currentUser, getApiAuthHeaders } = useAuth();
 
-  const [isOpen, setIsOpen] = useState(false);\n\n  const [showActions, setShowActions] = useState(false);\n\n  const [actionMode, setActionMode] = useState<ActionMode>('research');
+  const [isOpen, setIsOpen] = useState(false);
+
+  const [showActions, setShowActions] = useState(false);
+
+  const [actionMode, setActionMode] = useState<ActionMode>('research');
 
   const [chats, setChats] = useState<ChatItem[]>([]);
 
@@ -1770,6 +1774,7 @@ export function Chatbot() {
           {showActions && (
             <ChatActionsPanel
               getAuthHeaders={loadAuthHeaders}
+              initialMode={actionMode}
               onClose={() => setShowActions(false)}
             />
           )}
