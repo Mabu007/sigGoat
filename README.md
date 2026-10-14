@@ -1,4 +1,4 @@
-# SignalGOAT
+# SIRGOAT
 
 Personal AI market-analysis agents ("GOATs") that perform evidence-based market
 reasoning, deterministic conditional-setup validation, historical backtesting,
@@ -61,7 +61,7 @@ where per-GOAT polling would have made 48. Counters are exposed at
 A provider outage keeps the last good snapshot and flags it `degraded`; reasoning
 refuses to run on degraded data so stale prices cannot become a thesis.
 
-Scheduled reviews and GOAT runtime records are backed by Firebase/Firestore; GitHub Actions calls the authenticated cron endpoint to dispatch due work.
+Scheduled reviews and GOAT runtime records are backed by Firebase/Firestore. The target scheduler is Cloud Scheduler dispatching the authenticated Cloud Run endpoint every minute; see [the Cloud Run scheduler runbook](docs/CLOUD_RUN_SCHEDULER.md).
 
 ## Bring-your-own OpenRouter key (BYOK)
 
@@ -164,7 +164,7 @@ price tick regardless.
 |---|---|
 | `POST /api/goats/:id/status` | `{ action: 'PAUSE' \| 'PLAY' }` — Stop/Play. |
 | `PATCH /api/goats/:id/schedule` | Change the analysis interval. |
-| `POST /api/goats` | Deploys **and immediately runs the first analysis**, so the response already contains the first thesis, state, plan and trackers. |
+| `POST /api/goats` | Creates a GOAT draft. Deploy explicitly with `POST /api/goats/:id/status` and `{ action: 'PLAY' }`; deployment starts the first market review. |
 
 ## Chatting with a GOAT
 
@@ -218,7 +218,7 @@ mode**. Nothing pretends to be real:
 
 ## Hosting
 
-**Vercel runs the app and AI workflow. Firebase/Firestore is the durable source of truth. GitHub Actions dispatches scheduled work to the authenticated API. Cloudflare Workers and Durable Objects are not used.**
+**Vercel serves the web app and user-facing API. Cloud Run executes scheduled GOAT work, Cloud Scheduler dispatches it, and Firebase/Firestore is the durable source of truth. Cloudflare Workers and Cloudflare Durable Objects are not used.**
 
 ```
 Vercel UI + API
@@ -228,8 +228,8 @@ Vercel UI + API
   ├── OpenRouter / user-selected AI provider
   └── Telegram delivery
         ▲
-GitHub Actions (every 5 minutes)
-  └── POST /api/internal/cron
+Cloud Scheduler (every minute; OIDC + x-cron-secret)
+  └── private Cloud Run service: GET /api/internal/cron
         ├── claims due GOAT schedules using Firestore leases
         ├── runs scheduled AI reviews
         └── evaluates deterministic trackers
@@ -250,11 +250,7 @@ GitHub Actions (every 5 minutes)
 
    Generate a secret with `openssl rand -hex 32`. The same `CRON_SECRET` must be set in GitHub repository secrets. Never enable `SIGNALGOAT_ALLOW_DEV_AUTH` in production.
 
-3. In GitHub repository settings, add:
-   - **Variable** `SIRGOAT_API_URL`: the deployed app base URL, without a trailing slash.
-   - **Secret** `CRON_SECRET`: the same value configured in Vercel.
-
-   The `.github/workflows/goat-scheduler.yml` workflow runs every five minutes and can also be started manually. This is the minimum dependable cadence of this scheduler; intervals shorter than five minutes are not guaranteed by GitHub Actions cron.
+3. Configure the private Cloud Run scheduler service and Cloud Scheduler job using [docs/CLOUD_RUN_SCHEDULER.md](docs/CLOUD_RUN_SCHEDULER.md). Keep the old dispatcher active only during the cutover; disable it after the Cloud Scheduler job and end-to-end GOAT/Telegram checks pass.
 
 4. Configure Firebase Authentication's authorized domains to include your Vercel/custom domain and local development domains. Public `VITE_FIREBASE_*` web configuration is compiled into the frontend; Admin credentials remain server-side.
 
@@ -264,7 +260,7 @@ GitHub Actions (every 5 minutes)
 - A GOAT is saved as a draft until explicitly deployed. Deployment starts an immediate market review; later runs follow its persisted schedule.
 - Firestore leases and schedule generations suppress overlapping and stale cron dispatches. A completed run advances its next due time.
 - Telegram market-review recaps are queued before delivery and deduplicated. Opening a review history item marks it read; unclicked entries remain unread.
-- In-process timers are a local-development fallback only. Production must have Firebase Admin configured and the GitHub scheduler workflow variables/secrets set.
+- In-process timers are a local-development fallback only. Production scheduled execution requires Firebase Admin/Firestore access on Cloud Run and a working Cloud Scheduler OIDC invocation with `CRON_SECRET`.
 
 ### Health checks
 
@@ -274,7 +270,7 @@ GET /api/settings/status
 GET /api/markets/ingestion
 ```
 
-Check the deployment logs and the GitHub Actions **GOAT Scheduler** workflow to confirm scheduled dispatches are running. A successful deployment alone does not prove that cron credentials or Firebase access are configured.
+Check Cloud Run request logs and Cloud Scheduler job execution history to confirm scheduled dispatches are running. A successful deployment alone does not prove that cron credentials or Firebase access are configured.
 
 ## Secrets policy
 
@@ -303,7 +299,7 @@ src/
   services/agent/SkillConstraints.ts  # token parsing from skills
   services/ai/OpenRouterClient.ts # LLM client; DEMO fallback; chat answering
   services/market-data/           # MarketDataProvider boundary + PAPER provider
-  services/durable-object/        # per-GOAT actor: wake pipeline + scheduler
+  services/durable-object/        # legacy-named in-process GOAT actor: wake pipeline
   services/backtest/              # no-lookahead historical replay
   services/telegram/              # webhook updates + outbound messages
   server/                         # auth, repositories (firestore/file/memory), API router
