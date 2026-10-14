@@ -2,7 +2,8 @@
 # Build the same tested Node application that owns the GOAT wake pipeline.
 FROM node:22-slim
 
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    SIRGOAT_SCHEDULER_ONLY=true
 WORKDIR /app
 
 COPY package.json package-lock.json ./
