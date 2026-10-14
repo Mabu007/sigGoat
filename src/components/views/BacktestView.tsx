@@ -560,6 +560,35 @@ export const BacktestView: React.FC = () => {
             </div>
           </section>
 
+          {/* AGENT REPLAY AUDIT */}
+          {result.agentReplay && (
+            <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-line pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-fg">GOAT replay timeline</h3>
+                  <p className="text-[10px] text-fg-subtle mt-0.5">
+                    Historical price-only review, condition hits, AI reassessments and order lifecycle.
+                  </p>
+                </div>
+                <div className="flex gap-3 text-[10px] font-mono text-fg-muted">
+                  <span>{result.agentReplay.aiWakeCount} AI wakes</span>
+                  <span>{result.agentReplay.conditionHits} condition hits</span>
+                </div>
+              </div>
+              <div className="mt-3 space-y-2 max-h-80 overflow-y-auto">
+                {result.agentReplay.events.map((event, index) => (
+                  <div key={event.time + '-' + event.type + '-' + index} className="flex gap-3 rounded-lg bg-sunken/50 border border-line p-3">
+                    <div className="w-28 shrink-0">
+                      <div className="text-[9px] font-bold text-accent-text">{event.type.replaceAll('_', ' ')}</div>
+                      <div className="text-[9px] font-mono text-fg-subtle mt-1">{new Date(event.time).toLocaleString()}</div>
+                    </div>
+                    <p className="text-[11px] text-fg-muted break-words">{event.summary}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {/* TRADE HISTORY */}
           <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-line pb-3">
