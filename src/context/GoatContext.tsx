@@ -127,7 +127,7 @@ interface GoatContextType {
   /** Stop ("PAUSE") or resume ("PLAY") a GOAT's runtime. */
   setGoatStatus: (
     goatId: string,
-    action: 'PAUSE' | 'PLAY'
+    action: 'PAUSE' | 'PLAY' | 'STOP'
   ) => Promise<FundGoat>;
 
   /** Permanently remove a GOAT and its runtime. */
@@ -1021,6 +1021,7 @@ export const GoatProvider: React.FC<{
                 ? {
                     ...goat,
                     status: data.goat.status,
+                    deploymentState: data.goat.deploymentState,
                     schedule:
                       data.schedule ?? data.goat.schedule,
                   }
@@ -1028,11 +1029,12 @@ export const GoatProvider: React.FC<{
             )
           );
 
-          if (
-            activeGoatIdRef.current === id &&
-            data.runtimeState
-          ) {
-            setActiveGoatState(data.runtimeState);
+          if (activeGoatIdRef.current === id) {
+            if (action === 'STOP') {
+              setActiveGoatState(null);
+            } else if (data.runtimeState) {
+              setActiveGoatState(data.runtimeState);
+            }
           }
 
           if (isDataMode(data.dataMode)) {
@@ -1046,9 +1048,11 @@ export const GoatProvider: React.FC<{
       } catch (requestError) {
         setRequestError(
           requestError,
-          action === 'PAUSE'
-            ? 'Failed to stop GOAT.'
-            : 'Failed to resume GOAT.'
+          action === 'STOP'
+            ? 'Failed to stop and reset GOAT.'
+            : action === 'PAUSE'
+              ? 'Failed to pause GOAT.'
+              : 'Failed to resume GOAT.'
         );
 
         throw requestError;
