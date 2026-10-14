@@ -299,7 +299,10 @@ function describeTrackerFormula(directive: TrackerDirective): string {
     return `${label} ${directive.operator ?? 'REACHED'} ${target}`;
   }
 
-  return `${directive.type} ${directive.operator ?? 'CONDITION'} ${directive.targetValue ?? 'level'}`;
+  const target = directive.operator === 'WITHIN_RANGE' && directive.rangeLow !== undefined && directive.rangeHigh !== undefined
+    ? `${directive.rangeLow}–${directive.rangeHigh}`
+    : directive.targetValue ?? 'level';
+  return `${directive.type} ${directive.operator ?? 'CONDITION'} ${target}`;
 }
 
 /**
