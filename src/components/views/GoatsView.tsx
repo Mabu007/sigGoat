@@ -599,6 +599,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   // GOAT lifecycle actions
   const [pendingDelete, setPendingDelete] =
     useState<FundGoat | null>(null);
+  const [pendingStop, setPendingStop] = useState<FundGoat | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [actionError, setActionError] = useState('');
   const [isClearingHistory, setIsClearingHistory] = useState(false);
@@ -668,17 +670,43 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   const handleToggleStatus = async (goat: FundGoat) => {
     setActionError('');
 
-    const pausing =
-      goat.status !== 'PAUSED';
+    // Active GOATs require explicit confirmation before destructive Stop/reset.
+    if (goat.status !== 'PAUSED') {
+      setPendingStop(goat);
+      return;
+    }
 
     try {
-      await setGoatStatus(goat.id, pausing ? 'PAUSE' : 'PLAY');
+      await setGoatStatus(goat.id, 'PLAY');
     } catch (err: unknown) {
       setActionError(
         err instanceof Error
           ? err.message
-          : 'Failed to change GOAT status.'
+          : 'Failed to deploy GOAT.'
       );
+    }
+  };
+
+  const handleConfirmStop = async () => {
+    if (!pendingStop || isStopping) return;
+    setIsStopping(true);
+    setActionError('');
+    try {
+      await setGoatStatus(pendingStop.id, 'STOP');
+      setReadWakeEventIds(new Set());
+      setSelectedWakeEvent(null);
+      setShowWakeEvents(false);
+      setShowMarketReviews(false);
+      setShowEvidence(false);
+      setPendingStop(null);
+    } catch (err: unknown) {
+      setActionError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to stop and reset GOAT.'
+      );
+    } finally {
+      setIsStopping(false);
     }
   };
 
@@ -1734,6 +1762,55 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   <Check className="h-3.5 w-3.5" />
                 )}
                 {isSavingSkill ? 'Saving…' : 'Save skill'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stop/reset confirmation */}
+      {pendingStop && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md overflow-hidden rounded-3xl border border-negative/40 bg-surface shadow-2xl">
+            <div className="flex items-center gap-2 border-b border-line p-4">
+              <ShieldAlert className="h-4 w-4 text-negative" />
+              <h3 className="text-sm font-bold text-fg">
+                Stop “{pendingStop.name}” and reset it?
+              </h3>
+            </div>
+            <div className="space-y-3 p-5 text-xs text-fg-muted">
+              <p>
+                This immediately stops scheduled analysis and condition tracking,
+                then clears the current thesis, tracked conditions, signals,
+                review history, and pending notifications.
+              </p>
+              <p className="text-[11px] text-fg-subtle">
+                The GOAT’s name, job description, market, skills, model, and schedule
+                settings are kept as a draft. You can deploy it again for a fresh
+                initial market review. This reset cannot be undone.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-line p-4">
+              <button
+                type="button"
+                onClick={() => setPendingStop(null)}
+                disabled={isStopping}
+                className="rounded-xl px-4 py-2 text-xs font-semibold text-fg-muted hover:text-fg disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmStop()}
+                disabled={isStopping}
+                className="flex items-center gap-2 rounded-xl bg-negative px-4 py-2 text-xs font-bold text-accent-fg hover:bg-negative disabled:opacity-50"
+              >
+                {isStopping ? (
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Pause className="h-3.5 w-3.5" />
+                )}
+                {isStopping ? 'Stopping and clearing…' : 'Stop and clear data'}
               </button>
             </div>
           </div>
