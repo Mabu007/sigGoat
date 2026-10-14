@@ -92,8 +92,6 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
 
   useEffect(() => { setMode(initialMode); }, [initialMode]);
 
-  useEffect(() => { setMode(initialMode); }, [initialMode]);
-
   useEffect(() => { void refreshContext(); }, [refreshContext]);
 
   const run = async (fn: () => Promise<any>, successMessage: string) => {
