@@ -176,7 +176,7 @@ export class AgentBacktestEngine {
         if (exit !== null) {
           totalCosts += closePosition(pos, candle, exit, why, pip);
           equity += t.pnlDollars ?? 0;
-          trades.push(t); open.splice(j, 1);
+          open.splice(j, 1);
         }
       }
 
@@ -233,6 +233,7 @@ export class AgentBacktestEngine {
       equity += pos.trade.pnlDollars ?? 0;
     }
     if (equityCurve[equityCurve.length - 1].time !== last.time) equityCurve.push({ time: last.time, equity: Number(equity.toFixed(2)) });
+    else equityCurve[equityCurve.length - 1] = { time: last.time, equity: Number(equity.toFixed(2)) };
     trades.sort((a, b) => a.timestamp - b.timestamp);
     const closed = trades.filter(t => t.outcome === 'WIN' || t.outcome === 'LOSS');
     const wins = closed.filter(t => t.outcome === 'WIN'), losses = closed.filter(t => t.outcome === 'LOSS');
