@@ -47,7 +47,7 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
     const headers = await getAuthHeaders();
     const response = await fetch(path, {
       ...init,
-      headers: { ...headers, ...(init?.body ? { "Content-Type": "application/json" } : {}), ...(init?.headers ?? {}) },
+      headers: { ...headers, ...(init?.body ? { "Content-Type": "application/json" } : {}) },
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok && !payload?.action) throw new Error(payload?.error?.message || payload?.message || "The action could not be completed.");
