@@ -647,6 +647,10 @@ async function setGoatStatusFor(
  * Firestore-backed scheduling is separate and survives API cold starts.
  */
 function subscribeToMarkets(goat: FundGoat): void {
+  // The Cloud Run dispatcher checks trackers directly from Firestore due times;
+  // it must not start process-local market ingestion loops.
+  if (process.env.SIRGOAT_SCHEDULER_ONLY === "true") return;
+
   /**
    * A PAUSED GOAT IS UNSUBSCRIBED.
    *
