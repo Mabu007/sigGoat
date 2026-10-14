@@ -157,13 +157,9 @@ export function compareLevel(
     case 'EQUAL_TO':
       return value === target;
     case 'WITHIN_RANGE':
-      /**
-       * `WITHIN_RANGE` is genuinely ambiguous in the legacy schema: it was
-       * read as a bare `value >= target`. It is treated here as the STRUCTURAL
-       * zone test used by the existing `STRUCTURE` tracker type, and a bare
-       * level comparison is used when no zone is supplied.
-       */
-      return value >= target;
+      // A scalar target cannot describe a range. The caller must use the
+      // explicit rangeLow/rangeHigh path in evaluateTracker.
+      return false;
     default:
       return false;
   }
@@ -506,13 +502,24 @@ export function evaluateTracker(
         : crossedBelow(previousValue, calculatedValue, tracker.targetValue)
       : false;
 
+  const inRange =
+    tracker.operator === 'WITHIN_RANGE' &&
+    tracker.rangeLow !== undefined &&
+    tracker.rangeHigh !== undefined &&
+    calculatedValue >= tracker.rangeLow &&
+    calculatedValue <= tracker.rangeHigh;
   const levelSatisfied =
-    tracker.targetValue !== undefined
-      ? compareLevel(tracker.operator, calculatedValue, tracker.targetValue)
-      : false;
+    tracker.operator === 'WITHIN_RANGE'
+      ? inRange
+      : tracker.targetValue !== undefined
+        ? compareLevel(tracker.operator, calculatedValue, tracker.targetValue)
+        : false;
 
+  const hasValidTarget = tracker.operator === 'WITHIN_RANGE'
+    ? tracker.rangeLow !== undefined && tracker.rangeHigh !== undefined
+    : tracker.targetValue !== undefined;
   const satisfied =
-    tracker.targetValue === undefined
+    !hasValidTarget
       ? false
       : needsPrevious
         ? crossed
@@ -549,12 +556,12 @@ export function evaluateTracker(
     usedFormingCandle,
     reason:
       verdict === 'TRIGGERED'
-        ? `${label} ${tracker.operator ?? 'REACHED'} ${tracker.targetValue} — met ` +
+        ? `${label} ${tracker.operator ?? 'REACHED'} ${tracker.operator === 'WITHIN_RANGE' ? `${tracker.rangeLow}–${tracker.rangeHigh}` : tracker.targetValue} — met ` +
           `(previous ${previousValue ?? 'n/a'}, current ${calculatedValue}).`
         : verdict === 'SATISFIED'
-          ? `${label} ${tracker.operator ?? 'REACHED'} ${tracker.targetValue} — ` +
+          ? `${label} ${tracker.operator ?? 'REACHED'} ${tracker.operator === 'WITHIN_RANGE' ? `${tracker.rangeLow}–${tracker.rangeHigh}` : tracker.targetValue} — ` +
             `condition already satisfied on an earlier candle; no transition.`
-          : `${label} ${tracker.operator ?? 'REACHED'} ${tracker.targetValue} — not yet ` +
+          : `${label} ${tracker.operator ?? 'REACHED'} ${tracker.operator === 'WITHIN_RANGE' ? `${tracker.rangeLow}–${tracker.rangeHigh}` : tracker.targetValue} — not yet ` +
             `(previous ${previousValue ?? 'n/a'}, current ${calculatedValue}).`,
   };
 }
