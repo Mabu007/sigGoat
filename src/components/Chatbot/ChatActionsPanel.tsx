@@ -6,7 +6,8 @@ export type ActionMode = "research" | "create-goat" | "deploy-goat" | "proposal"
 interface ChatActionsPanelProps {
   getAuthHeaders: () => Promise<Record<string, string>>;
   onClose: () => void;
-  onResult?: (title: string, detail: string) => void;\n  initialMode?: ActionMode;
+  onResult?: (title: string, detail: string) => void;
+  initialMode?: ActionMode;
 }
 
 interface Option { id: string; label: string; [key: string]: unknown; }
@@ -84,7 +85,7 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult }: ChatActi
     }
   }, [request, market, goatId, accountId, symbol, skillIds.length]);
 
-  useEffect(() => { setMode(initialMode); }, [initialMode]);\n\n  useEffect(() => { void refreshContext(); }, [refreshContext]);
+  useEffect(() => { setMode(initialMode); }, [initialMode]);\n\n  useEffect(() => { setMode(initialMode); }, [initialMode]);\n\n  useEffect(() => { void refreshContext(); }, [refreshContext]);
 
   const run = async (fn: () => Promise<any>, successMessage: string) => {
     setLoading(true);
