@@ -941,12 +941,18 @@ export class GoatRuntime {
        * user always sees what the GOAT is looking for — a NO_TRADE with no
        * stated plan is not actionable information.
        */
-      const tradePlan =
+      const proposedTradePlan =
         reasoningResult.proposal.triggerSequence?.length
           ? reasoningResult.proposal.triggerSequence
           : reasoningResult.thesis.observationPlan
             ? [reasoningResult.thesis.observationPlan]
             : [];
+      const existingThesis = this.runtimeState.currentThesis;
+      const tradePlan = preservePlan
+        ? (existingThesis?.tradePlan?.length
+            ? [...existingThesis.tradePlan]
+            : activePlan.map((condition) => condition.description))
+        : proposedTradePlan;
 
       const newThesis: MarketThesis = {
         id: thesisId,
@@ -965,18 +971,23 @@ export class GoatRuntime {
           .filter((e) => e.classification === 'CONTRADICTORY')
           .map((e) => e.observation),
         relevantTimeframe: '1h',
-        confirmationConditions:
-          reasoningResult.proposal.confirmationRequired
+        confirmationConditions: preservePlan && existingThesis
+          ? [...existingThesis.confirmationConditions]
+          : reasoningResult.proposal.confirmationRequired
             ? [reasoningResult.proposal.confirmationRequired]
             : tradePlan.length > 0
               ? tradePlan
               : reasoningResult.evidence
                 .filter((e) => e.classification === 'SUPPORTING')
                 .map((e) => `${e.source}: ${e.observation}`),
-        invalidationConditions: reasoningResult.thesis.invalidation
-          ? [reasoningResult.thesis.invalidation]
-          : [],
-        observationPlan: reasoningResult.thesis.observationPlan ?? '',
+        invalidationConditions: preservePlan && existingThesis
+          ? [...existingThesis.invalidationConditions]
+          : reasoningResult.thesis.invalidation
+            ? [reasoningResult.thesis.invalidation]
+            : [],
+        observationPlan: preservePlan && existingThesis
+          ? existingThesis.observationPlan
+          : reasoningResult.thesis.observationPlan ?? '',
         trackers,
         confidence: reasoningResult.thesis.confidence,
         status: reasoningResult.proposal.decision === 'ACTIONABLE' ? 'CONFIRMED' : 'TRACKING',
