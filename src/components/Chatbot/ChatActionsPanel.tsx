@@ -26,7 +26,12 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
   const [propMarkets, setPropMarkets] = useState<Option[]>([]);
   const [skills, setSkills] = useState<Option[]>([]);
   const [goats, setGoats] = useState<Option[]>([]);
-  const [accounts, setAccounts] = useState<Option[]>([]);\n  const [accountDetails, setAccountDetails] = useState<any>(null);\n  const [autonomyMode, setAutonomyMode] = useState<"PROPOSAL" | "AUTONOMOUS">("PROPOSAL");\n  const [backtestPeriod, setBacktestPeriod] = useState("7d");\n  const [startingBalance, setStartingBalance] = useState("10000");\n  const [riskPerTradePct, setRiskPerTradePct] = useState("1.5");
+  const [accounts, setAccounts] = useState<Option[]>([]);
+  const [accountDetails, setAccountDetails] = useState<any>(null);
+  const [autonomyMode, setAutonomyMode] = useState<"PROPOSAL" | "AUTONOMOUS">("PROPOSAL");
+  const [backtestPeriod, setBacktestPeriod] = useState("7d");
+  const [startingBalance, setStartingBalance] = useState("10000");
+  const [riskPerTradePct, setRiskPerTradePct] = useState("1.5");
   const [result, setResult] = useState<any>(null);
 
   const [query, setQuery] = useState("");
@@ -63,13 +68,15 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
         request("/api/skills").catch(() => ({})),
         request("/api/goats").catch(() => ({})),
         request("/api/propdao/accounts").catch(() => ({})),
-        request("/api/propdao/markets").catch(() => ({})),\n        request("/api/settings/preferences").catch(() => ({})),
+        request("/api/propdao/markets").catch(() => ({})),
+        request("/api/settings/preferences").catch(() => ({})),
       ]);
       const marketRows = Array.isArray(marketData?.symbols) ? marketData.symbols : Array.isArray(marketData?.markets) ? marketData.markets : [];
       const skillRows = Array.isArray(skillData?.skills) ? skillData.skills : [];
       const goatRows = Array.isArray(goatData?.goats) ? goatData.goats : [];
       const accountRows = Array.isArray(accountData?.accounts) ? accountData.accounts : [];
-      const propMarketRows = Array.isArray(propMarketData?.markets) ? propMarketData.markets : [];\n      if (preferenceData?.autonomyMode === "AUTONOMOUS" || preferenceData?.autonomyMode === "PROPOSAL") setAutonomyMode(preferenceData.autonomyMode);
+      const propMarketRows = Array.isArray(propMarketData?.markets) ? propMarketData.markets : [];
+      if (preferenceData?.autonomyMode === "AUTONOMOUS" || preferenceData?.autonomyMode === "PROPOSAL") setAutonomyMode(preferenceData.autonomyMode);
       const nextMarkets = marketRows.map((item: any) => ({ ...item, id: String(item.symbol ?? item.id ?? ""), label: String(item.symbol ?? item.name ?? item.id ?? "") })).filter((item: Option) => item.id);
       const nextSkills = skillRows.map((item: any) => ({ ...item, id: String(item.id ?? ""), label: String(item.name ?? item.title ?? item.id ?? "") })).filter((item: Option) => item.id);
       const nextGoats = goatRows.map((item: any) => ({ ...item, id: String(item.id ?? ""), label: String(item.name ?? item.id ?? "") })).filter((item: Option) => item.id);
@@ -129,7 +136,32 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
 
   const createProposal = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/research", { reason: "Market review requested from SIRGOAT chat" }), "GOAT review completed");
 
-  const runBacktest = () => run(() => post("/api/backtest/run", {\n    goatId, market: market || undefined, period: backtestPeriod,\n    startingBalance: Number(startingBalance), riskPerTradePct: Number(riskPerTradePct),\n  }), "Backtest completed");\n\n  const loadAccountDetails = () => run(async () => {\n    if (!accountId) throw new Error("Select a PropDAO account first.");\n    const payload = await request("/api/propdao/accounts/" + encodeURIComponent(accountId) + "/details");\n    setAccountDetails(payload);\n    return { action: { type: "propdao_account", status: payload.completeness ?? "partial", title: "PropDAO account details", ...payload } };\n  }, "PropDAO account data refreshed");\n\n  const setAutonomy = (next: "PROPOSAL" | "AUTONOMOUS") => run(async () => {\n    const payload = await post("/api/settings/preferences", { autonomyMode: next });\n    setAutonomyMode(next);\n    return { action: { type: "autonomy_mode", status: "saved", title: next === "AUTONOMOUS" ? "Auto-accept enabled" : "Manual proposal approval", message: next === "AUTONOMOUS" ? "New actionable proposals may be automatically accepted. This setting alone does not place orders; execution requires separate provider authorization and order risk checks." : "GOATs will wait for you to accept or reject proposals." , preferences: payload } };\n  }, "Trading preference saved");\n\n  const decideSignal = (signal: any, decision: "ACCEPTED" | "REJECTED") => run(async () => {\n    if (!goatId || !signal?.id) throw new Error("Choose a GOAT proposal first.");\n    const payload = await post("/api/goats/" + encodeURIComponent(goatId) + "/signals/" + encodeURIComponent(signal.id) + "/decision", { decision, note: "Decision made in SIRGOAT chat" });\n    await refreshContext();\n    return { action: { type: "proposal_decision", title: decision === "ACCEPTED" ? "Proposal accepted" : "Proposal rejected", status: decision.toLowerCase(), signal: payload.signal, execution: payload.execution, message: decision === "ACCEPTED" ? "The acceptance is persisted. It is not proof an order was placed; use the separate risk-checked order flow if execution is available." : "The rejection is persisted." } };\n  }, decision === "ACCEPTED" ? "Proposal accepted" : "Proposal rejected");\n\n  const previewTrade = () => run(() => post("/api/chat/actions/execute-trade", {
+  const runBacktest = () => run(() => post("/api/backtest/run", {
+    goatId, market: market || undefined, period: backtestPeriod,
+    startingBalance: Number(startingBalance), riskPerTradePct: Number(riskPerTradePct),
+  }), "Backtest completed");
+
+  const loadAccountDetails = () => run(async () => {
+    if (!accountId) throw new Error("Select a PropDAO account first.");
+    const payload = await request("/api/propdao/accounts/" + encodeURIComponent(accountId) + "/details");
+    setAccountDetails(payload);
+    return { action: { type: "propdao_account", status: payload.completeness ?? "partial", title: "PropDAO account details", ...payload } };
+  }, "PropDAO account data refreshed");
+
+  const setAutonomy = (next: "PROPOSAL" | "AUTONOMOUS") => run(async () => {
+    const payload = await post("/api/settings/preferences", { autonomyMode: next });
+    setAutonomyMode(next);
+    return { action: { type: "autonomy_mode", status: "saved", title: next === "AUTONOMOUS" ? "Auto-accept enabled" : "Manual proposal approval", message: next === "AUTONOMOUS" ? "New actionable proposals may be automatically accepted. This setting alone does not place orders; execution requires separate provider authorization and order risk checks." : "GOATs will wait for you to accept or reject proposals." , preferences: payload } };
+  }, "Trading preference saved");
+
+  const decideSignal = (signal: any, decision: "ACCEPTED" | "REJECTED") => run(async () => {
+    if (!goatId || !signal?.id) throw new Error("Choose a GOAT proposal first.");
+    const payload = await post("/api/goats/" + encodeURIComponent(goatId) + "/signals/" + encodeURIComponent(signal.id) + "/decision", { decision, note: "Decision made in SIRGOAT chat" });
+    await refreshContext();
+    return { action: { type: "proposal_decision", title: decision === "ACCEPTED" ? "Proposal accepted" : "Proposal rejected", status: decision.toLowerCase(), signal: payload.signal, execution: payload.execution, message: decision === "ACCEPTED" ? "The acceptance is persisted. It is not proof an order was placed; use the separate risk-checked order flow if execution is available." : "The rejection is persisted." } };
+  }, decision === "ACCEPTED" ? "Proposal accepted" : "Proposal rejected");
+
+  const previewTrade = () => run(() => post("/api/chat/actions/execute-trade", {
     accountId, symbol, side, qty: Number(qty), entry: Number(entry), stopLoss: Number(stopLoss), takeProfit: Number(takeProfit), leverage: Number(leverage),
   }), "Risk checks completed");
 
