@@ -9,7 +9,7 @@
 - **AI:** User-selected model/provider through the reasoning gateway.
 - **Telegram:** Firestore-backed notification outbox with idempotency and retry state.
 
-Cloudflare Workers, Cloudflare Durable Objects, Worker bindings and Wrangler are not part of the target runtime. The existing `GoatDurableObject`/registry names refer to in-process TypeScript business-logic actors, not Cloudflare resources; preserve this logic until all imports/tests are migrated to neutral `GoatRuntime` names.
+Cloudflare Workers, Cloudflare Durable Objects, Worker bindings and Wrangler are not part of the target runtime. The existing `GoatRuntime`/registry names refer to in-process TypeScript business-logic actors, not Cloudflare resources; preserve this logic until all imports/tests are migrated to neutral `GoatRuntime` names.
 
 ## Production configuration
 
