@@ -86,7 +86,7 @@ function validateProviderKey(raw: string, provider: AiProvider): string | null {
     if (!SPACE_BUNNY_KEY_SHAPE.test(value)) return 'That does not look like a Space Bunny API key. Expected sb_live_… from spacebunnymodel.com/get-api-key.';
     return null;
   }
-  if (!OPENROUTER_KEY_SHAPE.test(value) {
+  if (!OPENROUTER_KEY_SHAPE.test(value)) {
     return 'That does not look like an OpenRouter API key. Expected something like sk-or-v1-… (openrouter.ai/keys → Create new key).';
   }
   return null;
@@ -333,9 +333,8 @@ export const SettingsView: React.FC = () => {
       // exactly what will be stored.
       const pendingKey = provider === 'groq' ? groqKey.trim() : provider === 'spacebunny' ? spaceBunnyKey.trim() : openRouterKey.trim();
 
-      // Persist the selected provider before probing it, even when its key
-      // was already saved. Otherwise switching providers and pressing Test
-      // would silently probe the previous provider's credential.
+      // Save the selected provider before probing, even when its key is
+      // already stored, so the test always exercises the selected provider.
       const saveRes = await fetch('/api/settings/keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
@@ -828,31 +827,6 @@ export const SettingsView: React.FC = () => {
               )}
               <span>{testResult.message}</span>
             </div>
-          ) : (
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label htmlFor="spacebunny-key" className="font-semibold text-fg-muted">AI Model API Key (Space Bunny)</label>
-              {hasSavedKey ? (
-                <span className="text-[10px] text-positive flex items-center gap-1 font-mono"><CheckCircle className="w-3 h-3" /> Your key is saved</span>
-              ) : (
-                <span className="text-[10px] text-accent-text flex items-center gap-1 font-mono"><AlertCircle className="w-3 h-3" /> Not configured</span>
-              )}
-            </div>
-            <input id="spacebunny-key" name="spacebunny-api-key" type="password" autoComplete="off" spellCheck={false}
-              value={spaceBunnyKey} onChange={e => setSpaceBunnyKey(e.target.value)}
-              placeholder={hasSavedKey ? 'Saved — type a new key to replace it' : 'sb_live_...'}
-              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus" />
-            <p className="text-[10px] text-fg-muted mt-1">
-              Uses Space Bunny Alpha through its OpenAI-compatible API. Your key is encrypted server-side and never sent back to the browser. Create a key at{' '}
-              <a href="https://spacebunnymodel.com/get-api-key" target="_blank" rel="noreferrer" className="underline text-accent-text">spacebunnymodel.com/get-api-key</a>.
-              The hosted API is prepaid; check Space Bunny's current pricing before use.
-            </p>
-            <div className="mt-3 border-t border-line pt-3">
-              <ModelPicker getApiAuthHeaders={getApiAuthHeaders} value={preferences.aiModel} onChange={handleModelChange}
-                disabled={isSavingPreferences} label="Reasoning model" error={preferencesError}
-                reloadKey={keyStatus?.spaceBunnyKeyConfigured} />
-            </div>
-          </div>
           )}
 
           {saveError && (
@@ -1118,6 +1092,31 @@ export const SettingsView: React.FC = () => {
               Groq is a separate service from OpenRouter: its model names are not interchangeable, and it is not
               unlimited or always free.
             </p>
+          </div>
+          ) : (
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor="spacebunny-key" className="font-semibold text-fg-muted">AI Model API Key (Space Bunny)</label>
+              {hasSavedKey ? (
+                <span className="text-[10px] text-positive flex items-center gap-1 font-mono"><CheckCircle className="w-3 h-3" /> Your key is saved</span>
+              ) : (
+                <span className="text-[10px] text-accent-text flex items-center gap-1 font-mono"><AlertCircle className="w-3 h-3" /> Not configured</span>
+              )}
+            </div>
+            <input id="spacebunny-key" name="spacebunny-api-key" type="password" autoComplete="off" spellCheck={false}
+              value={spaceBunnyKey} onChange={e => setSpaceBunnyKey(e.target.value)}
+              placeholder={hasSavedKey ? 'Saved — type a new key to replace it' : 'sb_live_...'}
+              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus" />
+            <p className="text-[10px] text-fg-muted mt-1">
+              Uses Space Bunny Alpha through its OpenAI-compatible API. Your key is encrypted server-side and never sent back to the browser. Create a key at{' '}
+              <a href="https://spacebunnymodel.com/get-api-key" target="_blank" rel="noreferrer" className="underline text-accent-text">spacebunnymodel.com/get-api-key</a>.
+              The hosted API is prepaid; check Space Bunny's current pricing before use.
+            </p>
+            <div className="mt-3 border-t border-line pt-3">
+              <ModelPicker getApiAuthHeaders={getApiAuthHeaders} value={preferences.aiModel} onChange={handleModelChange}
+                disabled={isSavingPreferences} label="Reasoning model" error={preferencesError}
+                reloadKey={keyStatus?.spaceBunnyKeyConfigured} />
+            </div>
           </div>
           )}
 
