@@ -3,6 +3,7 @@ import type { GoatReasoningContext } from '../ai/OpenRouterClient';
 import type { ReasoningResult } from '../agent/contracts';
 import type { MarketDataProvider } from '../market-data/MarketDataProvider';
 import { evaluateTracker } from '../tracker-sdk/DeterministicTrackerEvaluator';
+import { aggregateHardConstraints } from '../agent/SkillConstraints';
 
 export type AgentBacktestPeriod = '24h' | '7d' | '30d' | '90d';
 export type HistoricalGoatReasoner = (context: GoatReasoningContext, model: string) => Promise<ReasoningResult>;
@@ -63,7 +64,7 @@ function thesisFrom(goat: FundGoat, market: string, r: ReasoningResult, trackers
     createdAt: new Date(at).toISOString(), updatedAt: new Date(at).toISOString(),
   };
 }
-function proposalTrade(r: ReasoningResult, goat: FundGoat, market: string, at: number, index: number, balance: number, riskPct: number): BacktestTrade | null {
+function proposalTrade(r: ReasoningResult, goat: FundGoat, market: string, at: number, index: number, balance: number, riskPct: number, constraints: ReturnType<typeof aggregateHardConstraints>): BacktestTrade | null {
   const p = r.proposal;
   if (p.decision !== 'ACTIONABLE' || !p.direction || !p.orderType ||
       !Number.isFinite(p.entry) || !Number.isFinite(p.stopLoss) || !Number.isFinite(p.takeProfit)) return null;
@@ -73,7 +74,10 @@ function proposalTrade(r: ReasoningResult, goat: FundGoat, market: string, at: n
   if (p.direction === 'LONG' && !(stop < entry && target > entry)) return null;
   if (p.direction === 'SHORT' && !(stop > entry && target < entry)) return null;
   const rr = rewardDistance / stopDistance;
-  if (!Number.isFinite(rr) || rr < 1.4) return null;
+  if (!Number.isFinite(rr) || rr < Math.max(1.4, constraints.minRiskReward)) return null;
+  if (constraints.limitOrdersOnly && p.orderType === 'MARKET') return null;
+  if (constraints.requireInvalidation && (!p.invalidation || p.invalidation.trim().length < 5)) return null;
+  if (constraints.noCounterTrend && ((r.thesis.directionalBias === 'BULLISH' && p.direction === 'SHORT') || (r.thesis.directionalBias === 'BEARISH' && p.direction === 'LONG'))) return null;
   return {
     id: 'bt_' + goat.id + '_' + at + '_' + index, timestamp: at, market,
     direction: p.direction, orderType: p.orderType, plannedEntry: entry, stopLoss: stop, takeProfit: target,
@@ -106,6 +110,10 @@ export class AgentBacktestEngine {
     if (!Number.isFinite(startingBalance) || startingBalance <= 0) throw new Error('Starting balance must be greater than zero.');
     if (!Number.isFinite(riskPerTradePct) || riskPerTradePct <= 0 || riskPerTradePct > 10) throw new Error('Risk per trade must be greater than zero and at most 10%.');
     if (provider.dataMode !== 'LIVE') throw new Error('Agent backtests require real historical candles; PAPER data is refused.');
+    const constraints = aggregateHardConstraints(skills);
+    if (constraints.maxSpreadPips > 0 || constraints.maxSpreadBps > 0) {
+      throw new Error('This GOAT has a spread constraint, but historical 5m OHLC candles do not contain verified historical bid/ask spreads. Remove the spread constraint or use historical quote data.');
+    }
     const requestedBars = PERIOD_BARS[period];
     let raw: Candle[];
     try { raw = await provider.getCandles(market, '5m', requestedBars); }
@@ -173,7 +181,7 @@ export class AgentBacktestEngine {
       // Concurrent positions are managed independently. Same-candle stop/target ambiguity is stop-first.
       for (let j = open.length - 1; j >= 0; j--) {
         const pos = open[j], t = pos.trade;
-        if (index <= pos.entryIndex) continue;
+        if (index < pos.entryIndex) continue;
         const stopHit = t.direction === 'LONG' ? candle.low <= t.stopLoss : candle.high >= t.stopLoss;
         const targetHit = t.direction === 'LONG' ? candle.high >= t.takeProfit : candle.low <= t.takeProfit;
         let exit: number | null = null, why = '';
@@ -222,7 +230,7 @@ export class AgentBacktestEngine {
         const p = result.proposal;
         const opportunity = [candle.time, p.direction, p.orderType, p.entry, p.stopLoss, p.takeProfit].join('|');
         if (!captured.has(opportunity)) {
-          const trade = proposalTrade(result, goat, market, candle.time, tradeIndex, equity, riskPerTradePct);
+          const trade = proposalTrade(result, goat, market, candle.time, tradeIndex, equity, riskPerTradePct, constraints);
           if (trade) {
             captured.add(opportunity); tradeIndex++;
             trades.push(trade);
