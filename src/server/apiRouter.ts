@@ -29,6 +29,7 @@ import {
   CredentialValidationError,
   isPlausibleOpenRouterKey,
   normaliseGroqKey,
+  normaliseSpaceBunnyKey,
   normaliseOpenRouterKey,
   normalisePropDaoKey,
   normaliseTelegramToken,
@@ -3204,10 +3205,11 @@ apiRouter.get(
   handle(async (req, res) => {
     const user = requireUser(req);
 
-    const [openrouter, groq, propdao, telegram, vaultConfigured] =
+    const [openrouter, groq, spacebunny, propdao, telegram, vaultConfigured] =
       await Promise.all([
         credentialVault.getCredentialStatus(user.uid, "openrouter"),
         credentialVault.getCredentialStatus(user.uid, "groq"),
+        credentialVault.getCredentialStatus(user.uid, "spacebunny"),
         credentialVault.getCredentialStatus(user.uid, "propdao"),
         credentialVault.getCredentialStatus(user.uid, "telegram"),
         Promise.resolve(credentialVault.isConfigured()),
@@ -3227,6 +3229,9 @@ apiRouter.get(
       openRouterKeyHint: openrouter.maskedHint,
       groqKeyConfigured:
         groq.configured && !/unreadable/.test(groq.maskedHint ?? ""),
+      spaceBunnyKeyConfigured: spacebunny.configured && !/unreadable/.test(spacebunny.maskedHint ?? ""),
+      spaceBunnyKeyHint: spacebunny.maskedHint,
+      provider: await reasoningGateway.providerFor(user.uid),
       propDaoKeyConfigured:
         propdao.configured && !/unreadable/.test(propdao.maskedHint ?? ""),
       propDaoKeyHint: propdao.maskedHint,
@@ -3253,7 +3258,7 @@ apiRouter.post(
   "/settings/keys",
   handle(async (req, res) => {
     const user = requireUser(req);
-    const { openRouterKey, groqKey, telegramToken, telegramChatId, provider } =
+    const { openRouterKey, groqKey, spaceBunnyKey, telegramToken, telegramChatId, provider } =
       req.body ?? {};
 
     /**
@@ -3265,12 +3270,12 @@ apiRouter.post(
      */
     let nextProvider: AiProvider | undefined;
     if (provider !== undefined && provider !== null && provider !== "") {
-      if (provider !== "openrouter" && provider !== "groq") {
+      if (provider !== "openrouter" && provider !== "groq" && provider !== "spacebunny") {
         return fail(
           res,
           400,
           "INVALID_PROVIDER",
-          "provider must be openrouter or groq.",
+          "provider must be openrouter, groq or spacebunny.",
         );
       }
       nextProvider = provider;
@@ -3279,6 +3284,7 @@ apiRouter.post(
     // Throws CredentialValidationError (surfaced as 400) on a bad shape.
     const nextOpenRouterKey = normaliseOpenRouterKey(openRouterKey);
     const nextGroqKey = normaliseGroqKey(groqKey).key;
+    const nextSpaceBunnyKey = normaliseSpaceBunnyKey(spaceBunnyKey).key;
     const nextTelegramToken = normaliseTelegramToken(telegramToken);
 
     if (nextProvider) {
@@ -3310,6 +3316,10 @@ apiRouter.post(
 
       if (nextGroqKey !== undefined) {
         await credentialVault.saveCredential(user.uid, "groq", nextGroqKey);
+        reasoningGateway.invalidate(user.uid);
+      }
+      if (nextSpaceBunnyKey !== undefined) {
+        await credentialVault.saveCredential(user.uid, "spacebunny", nextSpaceBunnyKey);
         reasoningGateway.invalidate(user.uid);
       }
 
@@ -3388,9 +3398,10 @@ apiRouter.post(
 
     // Status only. No secret is echoed, so a client that intercepts the response
     // still learns nothing about the stored value.
-    const [openrouterStatus, groqStatus, propdaoStatus] = await Promise.all([
+    const [openrouterStatus, groqStatus, spacebunnyStatus, propdaoStatus] = await Promise.all([
       credentialVault.getCredentialStatus(user.uid, "openrouter"),
       credentialVault.getCredentialStatus(user.uid, "groq"),
+      credentialVault.getCredentialStatus(user.uid, "spacebunny"),
       credentialVault.getCredentialStatus(user.uid, "propdao"),
     ]);
 
@@ -3400,6 +3411,8 @@ apiRouter.post(
       openRouterKeyConfigured: openrouterStatus.configured,
       openRouterKeyHint: openrouterStatus.maskedHint,
       groqKeyConfigured: groqStatus.configured,
+      spaceBunnyKeyConfigured: spacebunnyStatus.configured,
+      spaceBunnyKeyHint: spacebunnyStatus.maskedHint,
       propDaoKeyConfigured: propdaoStatus.configured,
       propDaoKeyHint: propdaoStatus.maskedHint,
       ...(await readUserPreferences(user.uid)),
@@ -4094,14 +4107,14 @@ apiRouter.get(
         res,
         400,
         "AI_NOT_CONFIGURED",
-        "Add your OpenRouter API key in Settings → AI Reasoning Engine to load models.",
+        "Add your selected AI provider key in Settings → AI Reasoning Engine to load models.",
       );
     }
     const catalogue = await reasoningGateway.listModels(user.uid);
     res.json({
       models: catalogue.models,
       fetchedAt: catalogue.fetchedAt,
-      source: "openrouter",
+      source: catalogue.source,
     });
   }),
 );

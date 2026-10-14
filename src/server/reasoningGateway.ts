@@ -35,12 +35,13 @@ import {
   OpenRouterModel,
 } from '../services/ai/OpenRouterClient';
 import { GroqClient, DEFAULT_GROQ_MODEL } from '../services/ai/GroqClient';
+import { SpaceBunnyClient, SPACE_BUNNY_MODEL } from '../services/ai/SpaceBunnyClient';
 import { buildDemoReasoningResult, DEMO_CHAT_ANSWER } from '../services/ai/demoReasoning';
 import { ReasoningResult } from '../services/agent/contracts';
 import { KeyStore } from './repositories';
 import { isPlausibleOpenRouterKey } from './credentialValidation';
 
-export type AiProvider = 'openrouter' | 'groq';
+export type AiProvider = 'openrouter' | 'groq' | 'spacebunny';
 
 /** Normalised catalogue entry, whichever provider served it. */
 export interface ProviderModel {
@@ -103,7 +104,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
    * key: `${userId}::${provider}::${apiKey}` so rotating a key yields a fresh
    * client while unrelated users never share one.
    */
-  private clients = new Map<string, OpenRouterClient | GroqClient>();
+  private clients = new Map<string, OpenRouterClient | GroqClient | SpaceBunnyClient>();
 
   /** Per-user provider choice. Absent means OpenRouter. */
   private providerChoices = new Map<string, AiProvider>();
@@ -123,7 +124,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
    */
   async providerFor(userId: string): Promise<AiProvider> {
     const chosen = await this.keys.getProvider?.(userId);
-    if (chosen === 'groq' || chosen === 'openrouter') {
+    if (chosen === 'groq' || chosen === 'openrouter' || chosen === 'spacebunny') {
       this.providerChoices.set(userId, chosen);
       return chosen;
     }
@@ -153,11 +154,9 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     if (provider === 'groq') {
       const userKey = await this.keys.getGroqKey?.(userId);
       const serverKey = process.env.GROQ_API_KEY?.trim();
-      return {
-        provider,
-        key: userKey?.trim() || (serverKey ? serverKey : undefined),
-      };
+      return { provider, key: userKey?.trim() || (serverKey ? serverKey : undefined) };
     }
+    if (provider === 'spacebunny') return { provider, key: (await this.keys.getSpaceBunnyKey?.(userId))?.trim() || undefined };
 
     const userKey = await this.keys.getOpenRouterKey(userId);
     if (userKey && isPlausibleOpenRouterKey(userKey)) {
@@ -181,7 +180,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
   /** Returns a cached client, or null when no credential is configured. */
   private async clientFor(
     userId: string,
-  ): Promise<{ provider: AiProvider; client: OpenRouterClient | GroqClient } | null> {
+  ): Promise<{ provider: AiProvider; client: OpenRouterClient | GroqClient | SpaceBunnyClient } | null> {
     const { provider, key } = await this.resolveKey(userId);
     if (!key) return null;
 
@@ -192,7 +191,9 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     const client =
       provider === 'groq'
         ? new GroqClient({ apiKey: key })
-        : new OpenRouterClient({
+        : provider === 'spacebunny'
+          ? new SpaceBunnyClient({ apiKey: key })
+          : new OpenRouterClient({
             apiKey: key,
             headers: {
               'X-Title': 'SIRGOAT',
@@ -237,6 +238,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       const { result } = await groq.evaluateGoat(context, model || DEFAULT_GROQ_MODEL);
       return result;
     }
+    if (provider === 'spacebunny') return (await (client as SpaceBunnyClient).evaluateGoat(context, model || SPACE_BUNNY_MODEL)).result;
 
     // The client wraps the validated contract in transport metadata.
     const { result } = await (client as OpenRouterClient).evaluateGoat(
@@ -264,6 +266,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       const { answer } = await groq.answerQuestion(question, context, model || DEFAULT_GROQ_MODEL);
       return answer;
     }
+    if (provider === 'spacebunny') return (await (client as SpaceBunnyClient).answerQuestion(question, context, model || SPACE_BUNNY_MODEL)).answer;
 
     const answer = await (client as OpenRouterClient).answerQuestion(
       context,
@@ -311,9 +314,8 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
 
     const { provider, client } = resolved;
 
-    if (provider === 'groq') {
-      return DEFAULT_GROQ_MODEL;
-    }
+    if (provider === 'groq') return DEFAULT_GROQ_MODEL;
+    if (provider === 'spacebunny') return SPACE_BUNNY_MODEL;
 
     const catalogue = await (client as OpenRouterClient).fetchModels();
     const models = catalogue.models;
@@ -342,6 +344,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
 
     const { provider, client } = resolved;
     if (provider === 'groq') return true;
+    if (provider === 'spacebunny') return modelId === SPACE_BUNNY_MODEL;
 
     const catalogue = await (client as OpenRouterClient).fetchModels();
     return catalogue.models.some((model) => model.id === modelId);
@@ -364,6 +367,8 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     }
 
     const { provider, client } = resolved;
+
+    if (provider === 'spacebunny') return { provider, fetchedAt: Date.now(), source: 'spacebunny-static', models: [{ id: SPACE_BUNNY_MODEL, name: 'Space Bunny Alpha', description: 'Hosted Space Bunny reasoning model.', free: false, supportsStructuredOutputs: true }] };
 
     if (provider === 'groq') {
       const catalogue = (client as GroqClient).listModels();
@@ -420,6 +425,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       const result = await (resolved.client as GroqClient).testConnection();
       return { ...result, provider: 'groq' };
     }
+    if (resolved.provider === 'spacebunny') return { ...(await (resolved.client as SpaceBunnyClient).testConnection()), provider: 'spacebunny' };
 
     const result = await (resolved.client as OpenRouterClient).testConnection();
     return { ...result, provider: 'openrouter' };

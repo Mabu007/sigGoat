@@ -105,6 +105,8 @@ export interface KeyStore {
    */
   getGroqKey?(userId: string): Promise<string | undefined>;
   setGroqKey?(userId: string, key: string | undefined): Promise<void>;
+  getSpaceBunnyKey?(userId: string): Promise<string | undefined>;
+  setSpaceBunnyKey?(userId: string, key: string | undefined): Promise<void>;
 
   /**
    * Which provider this user selected.
@@ -112,8 +114,8 @@ export interface KeyStore {
    * Persisted rather than inferred so the choice survives a cold start and
    * cannot be swapped by a request field.
    */
-  getProvider?(userId: string): Promise<'openrouter' | 'groq' | undefined>;
-  setProvider?(userId: string, provider: 'openrouter' | 'groq'): Promise<void>;
+  getProvider?(userId: string): Promise<'openrouter' | 'groq' | 'spacebunny' | undefined>;
+  setProvider?(userId: string, provider: 'openrouter' | 'groq' | 'spacebunny'): Promise<void>;
 
   /**
    * The user's Telegram bot identity, recorded once `getMe` has verified it.
@@ -338,7 +340,7 @@ class MemoryKeyStore implements KeyStore {
   private openRouter = new Map<string, string>();
   private groq = new Map<string, string>();
   private telegram = new Map<string, string>();
-  private providers = new Map<string, 'openrouter' | 'groq'>();
+  private providers = new Map<string, 'openrouter' | 'groq' | 'spacebunny'>();
   private bots = new Map<string, TelegramBotRecord>();
 
   async getOpenRouterKey(userId: string) {
@@ -365,7 +367,7 @@ class MemoryKeyStore implements KeyStore {
   async getProvider(userId: string) {
     return this.providers.get(userId);
   }
-  async setProvider(userId: string, provider: 'openrouter' | 'groq') {
+  async setProvider(userId: string, provider: 'openrouter' | 'groq' | 'spacebunny') {
     this.providers.set(userId, provider);
   }
   async getTelegramBot(userId: string) {
@@ -754,7 +756,7 @@ class FileKeyStore implements KeyStore {
   async getProvider(userId: string) {
     return this.section('providers')[userId];
   }
-  async setProvider(userId: string, provider: 'openrouter' | 'groq') {
+  async setProvider(userId: string, provider: 'openrouter' | 'groq' | 'spacebunny') {
     this.section('providers')[userId] = provider;
     this.parent.persist();
   }
@@ -1233,9 +1235,9 @@ class FirestoreKeyStore implements KeyStore {
     const doc = await this.doc(userId).get();
     if (!doc.exists) return undefined;
     const value = doc.data()?.provider;
-    return value === 'groq' || value === 'openrouter' ? value : undefined;
+    return value === 'groq' || value === 'openrouter' || value === 'spacebunny' ? value : undefined;
   }
-  async setProvider(userId: string, provider: 'openrouter' | 'groq') {
+  async setProvider(userId: string, provider: 'openrouter' | 'groq' | 'spacebunny') {
     await this.write(userId, { provider });
   }
   async getTelegramBot(userId: string) {
