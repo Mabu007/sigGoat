@@ -176,7 +176,7 @@ const reasoningGateway = new UserScopedReasoningGateway(keyStore);
  * There is deliberately NO automatic fallback to the PAPER provider. Silently
  * swapping in simulated prices would mean a feed outage quietly turns the app
  * into fiction while the UI still says "LIVE". Instead a provider outage
- * surfaces as an explicit failure — GOATDurableObject already records
+ * surfaces as an explicit failure — GoatRuntime already records
  * "Market data unavailable" and backs off — and `dataMode` on every response
  * reports what is actually serving.
  *
@@ -1669,9 +1669,9 @@ async function syncSchedule(goat: FundGoat): Promise<void> {
  * Returning the decision in tens of milliseconds is what fixes the silent
  * loss of scheduled analysis. The cron endpoint claims a due event before
  * starting the longer AI workflow, so its lease and generation prevent duplicate work.
- * so the DO always timed out, recorded a failed delivery, and retried with a
+ * so the old actor callback always timed out, recorded a failed delivery, and retried with a
  * deduped eventId that produced no work and no re-arm. Acking immediately
- * lets the DO re-arm on a fixed cadence while the run executes in the
+ * lets the scheduler re-arm on a fixed cadence while the run executes in the
  * background via ctx.waitUntil.
  *
  * The decision applies the same dedupe gate as every other trigger path, plus
@@ -1695,7 +1695,7 @@ async function decideScheduledWake(
 
   /**
    * A wake for a PAUSED GOAT is not a duplicate. We must not consume the
-   * alarm's eventId, because the DO will re-arm it and the user has asked for
+   * alarm's eventId, because the scheduler will re-arm it and the user has asked for
    * the schedule to stop.
    */
   if (goat.status === "PAUSED") {
@@ -4362,7 +4362,7 @@ function publicTemplateSkill(skill: (typeof SYSTEM_SKILLS)[number]) {
  *
  *   On a serverless host there is no long-lived process to do background
  *   work. The GOAT's first analysis is dispatched (not awaited — see
- *   `POST /goats`, which used to time out at 60s), and the durable alarm is
+ *   `POST /goats`, which used to time out at 60s), and the persisted Firestore schedule is
  *   the intended safety net. That net has to work, but it is external
  *   infrastructure: if it is unreachable, the analysis simply never runs and
  *   the user's GOAT sits unreviewed forever with no indication why.
@@ -4721,7 +4721,7 @@ apiRouter.delete(
 
     // 1. Stop timers/subscriptions and remove the runtime actor.
     goatRuntimeRegistry.remove(goat.id);
-    // 2. Clear the durable alarm so a deleted GOAT cannot wake.
+    // 2. Clear the persisted Firestore schedule so a deleted GOAT cannot wake.
     await scheduler.cancel(goat.id).catch((err) => {
       console.error("[scheduler] cancel failed:", err);
     });
