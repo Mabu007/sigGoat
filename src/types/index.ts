@@ -786,6 +786,13 @@ export interface UserProfile {
    */
   autonomyMode?: AutonomyMode;
 
+  /** Explicit opt-in for unattended PropDAO order submission. */
+  autoTradeEnabled?: boolean;
+  /** Must be resolved against accounts returned by this user's own PropDAO key. */
+  autoTradeAccountId?: string;
+  /** Fixed base-asset quantity; the server risk validator is still authoritative. */
+  autoTradeQty?: number;
+
   /**
    * The OpenRouter model this user picked in Settings.
    *
