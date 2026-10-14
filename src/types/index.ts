@@ -340,6 +340,9 @@ export interface TrackerCondition {
   type: TrackerConditionType;
   market: string;
   targetValue?: number;
+  /** Required bounds when operator is WITHIN_RANGE. */
+  rangeLow?: number;
+  rangeHigh?: number;
   operator?: TrackerOperator;
   indicatorParams?: TrackerIndicatorParams;
   currentCalculatedValue?: number;
