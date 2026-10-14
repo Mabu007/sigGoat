@@ -18,7 +18,8 @@
     "test": "bun test",
     "test:all": "bun test",
     "test:backtest:live": "tsx scripts/backtest-live.mts",
-    "test:e2e": "tsx scripts/e2e-goat.mts"
+    "test:e2e": "tsx scripts/e2e-goat.mts",
+    "start:scheduler": "NODE_ENV=production tsx scheduler-server.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
