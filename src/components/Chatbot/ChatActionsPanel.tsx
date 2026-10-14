@@ -134,6 +134,7 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
   const createGoat = () => run(async () => {
     if (!goatName.trim() || !goal.trim() || !market || !skillIds.length) throw new Error("Name, goal, market, and at least one skill are required.");
     const payload = await post("/api/goats", { name: goatName.trim(), goal: goal.trim(), markets: [market], skillIds, deploymentState: "DRAFT" });
+    await refreshContext();
     return { action: { type: "create_goat", status: "completed", title: "GOAT draft created", goat: payload.goat ?? payload, message: "The draft is saved. Deploy it separately after reviewing the configuration." } };
   }, "GOAT draft created");
 
