@@ -1103,7 +1103,8 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
         persistence,
         policyStatus: () => propDaoFor(goat.userId).policyStatus(),
         executeSignal: async (ownedGoat, candidate, profile) => {
-          if (!profile.autoTradeAccountId || typeof profile.autoTradeQty !== "number" || !Number.isFinite(profile.autoTradeQty) || profile.autoTradeQty <= 0) {
+          const autoTradeQty = profile.autoTradeQty;
+          if (!profile.autoTradeAccountId || typeof autoTradeQty !== "number" || !Number.isFinite(autoTradeQty) || autoTradeQty <= 0) {
             return { submitted: false, message: "Automatic trading is missing an owned PropDAO account or fixed quantity." };
           }
           const provider = propDaoFor(ownedGoat.userId);
@@ -1142,7 +1143,7 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           const riskCheck = validateTradeIntent({
             symbol: candidate.market,
             side,
-            qty: profile.autoTradeQty,
+            qty: autoTradeQty,
             entry: candidate.entry!,
             stopLoss: candidate.stopLoss!,
             takeProfit: candidate.takeProfit!,
@@ -1154,7 +1155,7 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           const outcome = await provider.executeOrder(account.accountId, {
             symbol: candidate.market,
             side,
-            qty: profile.autoTradeQty,
+            qty: autoTradeQty,
             orderType: "limit",
             intentId,
             limitPrice: candidate.entry!,
