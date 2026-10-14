@@ -4621,6 +4621,9 @@ async function stopAndResetGoatFor(userId: string, goatId: string): Promise<Fund
     ...goat,
     status: "PAUSED",
     deploymentState: "DRAFT",
+    activeThesisId: undefined,
+    lastWakeReason: undefined,
+    lastWakeTime: undefined,
     updatedAt: new Date().toISOString(),
   };
 
