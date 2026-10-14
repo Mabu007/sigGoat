@@ -16,4 +16,4 @@ EXPOSE 8080
 
 # server.ts mounts the existing API router, including the authenticated
 # /api/internal/cron endpoint. Cloud Run IAM restricts invocation to Scheduler.
-CMD ["npm", "run", "start"]
+CMD ["npm", "run", "start:scheduler"]
