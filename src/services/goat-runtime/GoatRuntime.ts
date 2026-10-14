@@ -1374,14 +1374,22 @@ export class GoatRuntime {
     // waking the agent. Multiple conditions that transition on one bar are all
     // marked and persisted; none disappear because an earlier one fired.
     for (const tracker of matchingTrackers) {
+      const newestCandleMs = candles.length ? candles[candles.length - 1].time : null;
+      if (
+        newestCandleMs != null &&
+        tracker.lastEvaluatedCandleMs != null &&
+        newestCandleMs <= tracker.lastEvaluatedCandleMs
+      ) continue;
+
       const evaluation = evaluateTracker(tracker, candles, {
         lastProcessedCandleMs: tracker.lastEvaluatedCandleMs,
       });
 
-      if (evaluation.reason.includes('was already evaluated')) continue;
-
       tracker.lastEvaluatedAt = this.now();
       tracker.lastEvaluationReason = evaluation.reason;
+      if (evaluation.evaluatedCandleMs != null) {
+        tracker.lastEvaluatedCandleMs = evaluation.evaluatedCandleMs;
+      }
       changed = true;
 
       if (evaluation.verdict === 'UNEVALUABLE') {
@@ -1390,9 +1398,6 @@ export class GoatRuntime {
       }
 
       tracker.status = 'PENDING';
-      if (evaluation.evaluatedCandleMs != null) {
-        tracker.lastEvaluatedCandleMs = evaluation.evaluatedCandleMs;
-      }
       tracker.previousCalculatedValue = evaluation.previousValue ?? undefined;
       tracker.currentCalculatedValue = evaluation.calculatedValue ?? undefined;
 
@@ -1643,6 +1648,7 @@ export class GoatRuntime {
       operator: directive.operator,
       indicatorParams,
       formulaDescription: describeTrackerFormula(directive),
+      status: 'PENDING',
       isTriggered: false,
     };
   }
