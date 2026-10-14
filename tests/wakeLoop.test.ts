@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { GoatDurableObject } from '../src/services/durable-object/GoatDurableObject';
+import { GoatRuntime } from '../src/services/goat-runtime/GoatRuntime';
 import { PaperMarketDataProvider } from '../src/services/market-data/PaperMarketDataProvider';
 import { MarketStateStore } from '../src/services/market-data/MarketStateStore';
 import { InMemoryPersistence } from '../src/server/repositories';
@@ -128,7 +128,7 @@ function liveSnapshot(mid: number, rsi = 25): MarketStateSnapshot {
 
 function actor(gateway: ReasoningGateway, extra: Record<string, unknown> = {}) {
   const persistence = new InMemoryPersistence();
-  return new GoatDurableObject(makeGoat(), [] as TradingSkill[], {
+  return new GoatRuntime(makeGoat(), [] as TradingSkill[], {
     reasoning: gateway,
     marketProvider: new PaperMarketDataProvider({ enableTicks: false }),
     marketStateStore: new MarketStateStore(
@@ -178,7 +178,7 @@ describe('degraded data cannot produce a thesis', () => {
       log: () => {},
     });
 
-    const a = new GoatDurableObject(makeGoat(), [], {
+    const a = new GoatRuntime(makeGoat(), [], {
       reasoning: gateway,
       marketProvider: deadProvider as never,
       marketStateStore: store,
@@ -333,7 +333,7 @@ describe('scheduler presence removes in-process timers', () => {
       fired += 1;
     });
 
-    const a = new GoatDurableObject(makeGoat(), [] as TradingSkill[], {
+    const a = new GoatRuntime(makeGoat(), [] as TradingSkill[], {
       reasoning: gateway,
       marketProvider: new PaperMarketDataProvider({ enableTicks: false }),
       signals: undefined,
