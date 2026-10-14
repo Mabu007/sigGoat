@@ -927,7 +927,8 @@ export class GoatRuntime {
       const preservePlan =
         triggerType !== 'MANUAL_REEVALUATE' &&
         activePlan.length > 0 &&
-        activePlan.some((condition) => !condition.isTriggered);
+        (triggerType === 'TRACKER_TRIGGERED' ||
+          activePlan.some((condition) => !condition.isTriggered));
       const trackers: TrackerCondition[] = preservePlan
         ? activePlan.map((condition) => ({ ...condition }))
         : proposedTrackers;
@@ -1346,10 +1347,8 @@ export class GoatRuntime {
   /**
    * Shared tracker loop for both the store and direct-subscription paths.
    *
-   * Returns true when a condition fired. The return value cannot be derived by
-   * counting triggered trackers before and after, because a firing tracker
-   * immediately triggers a wake that REPLACES the tracker list with the next
-   * thesis's trackers.
+   * Returns true when one or more conditions fired. Every condition is evaluated
+   * and persisted before one consolidated reasoning wake runs.
    */
   private async runTrackers(
     quote: MarketQuote,
