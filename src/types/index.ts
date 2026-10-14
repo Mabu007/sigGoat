@@ -776,9 +776,10 @@ export interface UserProfile {
   /**
    * Whether this user's GOATs ask before they trade.
    *
-   * `PROPOSAL` (the default) is the safe mode: every signal becomes a
-   * proposal and waits for an explicit accept or reject. `AUTONOMOUS` means
-   * the system evaluates its own risk gate and executes without asking.
+   * `PROPOSAL` (the default) waits for explicit accept/reject decisions.
+   * `AUTONOMOUS` auto-accepts actionable proposals. Actual PropDAO order
+   * submission additionally requires `autoTradeEnabled`, an owned account,
+   * a fixed quantity, provider authorization, and a passing server risk gate.
    *
    * Stored per user rather than per GOAT because it is a statement about how
    * the user wants to be involved, and because it must survive a restart and
