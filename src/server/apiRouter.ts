@@ -1885,7 +1885,19 @@ async function decideTrackerCheck(
     };
   }
 
-  return { handled: true, nextAt: isoOrNull(computeNextTrackerCheckAt(goat)) };
+  // The previous implementation fetched valid market state but returned
+  // without ever evaluating it. This made scheduled tracker checks look healthy
+  // while no condition could actually wake the GOAT.
+  const runtime = goatRuntimeRegistry.get(goatId)
+    ?? await ensureGoatRuntime(goat);
+  await runtime.ready();
+  const triggered = await runtime.evaluateTrackersNow(state);
+
+  return {
+    handled: true,
+    nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+    reason: triggered ? "condition hit; AI reevaluation started" : "conditions evaluated; no hit",
+  };
 }
 
 /**
