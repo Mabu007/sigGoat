@@ -48,8 +48,8 @@ export function Header({
   const initials = (displayName ?? email ?? '?').trim().charAt(0).toUpperCase();
 
   return (
-    <header className="sticky top-0 z-30 border-b border-line bg-surface/90 backdrop-blur-lg">
-      <div className="mx-auto flex h-14 w-full max-w-7xl items-center gap-3 px-3 sm:px-6">
+    <header className="premium-header sticky top-0 z-30 border-b border-line">
+      <div className="mx-auto flex h-[68px] w-full max-w-7xl items-center gap-3 px-3 sm:px-6">
         {/* Mobile-only brand; the sidebar carries it on desktop. */}
         <div className="md:hidden">
           <BrandMark compact />
@@ -101,7 +101,7 @@ export function Header({
           <button
             type="button"
             onClick={() => window.dispatchEvent(new CustomEvent('sirgoat-chatbot-open'))}
-            className="group relative flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-raised md:px-4"
+            className="group relative flex items-center gap-2 rounded-xl border border-line bg-raised/70 px-3 py-2 text-[12px] font-semibold text-fg shadow-sm transition-all hover:border-line-strong hover:bg-raised md:px-4"
             aria-label="Open AI assistant"
             title="AI assistant"
           >
@@ -116,12 +116,12 @@ export function Header({
           <button
             type="button"
             onClick={onOpenSettings}
-            className="flex items-center gap-2 rounded-lg border border-line py-1 pl-1 pr-2.5 text-left transition-colors hover:bg-raised"
+            className="flex items-center gap-2 rounded-xl border border-line bg-raised/60 py-1 pl-1 pr-2.5 text-left shadow-sm transition-all hover:border-line-strong hover:bg-raised"
             aria-label="Account and settings"
           >
             <span
               aria-hidden="true"
-              className="flex h-7 w-7 items-center justify-center rounded-md bg-sunken text-[11px] font-semibold text-fg-muted"
+              className="premium-avatar flex h-8 w-8 items-center justify-center rounded-lg text-[11px] font-bold text-fg"
             >
               {initials}
             </span>
