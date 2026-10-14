@@ -814,7 +814,7 @@ export function Chatbot() {
           if (event.type === 'status' && typeof event.message === 'string') {
             setStreamStatus(event.message);
           } else if (event.type === 'action_suggestion' && typeof event.mode === 'string') {
-            const allowedModes: ActionMode[] = ['create-goat', 'deploy-goat', 'proposal', 'trade'];
+            const allowedModes: ActionMode[] = ['create-goat', 'deploy-goat', 'proposal', 'trade', 'backtest', 'account'];
             if (allowedModes.includes(event.mode as ActionMode)) {
               setActionMode(event.mode as ActionMode);
               setShowActions(true);
