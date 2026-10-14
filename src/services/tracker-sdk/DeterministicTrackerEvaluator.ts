@@ -574,9 +574,10 @@ function describeIndicator(indicator: string, period?: number): string {
 /**
  * Evaluates a set of trackers and returns the FIRST trigger.
  *
- * Returns at most one trigger: the downstream effect of a trigger is a
- * reasoning wake that REPLACES the tracker list, so evaluating the rest would
- * produce stale verdicts against a list that no longer exists.
+ * Evaluates every still-pending condition against the same candle snapshot.
+ * Callers may aggregate all transitions and issue a single wake after every
+ * hit is persisted. A condition is one-shot: once HIT, it is never re-armed by
+ * a later candle; a new condition plan gets new tracker IDs.
  */
 export function evaluateTrackers(
   trackers: readonly TrackerCondition[],
@@ -592,8 +593,8 @@ export function evaluateTrackers(
   const unevaluable: TrackerEvaluation[] = [];
 
   for (const tracker of trackers) {
-    if (tracker.isTriggered && tracker.operator !== 'CROSS_ABOVE' && tracker.operator !== 'CROSS_BELOW') {
-      // Already fired; a level condition that stays true is not re-fired.
+    if (tracker.isTriggered || tracker.status === 'HIT' || tracker.status === 'INVALIDATED' || tracker.status === 'EXPIRED') {
+      // Condition plans are monotonic. A completed condition cannot fire again.
       continue;
     }
 
