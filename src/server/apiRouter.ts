@@ -559,6 +559,11 @@ async function patchGoatScheduleFor(
   if (!goat) {
     throw new NotFoundError();
   }
+  if (goat.deploymentState === 'DEPLOYED' && scheduler.kind === "disabled") {
+    throw new Error(
+      "Cannot change this GOAT's schedule because Firebase scheduling is unavailable. Configure Firebase/Firestore first.",
+    );
+  }
 
   const resolvedTimeframe =
     timeframe !== undefined
