@@ -29,6 +29,7 @@
     "src",
     "tests",
     "server.ts",
+    "scheduler-server.ts",
     "vite.config.ts"
   ]
 }
