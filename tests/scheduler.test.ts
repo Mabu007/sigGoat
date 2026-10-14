@@ -1,9 +1,9 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import {
-  GoatDurableObject,
+  GoatRuntime,
   computeBackoffDelay,
-} from '../src/services/durable-object/GoatDurableObject';
-import { durableObjectRegistry } from '../src/services/durable-object/DurableObjectRegistry';
+} from '../src/services/goat-runtime/GoatRuntime';
+import { goatRuntimeRegistry } from '../src/services/goat-runtime/GoatRuntimeRegistry';
 import type { ReasoningGateway } from '../src/server/reasoningGateway';
 import { PaperMarketDataProvider } from '../src/services/market-data/PaperMarketDataProvider';
 import { InMemoryPersistence } from '../src/server/repositories';
@@ -69,7 +69,7 @@ function countingGateway(fail: boolean): ReasoningGateway & { calls: number; tim
   return stub as ReturnType<typeof countingGateway>;
 }
 
-const actors: GoatDurableObject[] = [];
+const actors: GoatRuntime[] = [];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -105,7 +105,7 @@ describe('scheduler runtime behaviour', () => {
   test('a persistently failing GOAT backs off instead of hammering the broken pipeline', async () => {
     const gateway = countingGateway(true);
     const p = new InMemoryPersistence();
-    const live = new GoatDurableObject(makeGoat('goat_backoff'), SKILLS, {
+    const live = new GoatRuntime(makeGoat('goat_backoff'), SKILLS, {
       reasoning: gateway,
       marketProvider: new PaperMarketDataProvider({ enableTicks: false }),
       signals: p.signals,
@@ -142,7 +142,7 @@ describe('scheduler runtime behaviour', () => {
     const healthyGateway = countingGateway(false);
 
     const p1 = new InMemoryPersistence();
-    const broken = new GoatDurableObject(makeGoat('goat_broken'), SKILLS, {
+    const broken = new GoatRuntime(makeGoat('goat_broken'), SKILLS, {
       reasoning: failingGateway,
       marketProvider: new PaperMarketDataProvider({ enableTicks: false }),
       signals: p1.signals,
@@ -153,7 +153,7 @@ describe('scheduler runtime behaviour', () => {
       periodicReviewMs: 0,
     });
     const p2 = new InMemoryPersistence();
-    const healthy = new GoatDurableObject(makeGoat('goat_healthy'), SKILLS, {
+    const healthy = new GoatRuntime(makeGoat('goat_healthy'), SKILLS, {
       reasoning: healthyGateway,
       marketProvider: new PaperMarketDataProvider({ enableTicks: false }),
       signals: p2.signals,
@@ -178,7 +178,7 @@ describe('scheduler runtime behaviour', () => {
   test('destroy() stops scheduled work: no further wakes after shutdown', async () => {
     const gateway = countingGateway(true);
     const p = new InMemoryPersistence();
-    const actor = new GoatDurableObject(makeGoat('goat_stop'), SKILLS, {
+    const actor = new GoatRuntime(makeGoat('goat_stop'), SKILLS, {
       reasoning: gateway,
       marketProvider: new PaperMarketDataProvider({ enableTicks: false }),
       signals: p.signals,
@@ -204,7 +204,7 @@ describe('scheduler runtime behaviour', () => {
     const goat = makeGoat('goat_removed');
     const p = new InMemoryPersistence();
 
-    const actor = durableObjectRegistry.getOrCreate(goat, SKILLS, {
+    const actor = goatRuntimeRegistry.getOrCreate(goat, SKILLS, {
       reasoning: gateway,
       marketProvider: new PaperMarketDataProvider({ enableTicks: false }),
       signals: p.signals,
@@ -217,8 +217,8 @@ describe('scheduler runtime behaviour', () => {
     actors.push(actor);
 
     await sleep(400);
-    durableObjectRegistry.remove(goat.id);
-    expect(durableObjectRegistry.get(goat.id)).toBeUndefined();
+    goatRuntimeRegistry.remove(goat.id);
+    expect(goatRuntimeRegistry.get(goat.id)).toBeUndefined();
 
     const callsAtRemoval = gateway.calls;
     await sleep(400);
