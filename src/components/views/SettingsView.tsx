@@ -948,8 +948,7 @@ export const SettingsView: React.FC = () => {
             <span>AI Reasoning Engine</span>
           </h2>
           <p className="text-xs text-fg-muted mt-0.5">
-            Add your OpenRouter key, then pick the model your GOATs reason with. Every
-            model in the live catalogue is available — nothing is hardcoded.
+            Connect a provider with your own API key, then choose the model your GOATs reason with. OpenRouter uses its live catalogue; Space Bunny provides Space Bunny Alpha.
           </p>
         </div>
 
