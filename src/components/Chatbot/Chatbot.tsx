@@ -140,7 +140,7 @@ import {
 
 
 import { useAuth } from '../../context/AuthContext';
-import { ChatActionsPanel } from './ChatActionsPanel';
+import { ChatActionsPanel, type ActionMode } from './ChatActionsPanel';
 
 
 
@@ -413,7 +413,7 @@ export function Chatbot() {
 
   const { currentUser, getApiAuthHeaders } = useAuth();
 
-  const [isOpen, setIsOpen] = useState(false);\n\n  const [showActions, setShowActions] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);\n\n  const [showActions, setShowActions] = useState(false);\n\n  const [actionMode, setActionMode] = useState<ActionMode>('research');
 
   const [chats, setChats] = useState<ChatItem[]>([]);
 
@@ -809,6 +809,13 @@ export function Chatbot() {
           const event = JSON.parse(payload);
           if (event.type === 'status' && typeof event.message === 'string') {
             setStreamStatus(event.message);
+          } else if (event.type === 'action_suggestion' && typeof event.mode === 'string') {
+            const allowedModes: ActionMode[] = ['create-goat', 'deploy-goat', 'proposal', 'trade'];
+            if (allowedModes.includes(event.mode as ActionMode)) {
+              setActionMode(event.mode as ActionMode);
+              setShowActions(true);
+              setStreamStatus(typeof event.message === 'string' ? event.message : 'Opening the requested action card…');
+            }
           } else if (event.type === 'delta' && typeof event.content === 'string') {
             streamedContent += event.content;
             setMessages((prev) => {
