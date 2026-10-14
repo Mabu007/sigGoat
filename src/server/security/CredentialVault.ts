@@ -50,6 +50,7 @@ import { redactSecrets } from './redaction';
 export type CredentialProviderId =
   | 'openrouter'
   | 'groq'
+  | 'spacebunny'
   | 'propdao'
   | 'telegram';
 
