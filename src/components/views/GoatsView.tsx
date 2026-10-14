@@ -854,7 +854,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
     if (!name.trim() || !goal.trim() || !selectedMarkets.length) {
       setCreateError(
-        'Please provide a name, objective goal, and select exactly one asset.'
+        'Please provide a name, job description, and select exactly one asset.'
       );
       return;
     }
@@ -1131,7 +1131,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 </h3>
 
                 <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-fg-subtle">
-                  Define an objective, assign markets and choose a live
+                  Write its job description, assign a market and choose a live
                   reasoning model. The GOAT builds its own thesis and
                   tracked conditions after deployment.
                 </p>
