@@ -158,7 +158,7 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
       request("/api/propdao/accounts/" + encodeURIComponent(accountId) + "/details"),
       request("/api/propdao/challenges").catch(() => ({ challenges: [], markets: [] })),
     ]);
-    const fullData = { ...payload, challenges: challengeData.challenges ?? [], markets: challengeData.markets ?? [] };
+    const fullData = { ...payload, identity: challengeData.identity ?? null, challenges: challengeData.challenges ?? [], markets: challengeData.markets ?? [] };
     setAccountDetails(fullData);
     return { action: { type: "propdao_account", status: fullData.completeness ?? "partial", title: "PropDAO account details", ...fullData } };
   }, "PropDAO account data refreshed");
