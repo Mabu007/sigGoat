@@ -163,9 +163,9 @@ export interface TrackerDirective {
    *   { indicator: 'EMA', period: 20 } CROSS_ABOVE targetValue: 1.2345
    *   { indicator: 'RSI', period: 14 } CROSS_BELOW targetValue: 30
    *
-   * The runtime recomputes the value from candles and compares it to
-   * targetValue. A tracker with an indicator and a targetValue is therefore
-   * fully deterministic and never depends on the model at evaluation time.
+   * The runtime recomputes the value from candles and compares it to targetValue,
+   * or to the inclusive rangeLow/rangeHigh bounds for WITHIN_RANGE. Evaluation
+   * is deterministic and never depends on the model after the condition is armed.
    */
   indicator?: IndicatorType;
   period?: number;
