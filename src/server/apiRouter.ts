@@ -5952,6 +5952,62 @@ async function runChatResearchLoop(
     }).slice(0, 18000);
 }
 
+/**
+ * Explicit, authenticated market-research tool for SIRGOAT chat.
+ *
+ * The chat model may explain the returned evidence, but it does not get to
+ * invent quotes or trigger state changes. This endpoint reuses the same
+ * provider-backed research pipeline as chat and returns a typed tool result
+ * suitable for interactive cards.
+ */
+apiRouter.post("/chat/actions/market-research", authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  const query = typeof req.body?.query === "string" ? req.body.query.trim() : "";
+  if (!query) return fail(res, 400, "INVALID_QUERY", "A market or asset query is required.");
+  if (query.length > 1000) return fail(res, 400, "QUERY_TOO_LONG", "Market queries must be 1,000 characters or fewer.");
+
+  try {
+    const evidence = await buildChatResearchContext(user.uid, query);
+    const failed = /RESEARCH ERROR|QUOTE RETRIEVAL FAILED|DISCOVERY FAILED/i.test(evidence);
+    res.json({
+      action: {
+        id: "market_research_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+        type: "market_research",
+        status: failed ? "partial" : "completed",
+        title: "Hyperliquid market research",
+        query,
+        dataMode: marketProvider.dataMode,
+        generatedAt: new Date().toISOString(),
+        evidence,
+      },
+    });
+  } catch (error) {
+    console.error("[chat/actions] market research failed", error);
+    return fail(res, 502, "MARKET_RESEARCH_FAILED", "Market research failed. No market facts were generated.");
+  }
+});
+
+/**
+ * Discover the server-side tools SIRGOAT can safely orchestrate. Existing
+ * resource routes remain the source of truth for creation, deployment,
+ * proposal decisions and execution policy; this route never advertises a
+ * capability as executable unless the deployment policy confirms it.
+ */
+apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
+  const user = requireUser(req);
+  const execution = propDaoFor(user.uid).policyStatus();
+  res.json({
+    tools: [
+      { id: "market_research", label: "Research a market", endpoint: "POST /api/chat/actions/market-research", confirmationRequired: false, available: true },
+      { id: "create_goat", label: "Create a GOAT", endpoint: "POST /api/goats", confirmationRequired: true, available: true },
+      { id: "deploy_goat", label: "Deploy or wake a GOAT", endpoint: "POST /api/goats/:id/status or POST /api/goats/:id/wake", confirmationRequired: true, available: true },
+      { id: "create_trade_proposal", label: "Generate a trade proposal", endpoint: "POST /api/goats/:id/wake then GET /api/goats/:id/signals", confirmationRequired: false, available: true },
+      { id: "execute_trade", label: "Approve trade proposal", endpoint: "POST /api/goats/:id/signals/:signalId/decision", confirmationRequired: true, available: Boolean(execution.enabled && execution.authorised), blockedReason: execution.enabled && execution.authorised ? null : execution.summary },
+    ],
+    execution,
+  });
+});
+
 apiRouter.get("/chats", authMiddleware, async (req, res) => {
   const user = requireUser(req);
   try {
