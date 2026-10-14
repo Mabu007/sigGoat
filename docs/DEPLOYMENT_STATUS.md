@@ -18,7 +18,7 @@ No Firebase Functions or Cloud Run service is required. Cloudflare Durable Objec
 3. The review creates a thesis and a bounded set of deterministic conditions using supported indicator/operator definitions.
 4. Tracker checks are separate from AI reasoning. They compute indicator values from ordered candle data and do not call AI unless one or more conditions transition to HIT.
 5. Every condition is evaluated on the same snapshot. All hits are persisted before one consolidated AI wake; a completed condition is never re-armed.
-6. Routine reviews follow the user's configured interval/time/manual/tracker-only schedule. Routine and trigger-triggered research preserve the active condition definitions while any remain pending.
+6. Routine reviews follow the user's configured interval/time/manual/tracker-only schedule. Routine and tracker-triggered research preserve the active condition definitions while any remain pending.
 7. SignalGate remains authoritative. Actionable signals are persisted only after the thesis and signal writes succeed.
 8. Telegram notifications are sent through the existing Firestore-backed idempotent outbox.
 
