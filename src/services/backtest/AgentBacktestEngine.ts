@@ -1,4 +1,4 @@
-import type { BacktestProvenance, BacktestResult, BacktestTrade, Candle, DataMode, FundGoat, MarketThesis, TrackerCondition, TradingSkill } from '../../types';
+import type { BacktestProvenance, BacktestReplayEvent, BacktestResult, BacktestTrade, Candle, DataMode, FundGoat, MarketThesis, TrackerCondition, TradingSkill } from '../../types';
 import type { GoatReasoningContext } from '../ai/OpenRouterClient';
 import type { ReasoningResult } from '../agent/contracts';
 import type { MarketDataProvider } from '../market-data/MarketDataProvider';
@@ -116,6 +116,8 @@ export class AgentBacktestEngine {
     const pip = provider.getMarketMetadata(market)?.pipSize ?? (market.toUpperCase().includes('JPY') ? 0.01 : market.toUpperCase().includes('XAU') ? 0.1 : 0.0001);
     const trades: BacktestTrade[] = [], pending: PendingEntry[] = [], open: OpenPosition[] = [];
     const equityCurve: { time: number; equity: number }[] = [{ time: candles[0].time, equity: startingBalance }];
+    const replayEvents: BacktestReplayEvent[] = [];
+    let aiWakeCount = 0, conditionHitCount = 0;
     let equity = startingBalance, totalCosts = 0, tradeIndex = 0, activeTrackers: TrackerCondition[] = [];
     let activeThesis: MarketThesis | null = null, lastReasoningAt = -1, bankrupt = false;
 
@@ -134,6 +136,8 @@ export class AgentBacktestEngine {
     // Initial market review is a real GOAT reasoning call over the first 60 closed 5m bars.
     const initialIndex = MIN_HISTORY - 1;
     const initial = await reasonAt(initialIndex, 'BACKTEST_INITIAL_MARKET_REVIEW');
+    aiWakeCount++;
+    replayEvents.push({ time: candles[initialIndex].time, type: 'INITIAL_REVIEW', summary: initial.investigation.summary + ' Thesis: ' + initial.thesis.summary });
     activeTrackers = trackersFrom(initial, market, runId, candles[initialIndex].time);
     activeThesis = thesisFrom(goat, market, initial, activeTrackers, candles[initialIndex].time);
     lastReasoningAt = initialIndex;
@@ -156,10 +160,13 @@ export class AgentBacktestEngine {
           t.entryPrice = fill;
           t.executionPath?.push('Entry filled at ' + fill + ' on ' + new Date(candle.time).toISOString());
           open.push({ trade: t, entryIndex: index, riskDollars: item.riskDollars });
+          replayEvents.push({ time: candle.time, type: 'ORDER_FILLED', summary: t.direction + ' entry filled at ' + fill });
           pending.splice(j, 1);
         } else if (index >= item.expiresIndex) {
           t.outcome = 'EXPIRED'; t.reason += ' Entry order expired without a fill.';
-          t.executionPath?.push('Entry expired without a fill.'); pending.splice(j, 1);
+          t.executionPath?.push('Entry expired without a fill.');
+          replayEvents.push({ time: candle.time, type: 'ORDER_EXPIRED', summary: t.direction + ' entry order expired without a fill.' });
+          pending.splice(j, 1);
         }
       }
 
@@ -176,6 +183,7 @@ export class AgentBacktestEngine {
         if (exit !== null) {
           totalCosts += closePosition(pos, candle, exit, why, pip);
           equity += t.pnlDollars ?? 0;
+          replayEvents.push({ time: candle.time, type: 'TRADE_CLOSED', summary: t.direction + ' closed ' + why + '; net PnL ' + (t.pnlDollars ?? 0).toFixed(2) });
           open.splice(j, 1);
         }
       }
@@ -200,7 +208,11 @@ export class AgentBacktestEngine {
       }
 
       if (hits.length && index > lastReasoningAt) {
+        conditionHitCount += hits.length;
+        for (const hit of hits) replayEvents.push({ time: candle.time, type: 'CONDITION_HIT', summary: hit });
         const result = await reasonAt(index, 'BACKTEST_TRACKER_TRIGGERED: ' + hits.join('; ') + '. Reassess historical price data only.');
+        aiWakeCount++;
+        replayEvents.push({ time: candle.time, type: 'AI_REASSESSMENT', summary: result.investigation.summary + ' Thesis: ' + result.thesis.summary });
         lastReasoningAt = index;
         const proposed = trackersFrom(result, market, runId, candle.time);
         const signatures = new Set(activeTrackers.map(trackerSignature));
@@ -214,6 +226,7 @@ export class AgentBacktestEngine {
           if (trade) {
             captured.add(opportunity); tradeIndex++;
             trades.push(trade);
+            replayEvents.push({ time: candle.time, type: 'SIGNAL_CAPTURED', summary: trade.direction + ' ' + trade.orderType + ' entry ' + trade.plannedEntry + ', SL ' + trade.stopLoss + ', TP ' + trade.takeProfit });
             pending.push({ trade, signalIndex: index, expiresIndex: index + MAX_PENDING_BARS, riskDollars: equity * riskPerTradePct / 100 });
             trade.executionPath?.push('Opportunity captured; scanning continues for independent setups.');
           }
@@ -227,10 +240,12 @@ export class AgentBacktestEngine {
       item.trade.outcome = 'EXPIRED';
       item.trade.reason += ' Backtest ended before entry filled.';
       item.trade.executionPath?.push('Replay ended with entry still pending.');
+      replayEvents.push({ time: last.time, type: 'ORDER_EXPIRED', summary: item.trade.direction + ' entry still pending when replay ended.' });
     }
     for (const pos of open) {
       totalCosts += closePosition(pos, last, last.close, 'TIME_EXIT', pip);
       equity += pos.trade.pnlDollars ?? 0;
+      replayEvents.push({ time: last.time, type: 'TRADE_CLOSED', summary: pos.trade.direction + ' closed at replay end; net PnL ' + (pos.trade.pnlDollars ?? 0).toFixed(2) });
     }
     if (equityCurve[equityCurve.length - 1].time !== last.time) equityCurve.push({ time: last.time, equity: Number(equity.toFixed(2)) });
     else equityCurve[equityCurve.length - 1] = { time: last.time, equity: Number(equity.toFixed(2)) };
@@ -265,7 +280,9 @@ export class AgentBacktestEngine {
       averageWin: wins.length ? Number((wins.reduce((s, t) => s + (t.pnlDollars ?? 0), 0) / wins.length).toFixed(2)) : 0,
       averageLoss: losses.length ? Number((losses.reduce((s, t) => s + (t.pnlDollars ?? 0), 0) / losses.length).toFixed(2)) : 0,
       ambiguityPolicy: 'Historical 5m OHLC only; if stop and target touch in the same candle, stop is assumed first. Signals cannot fill on the candle that generated them.',
-      bankrupt, equityCurve, trades, createdAt: new Date().toISOString(),
+      bankrupt, equityCurve, trades,
+      agentReplay: { engine: 'AGENT_HISTORICAL_REPLAY', aiWakeCount, conditionHits: conditionHitCount, events: replayEvents },
+      createdAt: new Date().toISOString(),
     };
   }
 }
