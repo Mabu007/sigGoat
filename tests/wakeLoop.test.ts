@@ -126,6 +126,33 @@ function liveSnapshot(mid: number, rsi = 25): MarketStateSnapshot {
   };
 }
 
+function armTrackers(runtime: GoatRuntime, trackers: unknown[]) {
+  const state = runtime as unknown as {
+    runtimeState: { trackers: unknown[]; currentThesis: unknown };
+  };
+  state.runtimeState.trackers = trackers;
+  state.runtimeState.currentThesis = {
+    id: 'ths_tracker_test',
+    userId: 'u',
+    goatId: 'goat_wake',
+    market: 'EUR/USD',
+    directionalHypothesis: 'NEUTRAL',
+    summary: 'Tracker test thesis',
+    tradePlan: ['wait for deterministic conditions'],
+    supportingEvidence: [],
+    contradictoryEvidence: [],
+    relevantTimeframe: '5m',
+    confirmationConditions: [],
+    invalidationConditions: [],
+    observationPlan: 'Test conditions',
+    trackers,
+    confidence: 50,
+    status: 'TRACKING',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function actor(gateway: ReasoningGateway, extra: Record<string, unknown> = {}) {
   const persistence = new InMemoryPersistence();
   return new GoatRuntime(makeGoat(), [] as TradingSkill[], {
@@ -203,19 +230,19 @@ describe('tracker event drives the wake', () => {
     const gateway = makeGateway();
     const a = actor(gateway);
 
-    // Arm a tracker that WILL fire: RSI(14) below 30, snapshot rsi = 25.
-    (a as never as { runtimeState: { trackers: unknown[] } }).runtimeState.trackers = [
+    // Arm a level condition using computed candle RSI, not the supplied display snapshot.
+    armTrackers(a, [
       {
         id: 't1',
         description: 'RSI(14) below 30',
         type: 'INDICATOR',
         market: 'EUR/USD',
-        operator: 'CROSS_BELOW',
+        operator: 'LESS_THAN',
         targetValue: 30,
         indicatorParams: { indicator: 'RSI', period: 14 },
         isTriggered: false,
       },
-    ];
+    ]);
 
     const fired = await a.evaluateTrackersNow(liveSnapshot(1.2, 25));
 
@@ -223,22 +250,56 @@ describe('tracker event drives the wake', () => {
     expect(gateway.calls).toBe(1);
   });
 
+  test('all conditions hit on one candle are persisted before one AI wake', async () => {
+    const gateway = makeGateway();
+    const a = actor(gateway);
+    armTrackers(a, [
+      {
+        id: 'price_a',
+        description: 'Price below 1.30',
+        type: 'INDICATOR',
+        market: 'EUR/USD',
+        operator: 'LESS_THAN',
+        targetValue: 1.30,
+        indicatorParams: { indicator: 'PRICE' },
+        isTriggered: false,
+      },
+      {
+        id: 'price_b',
+        description: 'Price below 1.25',
+        type: 'INDICATOR',
+        market: 'EUR/USD',
+        operator: 'LESS_THAN',
+        targetValue: 1.25,
+        indicatorParams: { indicator: 'PRICE' },
+        isTriggered: false,
+      },
+    ]);
+
+    const fired = await a.evaluateTrackersNow(liveSnapshot(1.2, 25));
+    const state = a.getState();
+
+    expect(fired).toBe(true);
+    expect(gateway.calls).toBe(1);
+    expect(state.trackers.every((tracker) => tracker.isTriggered && tracker.status === 'HIT')).toBe(true);
+  });
+
   test('an UNSATISFIED tracker escalates to nothing (no AI call)', async () => {
     const gateway = makeGateway();
     const a = actor(gateway);
 
-    (a as never as { runtimeState: { trackers: unknown[] } }).runtimeState.trackers = [
+    armTrackers(a, [
       {
         id: 't1',
-        description: 'RSI(14) below 30',
+        description: 'RSI(14) below -1',
         type: 'INDICATOR',
         market: 'EUR/USD',
-        operator: 'CROSS_BELOW',
-        targetValue: 10,
+        operator: 'LESS_THAN',
+        targetValue: -1,
         indicatorParams: { indicator: 'RSI', period: 14 },
         isTriggered: false,
       },
-    ];
+    ]);
 
     const fired = await a.evaluateTrackersNow(liveSnapshot(1.2, 25));
 
@@ -252,18 +313,18 @@ describe('tracker event drives the wake', () => {
     const gateway = makeGateway();
     const a = actor(gateway);
 
-    (a as never as { runtimeState: { trackers: unknown[] } }).runtimeState.trackers = [
+    armTrackers(a, [
       {
         id: 't1',
         description: 'RSI(14) below 30',
         type: 'INDICATOR',
         market: 'EUR/USD',
-        operator: 'CROSS_BELOW',
+        operator: 'LESS_THAN',
         targetValue: 30,
         indicatorParams: { indicator: 'RSI', period: 14 },
         isTriggered: false,
       },
-    ];
+    ]);
 
     const degraded = {
       ...liveSnapshot(1.2, 25),
