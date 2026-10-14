@@ -673,6 +673,12 @@ export interface BacktestProvenance {
   rejectedCandles: number;
 }
 
+export interface BacktestReplayEvent {
+  time: number;
+  type: 'INITIAL_REVIEW' | 'CONDITION_HIT' | 'AI_REASSESSMENT' | 'SIGNAL_CAPTURED' | 'ORDER_FILLED' | 'TRADE_CLOSED' | 'ORDER_EXPIRED';
+  summary: string;
+}
+
 export interface BacktestResult {
   id: string;
   goatId: string;
@@ -746,6 +752,14 @@ export interface BacktestResult {
    * would be unable to.
    */
   trades: BacktestTrade[];
+
+  /** Present for the AI-driven replay engine; absent on legacy/imported results. */
+  agentReplay?: {
+    engine: 'AGENT_HISTORICAL_REPLAY';
+    aiWakeCount: number;
+    conditionHits: number;
+    events: BacktestReplayEvent[];
+  };
 
   createdAt: string;
 }
