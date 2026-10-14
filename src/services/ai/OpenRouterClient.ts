@@ -1126,8 +1126,10 @@ STEP 3 — BUILD TRACKERS
     "period"      : indicator period, e.g. 20 for EMA(20), 14 for RSI(14)
     "operator"    : CROSS_ABOVE | CROSS_BELOW | GREATER_THAN |
                    LESS_THAN | WITHIN_RANGE
-    "targetValue" : the exact number the indicator must reach
-    "description" : the same condition written in plain English
+    "targetValue" : the exact number the indicator must reach (except WITHIN_RANGE)
+    "rangeLow"    : inclusive lower bound, required for WITHIN_RANGE
+     "rangeHigh"   : inclusive upper bound, required for WITHIN_RANGE
+     "description" : the same condition written in plain English
 
   Valid examples:
     { "type":"INDICATOR", "indicator":"EMA", "period":20,
@@ -1152,7 +1154,8 @@ STEP 3 — BUILD TRACKERS
 
 RULES FOR TRACKERS:
   - Every tracker MUST be falsifiable and numeric.
-  - If you specify an "indicator", you MUST supply "targetValue".
+  - For every operator except WITHIN_RANGE, an indicator requires targetValue.
+   - WITHIN_RANGE requires numeric rangeLow and rangeHigh, with low <= high; never treat one scalar target as a range.
   - Base every targetValue on a supplied number (quote, candles or a
     supplied indicator). Never invent a level.
   - Provide 2 to 6 trackers covering the sequence in your plan.
