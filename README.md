@@ -61,7 +61,7 @@ where per-GOAT polling would have made 48. Counters are exposed at
 A provider outage keeps the last good snapshot and flags it `degraded`; reasoning
 refuses to run on degraded data so stale prices cannot become a thesis.
 
-Scheduled reviews and GOAT runtime records are backed by Firebase/Firestore. The target scheduler is Cloud Scheduler dispatching the authenticated Cloud Run endpoint every minute; see [the Cloud Run scheduler runbook](docs/CLOUD_RUN_SCHEDULER.md).
+Scheduled reviews and GOAT runtime records are backed by Firebase/Firestore. Cloudflare Workers Cron dispatches the authenticated SIRGOAT endpoint every minute while Firebase/Firestore stores durable GOAT state; see [the Cloudflare Worker scheduler runbook](docs/CLOUDFLARE_WORKER_SCHEDULER.md).
 
 ## Bring-your-own OpenRouter key (BYOK)
 
