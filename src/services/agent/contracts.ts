@@ -174,6 +174,9 @@ export interface TrackerDirective {
   session?: 'LONDON' | 'NEW_YORK' | 'ASIAN';
 
   targetValue?: number;
+  /** Required together for WITHIN_RANGE. */
+  rangeLow?: number;
+  rangeHigh?: number;
   operator?: TrackerOperator;
 }
 
@@ -678,14 +681,22 @@ function parseTrackerDirective(
     `${label}.targetValue`,
     itemIssues,
   );
+  const rangeLow = parseFiniteNumber(
+    raw.rangeLow,
+    `${label}.rangeLow`,
+    itemIssues,
+  );
+  const rangeHigh = parseFiniteNumber(
+    raw.rangeHigh,
+    `${label}.rangeHigh`,
+    itemIssues,
+  );
 
-  if (
-    targetValue !== undefined &&
-    !Number.isFinite(targetValue)
-  ) {
-    itemIssues.push(
-      `${label}.targetValue must be finite`,
-    );
+  if (rangeLow !== undefined && rangeHigh !== undefined && rangeLow > rangeHigh) {
+    itemIssues.push(`${label}.rangeLow must be <= ${label}.rangeHigh`);
+  }
+  if (operator === 'WITHIN_RANGE' && (rangeLow === undefined || rangeHigh === undefined)) {
+    itemIssues.push(`${label} WITHIN_RANGE requires numeric rangeLow and rangeHigh`);
   }
 
   /**
@@ -737,6 +748,7 @@ function parseTrackerDirective(
    */
   if (
     indicator &&
+    operator !== 'WITHIN_RANGE' &&
     targetValue === undefined
   ) {
     itemIssues.push(
@@ -758,6 +770,8 @@ function parseTrackerDirective(
     slowPeriod: slowPeriod ?? undefined,
     session: session ?? undefined,
     targetValue,
+    rangeLow,
+    rangeHigh,
     operator,
   };
 }
