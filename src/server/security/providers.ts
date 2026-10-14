@@ -23,7 +23,7 @@ import {
   registerCredentialProvider,
 } from './CredentialVault';
 import { CredentialRecordRepository, PersistenceLayer } from '../repositories';
-import { isPlausibleOpenRouterKey, isPlausibleGroqKey, isPlausiblePropDaoKey, isPlausibleTelegramToken } from '../credentialValidation';
+import { isPlausibleOpenRouterKey, isPlausibleGroqKey, isPlausibleSpaceBunnyKey, isPlausiblePropDaoKey, isPlausibleTelegramToken } from '../credentialValidation';
 
 /* ------------------------------------------------------------------ */
 /* Shape validation                                                    */
@@ -68,6 +68,7 @@ registerCredentialProvider({
   executionCapable: false,
   normalise: (value) => requireFormat(value, 'Groq', isPlausibleGroqKey),
 });
+registerCredentialProvider({ id: 'spacebunny', label: 'Space Bunny', executionCapable: false, normalise: (value) => requireFormat(value, 'Space Bunny', isPlausibleSpaceBunnyKey) });
 
 registerCredentialProvider({
   id: 'propdao',
@@ -108,6 +109,7 @@ export class PersistenceCredentialRecordStore {
     return rows.filter((row): row is typeof row & { provider: CredentialProviderId } =>
       row.provider === 'openrouter' ||
       row.provider === 'groq' ||
+      row.provider === 'spacebunny' ||
       row.provider === 'propdao' ||
       row.provider === 'telegram');
   }
