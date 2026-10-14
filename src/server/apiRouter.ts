@@ -89,6 +89,7 @@ import {
   OpenRouterClient,
 } from "../services/ai/OpenRouterClient";
 import { FirebaseScheduler } from "./scheduler/FirebaseScheduler";
+import { DisabledScheduler } from "./scheduler/DisabledScheduler";
 import type { WakeScheduler, FiredWake } from "./scheduler/types";
 import { InProcessScheduler } from "./scheduler/InProcessScheduler";
 import {
@@ -462,7 +463,7 @@ let inProcessScheduler: InProcessScheduler | null = null;
 
 if (firebaseScheduler) {
   console.log("[api] Firebase-backed GOAT scheduler active; Cloud Scheduler dispatches due reviews.");
-} else {
+} else if (process.env.NODE_ENV !== "production" && !isEphemeralRuntime()) {
   inProcessScheduler = new InProcessScheduler(async (wake) => {
     await runScheduledWakeSync(wake.goatId, wake.eventId, wake.reason);
   });
@@ -470,9 +471,15 @@ if (firebaseScheduler) {
     await runTrackerCheckSync(wake.goatId, wake.eventId);
   };
   console.warn("[api] Firebase Admin unavailable — using in-process timers for local development only.");
+} else {
+  console.error("[api] Firebase Admin unavailable on a production/ephemeral host; scheduling is disabled to avoid volatile runtime state.");
 }
 
-const scheduler: WakeScheduler = firebaseScheduler ?? inProcessScheduler!;
+const scheduler: WakeScheduler = firebaseScheduler
+  ?? inProcessScheduler
+  ?? new DisabledScheduler(
+    "Firebase Admin is unavailable. Configure Firebase/Firestore before deploying or scheduling GOATs.",
+  );
 
 /**
  * Routes locally-ingested market events through the in-process runtime.
