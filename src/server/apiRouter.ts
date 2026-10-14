@@ -6411,7 +6411,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       requestedActionMode = "deploy-goat";
     } else if (/\b(execute|place|submit|enter)\b[\s\S]{0,80}\b(trade|order)\b/.test(actionText)) {
       requestedActionMode = "trade";
-    } else if (/\b(create|generate|research|review|find|prepare)\b[\s\S]{0,80}\b(proposal|signal|trade setup|trade idea)\b/.test(actionText) ||
+    } else if (/\b(create|generate|research|review|find|prepare|accept|reject|show|list|manage)\b[\s\S]{0,80}\b(proposal|signal|trade setup|trade idea)\b/.test(actionText) ||
                /\b(ask|tell)\b[\s\S]{0,60}\b(my goat|my agent)\b[\s\S]{0,60}\b(research|review|analyse|analyze)\b/.test(actionText)) {
       requestedActionMode = "proposal";
     }
