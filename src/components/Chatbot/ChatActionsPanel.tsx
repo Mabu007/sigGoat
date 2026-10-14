@@ -22,7 +22,8 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [markets, setMarkets] = useState<Option[]>([]);\n  const [propMarkets, setPropMarkets] = useState<Option[]>([]);
+  const [markets, setMarkets] = useState<Option[]>([]);
+  const [propMarkets, setPropMarkets] = useState<Option[]>([]);
   const [skills, setSkills] = useState<Option[]>([]);
   const [goats, setGoats] = useState<Option[]>([]);
   const [accounts, setAccounts] = useState<Option[]>([]);
@@ -61,20 +62,24 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
         request("/api/markets/symbols").catch(() => ({})),
         request("/api/skills").catch(() => ({})),
         request("/api/goats").catch(() => ({})),
-        request("/api/propdao/accounts").catch(() => ({})),\n        request("/api/propdao/markets").catch(() => ({})),
+        request("/api/propdao/accounts").catch(() => ({})),
+        request("/api/propdao/markets").catch(() => ({})),
       ]);
       const marketRows = Array.isArray(marketData?.symbols) ? marketData.symbols : Array.isArray(marketData?.markets) ? marketData.markets : [];
       const skillRows = Array.isArray(skillData?.skills) ? skillData.skills : [];
       const goatRows = Array.isArray(goatData?.goats) ? goatData.goats : [];
-      const accountRows = Array.isArray(accountData?.accounts) ? accountData.accounts : [];\n      const propMarketRows = Array.isArray(propMarketData?.markets) ? propMarketData.markets : [];
+      const accountRows = Array.isArray(accountData?.accounts) ? accountData.accounts : [];
+      const propMarketRows = Array.isArray(propMarketData?.markets) ? propMarketData.markets : [];
       const nextMarkets = marketRows.map((item: any) => ({ ...item, id: String(item.symbol ?? item.id ?? ""), label: String(item.symbol ?? item.name ?? item.id ?? "") })).filter((item: Option) => item.id);
       const nextSkills = skillRows.map((item: any) => ({ ...item, id: String(item.id ?? ""), label: String(item.name ?? item.title ?? item.id ?? "") })).filter((item: Option) => item.id);
       const nextGoats = goatRows.map((item: any) => ({ ...item, id: String(item.id ?? ""), label: String(item.name ?? item.id ?? "") })).filter((item: Option) => item.id);
-      const nextAccounts = accountRows.map((item: any) => ({ ...item, id: String(item.accountId ?? item.id ?? ""), label: String(item.accountId ?? item.name ?? item.id ?? "") })).filter((item: Option) => item.id);\n      const nextPropMarkets = propMarketRows.map((item: any) => ({ ...item, id: String(item.symbol ?? item.id ?? ""), label: String(item.symbol ?? item.name ?? item.id ?? "") })).filter((item: Option) => item.id);
+      const nextAccounts = accountRows.map((item: any) => ({ ...item, id: String(item.accountId ?? item.id ?? ""), label: String(item.accountId ?? item.name ?? item.id ?? "") })).filter((item: Option) => item.id);
+      const nextPropMarkets = propMarketRows.map((item: any) => ({ ...item, id: String(item.symbol ?? item.id ?? ""), label: String(item.symbol ?? item.name ?? item.id ?? "") })).filter((item: Option) => item.id);
       setMarkets(nextMarkets);
       setSkills(nextSkills);
       setGoats(nextGoats);
-      setAccounts(nextAccounts);\n      setPropMarkets(nextPropMarkets);
+      setAccounts(nextAccounts);
+      setPropMarkets(nextPropMarkets);
       if (!market && nextMarkets.length) setMarket(nextMarkets[0].id);
       if (!goatId && nextGoats.length) setGoatId(nextGoats[0].id);
       if (!accountId && nextAccounts.length) setAccountId(nextAccounts[0].id);
@@ -85,7 +90,11 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
     }
   }, [request, market, goatId, accountId, symbol, skillIds.length]);
 
-  useEffect(() => { setMode(initialMode); }, [initialMode]);\n\n  useEffect(() => { setMode(initialMode); }, [initialMode]);\n\n  useEffect(() => { void refreshContext(); }, [refreshContext]);
+  useEffect(() => { setMode(initialMode); }, [initialMode]);
+
+  useEffect(() => { setMode(initialMode); }, [initialMode]);
+
+  useEffect(() => { void refreshContext(); }, [refreshContext]);
 
   const run = async (fn: () => Promise<any>, successMessage: string) => {
     setLoading(true);
@@ -116,7 +125,9 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
     return { action: { type: "create_goat", status: "completed", title: "GOAT draft created", goat: payload.goat ?? payload, message: "The draft is saved. Deploy it separately after reviewing the configuration." } };
   }, "GOAT draft created");
 
-  const deployGoat = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/deploy", { confirmed: false }), "Review the deployment confirmation card");\n\n  const confirmDeployGoat = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/deploy", { confirmed: true }), "Deployment request submitted");
+  const deployGoat = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/deploy", { confirmed: false }), "Review the deployment confirmation card");
+
+  const confirmDeployGoat = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/deploy", { confirmed: true }), "Deployment request submitted");
 
   const createProposal = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/research", { reason: "Market review requested from SIRGOAT chat" }), "GOAT review completed");
 
