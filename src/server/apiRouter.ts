@@ -3434,6 +3434,9 @@ apiRouter.post(
  */
 async function readUserPreferences(userId: string): Promise<{
   autonomyMode: AutonomyMode;
+  autoTradeEnabled: boolean;
+  autoTradeAccountId: string | null;
+  autoTradeQty: number | null;
   aiModel: string | null;
   aiModelAvailable: boolean | null;
   /** False when execution is impossible no matter the user's choice. */
@@ -3446,6 +3449,9 @@ async function readUserPreferences(userId: string): Promise<{
 
   return {
     autonomyMode,
+    autoTradeEnabled: profile?.autoTradeEnabled === true,
+    autoTradeAccountId: profile?.autoTradeAccountId ?? null,
+    autoTradeQty: typeof profile?.autoTradeQty === "number" ? profile.autoTradeQty : null,
     aiModel: profile?.aiModel ?? null,
     /**
      * Null when it cannot be checked (no key configured, or the catalogue is
@@ -3520,6 +3526,48 @@ apiRouter.post(
         );
       }
       profile.autonomyMode = body.autonomyMode;
+    }
+
+    if (body.autoTradeEnabled !== undefined) {
+      if (typeof body.autoTradeEnabled !== "boolean") {
+        return fail(res, 400, "INVALID_AUTO_TRADE_SETTING", "autoTradeEnabled must be true or false.");
+      }
+      profile.autoTradeEnabled = body.autoTradeEnabled;
+    }
+
+    if (body.autoTradeAccountId !== undefined) {
+      if (typeof body.autoTradeAccountId !== "string") {
+        return fail(res, 400, "INVALID_AUTO_TRADE_ACCOUNT", "autoTradeAccountId must be a string.");
+      }
+      const accountId = body.autoTradeAccountId.trim();
+      if (accountId) {
+        const ownedAccount = await propDaoFor(user.uid).resolveAccount(accountId);
+        if (!ownedAccount) return fail(res, 400, "INVALID_AUTO_TRADE_ACCOUNT", "Select an account returned by your connected PropDAO key.");
+        profile.autoTradeAccountId = ownedAccount.accountId;
+      } else {
+        delete profile.autoTradeAccountId;
+      }
+    }
+
+    if (body.autoTradeQty !== undefined) {
+      const qty = Number(body.autoTradeQty);
+      if (!Number.isFinite(qty) || qty <= 0 || qty > 1_000_000) {
+        return fail(res, 400, "INVALID_AUTO_TRADE_QTY", "autoTradeQty must be greater than zero and at most 1,000,000 units.");
+      }
+      profile.autoTradeQty = qty;
+    }
+
+    if (profile.autoTradeEnabled) {
+      if (normaliseAutonomyMode(profile.autonomyMode) !== "AUTONOMOUS") {
+        return fail(res, 409, "AUTO_TRADE_REQUIRES_AUTONOMOUS_MODE", "Set autonomyMode to AUTONOMOUS before enabling automatic order submission.");
+      }
+      if (!profile.autoTradeAccountId || !profile.autoTradeQty) {
+        return fail(res, 409, "AUTO_TRADE_CONFIGURATION_REQUIRED", "Select your owned PropDAO account and set a fixed order quantity before enabling automatic trading.");
+      }
+      const execution = propDaoFor(user.uid).policyStatus();
+      if (!execution.enabled || !execution.authorised) {
+        return fail(res, 409, "EXECUTION_NOT_AUTHORISED", execution.summary + " " + execution.termsSummary);
+      }
     }
 
     if (body.aiModel !== undefined) {
