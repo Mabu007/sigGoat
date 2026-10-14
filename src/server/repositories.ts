@@ -1235,7 +1235,7 @@ class FirestoreKeyStore implements KeyStore {
     const doc = await this.doc(userId).get();
     if (!doc.exists) return undefined;
     const value = doc.data()?.provider;
-    return value === 'groq' || value === 'openrouter' ? value : undefined;
+    return value === 'groq' || value === 'openrouter' || value === 'spacebunny' ? value : undefined;
   }
   async setProvider(userId: string, provider: 'openrouter' | 'groq' | 'spacebunny') {
     await this.write(userId, { provider });
