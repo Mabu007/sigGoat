@@ -96,7 +96,9 @@ export function isExecutionEnabled(env: NodeJS.ProcessEnv = process.env): boolea
  * A separate variable from the enable flag on purpose — see the header.
  */
 export function isCommercialUseAuthorised(env: NodeJS.ProcessEnv = process.env): boolean {
-  return envFlag(env.PROPDAO_EXECUTION_AUTHORISED);
+  // A boolean assertion without a durable reference is not an auditable authorisation.
+  return envFlag(env.PROPDAO_EXECUTION_AUTHORISED) &&
+    Boolean(env.PROPDAO_EXECUTION_TERMS_REFERENCE?.trim());
 }
 
 /** The authorisation reference recorded in the deployment, if any. */
