@@ -6101,6 +6101,10 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
 
   const suppliedIntentId = typeof body.intentId === "string" && /^[A-Za-z0-9_-]{8,120}$/.test(body.intentId)
     ? body.intentId : "";
+  if (body.confirmed === true && !suppliedIntentId) {
+    return fail(res, 400, "PREFLIGHT_REQUIRED",
+      "Run risk preflight first, then confirm using the intentId returned in its confirmation card.");
+  }
   const intentId = suppliedIntentId || ("sirgoat_" + Date.now() + "_" + Math.random().toString(36).slice(2, 12));
   if (body.confirmed !== true) {
     return res.json({ action: { type: "execute_trade", status: "confirmation_required",
