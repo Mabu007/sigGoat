@@ -71,6 +71,7 @@ export async function autoAcceptSignal(
   deps: {
     persistence: AutonomousPersistence;
     policyStatus: () => AutonomousExecutionPolicy;
+    executeSignal?: (goat: FundGoat, signal: TradeSignal, profile: UserProfile) => Promise<{ submitted: boolean; orderId?: string | null; intentId?: string; message?: string }>;
   },
   goat: FundGoat,
   signal: TradeSignal,
@@ -107,6 +108,17 @@ export async function autoAcceptSignal(
     return { action: 'SKIPPED_NOT_ACTIONABLE', reason: 'signal expired' };
   }
 
+  let order: { submitted: boolean; orderId?: string | null; intentId?: string; message?: string } | undefined;
+  if (profile?.autoTradeEnabled) {
+    if (!deps.executeSignal) return { action: "FAILED", reason: "Auto-trading is enabled but no execution handler is configured." };
+    try {
+      order = await deps.executeSignal(goat, signal, profile);
+    } catch (error) {
+      return { action: "FAILED", reason: error instanceof Error ? error.message : "Automatic order submission failed." };
+    }
+    if (!order.submitted) return { action: "FAILED", reason: order.message ?? "Automatic order submission was blocked. The proposal remains undecided." };
+  }
+
   const stamp = new Date(now()).toISOString();
   const decided: TradeSignal = {
     ...signal,
@@ -116,7 +128,9 @@ export async function autoAcceptSignal(
      * The audit trail has to say WHY there was no human in the loop. A record
      * indistinguishable from a clicked Accept cannot be reviewed afterwards.
      */
-    decisionNote: 'Auto-accepted: autonomy mode is on.',
+    decisionNote: profile?.autoTradeEnabled
+      ? `Auto-accepted and PropDAO order submitted (${order?.orderId ?? order?.intentId ?? 'provider confirmation received'}).`
+      : 'Auto-accepted: autonomy mode is on; no venue order was requested.',
     updatedAt: stamp,
   };
 
