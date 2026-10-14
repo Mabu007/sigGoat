@@ -218,49 +218,44 @@ mode**. Nothing pretends to be real:
 
 ## Hosting
 
-**Vercel serves the web app and user-facing API. Cloud Run executes scheduled GOAT work, Cloud Scheduler dispatches it, and Firebase/Firestore is the durable source of truth. Cloudflare Workers and Cloudflare Durable Objects are not used.**
+**Firebase/Firestore is the durable state layer. Cloudflare Workers Cron dispatches scheduled work; the existing SIRGOAT API executes the canonical Node-based GOAT pipeline.** This avoids Firebase Functions and Cloud Run. The Worker is a lightweight scheduler/dispatcher, not a second copy of the signal engine.
 
 ```
-Vercel UI + API
-  ├── Firebase Auth
-  ├── Firestore: GOATs, schedules, theses, signals, trackers, review history,
-  │              Telegram outbox, chats and messages
-  ├── OpenRouter / user-selected AI provider
-  └── Telegram delivery
-        ▲
-Cloud Scheduler (every minute; OIDC + x-cron-secret)
-  └── private Cloud Run service: GET /api/internal/cron
-        ├── claims due GOAT schedules using Firestore leases
-        ├── runs scheduled AI reviews
-        └── evaluates deterministic trackers
+Cloudflare Worker Cron (every minute)
+  └── authenticated GET /api/internal/cron on the deployed SIRGOAT API
+        ├── Firebase/Firestore leases and schedule generations
+        ├── market data + indicator evaluation
+        ├── AI research only for due reviews or condition hits
+        ├── SignalGate validation and persistence
+        └── Telegram notification outbox
 ```
 
-### Vercel setup
+### Configure the API host
 
-1. Import the repository and deploy with the committed `vercel.json`.
-2. Configure the Firebase Admin service account. Recommended environment variable:
+Set these server-side environment variables on the existing API host:
 
-   ```
-   FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=<base64 of the Firebase service-account JSON>
-   CRON_SECRET=<long random secret>
-   APP_ORIGIN=https://your-production-domain
-   OPENROUTER_API_KEY=                 # optional platform fallback
-   TELEGRAM_BOT_TOKEN=                 # optional platform fallback
-   ```
+```bash
+FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=<base64 Firebase service-account JSON>
+CRON_SECRET=<long random secret>
+APP_ORIGIN=https://your-production-domain
+OPENROUTER_API_KEY=                 # optional platform fallback
+TELEGRAM_BOT_TOKEN=                 # optional platform fallback
+```
 
-   Generate a secret with `openssl rand -hex 32`. The same `CRON_SECRET` must be available to Cloud Run via Secret Manager and set in the Cloud Scheduler request header. Never enable `SIGNALGOAT_ALLOW_DEV_AUTH` in production.
+Generate a secret with `openssl rand -hex 32`. Never expose `CRON_SECRET` through a `VITE_*` variable or commit its value.
 
-3. Configure the private Cloud Run scheduler service and Cloud Scheduler job using [docs/CLOUD_RUN_SCHEDULER.md](docs/CLOUD_RUN_SCHEDULER.md). Keep the old dispatcher active only during the cutover; disable it after the Cloud Scheduler job and end-to-end GOAT/Telegram checks pass.
+### Deploy the free Cloudflare scheduler
 
-4. Configure Firebase Authentication's authorized domains to include your Vercel/custom domain and local development domains. Public `VITE_FIREBASE_*` web configuration is compiled into the frontend; Admin credentials remain server-side.
+Follow [the Firebase + Cloudflare Worker runbook](docs/CLOUDFLARE_WORKER_SCHEDULER.md). Configure the Worker's `SIRGOAT_API_ORIGIN` to the deployed API base URL and set its `CRON_SECRET` to the same secret configured on the API host. The GitHub Actions dispatcher remains only as a temporary fallback; disable it after the Worker dispatch and full GOAT/Telegram path are verified.
 
 ### Persistence and scheduling
 
-- Firestore stores GOAT configuration, deployment state, schedules, theses, proposals, review events, chat records and the Telegram notification outbox.
-- A GOAT is saved as a draft until explicitly deployed. Deployment starts an immediate market review; later runs follow its persisted schedule.
-- Firestore leases and schedule generations suppress overlapping and stale cron dispatches. A completed run advances its next due time.
-- Telegram market-review recaps are queued before delivery and deduplicated. Opening a review history item marks it read; unclicked entries remain unread.
-- In-process timers are a local-development fallback only. Production scheduled execution requires Firebase Admin/Firestore access on Cloud Run and a working Cloud Scheduler OIDC invocation with `CRON_SECRET`.
+- A GOAT is saved as a draft until explicitly deployed. Deployment starts an immediate market review; later AI runs follow its persisted user-selected schedule.
+- Deterministic tracker checks use the separate persisted `nextTrackerCheckAt` clock. A Worker tick is not permission to call AI for every GOAT.
+- Conditions are immutable within a plan: routine and tracker-triggered reviews update thesis/research but do not replace outstanding condition definitions. Each condition's evaluation cursor, last value, and hit status are persisted. An explicit manual re-evaluation can create a new plan; once every condition is terminal, the next routine review can start the next plan.
+- Firestore leases and schedule generations suppress overlapping and stale dispatches. A completed run advances its next due time.
+- Telegram notifications are queued and deduplicated through the Firestore-backed outbox.
+- In-process timers are for local development only. Production scheduling requires working Firebase Admin/Firestore credentials and the Cloudflare Worker secrets.
 
 ### Health checks
 
@@ -270,7 +265,7 @@ GET /api/settings/status
 GET /api/markets/ingestion
 ```
 
-Check Cloud Run request logs and Cloud Scheduler job execution history to confirm scheduled dispatches are running. A successful deployment alone does not prove that cron credentials or Firebase access are configured.
+A successful Worker deployment alone does not prove Firebase access, market data, AI credentials, or Telegram delivery. Verify a real GOAT end to end before removing the fallback dispatcher.
 
 ## Secrets policy
 
