@@ -6047,10 +6047,17 @@ apiRouter.post("/chat/actions/goats/:id/research", authMiddleware, handle(async 
       "MANUAL_REEVALUATE",
       requestedMarket,
     );
-    const signals = await persistence.signals.listByGoat(goat.id, 20);
+    const storedSignals = await persistence.signals.listByGoat(goat.id, 100);
+    const latestThesisId = state.currentThesis?.id;
+    const signals = storedSignals.filter((signal) => {
+      const expiry = signal.expiresAt ? Date.parse(signal.expiresAt) : Date.parse(signal.createdAt) + 60 * 60_000;
+      return Boolean(latestThesisId) && signal.thesisId === latestThesisId &&
+        signal.status === "ACTIONABLE" && !signal.decision && expiry > Date.now();
+    });
     res.json({ action: { type: "create_trade_proposal", status: "completed",
       title: "GOAT market review complete", goat: { id: goat.id, name: goat.name },
-      runtimeState: state, signals: signals.slice(0, 10), dataMode: marketProvider.dataMode } });
+      runtimeState: state, signals: signals.slice(0, 10), dataMode: marketProvider.dataMode,
+      message: signals.length ? "Fresh actionable proposals are listed below." : "The latest review produced no fresh actionable proposal. Do not force a trade." } });
   } catch (error) {
     console.error("[chat/actions] GOAT research failed", error);
     return fail(res, 502, "GOAT_RESEARCH_FAILED", "The GOAT could not complete its market review.");
