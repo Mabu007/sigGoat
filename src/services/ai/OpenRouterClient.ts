@@ -1106,6 +1106,19 @@ STEP 3 — BUILD TRACKERS
   "thesis.trackers". A tracker is an INDICATOR EXPRESSION: one specific
   indicator, one specific value, one comparison.
 
+   IMMUTABLE ACTIVE CONDITION PLAN
+   - If the context contains an active thesis with pending trackers, treat
+     those exact conditions as an immutable monitoring plan.
+   - Routine reviews and tracker-triggered reviews must not redesign, retarget,
+     remove, or reorder pending conditions. The runtime preserves stored
+     definitions and only updates measured values, evaluation cursors, and
+     states (PENDING / UNEVALUABLE / HIT).
+   - A condition that has hit remains HIT. Never re-arm it in the same plan.
+   - Only propose a fresh plan when no active plan remains, or when the user
+     explicitly requests a manual re-evaluation/reset.
+   - Runtime condition state is authoritative; SignalGate is authoritative for
+     whether any proposed signal is actionable.
+
   Fields per tracker:
     "type"        : use "INDICATOR" for any indicator-value condition
     "indicator"   : RSI | EMA | SMA | ATR | MACD | MACD_HISTOGRAM |
@@ -1326,7 +1339,7 @@ Name: ${truncate(
     200,
   )}
 
-Goal:
+Job description:
 ${truncate(
   context.goatGoal,
   1_000,
