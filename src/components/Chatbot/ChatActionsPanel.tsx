@@ -208,7 +208,8 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
 
   const tabs: Array<{ id: ActionMode; label: string }> = [
     { id: "research", label: "Research" }, { id: "create-goat", label: "Create GOAT" },
-    { id: "deploy-goat", label: "Deploy" }, { id: "proposal", label: "Proposals" }, { id: "trade", label: "Trade order" },\n    { id: "backtest", label: "Backtest" }, { id: "account", label: "PropDAO" },
+    { id: "deploy-goat", label: "Deploy" }, { id: "proposal", label: "Proposals" }, { id: "trade", label: "Trade order" },
+    { id: "backtest", label: "Backtest" }, { id: "account", label: "PropDAO" },
   ];
 
   return (
