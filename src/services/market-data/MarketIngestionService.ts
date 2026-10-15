@@ -477,11 +477,11 @@ export class MarketIngestionService {
           close: bar.close,
           volume: bar.volume,
           /**
-           * A feed that does not mark finality is treated as "the newest bar
-           * may still be forming". Assuming everything is final would let a
-           * half-built candle satisfy a tracker and fire a wake.
+           * The provider returns the currently forming 1m candle too. A candle
+           * is only closed once its full minute has elapsed; never mark a live
+           * partial bar as final merely because the source omitted a finality flag.
            */
-          finalized: true,
+          finalized: floorToMinute(bar.time) + 60_000 <= at,
         },
         { now: () => at },
       );
@@ -523,8 +523,10 @@ export class MarketIngestionService {
     this.stats.candleCorrections += outcome.updated;
 
     // ---- freshness -----------------------------------------------------
+    // Freshness and wake events must be anchored to the newest CLOSED candle,
+    // not the latest row returned by the feed (which may still be forming).
     const newest = valid.reduce<CandleRecord | null>(
-      (best, candle) => (!best || candle.openTimeMs > best.openTimeMs ? candle : best),
+      (best, candle) => candle.finalized && (!best || candle.openTimeMs > best.openTimeMs) ? candle : best,
       null,
     );
 
@@ -533,7 +535,7 @@ export class MarketIngestionService {
     // ---- publish events -----------------------------------------------
     let events = 0;
     for (const candle of valid) {
-      const isNew = candle.openTimeMs === newest?.openTimeMs;
+      const isNew = candle.finalized && candle.openTimeMs === newest?.openTimeMs;
       /**
        * Only the newest candle can be a transition worth notifying on. Older
        * candles in the same batch are history catching up, and waking a GOAT
