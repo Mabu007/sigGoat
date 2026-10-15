@@ -5947,8 +5947,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
       }
     }));
     sections.push(
-      "ON-DEMAND HYPERLIQUID RESEARCH RESULTS (historical candles oldest-to-newest; unavailable fields are not zero):
-" +
+      "ON-DEMAND HYPERLIQUID RESEARCH RESULTS (historical candles oldest-to-newest; unavailable fields are not zero):\n" +
       JSON.stringify({ fetchedAt: now.toISOString(), timeframe, requestedCandleCount: candleCount, results: quotes }).slice(0, 30000),
     );
   } else {
