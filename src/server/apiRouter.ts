@@ -53,6 +53,7 @@ import { PropFundAccountProvider } from "../services/propdao/PropFundAccountProv
 import { executionPolicyStatus } from "../services/propdao/executionPolicy";
 import {
   DEFAULT_RISK_LIMITS,
+  suggestQuantityForRisk,
   validateTradeIntent,
 } from "../services/propdao/PropRiskValidator";
 import { goatRuntimeRegistry } from "../services/goat-runtime/GoatRuntimeRegistry";
@@ -3875,6 +3876,7 @@ apiRouter.post(
       stopLoss,
       takeProfit,
       leverage,
+      suggestSize,
     } = req.body ?? {};
 
     if (typeof accountId !== "string" || !accountId) {
@@ -3919,8 +3921,27 @@ apiRouter.post(
       provider.positions(accountId),
     ]);
 
+    let effectiveQty = qty as number;
+    let suggestedQty: number | null = null;
+    if (suggestSize === true && effectiveQty <= 0) {
+      suggestedQty = suggestQuantityForRisk({ symbol, side, entry, stopLoss, takeProfit }, risk, markets, positions);
+      if (suggestedQty === null) {
+        const symbolExists = markets.some((market) => market.symbol === symbol);
+        return res.status(409).json({
+          ok: false,
+          violations: [symbolExists
+            ? "A safe size could not be calculated from current account headroom, open-position risk, lot size, and proposal levels."
+            : `"${symbol}" is not an exact market symbol offered by PropDAO. No cross-venue symbol mapping is inferred.`],
+          measured: { notionalUsd: null, riskUsd: null, feeUsd: null, riskReward: null, riskPctOfRoom: null, portfolioRiskPctOfRoom: null, maxQtyByLotStep: null, maxQtyByRiskBudget: null, leverageCap: null },
+          limits: DEFAULT_RISK_LIMITS,
+          execution: provider.policyStatus(),
+        });
+      }
+      effectiveQty = suggestedQty;
+    }
+
     const result = validateTradeIntent(
-      { symbol, side, qty, entry, stopLoss, takeProfit, leverage },
+      { symbol, side, qty: effectiveQty, entry, stopLoss, takeProfit, leverage },
       account,
       risk,
       markets,
@@ -3931,6 +3952,7 @@ apiRouter.post(
       ok: result.ok,
       violations: result.violations,
       measured: result.measured,
+      suggestedQty,
       limits: DEFAULT_RISK_LIMITS,
       /** Always included, so the UI can explain a refusal rather than hide it. */
       execution: provider.policyStatus(),
