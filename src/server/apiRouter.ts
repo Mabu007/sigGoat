@@ -1199,7 +1199,7 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
             tp: candidate.takeProfit!,
             tif: "gtc",
           });
-          if (!outcome.executed) return { submitted: false, intentId, message: outcome.message };
+          if (outcome.executed === false) return { submitted: false, intentId, message: outcome.message };
           return { submitted: true, orderId: outcome.result.orderId, intentId, message: "PropDAO accepted the order request." };
         },
       },
@@ -1477,6 +1477,19 @@ function marketEventDedup(eventId: string): boolean {
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
+function isoOrNull(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "number") {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  return null;
+}
+
 function fail(
   res: Response,
   status: number,
@@ -1491,7 +1504,7 @@ function notFound(res: Response): void {
 }
 
 /** Route wrapper: structured errors, no stack traces leaked. */
-function handle(fn: (req: Request, res: Response) => Promise<void>) {
+function handle(fn: (req: Request, res: Response) => Promise<unknown>) {
   return (req: Request, res: Response, next: NextFunction) => {
     fn(req, res).catch((err) => {
       /**
@@ -6563,7 +6576,7 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
     ...(typeof leverage === "number" ? { leverage } : {}),
     tif: "gtc",
   });
-  if (!result.executed) {
+  if (result.executed === false) {
     return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
       title: "Order not submitted", intentId, code: result.code, message: result.message, riskCheck, execution } });
   }
