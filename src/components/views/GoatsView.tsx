@@ -366,6 +366,21 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
 
   // Navigation
   const [detailGoatId, setDetailGoatId] = useState<string | null>(null);
+  const [publishingGoat, setPublishingGoat] = useState(false);
+  const [publishError, setPublishError] = useState('');
+  const [publishedUrl, setPublishedUrl] = useState('');
+  const publishInspectedGoat = async () => {
+    if (!inspectedGoat) return;
+    setPublishingGoat(true); setPublishError('');
+    try {
+      const response = await fetch('/api/goats/' + encodeURIComponent(inspectedGoat.id) + '/publish', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) }, body: '{}' });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || 'Could not publish this robot.');
+      const url = window.location.origin + body.path;
+      setPublishedUrl(url); await refreshGoats();
+    } catch (err) { setPublishError(err instanceof Error ? err.message : 'Could not publish this robot.'); }
+    finally { setPublishingGoat(false); }
+  };
 
   /*
    * ------------------------------------------------------------------
@@ -2159,6 +2174,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                 </span>
               </div>
             </div>
+          </section>
+
+          <section className="rounded-2xl border border-line bg-surface p-4 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-bold text-fg">Publish your robot</h2><p className="mt-1 text-xs leading-5 text-fg-muted">Give this GOAT its own clean web page. Visitors can sign in, join and chat; payment gates can come later.</p></div>
+              {inspectedGoat.isPublished && inspectedGoat.publicSlug ? <a href={'/robot/' + inspectedGoat.publicSlug} target="_blank" rel="noreferrer" className="rounded-xl border border-positive/30 bg-positive-soft px-3 py-2 text-xs font-bold text-positive">Open robot page ↗</a> : <button type="button" onClick={() => void publishInspectedGoat()} disabled={publishingGoat || inspectedGoat.deploymentState === 'DRAFT'} className="rounded-xl bg-accent px-4 py-2.5 text-xs font-bold text-accent-fg disabled:opacity-50">{publishingGoat ? 'Publishing…' : 'Publish and get link'}</button>}
+            </div>
+            {inspectedGoat.isPublished && inspectedGoat.publicSlug && <div className="mt-3 flex flex-col gap-2 sm:flex-row"><input readOnly value={publishedUrl || (typeof window !== 'undefined' ? window.location.origin : '') + '/robot/' + inspectedGoat.publicSlug} className="min-w-0 flex-1 rounded-lg border border-line bg-sunken px-3 py-2 text-xs text-fg-muted" /><button type="button" onClick={() => { const url = window.location.origin + '/robot/' + inspectedGoat.publicSlug; void navigator.clipboard?.writeText(url); setPublishedUrl(url); }} className="rounded-lg border border-line px-3 py-2 text-xs font-semibold text-fg">Copy link</button><button type="button" onClick={async () => { try { const response = await fetch('/api/goats/' + encodeURIComponent(inspectedGoat.id) + '/unpublish', { method: 'POST', headers: await getApiAuthHeaders() }); if (!response.ok) throw new Error('Could not unpublish this robot.'); await refreshGoats(); setPublishedUrl(''); } catch (err) { setPublishError(err instanceof Error ? err.message : 'Could not unpublish this robot.'); } }} className="rounded-lg border border-line px-3 py-2 text-xs font-semibold text-fg-muted">Unpublish</button></div>}
+            {publishError && <p role="alert" className="mt-3 text-xs text-negative">{publishError}</p>}
           </section>
 
           {inspectedGoat.deploymentState !== 'DRAFT' &&

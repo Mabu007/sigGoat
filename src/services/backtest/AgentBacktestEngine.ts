@@ -18,7 +18,9 @@ interface PendingEntry { trade: BacktestTrade; signalIndex: number; expiresIndex
 
 const PERIOD_BARS: Record<AgentBacktestPeriod, number> = { '24h': 288, '7d': 2016, '30d': 8640, '90d': 25920 };
 const MIN_HISTORY = 60;
-const CONTEXT_BARS = 120;
+const CONTEXT_BARS = 72;
+// Bound sequential model calls in long replays; every candle still receives deterministic evaluation.
+const MAX_AI_WAKES_BY_PERIOD: Record<AgentBacktestPeriod, number> = { '24h': 3, '7d': 4, '30d': 5, '90d': 6 };
 const MAX_PENDING_BARS = 12;
 const MAX_HOLDING_BARS = 35;
 const TAKER_FEE = 0.00045;
@@ -248,6 +250,12 @@ export class AgentBacktestEngine {
       if (hits.length && index > lastReasoningAt) {
         conditionHitCount += hits.length;
         for (const hit of hits) replayEvents.push({ time: candle.time, type: 'CONDITION_HIT', summary: hit });
+        if (aiWakeCount >= MAX_AI_WAKES_BY_PERIOD[period]) {
+          replayEvents.push({ time: candle.time, type: 'AI_REASSESSMENT_SKIPPED', summary: 'AI reassessment budget reached for this replay; deterministic tracker and trade lifecycle evaluation continued.' });
+          lastReasoningAt = index;
+          if (equityCurve[equityCurve.length - 1].time !== candle.time) equityCurve.push({ time: candle.time, equity: Number(equity.toFixed(2)) });
+          continue;
+        }
         const result = await reasonAt(index, 'BACKTEST_TRACKER_TRIGGERED: ' + hits.join('; ') + '. Reassess historical price data only.');
         aiWakeCount++;
         replayEvents.push({ time: candle.time, type: 'AI_REASSESSMENT', summary: result.investigation.summary + ' Thesis: ' + result.thesis.summary });

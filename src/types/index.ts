@@ -398,6 +398,10 @@ export interface FundGoat {
   activeThesisId?: string;
   lastWakeReason?: string;
   lastWakeTime?: string;
+  /** Public robot link metadata; the underlying GOAT record stays the same. */
+  publicSlug?: string;
+  isPublished?: boolean;
+  publishedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
