@@ -542,12 +542,16 @@ export class HyperliquidClient {
     const requested = Math.min(Math.max(Number.isFinite(count) ? Math.floor(count) : 1, 1), 30_000);
     const intervalMs = intervalToMs(interval);
     const collected = new Map<number, HyperliquidCandle>();
-    let endTime = Date.now();
+    // End just before the current interval opens so an in-progress candle
+    // cannot be mistaken for a completed historical bar in backtests.
+    let endTime = Math.floor(Date.now() / intervalMs) * intervalMs - 1;
     let pages = 0;
 
     while (collected.size < requested && pages < 10) {
       const pageTarget = Math.min(MAX_CANDLES_PER_REQUEST, requested - collected.size);
-      const startTime = endTime - intervalMs * pageTarget * 2;
+      // Request at most pageTarget candle intervals. A 2x window can exceed
+      // Hyperliquid's per-response cap and silently skip half the time range.
+      const startTime = endTime - intervalMs * pageTarget;
       const response = await this.info<unknown>(
         { type: 'candleSnapshot', req: { coin, interval, startTime, endTime } },
         WEIGHT.candleBase,
