@@ -1052,7 +1052,7 @@ export const SettingsView: React.FC = () => {
                 disabled={isSavingPreferences}
                 label="Reasoning model"
                 error={preferencesError}
-                reloadKey={`\${provider}:\${hasSavedKey}`}
+                reloadKey={`${provider}:${hasSavedKey}`}
               />
             </div>
           </div>
@@ -1091,7 +1091,7 @@ export const SettingsView: React.FC = () => {
             <div className="mt-3 border-t border-line pt-3">
               <ModelPicker getApiAuthHeaders={getApiAuthHeaders} value={preferences.aiModel} onChange={handleModelChange}
                 disabled={isSavingPreferences} label="Reasoning model" error={preferencesError}
-                reloadKey={`\${provider}:\${hasSavedKey}`} />
+                reloadKey={`${provider}:${hasSavedKey}`} />
             </div>
           </div>
           ) : (
@@ -1116,7 +1116,7 @@ export const SettingsView: React.FC = () => {
             <div className="mt-3 border-t border-line pt-3">
               <ModelPicker getApiAuthHeaders={getApiAuthHeaders} value={preferences.aiModel} onChange={handleModelChange}
                 disabled={isSavingPreferences} label="Reasoning model" error={preferencesError}
-                reloadKey={`\${provider}:\${hasSavedKey}`} />
+                reloadKey={`${provider}:${hasSavedKey}`} />
             </div>
           </div>
           )}
