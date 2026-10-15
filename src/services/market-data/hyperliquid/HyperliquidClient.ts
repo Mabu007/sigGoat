@@ -537,67 +537,46 @@ export class HyperliquidClient {
       );
     }
 
-    const requested = Number.isFinite(count) ? Math.floor(count) : 1;
-    const limit = Math.min(Math.max(requested, 1), MAX_CANDLES_PER_REQUEST);
+    // Hyperliquid caps each candleSnapshot response at 5,000 bars. Backtest
+    // periods can be longer, so page backwards in non-overlapping ranges.
+    const requested = Math.min(Math.max(Number.isFinite(count) ? Math.floor(count) : 1, 1), 30_000);
+    const intervalMs = intervalToMs(interval);
+    const collected = new Map<number, HyperliquidCandle>();
+    let endTime = Date.now();
+    let pages = 0;
 
-    const endTime = Date.now();
-    // Ask for enough wall-clock time to cover `limit` bars, with 2x headroom
-    // for gaps (a market that was closed, an interval we rounded up) so a
-    // thin market returns a few bars rather than none.
-    const spanMs = intervalToMs(interval) * limit * 2;
-    const startTime = endTime - spanMs;
-
-    const response = await this.info<unknown>(
-      { type: 'candleSnapshot', req: { coin, interval, startTime, endTime } },
-      WEIGHT.candleBase,
-    );
-
-    if (!Array.isArray(response)) {
-      throw new HyperliquidError(
-        'INVALID_RESPONSE',
-        `candleSnapshot for "${coin}" did not return an array.`,
+    while (collected.size < requested && pages < 10) {
+      const pageTarget = Math.min(MAX_CANDLES_PER_REQUEST, requested - collected.size);
+      const startTime = endTime - intervalMs * pageTarget * 2;
+      const response = await this.info<unknown>(
+        { type: 'candleSnapshot', req: { coin, interval, startTime, endTime } },
+        WEIGHT.candleBase,
       );
+      if (!Array.isArray(response)) {
+        throw new HyperliquidError('INVALID_RESPONSE', `candleSnapshot for "${coin}" did not return an array.`);
+      }
+      this.limiter.settle(Math.ceil(response.length / 60) * WEIGHT.candlePer60);
+      const page: HyperliquidCandle[] = [];
+      for (const row of response) {
+        const record = asRecord(row);
+        if (!record) continue;
+        const time = asNumber(record.t), open = asNumber(record.o), high = asNumber(record.h);
+        const low = asNumber(record.l), close = asNumber(record.c), volume = asNumber(record.v);
+        if (time === null || open === null || high === null || low === null || close === null) continue;
+        if (open <= 0 || close <= 0 || high <= 0 || low <= 0 || high < low) continue;
+        page.push({ time, open, high, low, close, volume: volume !== null && volume >= 0 ? volume : 0 });
+      }
+      if (page.length === 0) break;
+      page.sort((a, b) => a.time - b.time);
+      const oldestTime = page[0].time;
+      for (const candle of page) collected.set(candle.time, candle);
+      if (oldestTime >= endTime || oldestTime >= endTime - intervalMs) break;
+      endTime = oldestTime - 1;
+      pages += 1;
+      if (page.length < 60 && collected.size < requested) break;
     }
-
-    // Documented cost is 20 plus 1 per 60 items RETURNED, so charge the real
-    // amount after the fact rather than reserving the worst case.
-    this.limiter.settle(Math.ceil(response.length / 60) * WEIGHT.candlePer60);
-
-    const candles: HyperliquidCandle[] = [];
-    for (const row of response) {
-      const record = asRecord(row);
-      if (!record) continue;
-      const time = asNumber(record.t);
-      const open = asNumber(record.o);
-      const high = asNumber(record.h);
-      const low = asNumber(record.l);
-      const close = asNumber(record.c);
-      const volume = asNumber(record.v);
-
-      if (time === null || open === null || high === null || low === null || close === null) continue;
-      // A bar with no price is noise; a bar with a zero volume is real (a
-      // market that simply did not trade in that minute).
-      if (open <= 0 || close <= 0 || high <= 0 || low <= 0) continue;
-      if (high < low) continue;
-
-      candles.push({
-        time,
-        open,
-        high,
-        low,
-        close,
-        volume: volume !== null && volume >= 0 ? volume : 0,
-      });
-    }
-
-    // The provider returns newest-first. Every internal consumer expects
-    // ascending, including the Durable Object's upsert path.
-    candles.sort((a, b) => a.time - b.time);
-
-    // Keep the most recent `limit` bars.
-    return candles.length > limit ? candles.slice(candles.length - limit) : candles;
+    return Array.from(collected.values()).sort((a, b) => a.time - b.time).slice(-requested);
   }
-
   /** Confirms the venue is reachable. Used by the Markets connection badge. */
   async health(): Promise<{ ok: boolean; detail: string }> {
     try {

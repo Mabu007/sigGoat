@@ -4285,15 +4285,11 @@ apiRouter.get(
   "/ai/models",
   handle(async (req, res) => {
     const user = requireUser(req);
-    if (!(await reasoningGateway.hasKeyFor(user.uid))) {
-      return fail(
-        res,
-        400,
-        "AI_NOT_CONFIGURED",
-        "Add your selected AI provider key in Settings → AI Reasoning Engine to load models.",
-      );
-    }
-    const catalogue = await reasoningGateway.listModels(user.uid);
+    const requestedProvider = typeof req.query.provider === 'string' ? req.query.provider : undefined;
+    if (requestedProvider && requestedProvider !== 'openrouter' && requestedProvider !== 'spacebunny') return fail(res, 400, 'INVALID_PROVIDER', 'Provider must be openrouter or spacebunny.');
+    const provider = requestedProvider as 'openrouter' | 'spacebunny' | undefined;
+    if (!(await reasoningGateway.hasKeyFor(user.uid, provider))) return fail(res, 400, 'AI_NOT_CONFIGURED', `Add a ${provider ?? 'selected'} AI provider key in Settings to load models.`);
+    const catalogue = await reasoningGateway.listModels(user.uid, provider);
     res.json({
       models: catalogue.models,
       provider: catalogue.provider,
@@ -4803,6 +4799,35 @@ apiRouter.post(
   }),
 );
 
+apiRouter.patch(
+  "/goats/:id",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const existing = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!existing) return notFound(res);
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : existing.name;
+    const goal = typeof req.body?.goal === "string" ? req.body.goal.trim() : existing.goal;
+    const requestedModel = typeof req.body?.model === "string" ? req.body.model.trim() : existing.model;
+    const requestedProvider = req.body?.aiProvider === undefined ? existing.aiProvider : req.body.aiProvider;
+    if (requestedProvider !== undefined && requestedProvider !== 'openrouter' && requestedProvider !== 'spacebunny') return fail(res, 400, 'INVALID_PROVIDER', 'Choose OpenRouter or SpaceBunny for this GOAT.');
+    const aiProvider = requestedProvider as 'openrouter' | 'spacebunny' | undefined;
+    if (!name || name.length > 80) return fail(res, 400, "INVALID_NAME", "GOAT name must be between 1 and 80 characters.");
+    if (!goal || goal.length > 4000) return fail(res, 400, "INVALID_DESCRIPTION", "GOAT description must be between 1 and 4000 characters.");
+    if (!requestedModel || !isValidModel(requestedModel)) return fail(res, 400, "INVALID_MODEL", "Choose a valid model from this GOAT's provider catalogue.");
+    if (!(await reasoningGateway.hasKeyFor(user.uid, aiProvider))) return fail(res, 400, 'AI_NOT_CONFIGURED', 'Save credentials for this GOAT provider in Settings before selecting it.');
+    if (!(await reasoningGateway.isModelAvailable(user.uid, requestedModel, aiProvider))) return fail(res, 400, 'INVALID_MODEL', 'That model is not available from the selected GOAT provider.');
+    const model = requestedModel;
+    const updated: FundGoat = { ...existing, name, goal, model, aiProvider, updatedAt: new Date().toISOString() };
+    await persistence.goats.save(updated);
+    const runtime = goatRuntimeRegistry.get(updated.id);
+    if (runtime) {
+      try { runtime.updateConfig(updated, (await allSkillsFor(user.uid)).filter(skill => updated.skillIds.includes(skill.id))); }
+      catch (err) { console.warn(`[api] GOAT ${updated.id} saved but runtime config refresh failed:`, err); }
+    }
+    res.json({ goat: updated, runtimeState: runtime?.getState() ?? null, dataMode: marketProvider.dataMode });
+  }),
+);
+
 // ---- Stop / Play / schedule ------------------------------------------
 
 /**
@@ -5122,6 +5147,7 @@ apiRouter.post(
       question.trim(),
       enriched,
       model,
+      goat.aiProvider,
     );
     res.json({ answer, dataMode: marketProvider.dataMode });
   }),
@@ -5581,7 +5607,7 @@ apiRouter.post(
       provider: marketProvider,
       startingBalance,
       riskPerTradePct,
-      reason: (context, model) => reasoningGateway.evaluateGoat(context, model),
+      reason: (context, model) => reasoningGateway.evaluateGoat(context, model, goat.aiProvider),
     });
 
     res.json({ result, engine: "AGENT_HISTORICAL_REPLAY" });

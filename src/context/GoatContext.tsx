@@ -32,6 +32,8 @@ export interface CreateGoatInput {
   deploymentState?: 'DRAFT' | 'DEPLOYED';
 }
 
+export interface UpdateGoatInput { name: string; goal: string; model: string; aiProvider?: 'openrouter' | 'spacebunny'; }
+
 export interface CreateSkillInput {
   name: string;
   description?: string;
@@ -123,6 +125,7 @@ interface GoatContextType {
   setActiveGoatId: (id: string) => void;
 
   createGoat: (data: CreateGoatInput) => Promise<FundGoat>;
+  updateGoat: (goatId: string, data: UpdateGoatInput) => Promise<FundGoat>;
 
   /** Stop ("PAUSE") or resume ("PLAY") a GOAT's runtime. */
   setGoatStatus: (
@@ -1063,6 +1066,34 @@ export const GoatProvider: React.FC<{
     [apiRequest, markGoatBusy, setRequestError]
   );
 
+  const updateGoat = useCallback(
+    async (goatId: string, input: UpdateGoatInput): Promise<FundGoat> => {
+      const id = goatId.trim();
+      const name = requireNonEmpty(input.name, 'GOAT name');
+      const goal = requireNonEmpty(input.goal, 'GOAT description');
+      const model = requireNonEmpty(input.model, 'Reasoning model');
+      if (!id) throw new Error('GOAT ID is required.');
+      markGoatBusy(id, true);
+      try {
+        const data = await apiRequest<GoatResponse>(`/api/goats/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, goal, model, aiProvider: input.aiProvider }),
+        });
+        if (!data?.goat?.id) throw new Error('The server did not return the updated GOAT.');
+        setGoats(previous => previous.map(goat => goat.id === id ? { ...goat, ...data.goat } : goat));
+        setError(null);
+        return data.goat;
+      } catch (requestError) {
+        setRequestError(requestError, 'Failed to update GOAT settings.');
+        throw requestError;
+      } finally {
+        markGoatBusy(id, false);
+      }
+    },
+    [apiRequest, markGoatBusy, setRequestError]
+  );
+
   const deleteGoat = useCallback(
     async (goatId: string): Promise<void> => {
       const id = goatId.trim();
@@ -1517,6 +1548,7 @@ export const GoatProvider: React.FC<{
       setActiveGoatId,
 
       createGoat,
+      updateGoat,
       setGoatStatus,
       deleteGoat,
       setGoatSchedule,
@@ -1547,6 +1579,7 @@ export const GoatProvider: React.FC<{
       busyGoatIds,
       setActiveGoatId,
       createGoat,
+      updateGoat,
       setGoatStatus,
       deleteGoat,
       setGoatSchedule,

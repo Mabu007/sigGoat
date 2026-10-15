@@ -73,6 +73,7 @@ interface LiveModel {
 
 interface ModelCatalogueResponse {
   models: LiveModel[];
+  provider?: 'openrouter' | 'spacebunny';
   fetchedAt?: number;
 }
 
@@ -250,6 +251,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     activeGoatState,
     setActiveGoatId,
     createGoat,
+    updateGoat,
     setGoatStatus,
     deleteGoat,
     setGoatSchedule,
@@ -260,6 +262,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     skills,
     createSkill,
     deleteSkill,
+    refreshGoats,
     refreshSkills,
     dataMode,
   } = useGoat();
@@ -287,17 +290,19 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   const [modelState, setModelState] = useState<ModelState>('loading');
   const [modelError, setModelError] = useState('');
   const [modelsFetchedAt, setModelsFetchedAt] = useState<number | null>(null);
+  const [activeProvider, setActiveProvider] = useState<'openrouter' | 'spacebunny'>('openrouter');
   const [modelSearch, setModelSearch] = useState('');
   const [showModelDetails, setShowModelDetails] = useState(false);
 
-  const loadModels = useCallback(async () => {
+  const loadModels = useCallback(async (providerOverride?: 'openrouter' | 'spacebunny') => {
     setModelState('loading');
     setModelError('');
 
     try {
       const authHeaders = await getApiAuthHeaders();
 
-      const response = await fetch(MODEL_CATALOGUE_ENDPOINT, {
+      const modelUrl = providerOverride ? `${MODEL_CATALOGUE_ENDPOINT}?provider=${providerOverride}` : MODEL_CATALOGUE_ENDPOINT;
+      const response = await fetch(modelUrl, {
         method: 'GET',
         headers: { Accept: 'application/json', ...authHeaders },
       });
@@ -322,6 +327,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       }
 
       setModels(nextModels);
+      if (!Array.isArray(payload) && (payload.provider === 'openrouter' || payload.provider === 'spacebunny')) setActiveProvider(payload.provider);
       setModelsFetchedAt(
         !Array.isArray(payload) && payload.fetchedAt
           ? payload.fetchedAt
@@ -341,6 +347,22 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   useEffect(() => {
     void loadModels();
   }, [loadModels]);
+
+  const openEditGoat = (goat: FundGoat) => {
+    const provider = goat.aiProvider ?? activeProvider;
+    setEditProvider(provider);
+    setEditName(goat.name); setEditGoal(goat.goal); setEditModel(goat.model || '');
+    setEditGoatError(''); setIsEditingGoat(true);
+    if (provider !== activeProvider) void loadModels(provider);
+  };
+  const saveGoatEdits = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!inspectedGoat) return;
+    setIsSavingGoat(true); setEditGoatError('');
+    try { await updateGoat(inspectedGoat.id, { name: editName, goal: editGoal, model: editModel, aiProvider: editProvider }); setIsEditingGoat(false); await refreshGoats(); }
+    catch (err) { setEditGoatError(err instanceof Error ? err.message : 'Could not save GOAT settings.'); }
+    finally { setIsSavingGoat(false); }
+  };
 
   // Navigation
   const [detailGoatId, setDetailGoatId] = useState<string | null>(null);
@@ -595,6 +617,14 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
    */
   const [schedulePreset, setSchedulePreset] = useState<string>('60');
   const [customTimes, setCustomTimes] = useState<string[]>(['08:30']);
+
+  const [isEditingGoat, setIsEditingGoat] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editGoal, setEditGoal] = useState('');
+  const [editModel, setEditModel] = useState('');
+  const [editProvider, setEditProvider] = useState<'openrouter' | 'spacebunny'>('openrouter');
+  const [isSavingGoat, setIsSavingGoat] = useState(false);
+  const [editGoatError, setEditGoatError] = useState('');
 
   // GOAT lifecycle actions
   const [pendingDelete, setPendingDelete] =
@@ -1411,7 +1441,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             </div>
 
             {showSkillsSection && (
-              <div className="mt-3 space-y-2">
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {skills.length === 0 ? (
                   <p className="rounded-xl border border-dashed border-line bg-raised px-3 py-4 text-center text-[11px] text-fg-subtle">
                     No skills yet. Create one, or copy a template from the built-in library below —
@@ -1541,7 +1571,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   return (
                     <div
                       key={tpl.id}
-                      className="rounded-xl border border-line bg-raised px-3 py-2.5"
+                      className="group rounded-2xl border border-line bg-raised p-4 transition hover:border-accent/50 hover:bg-surface"
                     >
                       <button
                         type="button"
@@ -1818,6 +1848,21 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       )}
 
       {/* Delete confirmation */}
+      {isEditingGoat && inspectedGoat && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="edit-goat-title">
+          <form onSubmit={saveGoatEdits} className="my-6 w-full max-w-xl space-y-4 rounded-3xl border border-line bg-surface p-5 shadow-2xl sm:p-7">
+            <div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-accent-text">🐐 GOAT settings</p><h2 id="edit-goat-title" className="mt-1 text-lg font-bold text-fg">Edit {inspectedGoat.name}</h2><p className="mt-1 text-xs text-fg-muted">Choose this GOAT's provider independently of the account default.</p></div><button type="button" onClick={() => setIsEditingGoat(false)} className="rounded-lg p-2 text-fg-muted hover:bg-raised" aria-label="Close edit dialog"><X className="h-4 w-4" /></button></div>
+            {editGoatError && <p className="rounded-xl border border-negative/30 bg-negative-soft p-3 text-xs text-negative">{editGoatError}</p>}
+            <label className="block text-xs font-semibold text-fg-muted">Name<input required maxLength={80} value={editName} onChange={e => setEditName(e.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-sunken px-3 py-3 text-sm text-fg outline-none focus:border-accent/60" /></label>
+            <label className="block text-xs font-semibold text-fg-muted">Description / goal<textarea required maxLength={4000} rows={4} value={editGoal} onChange={e => setEditGoal(e.target.value)} className="mt-1.5 w-full resize-y rounded-xl border border-line bg-sunken px-3 py-3 text-sm text-fg outline-none focus:border-accent/60" /></label>
+            <label className="block text-xs font-semibold text-fg-muted">AI provider<select required value={editProvider} onChange={e => { const provider = e.target.value as 'openrouter' | 'spacebunny'; setEditProvider(provider); setEditModel(''); void loadModels(provider); }} className="mt-1.5 w-full rounded-xl border border-line bg-sunken px-3 py-3 text-sm text-fg outline-none focus:border-accent/60"><option value="openrouter">OpenRouter</option><option value="spacebunny">SpaceBunny</option></select></label>
+            <label className="block text-xs font-semibold text-fg-muted">Reasoning model<select required value={editModel} onChange={e => setEditModel(e.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-sunken px-3 py-3 text-sm text-fg outline-none focus:border-accent/60"><option value="">Select a model</option>{models.map(model => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}</select></label>
+            {modelState === 'error' && <p className="text-[11px] text-negative">Could not load the selected provider's model catalogue: {modelError}. Save that provider's key in Settings and retry.</p>}
+            <div className="flex justify-end gap-2 pt-2"><button type="button" onClick={() => setIsEditingGoat(false)} className="rounded-xl border border-line px-4 py-2.5 text-xs font-semibold text-fg-muted">Cancel</button><button type="submit" disabled={isSavingGoat || !editName.trim() || !editGoal.trim() || !editModel} className="rounded-xl bg-accent px-4 py-2.5 text-xs font-bold text-accent-fg disabled:opacity-50">{isSavingGoat ? 'Saving…' : 'Save changes'}</button></div>
+          </form>
+        </div>
+      )}
+
       {pendingDelete && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md overflow-hidden rounded-3xl border border-negative/40 bg-surface shadow-2xl">
@@ -1888,6 +1933,9 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             </button>
 
             <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => openEditGoat(inspectedGoat)} className="flex items-center gap-1.5 rounded-xl border border-line bg-sunken px-3 py-1.5 text-xs font-semibold text-fg hover:bg-raised">
+                <Sparkles className="h-3.5 w-3.5 text-accent-text" /> Edit GOAT
+              </button>
               <button
                 onClick={() =>
                   setShowScheduleEditor(
@@ -2030,6 +2078,19 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               </div>
             </section>
           )}
+
+          <section className="overflow-hidden rounded-2xl border border-[#253344] bg-[#080d14] text-slate-200">
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3"><div><h3 className="flex items-center gap-2 text-xs font-black tracking-[.16em] text-emerald-300"><span className="text-base">🐐</span> SIRGOAT / AGENTIC LOG</h3><p className="mt-1 text-[10px] text-slate-500">Runtime activity and persisted reasoning status</p></div><span className={`rounded-full border px-2 py-1 text-[9px] font-bold tracking-wider ${inspectedState?.isEvaluating ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300' : 'border-slate-700 text-slate-400'}`}>{inspectedState?.isEvaluating ? 'WORKING' : 'IDLE'}</span></div>
+            <div className="space-y-2 p-4 font-mono text-[11px] leading-5">
+              <p><span className="text-slate-600">[{inspectedGoat.lastWakeTime ? new Date(inspectedGoat.lastWakeTime).toLocaleTimeString() : '--:--:--'}]</span> <span className="text-emerald-300">SYSTEM</span> GOAT loaded · {inspectedGoat.model || 'no model selected'}</p>
+              {inspectedGoat.lastWakeReason && <p><span className="text-slate-600">[wake]</span> <span className="text-sky-300">TRIGGER</span> {inspectedGoat.lastWakeReason}</p>}
+              {inspectedState?.isEvaluating && <p className="animate-pulse text-emerald-200"><span className="text-slate-600">[live]</span> REASONER evaluation in progress…</p>}
+              {inspectedState?.currentThesis && <p><span className="text-slate-600">[thesis]</span> <span className="text-violet-300">THESIS</span> {inspectedState.currentThesis.directionalHypothesis || 'NEUTRAL'} · {inspectedState.currentThesis.summary || 'Thesis persisted'}</p>}
+              {inspectedState?.lastError && <p className="break-words text-rose-300"><span className="text-slate-600">[error]</span> ERROR {inspectedState.lastError}</p>}
+              {!inspectedGoat.lastWakeReason && !inspectedState?.isEvaluating && !inspectedState?.currentThesis && !inspectedState?.lastError && <p className="text-slate-500">Waiting for the first runtime event. Wake & Re-evaluate to start a fresh review.</p>}
+              <p className="border-t border-white/10 pt-2 text-[10px] text-slate-500">This log shows observed runtime state only; it does not invent intermediate model/tool events.</p>
+            </div>
+          </section>
 
           {/* Identity */}
           <section className="relative overflow-hidden rounded-3xl border border-line bg-surface p-4 sm:p-5">

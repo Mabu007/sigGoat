@@ -862,7 +862,7 @@ export class GoatRuntime {
 
       let reasoningResult: ReasoningResult;
       try {
-        reasoningResult = await this.reasoning.evaluateGoat(reasoningContext, this.goatConfig.model);
+        reasoningResult = await this.reasoning.evaluateGoat(reasoningContext, this.goatConfig.model, this.goatConfig.aiProvider);
       } catch (err) {
         if (err instanceof ReasoningValidationError) {
           this.recordFailure(`Model response failed validation: ${err.issues.slice(0, 3).join('; ')}`);

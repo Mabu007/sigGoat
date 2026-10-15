@@ -37,6 +37,7 @@
 import React, { useState } from 'react';
 import { AlertCircle, LogIn, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { LandingAuth } from './LandingAuth';
 
 export interface AuthGateProps {
   children: React.ReactNode;
@@ -65,7 +66,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
   }
 
   if (!currentUser) {
-    return <SignInScreen authError={authError} authMode={authMode} />;
+    return <LandingAuth authError={authError} authMode={authMode} />;
   }
 
   return <>{children}</>;

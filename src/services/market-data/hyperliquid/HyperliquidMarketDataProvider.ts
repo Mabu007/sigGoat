@@ -320,7 +320,8 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
       );
     }
 
-    const limit = Math.min(Math.max(Math.floor(count) || 1, 1), 5000);
+    // Long backtests are paginated by HyperliquidClient; only each upstream page is capped at 5,000.
+    const limit = Math.min(Math.max(Math.floor(count) || 1, 1), 30_000);
 
     try {
       const bars = await this.client.candles(snapshot.symbol, timeframe, limit);
