@@ -67,17 +67,18 @@ export interface ReasoningGateway {
    * Runs canonical reasoning for a GOAT. Resolves the owner's credential;
    * when absent, returns the clearly-labelled DEMO deterministic result.
    */
-  evaluateGoat(context: GoatReasoningContext, model: string): Promise<ReasoningResult>;
+  evaluateGoat(context: GoatReasoningContext, model: string, providerOverride?: AiProvider): Promise<ReasoningResult>;
 
   /** Answers a chat question from the canonical GOAT context. */
   answerGoatQuestion(
     question: string,
     context: GoatReasoningContext,
     model: string,
+    providerOverride?: AiProvider,
   ): Promise<string>;
 
   /** True when the user has configured a usable AI model key. */
-  hasKeyFor(userId: string): Promise<boolean>;
+  hasKeyFor(userId: string, providerOverride?: AiProvider): Promise<boolean>;
 
   /** The provider that will actually serve this user. */
   providerFor(userId: string): Promise<AiProvider>;
@@ -90,6 +91,7 @@ export interface ReasoningGateway {
    */
   listModels(
     userId: string,
+    providerOverride?: AiProvider,
   ): Promise<{ models: ProviderModel[]; provider: AiProvider; fetchedAt: number; source: string }>;
 
   /** Cheap end-to-end probe of the user's own credential. */
@@ -122,7 +124,8 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
    * cannot route another user's evaluation through a provider they did not
    * configure.
    */
-  async providerFor(userId: string): Promise<AiProvider> {
+  async providerFor(userId: string, providerOverride?: AiProvider): Promise<AiProvider> {
+    if (providerOverride === 'openrouter' || providerOverride === 'spacebunny' || providerOverride === 'groq') return providerOverride;
     const chosen = await this.keys.getProvider?.(userId);
     if (chosen === 'groq' || chosen === 'openrouter' || chosen === 'spacebunny') {
       this.providerChoices.set(userId, chosen);
@@ -148,8 +151,9 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
    */
   private async resolveKey(
     userId: string,
+    providerOverride?: AiProvider,
   ): Promise<{ provider: AiProvider; key: string | undefined }> {
-    const provider = await this.providerFor(userId);
+    const provider = await this.providerFor(userId, providerOverride);
 
     if (provider === 'groq') {
       const userKey = await this.keys.getGroqKey?.(userId);
@@ -180,8 +184,9 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
   /** Returns a cached client, or null when no credential is configured. */
   private async clientFor(
     userId: string,
+    providerOverride?: AiProvider,
   ): Promise<{ provider: AiProvider; client: OpenRouterClient | GroqClient | SpaceBunnyClient } | null> {
-    const { provider, key } = await this.resolveKey(userId);
+    const { provider, key } = await this.resolveKey(userId, providerOverride);
     if (!key) return null;
 
     const cacheKey = `${userId}::${provider}::${key}`;
@@ -219,8 +224,9 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
   async evaluateGoat(
     context: GoatReasoningContext,
     model: string,
+    providerOverride?: AiProvider,
   ): Promise<ReasoningResult> {
-    const resolved = await this.clientFor(context.userId);
+    const resolved = await this.clientFor(context.userId, providerOverride);
 
     /**
      * No credential: return the clearly-labelled deterministic DEMO result
@@ -261,8 +267,9 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     question: string,
     context: GoatReasoningContext,
     model: string,
+    providerOverride?: AiProvider,
   ): Promise<string> {
-    const resolved = await this.clientFor(context.userId);
+    const resolved = await this.clientFor(context.userId, providerOverride);
 
     if (!resolved) {
       return DEMO_CHAT_ANSWER;
@@ -287,8 +294,8 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     return answer.answer;
   }
 
-  async hasKeyFor(userId: string): Promise<boolean> {
-    const { key } = await this.resolveKey(userId);
+  async hasKeyFor(userId: string, providerOverride?: AiProvider): Promise<boolean> {
+    const { key } = await this.resolveKey(userId, providerOverride);
     return key !== undefined;
   }
 
@@ -349,8 +356,8 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
    * be silently reused as a default — that is exactly the failure this
    * app already shipped once with a hardcoded slug.
    */
-  async isModelAvailable(userId: string, modelId: string): Promise<boolean> {
-    const resolved = await this.clientFor(userId);
+  async isModelAvailable(userId: string, modelId: string, providerOverride?: AiProvider): Promise<boolean> {
+    const resolved = await this.clientFor(userId, providerOverride);
     if (!resolved) return false;
 
     const { provider, client } = resolved;
@@ -365,17 +372,18 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
 
   async listModels(
     userId: string,
+    providerOverride?: AiProvider,
   ): Promise<{
     models: ProviderModel[];
     provider: AiProvider;
     fetchedAt: number;
     source: string;
   }> {
-    const resolved = await this.clientFor(userId);
+    const resolved = await this.clientFor(userId, providerOverride);
 
     if (!resolved) {
       throw new Error(
-        'No AI provider is configured. Add a key in Settings to load models.',
+        'No AI provider is configured for this GOAT. Add that provider key in Settings.',
       );
     }
 
