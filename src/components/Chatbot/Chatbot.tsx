@@ -443,6 +443,7 @@ export function Chatbot() {
   const [chatModels, setChatModels] = useState<ChatModelOption[]>([]);
   const [modelSaving, setModelSaving] = useState(false);
   const [streamStatus, setStreamStatus] = useState('SirGOAT is on it…');
+  const [researchSteps, setResearchSteps] = useState<string[]>([]);
   const [renameTarget, setRenameTarget] = useState<ChatItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ChatItem | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -733,6 +734,7 @@ export function Chatbot() {
 
       setIsSending(true);
       setStreamStatus('SirGOAT is on it…');
+      setResearchSteps([]);
 
       setError(null);
 
@@ -813,6 +815,9 @@ export function Chatbot() {
           const event = JSON.parse(payload);
           if (event.type === 'status' && typeof event.message === 'string') {
             setStreamStatus(event.message);
+            setResearchSteps((previous) => previous[previous.length - 1] === event.message
+              ? previous
+              : [...previous, event.message].slice(-5));
           } else if (event.type === 'action_suggestion' && typeof event.mode === 'string') {
             const allowedModes: ActionMode[] = ['create-goat', 'deploy-goat', 'proposal', 'trade', 'backtest', 'account'];
             if (allowedModes.includes(event.mode as ActionMode)) {
@@ -1330,7 +1335,7 @@ export function Chatbot() {
 
               showSessions
 
-                ? 'absolute inset-x-0 top-[45px] bottom-0 z-10 w-full max-w-none border-b sm:static sm:inset-auto sm:w-60 sm:max-w-[80vw]'
+                ? 'absolute inset-0 z-10 w-full max-w-none border-b sm:static sm:inset-auto sm:w-60 sm:max-w-[80vw] sm:border-r'
 
                 : 'hidden',
 
@@ -1644,15 +1649,22 @@ export function Chatbot() {
 
 
               {isSending && (
-
-                <div className="mb-3 flex items-center gap-1.5 text-[11px] text-fg-subtle">
-
-                  <Loader2 size={13} className="animate-spin" aria-hidden="true" />
-
-                  <span>{streamStatus}</span>
-
+                <div className="mb-3 rounded-xl border border-line bg-sunken px-3 py-2.5" role="status" aria-live="polite">
+                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-fg">
+                    <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+                    <span>{streamStatus}</span>
+                  </div>
+                  {researchSteps.length > 0 && (
+                    <ol className="space-y-1 pl-0.5">
+                      {researchSteps.map((step, index) => (
+                        <li key={step + index} className="flex min-w-0 items-start gap-2 text-[10px] leading-relaxed text-fg-subtle">
+                          <span className="mt-px shrink-0" aria-hidden="true">{index < researchSteps.length - 1 ? '✓' : '•'}</span>
+                          <span className="min-w-0 break-words">{step}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
                 </div>
-
               )}
 
             </div>
