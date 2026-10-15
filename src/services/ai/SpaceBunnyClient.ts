@@ -23,6 +23,22 @@ const REASONING_MAX_TOKENS = 3072;
 
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
 
+/** Normalise common OpenAI-compatible text payloads without treating hidden reasoning as the answer. */
+function extractCompletionText(payload: any): string | undefined {
+  const choice = payload?.choices?.[0];
+  const content = choice?.message?.content ?? choice?.text ?? payload?.output_text;
+  if (typeof content === 'string') return content.trim() || undefined;
+  if (Array.isArray(content)) {
+    const text = content.map((part: unknown) => {
+      if (typeof part === 'string') return part;
+      if (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string') return (part as { text: string }).text;
+      return '';
+    }).join('').trim();
+    return text || undefined;
+  }
+  return undefined;
+}
+
 export class SpaceBunnyClient {
   private readonly apiKey: string;
   private readonly fetchImpl: (url: string, init?: RequestInit) => Promise<Response>;
@@ -64,14 +80,16 @@ export class SpaceBunnyClient {
           retryable: response.status === 429 || response.status >= 500,
         });
       }
-      const text = payload?.choices?.[0]?.message?.content;
-      if (typeof text !== 'string' || !text.trim()) {
-        throw new ApiRequestError('Space Bunny returned an empty response.', { code: 'EMPTY_RESPONSE', retryable: true });
+      const text = extractCompletionText(payload);
+      if (!text) {
+        const finishReason = payload?.choices?.[0]?.finish_reason;
+        const suffix = typeof finishReason === 'string' ? ` (finish reason: ${finishReason})` : '';
+        throw new ApiRequestError(`Space Bunny returned no visible answer text${suffix}.`, { code: 'EMPTY_RESPONSE', retryable: true });
       }
-      return text.trim();
+      return text;
     } catch (error) {
       if (error instanceof ApiRequestError) throw error;
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
         throw new ApiRequestError('Space Bunny request timed out.', { code: 'TIMEOUT', retryable: true });
       }
       throw new ApiRequestError(error instanceof Error ? error.message : 'Could not reach Space Bunny.', { code: 'NETWORK_ERROR', retryable: true });
@@ -85,7 +103,16 @@ export class SpaceBunnyClient {
       { role: 'system', content: buildReasoningSystemPrompt() },
       { role: 'user', content: buildReasoningUserPrompt(context) },
     ];
-    let raw = await this.complete(SPACE_BUNNY_MODEL, messages, REASONING_MAX_TOKENS);
+    let raw: string;
+    try {
+      raw = await this.complete(SPACE_BUNNY_MODEL, messages, REASONING_MAX_TOKENS);
+    } catch (error) {
+      // Empty successful HTTP responses are often transient proxy/model issues.
+      // Retry that specific case once with a smaller output budget; do not repeat
+      // timeouts, auth errors, or credit failures and risk doubling serverless time.
+      if (!(error instanceof ApiRequestError) || error.code !== 'EMPTY_RESPONSE' || context.wakeReason?.startsWith('BACKTEST_')) throw error;
+      raw = await this.complete(SPACE_BUNNY_MODEL, messages, 2048, 25_000);
+    }
     let parsed = tryParseJson(raw);
     // A historical replay has a strict serverless time budget. Do not spend a
     // second provider request repairing malformed output; fail the replay clearly.
