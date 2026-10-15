@@ -289,17 +289,19 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   const [modelState, setModelState] = useState<ModelState>('loading');
   const [modelError, setModelError] = useState('');
   const [modelsFetchedAt, setModelsFetchedAt] = useState<number | null>(null);
+  const [activeProvider, setActiveProvider] = useState<'openrouter' | 'spacebunny'>('openrouter');
   const [modelSearch, setModelSearch] = useState('');
   const [showModelDetails, setShowModelDetails] = useState(false);
 
-  const loadModels = useCallback(async () => {
+  const loadModels = useCallback(async (providerOverride?: 'openrouter' | 'spacebunny') => {
     setModelState('loading');
     setModelError('');
 
     try {
       const authHeaders = await getApiAuthHeaders();
 
-      const response = await fetch(MODEL_CATALOGUE_ENDPOINT, {
+      const modelUrl = providerOverride ? `${MODEL_CATALOGUE_ENDPOINT}?provider=${providerOverride}` : MODEL_CATALOGUE_ENDPOINT;
+      const response = await fetch(modelUrl, {
         method: 'GET',
         headers: { Accept: 'application/json', ...authHeaders },
       });
@@ -324,6 +326,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       }
 
       setModels(nextModels);
+      if (!Array.isArray(payload) && (payload.provider === 'openrouter' || payload.provider === 'spacebunny')) setActiveProvider(payload.provider);
       setModelsFetchedAt(
         !Array.isArray(payload) && payload.fetchedAt
           ? payload.fetchedAt
@@ -345,14 +348,17 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   }, [loadModels]);
 
   const openEditGoat = (goat: FundGoat) => {
+    const provider = goat.aiProvider ?? activeProvider;
+    setEditProvider(provider);
     setEditName(goat.name); setEditGoal(goat.goal); setEditModel(goat.model || '');
     setEditGoatError(''); setIsEditingGoat(true);
+    if (provider !== activeProvider) void loadModels(provider);
   };
   const saveGoatEdits = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!inspectedGoat) return;
     setIsSavingGoat(true); setEditGoatError('');
-    try { await updateGoat(inspectedGoat.id, { name: editName, goal: editGoal, model: editModel }); setIsEditingGoat(false); await refreshGoats(); }
+    try { await updateGoat(inspectedGoat.id, { name: editName, goal: editGoal, model: editModel, aiProvider: editProvider }); setIsEditingGoat(false); await refreshGoats(); }
     catch (err) { setEditGoatError(err instanceof Error ? err.message : 'Could not save GOAT settings.'); }
     finally { setIsSavingGoat(false); }
   };
@@ -615,6 +621,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   const [editName, setEditName] = useState('');
   const [editGoal, setEditGoal] = useState('');
   const [editModel, setEditModel] = useState('');
+  const [editProvider, setEditProvider] = useState<'openrouter' | 'spacebunny'>('openrouter');
   const [isSavingGoat, setIsSavingGoat] = useState(false);
   const [editGoatError, setEditGoatError] = useState('');
 
@@ -1843,12 +1850,13 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       {isEditingGoat && inspectedGoat && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="edit-goat-title">
           <form onSubmit={saveGoatEdits} className="my-6 w-full max-w-xl space-y-4 rounded-3xl border border-line bg-surface p-5 shadow-2xl sm:p-7">
-            <div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-accent-text">🐐 GOAT settings</p><h2 id="edit-goat-title" className="mt-1 text-lg font-bold text-fg">Edit {inspectedGoat.name}</h2><p className="mt-1 text-xs text-fg-muted">The model list follows the AI provider currently selected in Settings.</p></div><button type="button" onClick={() => setIsEditingGoat(false)} className="rounded-lg p-2 text-fg-muted hover:bg-raised" aria-label="Close edit dialog"><X className="h-4 w-4" /></button></div>
+            <div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-accent-text">🐐 GOAT settings</p><h2 id="edit-goat-title" className="mt-1 text-lg font-bold text-fg">Edit {inspectedGoat.name}</h2><p className="mt-1 text-xs text-fg-muted">Choose this GOAT's provider independently of the account default.</p></div><button type="button" onClick={() => setIsEditingGoat(false)} className="rounded-lg p-2 text-fg-muted hover:bg-raised" aria-label="Close edit dialog"><X className="h-4 w-4" /></button></div>
             {editGoatError && <p className="rounded-xl border border-negative/30 bg-negative-soft p-3 text-xs text-negative">{editGoatError}</p>}
             <label className="block text-xs font-semibold text-fg-muted">Name<input required maxLength={80} value={editName} onChange={e => setEditName(e.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-sunken px-3 py-3 text-sm text-fg outline-none focus:border-accent/60" /></label>
             <label className="block text-xs font-semibold text-fg-muted">Description / goal<textarea required maxLength={4000} rows={4} value={editGoal} onChange={e => setEditGoal(e.target.value)} className="mt-1.5 w-full resize-y rounded-xl border border-line bg-sunken px-3 py-3 text-sm text-fg outline-none focus:border-accent/60" /></label>
+            <label className="block text-xs font-semibold text-fg-muted">AI provider<select required value={editProvider} onChange={e => { const provider = e.target.value as 'openrouter' | 'spacebunny'; setEditProvider(provider); setEditModel(''); void loadModels(provider); }} className="mt-1.5 w-full rounded-xl border border-line bg-sunken px-3 py-3 text-sm text-fg outline-none focus:border-accent/60"><option value="openrouter">OpenRouter</option><option value="spacebunny">SpaceBunny</option></select></label>
             <label className="block text-xs font-semibold text-fg-muted">Reasoning model<select required value={editModel} onChange={e => setEditModel(e.target.value)} className="mt-1.5 w-full rounded-xl border border-line bg-sunken px-3 py-3 text-sm text-fg outline-none focus:border-accent/60"><option value="">Select a model</option>{models.map(model => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}</select></label>
-            {modelState === 'error' && <p className="text-[11px] text-negative">Could not load the active provider's model catalogue: {modelError}. Connect your provider in Settings and retry.</p>}
+            {modelState === 'error' && <p className="text-[11px] text-negative">Could not load the selected provider's model catalogue: {modelError}. Save that provider's key in Settings and retry.</p>}
             <div className="flex justify-end gap-2 pt-2"><button type="button" onClick={() => setIsEditingGoat(false)} className="rounded-xl border border-line px-4 py-2.5 text-xs font-semibold text-fg-muted">Cancel</button><button type="submit" disabled={isSavingGoat || !editName.trim() || !editGoal.trim() || !editModel} className="rounded-xl bg-accent px-4 py-2.5 text-xs font-bold text-accent-fg disabled:opacity-50">{isSavingGoat ? 'Saving…' : 'Save changes'}</button></div>
           </form>
         </div>
