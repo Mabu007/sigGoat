@@ -382,6 +382,8 @@ export interface FundGoat {
   markets: string[];
   skillIds: string[];
   model: string;
+  /** Optional per-GOAT provider override; absent inherits Settings. */
+  aiProvider?: 'openrouter' | 'spacebunny';
   status: GoatStatus;
   /** Drafts are persisted but never scheduled or analysed until explicitly deployed. */
   deploymentState?: 'DRAFT' | 'DEPLOYED';
