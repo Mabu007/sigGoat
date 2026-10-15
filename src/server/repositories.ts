@@ -993,13 +993,17 @@ async function deleteGoatDocuments(db: Firestore, collectionName: string, goatId
 class FirestoreSignalRepository implements SignalRepository {
   constructor(private db: Firestore) {}
   async listByGoat(goatId: string, limit = 50) {
+    // Use the automatic single-field goatId index, then sort in memory.
+    // This keeps stale-signal cleanup working even before composite indexes
+    // have propagated to a Firebase project.
     const snap = await this.db
       .collection(SIGNALS)
       .where('goatId', '==', goatId)
-      .orderBy('createdAt', 'desc')
-      .limit(limit)
       .get();
-    return snap.docs.map((d) => d.data() as TradeSignal);
+    return snap.docs
+      .map((d) => d.data() as TradeSignal)
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, limit);
   }
   async save(signal: TradeSignal) {
     await this.db.collection(SIGNALS).doc(signal.id).set(firestoreSafe({ ...signal }));
