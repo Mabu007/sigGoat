@@ -261,6 +261,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     skills,
     createSkill,
     deleteSkill,
+    refreshGoats,
     refreshSkills,
     dataMode,
   } = useGoat();
