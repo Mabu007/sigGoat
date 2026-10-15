@@ -68,7 +68,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
 
   if (!currentUser) {
     const robotLink = typeof window !== 'undefined' && /^\/robot\/[^/]+\/?$/.test(window.location.pathname);
-    return robotLink ? <RobotAccessScreen authError={authError} authMode={authMode} /> : <LandingAuth authError={authError} authMode={authMode} />;
+    return robotLink ? <>{children}</> : <LandingAuth authError={authError} authMode={authMode} />;
   }
 
   return <>{children}</>;
