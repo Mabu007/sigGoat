@@ -520,6 +520,32 @@ describe('candles', () => {
     const span = calls[0].body.req.endTime - calls[0].body.req.startTime;
     expect(span).toBeLessThanOrEqual(5000 * 60_000);
   });
+
+  test('paginates long history without gaps and excludes the current open candle', async () => {
+    const intervalMs = 60_000;
+    const calls: Array<{ type: string; body: any }> = [];
+    const fetchImpl = async (_url: string, init: RequestInit): Promise<Response> => {
+      const body = JSON.parse(String(init.body));
+      calls.push({ type: body.type, body });
+      const { startTime, endTime } = body.req;
+      const firstOpen = Math.ceil(startTime / intervalMs) * intervalMs;
+      const lastOpen = Math.floor(endTime / intervalMs) * intervalMs;
+      const rows: Array<Record<string, string | number>> = [];
+      for (let time = lastOpen; time >= firstOpen && rows.length < 5000; time -= intervalMs) {
+        rows.push({ t: time, o: '100', h: '101', l: '99', c: '100.5', v: '10' });
+      }
+      return new Response(JSON.stringify(rows), { status: 200 });
+    };
+    const hl = new HyperliquidClient({ fetchImpl, onWarn: () => {} });
+    const candles = await hl.candles('BTC', '1m', 6000);
+
+    expect(calls.length).toBe(2);
+    expect(candles).toHaveLength(6000);
+    expect((calls[0].body.req.endTime + 1) % intervalMs).toBe(0);
+    for (let index = 1; index < candles.length; index += 1) {
+      expect(candles[index].time - candles[index - 1].time).toBe(intervalMs);
+    }
+  });
 });
 
 describe('quotes', () => {
