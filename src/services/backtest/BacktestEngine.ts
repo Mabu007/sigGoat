@@ -285,36 +285,27 @@ export class BacktestEngine {
 
       /** Only filled WIN/LOSS trades modify realised equity. */
       if (simulation.trade.outcome === 'WIN' || simulation.trade.outcome === 'LOSS') {
-        // A loss also pays fees/slippage. Risking 100% of remaining equity
-        // would therefore push the account below zero after costs. Scale the
-        // final trade down so loss plus modelled costs cannot exceed equity.
-        if (simulation.trade.outcome === 'LOSS' && currentEquity > 0) {
-          const costPerRiskDollar = tradeCost(
-            1,
-            this.estimateNotionalUsd(simulation.trade, 1),
-          );
-          affordableRisk = Math.min(
-            affordableRisk,
-            currentEquity / (1 + costPerRiskDollar),
-          );
+        // Both gross PnL and modeled costs scale linearly with risk. Cap the
+        // risk so even a high-notional trade whose fees exceed its gross win
+        // cannot push the account below zero.
+        const costPerRiskDollar = tradeCost(1, this.estimateNotionalUsd(simulation.trade, 1));
+        const grossPerRiskDollar = this.calculateDollarPnl(simulation.trade, 1);
+        const netPerRiskDollar = grossPerRiskDollar - costPerRiskDollar;
+        if (netPerRiskDollar < 0 && currentEquity > 0) {
+          affordableRisk = Math.min(affordableRisk, currentEquity / Math.abs(netPerRiskDollar));
         }
-        const pnl = this.calculateDollarPnl(simulation.trade, affordableRisk);
-        // Persist the actual gross PnL for this trade. Summary metrics must not
-        // assume full starting-balance risk after the account has drawn down.
-        simulation.trade.pnlDollars = Number(pnl.toFixed(2));
 
-        /**
-         * Trading costs are charged on the SAME basis as the P&L, inside the
-         * same step, so the equity curve and every summary metric are derived
-         * from one calculation. A separate "costs" bucket would let the curve
-         * and the headline numbers disagree.
-         */
-        const cost = tradeCost(
-          affordableRisk,
-          this.estimateNotionalUsd(simulation.trade, affordableRisk),
-        );
+        const grossPnl = this.calculateDollarPnl(simulation.trade, affordableRisk);
+        const cost = tradeCost(affordableRisk, this.estimateNotionalUsd(simulation.trade, affordableRisk));
+        const netPnl = grossPnl - cost;
         totalCosts += cost;
-        currentEquity += pnl - cost;
+
+        // The trade log, win/loss classification, summary statistics and
+        // equity curve all use the same NET realized PnL after fees/slippage.
+        simulation.trade.pnlDollars = Number(netPnl.toFixed(2));
+        simulation.trade.pnlPct = Number((netPnl / startingBalance * 100).toFixed(4));
+        simulation.trade.outcome = netPnl >= 0 ? 'WIN' : 'LOSS';
+        currentEquity = Math.max(0, currentEquity + netPnl);
         equityCurve.push({
           time: simulation.trade.exitTime ?? simulation.trade.timestamp,
           equity: Number(currentEquity.toFixed(2)),
