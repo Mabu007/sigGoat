@@ -926,7 +926,10 @@ export function Chatbot() {
         models.sort((a, b) => Number(!a.id.endsWith(':free')) - Number(!b.id.endsWith(':free')) || a.name.localeCompare(b.name));
         if (cancelled) return;
         setChatModels(models);
-        const preferred = typeof prefs?.aiModel === 'string' ? prefs.aiModel : null;
+        const savedModel = typeof prefs?.aiModel === 'string' ? prefs.aiModel : null;
+        // Model IDs are provider-scoped. Never keep displaying a saved model
+        // that is absent from the currently selected provider's catalogue.
+        const preferred = savedModel && models.some((model) => model.id === savedModel) ? savedModel : null;
         setChatModel(preferred || models.find((model) => model.id.endsWith(':free'))?.id || models[0]?.id || null);
       } catch {
         // Keep the current selection if the provider catalogue is temporarily unavailable.
