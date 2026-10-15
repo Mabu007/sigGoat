@@ -511,14 +511,14 @@ describe('candles', () => {
     expect(await hl.candles('xyz:NIFTY', '1m', 10)).toEqual([]);
   });
 
-  test('clamps the requested count to the documented 5000 ceiling', async () => {
+  test('bounds each historical request to the upstream 5000-candle page size', async () => {
     const calls: Array<{ type: string; body: any }> = [];
     const hl = client({ candleSnapshot: [] }, calls);
     await hl.candles('BTC', '1m', 99999);
-    // startTime is derived from the CLAMPED count, so a runaway request
-    // cannot ask the provider for unbounded history.
+    // Long backtests may request more history, but no individual page may
+    // span more than the documented upstream response cap.
     const span = calls[0].body.req.endTime - calls[0].body.req.startTime;
-    expect(span).toBeLessThanOrEqual(5000 * 60_000 * 2);
+    expect(span).toBeLessThanOrEqual(5000 * 60_000);
   });
 });
 
