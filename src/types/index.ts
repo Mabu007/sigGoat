@@ -146,6 +146,8 @@ export interface Candle {
   low: number;
   close: number;
   volume: number;
+  /** Whether the provider has closed/finalized this candle, when known. */
+  finalized?: boolean;
 }
 
 /**
