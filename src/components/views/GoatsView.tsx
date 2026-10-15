@@ -327,7 +327,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
       }
 
       setModels(nextModels);
-      if (!Array.isArray(payload) && (payload.provider === 'openrouter' || payload.provider === 'spacebunny')) setActiveProvider(payload.provider);
+      if (!providerOverride && !Array.isArray(payload) && (payload.provider === 'openrouter' || payload.provider === 'spacebunny')) setActiveProvider(payload.provider);
       setModelsFetchedAt(
         !Array.isArray(payload) && payload.fetchedAt
           ? payload.fetchedAt
