@@ -158,6 +158,11 @@ interface ChatItem {
 
 
 
+interface ChatModelOption {
+  id: string;
+  name: string;
+}
+
 interface ChatMessage {
 
   id: string;
