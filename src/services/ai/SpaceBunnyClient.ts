@@ -87,6 +87,11 @@ export class SpaceBunnyClient {
     ];
     let raw = await this.complete(SPACE_BUNNY_MODEL, messages, REASONING_MAX_TOKENS);
     let parsed = tryParseJson(raw);
+    // A historical replay has a strict serverless time budget. Do not spend a
+    // second provider request repairing malformed output; fail the replay clearly.
+    if (parsed === undefined && context.wakeReason?.startsWith('BACKTEST_')) {
+      throw new ApiRequestError('Space Bunny returned invalid JSON during backtesting; retry the backtest or use a shorter period.', { code: 'BACKTEST_INVALID_JSON', retryable: true });
+    }
     if (parsed === undefined) {
       raw = await this.complete(SPACE_BUNNY_MODEL, [
         ...messages,

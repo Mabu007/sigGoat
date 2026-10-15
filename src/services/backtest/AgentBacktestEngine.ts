@@ -20,7 +20,7 @@ const PERIOD_BARS: Record<AgentBacktestPeriod, number> = { '24h': 288, '7d': 201
 const MIN_HISTORY = 60;
 const CONTEXT_BARS = 72;
 // Bound sequential model calls in long replays; every candle still receives deterministic evaluation.
-const MAX_AI_WAKES_BY_PERIOD: Record<AgentBacktestPeriod, number> = { '24h': 2, '7d': 2, '30d': 3, '90d': 3 };
+const MAX_AI_WAKES_BY_PERIOD: Record<AgentBacktestPeriod, number> = { '24h': 2, '7d': 2, '30d': 2, '90d': 2 };
 const MAX_PENDING_BARS = 12;
 const MAX_HOLDING_BARS = 35;
 const TAKER_FEE = 0.00045;
