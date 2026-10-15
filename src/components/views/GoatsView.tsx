@@ -73,6 +73,7 @@ interface LiveModel {
 
 interface ModelCatalogueResponse {
   models: LiveModel[];
+  provider?: 'openrouter' | 'spacebunny';
   fetchedAt?: number;
 }
 
