@@ -1052,11 +1052,7 @@ export const SettingsView: React.FC = () => {
                 disabled={isSavingPreferences}
                 label="Reasoning model"
                 error={preferencesError}
-                reloadKey={
-                  provider === 'openrouter'
-                    ? keyStatus?.openRouterKeyConfigured
-                    : keyStatus?.groqKeyConfigured
-                }
+                reloadKey={`\${provider}:\${hasSavedKey}`}
               />
             </div>
           </div>
@@ -1092,6 +1088,11 @@ export const SettingsView: React.FC = () => {
               Groq is a separate service from OpenRouter: its model names are not interchangeable, and it is not
               unlimited or always free.
             </p>
+            <div className="mt-3 border-t border-line pt-3">
+              <ModelPicker getApiAuthHeaders={getApiAuthHeaders} value={preferences.aiModel} onChange={handleModelChange}
+                disabled={isSavingPreferences} label="Reasoning model" error={preferencesError}
+                reloadKey={`\${provider}:\${hasSavedKey}`} />
+            </div>
           </div>
           ) : (
           <div>
@@ -1115,7 +1116,7 @@ export const SettingsView: React.FC = () => {
             <div className="mt-3 border-t border-line pt-3">
               <ModelPicker getApiAuthHeaders={getApiAuthHeaders} value={preferences.aiModel} onChange={handleModelChange}
                 disabled={isSavingPreferences} label="Reasoning model" error={preferencesError}
-                reloadKey={keyStatus?.spaceBunnyKeyConfigured} />
+                reloadKey={`\${provider}:\${hasSavedKey}`} />
             </div>
           </div>
           )}
