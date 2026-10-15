@@ -235,16 +235,25 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
 
     if (provider === 'groq') {
       const groq = client as GroqClient;
-      const { result } = await groq.evaluateGoat(context, model || DEFAULT_GROQ_MODEL);
+      // Existing GOATs can retain a model from the provider previously selected
+      // in Settings. Model IDs are provider-scoped, so fall back to a known
+      // Groq model rather than sending an OpenRouter slug to Groq.
+      const available = groq.listModels().models.some((entry) => entry.id === model);
+      const selectedModel = available ? model : DEFAULT_GROQ_MODEL;
+      const { result } = await groq.evaluateGoat(context, selectedModel);
       return result;
     }
-    if (provider === 'spacebunny') return (await (client as SpaceBunnyClient).evaluateGoat(context, model || SPACE_BUNNY_MODEL)).result;
+    if (provider === 'spacebunny') {
+      return (await (client as SpaceBunnyClient).evaluateGoat(context, SPACE_BUNNY_MODEL)).result;
+    }
 
-    // The client wraps the validated contract in transport metadata.
-    const { result } = await (client as OpenRouterClient).evaluateGoat(
-      context,
-      model,
-    );
+    // Existing GOATs may still carry a Groq or Space Bunny model after the
+    // account provider changes. Repair provider-mismatched IDs before calling
+    // OpenRouter; preserve valid OpenRouter slugs as configured.
+    const selectedModel = typeof model === 'string' && model.includes('/')
+      ? model
+      : (await this.pickAnyModel(context.userId)) || model;
+    const { result } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
     return result;
   }
 
@@ -263,16 +272,18 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
 
     if (provider === 'groq') {
       const groq = client as GroqClient;
-      const { answer } = await groq.answerQuestion(question, context, model || DEFAULT_GROQ_MODEL);
+      const available = groq.listModels().models.some((entry) => entry.id === model);
+      const { answer } = await groq.answerQuestion(question, context, available ? model : DEFAULT_GROQ_MODEL);
       return answer;
     }
-    if (provider === 'spacebunny') return (await (client as SpaceBunnyClient).answerQuestion(question, context, model || SPACE_BUNNY_MODEL)).answer;
+    if (provider === 'spacebunny') {
+      return (await (client as SpaceBunnyClient).answerQuestion(question, context, SPACE_BUNNY_MODEL)).answer;
+    }
 
-    const answer = await (client as OpenRouterClient).answerQuestion(
-      context,
-      question,
-      model,
-    );
+    const selectedModel = typeof model === 'string' && model.includes('/')
+      ? model
+      : (await this.pickAnyModel(context.userId)) || model;
+    const answer = await (client as OpenRouterClient).answerQuestion(context, question, selectedModel);
     return answer.answer;
   }
 
@@ -343,7 +354,9 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     if (!resolved) return false;
 
     const { provider, client } = resolved;
-    if (provider === 'groq') return true;
+    if (provider === 'groq') {
+      return (resolved.client as GroqClient).listModels().models.some((model) => model.id === modelId);
+    }
     if (provider === 'spacebunny') return modelId === SPACE_BUNNY_MODEL;
 
     const catalogue = await (client as OpenRouterClient).fetchModels();
