@@ -65,7 +65,7 @@ a real market quote.
 fans it out to every GOAT. It is keyed by **market, not GOAT**, because the
 expensive part is identical for everyone watching the same pair.
 
-Six GOATs on EUR/USD over 40 seconds: **1 poll loop and 3 provider fetches**,
+Six GOATs on BTC over 40 seconds: **1 poll loop and 3 provider fetches**,
 where per-GOAT polling would have made 48. Counters are exposed at
 `GET /api/settings/status` under `marketState`.
 
