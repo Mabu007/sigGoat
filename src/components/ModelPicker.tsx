@@ -70,6 +70,7 @@ export function ModelPicker({
   reloadKey = null,
 }: ModelPickerProps) {
   const [models, setModels] = useState<ModelOption[] | null>(null);
+  const [catalogueProvider, setCatalogueProvider] = useState<string>("openrouter");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -93,6 +94,7 @@ export function ModelPicker({
         return;
       }
 
+      if (typeof body?.provider === "string") setCatalogueProvider(body.provider);
       const list: ModelOption[] = Array.isArray(body?.models) ? body.models : [];
       setModels(list);
     } catch {
@@ -184,7 +186,7 @@ export function ModelPicker({
 
       {models && models.length === 0 && (
         <div className="mb-2 rounded-lg border border-warning/40 bg-warning-soft p-2 text-[10px] text-fg-muted">
-          OpenRouter returned an empty catalogue for this key.
+          {catalogueProvider === "spacebunny" ? "Space Bunny returned an empty model catalogue." : catalogueProvider === "groq" ? "Groq returned an empty model catalogue." : "OpenRouter returned an empty catalogue for this key."}
         </div>
       )}
 
