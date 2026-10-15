@@ -38,6 +38,7 @@ import React, { useState } from 'react';
 import { AlertCircle, LogIn, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { LandingAuth } from './LandingAuth';
+import { isFirebaseConfigured } from '../lib/firebaseConfig';
 
 export interface AuthGateProps {
   children: React.ReactNode;
@@ -66,10 +67,42 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
   }
 
   if (!currentUser) {
-    return <LandingAuth authError={authError} authMode={authMode} />;
+    const robotLink = typeof window !== 'undefined' && /^\/robot\/[^/]+\/?$/.test(window.location.pathname);
+    return robotLink ? <>{children}</> : <LandingAuth authError={authError} authMode={authMode} />;
   }
 
   return <>{children}</>;
+};
+
+const RobotAccessScreen: React.FC<{ authError: string | null; authMode: string | null }> = ({ authError, authMode }) => {
+  const { loginWithGoogle, signupWithEmail, loginWithEmail } = useAuth();
+  const [mode, setMode] = useState<'signin' | 'signup'>('signup');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8) { setError('Enter a valid email and a password of at least 8 characters.'); return; }
+    setBusy(true); setError('');
+    try { await (mode === 'signup' ? signupWithEmail(email.trim(), password) : loginWithEmail(email.trim(), password)); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Sign-in failed.'); }
+    finally { setBusy(false); }
+  };
+  const google = async () => { setBusy(true); setError(''); try { await loginWithGoogle(); } catch (e) { setError(e instanceof Error ? e.message : 'Google sign-in failed.'); } finally { setBusy(false); } };
+  return <main className="min-h-screen bg-[#080a0f] px-5 py-12 text-white flex items-center justify-center"><div className="w-full max-w-md">
+    <p className="text-[10px] uppercase tracking-[.25em] text-violet-200">Private robot access</p><h1 className="mt-3 text-3xl font-black tracking-tight">{mode === 'signup' ? 'Create your account' : 'Welcome back'}</h1><p className="mt-2 text-sm leading-6 text-white/55">Sign in to use this trading robot. Your account and connected trading credentials stay yours.</p>
+    {authMode === 'none' && <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[.06] p-3 text-xs text-red-100">Authentication is not configured on this deployment.</p>}
+    {!isFirebaseConfigured && <p className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/[.06] p-3 text-xs text-amber-100">Firebase web configuration is missing.</p>}
+    <form onSubmit={submit} className="mt-5 space-y-3 rounded-2xl border border-white/10 bg-white/[.025] p-5">
+      <label className="block text-xs text-white/60">Email<input value={email} onChange={e => setEmail(e.target.value)} type="email" autoComplete="email" required className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none focus:border-violet-300/50" /></label>
+      <label className="block text-xs text-white/60">Password<input value={password} onChange={e => setPassword(e.target.value)} type="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} minLength={8} required className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none focus:border-violet-300/50" /></label>
+      <button disabled={busy || authMode === 'none' || !isFirebaseConfigured} className="w-full rounded-xl bg-violet-300 px-4 py-3 text-sm font-bold text-[#100c1b] disabled:opacity-50">{busy ? 'Working…' : mode === 'signup' ? 'Create account and continue' : 'Sign in and continue'}</button>
+      <button type="button" disabled={busy || authMode === 'none' || !isFirebaseConfigured} onClick={() => void google()} className="w-full rounded-xl border border-white/15 px-4 py-3 text-sm font-semibold text-white/85 disabled:opacity-50">{busy ? 'Connecting…' : 'Continue with Google'}</button>
+      {(error || authError) && <p role="alert" className="whitespace-pre-wrap text-xs leading-5 text-red-200">{error || authError}</p>}
+    </form>
+    <p className="mt-4 text-center text-xs text-white/45">{mode === 'signup' ? 'Already have an account?' : 'New here?'} <button onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setError(''); }} className="font-semibold text-violet-200 underline underline-offset-4">{mode === 'signup' ? 'Sign in' : 'Create account'}</button></p>
+  </div></main>;
 };
 
 const AuthLoadingScreen: React.FC = () => (

@@ -158,6 +158,37 @@ configureCredentialVault(persistence);
  */
 const keyStore = createVaultBackedKeyStore(persistence.keys, credentialVault);
 
+/** Public robot memberships are keyed by robot slug + verified Firebase UID. */
+type PublishedRobotMembership = {
+  id: string; robotSlug: string; goatId: string; userId: string;
+  joinedAt: string; activatedAt?: string; mode: "PAPER";
+  lastChatAt?: string; chatWindowStartedAt?: string; chatCountInWindow?: number;
+};
+const localPublishedRobotMemberships = new Map<string, PublishedRobotMembership>();
+function publishedRobotMembershipId(slug: string, userId: string): string {
+  return (slug + "__" + userId).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 240);
+}
+async function findPublishedRobot(slug: string): Promise<FundGoat | null> {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return null;
+  const goats = await persistence.goats.listAll();
+  return goats.find((goat) => goat.publicSlug === slug && goat.isPublished === true && goat.deploymentState === "DEPLOYED") ?? null;
+}
+async function getPublishedRobotMembership(slug: string, userId: string): Promise<PublishedRobotMembership | null> {
+  const id = publishedRobotMembershipId(slug, userId);
+  const admin = getFirebaseAdmin();
+  if (admin) {
+    const snap = await admin.firestore.collection("publishedRobotUsers").doc(id).get();
+    return snap.exists ? snap.data() as PublishedRobotMembership : null;
+  }
+  return localPublishedRobotMemberships.get(id) ?? null;
+}
+async function savePublishedRobotMembership(membership: PublishedRobotMembership): Promise<void> {
+  localPublishedRobotMemberships.set(membership.id, membership);
+  const admin = getFirebaseAdmin();
+  if (admin) await admin.firestore.collection("publishedRobotUsers").doc(membership.id).set(membership, { merge: true });
+}
+
+
 /**
  * ONE PropDAO adapter factory.
  *
@@ -613,17 +644,21 @@ async function setGoatStatusFor(
   }
 
   const deployingDraft = !paused && goat.deploymentState === 'DRAFT';
-  // Preserve a model the user chose while saving the draft. Only resolve a
-  // current fallback when the draft was created before any model was selected.
   const resolvedModel = deployingDraft && goat.model === LEGACY_DEFAULT_MODEL
     ? await resolveModelForNewGoat(userId, goat.model, false)
     : goat.model;
+  const now = new Date().toISOString();
+  // First deployment publishes this existing GOAT under a shareable white-label URL.
+  const publicBase = goat.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "trading-robot";
+  const publicSuffix = goat.id.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase();
+  const publishOnFirstDeploy = deployingDraft && !goat.publicSlug;
   const updated: FundGoat = {
     ...goat,
     model: resolvedModel,
     status: paused ? "PAUSED" : "WATCHING",
     deploymentState: paused ? (goat.deploymentState ?? 'DEPLOYED') : 'DEPLOYED',
-    updatedAt: new Date().toISOString(),
+    ...(publishOnFirstDeploy ? { publicSlug: publicBase + "-" + publicSuffix, isPublished: true, publishedAt: now } : {}),
+    updatedAt: now,
   };
 
   await persistence.goats.save(updated);
@@ -3252,7 +3287,120 @@ apiRouter.get(
   }),
 );
 
+/**
+ * Public robot profile. This route is deliberately before authMiddleware:
+ * share links must render for signed-out visitors. Only curated public fields
+ * leave the server; credentials and owner IDs never do.
+ */
+apiRouter.get("/robots/:slug", handle(async (req, res) => {
+  const goat = await findPublishedRobot(String(req.params.slug || ""));
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  const [creator, theses, signals] = await Promise.all([
+    persistence.profiles.get(goat.userId),
+    persistence.theses.listByGoat(goat.id, 1),
+    persistence.signals.listByGoat(goat.id, 5),
+  ]);
+  const thesis = theses[0];
+  res.setHeader("Cache-Control", "public, max-age=15, stale-while-revalidate=30");
+  res.json({ robot: {
+    slug: goat.publicSlug, name: goat.name, description: goat.goal,
+    markets: goat.markets, status: goat.status, publishedAt: goat.publishedAt ?? goat.updatedAt,
+    creatorName: creator?.displayName || "Independent creator", mode: "PAPER",
+    latestThesis: thesis ? { market: thesis.market, bias: thesis.directionalHypothesis,
+      summary: thesis.summary ?? thesis.assetState ?? "No market review has been recorded yet.",
+      confidence: thesis.confidence, updatedAt: thesis.updatedAt } : null,
+    signals: signals.map((signal) => ({ market: signal.market, direction: signal.direction,
+      status: signal.status, entry: signal.entry, entryZone: signal.entryZone,
+      stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis,
+      rationale: signal.rationale, createdAt: signal.createdAt })),
+  }});
+}));
+
 apiRouter.use(authMiddleware);
+
+/** Publish the existing GOAT under a stable, shareable URL. */
+apiRouter.post("/goats/:id/publish", handle(async (req, res) => {
+  const user = requireUser(req);
+  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!goat) return notFound(res);
+  if (goat.deploymentState !== "DEPLOYED") return fail(res, 409, "ROBOT_MUST_BE_DEPLOYED", "Deploy this GOAT before publishing its robot link.");
+  const baseName = goat.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "trading-robot";
+  const stableSuffix = goat.id.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase();
+  const slug = goat.publicSlug || (baseName + "-" + stableSuffix);
+  const updated: FundGoat = { ...goat, publicSlug: slug, isPublished: true, publishedAt: goat.publishedAt ?? new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await persistence.goats.save(updated);
+  res.json({ goat: updated, slug, path: "/robot/" + slug });
+}));
+
+apiRouter.post("/goats/:id/unpublish", handle(async (req, res) => {
+  const user = requireUser(req);
+  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!goat) return notFound(res);
+  const updated: FundGoat = { ...goat, isPublished: false, updatedAt: new Date().toISOString() };
+  await persistence.goats.save(updated);
+  res.json({ goat: updated, unpublished: true });
+}));
+
+apiRouter.get("/robots/:slug/me", handle(async (req, res) => {
+  const user = requireUser(req);
+  const slug = String(req.params.slug || "");
+  const goat = await findPublishedRobot(slug);
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  const membership = await getPublishedRobotMembership(slug, user.uid);
+  const propDao = await credentialVault.getCredentialStatus(user.uid, "propdao");
+  res.json({ joined: Boolean(membership), membership: membership ? { joinedAt: membership.joinedAt, activatedAt: membership.activatedAt ?? null, mode: membership.mode } : null, propDaoKeyConfigured: propDao.configured });
+}));
+
+apiRouter.post("/robots/:slug/join", handle(async (req, res) => {
+  const user = requireUser(req);
+  const slug = String(req.params.slug || "");
+  const goat = await findPublishedRobot(slug);
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  const id = publishedRobotMembershipId(slug, user.uid);
+  const existing = await getPublishedRobotMembership(slug, user.uid);
+  const membership: PublishedRobotMembership = existing ?? { id, robotSlug: slug, goatId: goat.id, userId: user.uid, joinedAt: new Date().toISOString(), mode: "PAPER" };
+  await savePublishedRobotMembership(membership);
+  res.json({ joined: true, membership: { joinedAt: membership.joinedAt, activatedAt: membership.activatedAt ?? null, mode: membership.mode } });
+}));
+
+apiRouter.post("/robots/:slug/activate", handle(async (req, res) => {
+  const user = requireUser(req);
+  const slug = String(req.params.slug || "");
+  const goat = await findPublishedRobot(slug);
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  const existing = await getPublishedRobotMembership(slug, user.uid);
+  if (!existing) return fail(res, 403, "ROBOT_MEMBERSHIP_REQUIRED", "Join this robot before activating it.");
+  const membership: PublishedRobotMembership = { ...existing, activatedAt: existing.activatedAt ?? new Date().toISOString(), mode: "PAPER" };
+  await savePublishedRobotMembership(membership);
+  res.json({ activated: true, mode: "PAPER", message: "Robot activated in paper mode. No live orders were submitted." });
+}));
+
+/** Public robot chat uses the creator's configured AI credential server-side. */
+apiRouter.post("/robots/:slug/chat", handle(async (req, res) => {
+  const user = requireUser(req);
+  const slug = String(req.params.slug || "");
+  const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+  if (!question) return fail(res, 400, "INVALID_QUESTION", "Enter a message for this robot.");
+  if (question.length > 2000) return fail(res, 400, "INVALID_QUESTION", "Messages must be 2,000 characters or fewer.");
+  const goat = await findPublishedRobot(slug);
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  const membership = await getPublishedRobotMembership(slug, user.uid);
+  if (!membership) return fail(res, 403, "ROBOT_MEMBERSHIP_REQUIRED", "Join this robot before chatting with it.");
+  if (!(await reasoningGateway.hasKeyFor(goat.userId, goat.aiProvider))) {
+    return fail(res, 503, "CREATOR_AI_NOT_CONFIGURED", "The robot creator needs to configure a working AI provider key before this robot can chat.");
+  }
+  const chatNow = Date.now();
+  const lastChatAt = Date.parse(membership.lastChatAt ?? "");
+  if (Number.isFinite(lastChatAt) && chatNow - lastChatAt < 2500) return fail(res, 429, "ROBOT_CHAT_COOLDOWN", "Please wait a few seconds before sending another message.");
+  const priorWindow = Date.parse(membership.chatWindowStartedAt ?? "");
+  const windowExpired = !Number.isFinite(priorWindow) || chatNow - priorWindow >= 3600000;
+  const countInWindow = windowExpired ? 0 : (membership.chatCountInWindow ?? 0);
+  if (countInWindow >= 20) return fail(res, 429, "ROBOT_CHAT_LIMIT", "This robot allows up to 20 chat messages per hour per user.");
+  await savePublishedRobotMembership({ ...membership, lastChatAt: new Date(chatNow).toISOString(), chatWindowStartedAt: windowExpired ? new Date(chatNow).toISOString() : membership.chatWindowStartedAt, chatCountInWindow: countInWindow + 1 });
+  const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider }, goat.id, goat.userId);
+  const answer = await reasoningGateway.answerGoatQuestion(question, context, model || goat.model, goat.aiProvider);
+  res.json({ answer, provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
+}));
 
 // ---- Settings / keys (user-scoped) ----------------------------------
 
@@ -4751,6 +4899,11 @@ apiRouter.post(
           ),
       status: input.deploymentState === 'DRAFT' ? "PAUSED" : "WATCHING",
       deploymentState: input.deploymentState,
+      ...(input.deploymentState !== 'DRAFT' ? {
+        publicSlug: ((input.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42)) || "trading-robot") + "-" + goatId.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase(),
+        isPublished: true,
+        publishedAt: now,
+      } : {}),
       schedule: input.schedule,
       timeframe: input.timeframe,
       createdAt: now,

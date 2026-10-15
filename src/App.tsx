@@ -14,6 +14,7 @@ import { BacktestView } from './components/views/BacktestView';
 import { SettingsView } from './components/views/SettingsView';
 import { AuthGate } from './components/AuthGate';
 import { Chatbot } from './components/Chatbot/Chatbot';
+import { PublicRobotView } from './components/PublicRobotView';
 
 /**
  * Deep-link support without a router dependency.
@@ -139,12 +140,16 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <AuthGate>
-            <MarketProvider>
-              <GoatProvider>
-                <MainApp />
-              </GoatProvider>
-            </MarketProvider>
-            <Chatbot />
+            {typeof window !== 'undefined' && /^\/robot\/[^/]+\/?$/.test(window.location.pathname)
+              ? <PublicRobotView slug={decodeURIComponent(window.location.pathname.split('/')[2] || '')} />
+              : <>
+                  <MarketProvider>
+                    <GoatProvider>
+                      <MainApp />
+                    </GoatProvider>
+                  </MarketProvider>
+                  <Chatbot />
+                </>}
         </AuthGate>
       </AuthProvider>
     </ThemeProvider>

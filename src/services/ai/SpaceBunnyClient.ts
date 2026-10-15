@@ -19,6 +19,7 @@ export const SPACE_BUNNY_MODEL = 'space-bunny-alpha';
 const BASE_URL = 'https://spacebunnymodel.com/api/v1';
 const REQUEST_TIMEOUT_MS = 60_000;
 const PROBE_TIMEOUT_MS = 15_000;
+const REASONING_MAX_TOKENS = 3072;
 
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -84,14 +85,14 @@ export class SpaceBunnyClient {
       { role: 'system', content: buildReasoningSystemPrompt() },
       { role: 'user', content: buildReasoningUserPrompt(context) },
     ];
-    let raw = await this.complete(SPACE_BUNNY_MODEL, messages, 8192);
+    let raw = await this.complete(SPACE_BUNNY_MODEL, messages, REASONING_MAX_TOKENS);
     let parsed = tryParseJson(raw);
     if (parsed === undefined) {
       raw = await this.complete(SPACE_BUNNY_MODEL, [
         ...messages,
         { role: 'assistant', content: raw.slice(0, 4000) },
         { role: 'user', content: 'Return ONLY a valid JSON object with exactly the four top-level keys investigation, thesis, proposal and evidence. No markdown or prose.' },
-      ], 8192);
+      ], REASONING_MAX_TOKENS);
       parsed = tryParseJson(raw);
     }
     if (parsed === undefined) throw new ApiRequestError('Space Bunny did not return the required JSON reasoning contract after a repair attempt.', { code: 'UNPARSEABLE', retryable: true });
