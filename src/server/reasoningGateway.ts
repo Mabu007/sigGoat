@@ -258,7 +258,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     // OpenRouter; preserve valid OpenRouter slugs as configured.
     const selectedModel = typeof model === 'string' && model.includes('/')
       ? model
-      : (await this.pickAnyModel(context.userId)) || model;
+      : (await this.pickAnyModel(context.userId, provider)) || model;
     const { result } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
     return result;
   }
