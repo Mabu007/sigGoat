@@ -59,6 +59,7 @@ function value(raw: string | undefined): string {
  */
 export const isFirebaseConfigured = Boolean(
   value(injected.apiKey) &&
+    value(injected.authDomain) &&
     value(injected.projectId) &&
     value(injected.appId),
 );
