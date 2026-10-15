@@ -55,25 +55,31 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
+/** Shared SIRGOAT logo asset, with rounded corners at every app size. */
+export function BrandLogo({
+  className = 'h-9 w-9',
+  alt = 'SIRGOAT logo',
+}: {
+  className?: string;
+  alt?: string;
+}) {
+  return (
+    <img
+      src="https://res.cloudinary.com/dlguuk8lt/image/upload/v1792056929/sirgoat_fmuhqm.jpg"
+      alt={alt}
+      loading="eager"
+      decoding="async"
+      draggable={false}
+      className={`shrink-0 rounded-xl object-cover ${className}`}
+    />
+  );
+}
+
 /** The SIRGOAT wordmark. */
 export function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <span className="flex items-center gap-2 select-none">
-      <span
-        aria-hidden="true"
-        className="premium-brand-icon flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-accent-fg"
-      >
-        <svg viewBox="0 0 24 24" fill="none" className="h-[18px] w-[18px]">
-          <path
-            d="M4 17.5 9 11l3.5 3.5L20 6"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <circle cx="20" cy="6" r="2" fill="currentColor" />
-        </svg>
-      </span>
+      <BrandLogo className="h-9 w-9 rounded-xl" alt="" />
       {!compact && (
         <span className="text-[15px] font-bold tracking-[0.11em] text-fg">
           SIR<span className="text-accent-text">GOAT</span>
