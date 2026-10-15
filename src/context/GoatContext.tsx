@@ -32,7 +32,7 @@ export interface CreateGoatInput {
   deploymentState?: 'DRAFT' | 'DEPLOYED';
 }
 
-export interface UpdateGoatInput { name: string; goal: string; model: string; }
+export interface UpdateGoatInput { name: string; goal: string; model: string; aiProvider?: 'openrouter' | 'spacebunny'; }
 
 export interface CreateSkillInput {
   name: string;
@@ -1078,7 +1078,7 @@ export const GoatProvider: React.FC<{
         const data = await apiRequest<GoatResponse>(`/api/goats/${encodeURIComponent(id)}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, goal, model }),
+          body: JSON.stringify({ name, goal, model, aiProvider: input.aiProvider }),
         });
         if (!data?.goat?.id) throw new Error('The server did not return the updated GOAT.');
         setGoats(previous => previous.map(goat => goat.id === id ? { ...goat, ...data.goat } : goat));
