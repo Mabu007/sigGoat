@@ -4803,6 +4803,30 @@ apiRouter.post(
   }),
 );
 
+apiRouter.patch(
+  "/goats/:id",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const existing = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!existing) return notFound(res);
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : existing.name;
+    const goal = typeof req.body?.goal === "string" ? req.body.goal.trim() : existing.goal;
+    const requestedModel = typeof req.body?.model === "string" ? req.body.model.trim() : existing.model;
+    if (!name || name.length > 80) return fail(res, 400, "INVALID_NAME", "GOAT name must be between 1 and 80 characters.");
+    if (!goal || goal.length > 4000) return fail(res, 400, "INVALID_DESCRIPTION", "GOAT description must be between 1 and 4000 characters.");
+    if (!requestedModel || !isValidModel(requestedModel)) return fail(res, 400, "INVALID_MODEL", "Choose a valid model from the active provider's catalogue.");
+    const model = requestedModel === existing.model ? existing.model : await resolveModelForNewGoat(user.uid, requestedModel, true);
+    const updated: FundGoat = { ...existing, name, goal, model, updatedAt: new Date().toISOString() };
+    await persistence.goats.save(updated);
+    const runtime = goatRuntimeRegistry.get(updated.id);
+    if (runtime) {
+      try { runtime.updateConfig(updated, (await allSkillsFor(user.uid)).filter(skill => updated.skillIds.includes(skill.id))); }
+      catch (err) { console.warn(`[api] GOAT ${updated.id} saved but runtime config refresh failed:`, err); }
+    }
+    res.json({ goat: updated, runtimeState: runtime?.getState() ?? null, dataMode: marketProvider.dataMode });
+  }),
+);
+
 // ---- Stop / Play / schedule ------------------------------------------
 
 /**
