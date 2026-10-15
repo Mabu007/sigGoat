@@ -89,7 +89,7 @@ function proposalTrade(r: ReasoningResult, goat: FundGoat, market: string, at: n
       'Job: ' + goat.goal],
   };
 }
-function closePosition(position: OpenPosition, candle: Candle, exit: number, reason: string, pip: number): number {
+function closePosition(position: OpenPosition, candle: Candle, exit: number, reason: string, pip: number, startingBalance: number): number {
   const t = position.trade, entry = t.entryPrice as number;
   const stopDistance = Math.abs(entry - t.stopLoss);
   const move = t.direction === 'LONG' ? exit - entry : entry - exit;
@@ -99,7 +99,7 @@ function closePosition(position: OpenPosition, candle: Candle, exit: number, rea
   const slip = reason === 'STOP_LOSS' ? position.riskDollars * STOP_SLIPPAGE : 0;
   const net = position.riskDollars * grossR - fees - slip;
   t.exitPrice = exit; t.exitTime = candle.time; t.pnlPips = Number((move / pip).toFixed(2));
-  t.pnlDollars = Number(net.toFixed(2)); t.pnlPct = Number((net / position.riskDollars * 100).toFixed(4));
+  t.pnlDollars = Number(net.toFixed(2)); t.pnlPct = Number((net / startingBalance * 100).toFixed(4));
   t.outcome = net >= 0 ? 'WIN' : 'LOSS';
   t.executionPath = [...(t.executionPath ?? []), 'Closed at ' + exit + ' (' + reason + ') on ' + new Date(candle.time).toISOString() + '; net PnL ' + net.toFixed(2) + '.'];
   return fees + slip;
@@ -202,7 +202,7 @@ export class AgentBacktestEngine {
         else if (targetHit) { exit = t.takeProfit; why = 'TAKE_PROFIT'; }
         else if (index - pos.entryIndex >= MAX_HOLDING_BARS) { exit = candle.close; why = 'TIME_EXIT'; }
         if (exit !== null) {
-          totalCosts += closePosition(pos, candle, exit, why, pip);
+          totalCosts += closePosition(pos, candle, exit, why, pip, startingBalance);
           equity += t.pnlDollars ?? 0;
           replayEvents.push({ time: candle.time, type: 'TRADE_CLOSED', summary: t.direction + ' closed ' + why + '; net PnL ' + (t.pnlDollars ?? 0).toFixed(2) });
           open.splice(j, 1);
@@ -277,7 +277,7 @@ export class AgentBacktestEngine {
       replayEvents.push({ time: last.time, type: 'ORDER_EXPIRED', summary: item.trade.direction + ' entry still pending when replay ended.' });
     }
     for (const pos of open) {
-      totalCosts += closePosition(pos, last, last.close, 'TIME_EXIT', pip);
+      totalCosts += closePosition(pos, last, last.close, 'TIME_EXIT', pip, startingBalance);
       equity += pos.trade.pnlDollars ?? 0;
       replayEvents.push({ time: last.time, type: 'TRADE_CLOSED', summary: pos.trade.direction + ' closed at replay end; net PnL ' + (pos.trade.pnlDollars ?? 0).toFixed(2) });
     }
