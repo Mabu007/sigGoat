@@ -913,7 +913,7 @@ export function Chatbot() {
   useEffect(() => {
     if (!currentUser) return;
     let cancelled = false;
-    void (async () => {
+    const loadCatalogue = async () => {
       try {
         const headers = await loadAuthHeaders();
         const [prefsResponse, modelsResponse] = await Promise.all([
@@ -926,13 +926,22 @@ export function Chatbot() {
         models.sort((a, b) => Number(!a.id.endsWith(':free')) - Number(!b.id.endsWith(':free')) || a.name.localeCompare(b.name));
         if (cancelled) return;
         setChatModels(models);
-        const preferred = typeof prefs?.aiModel === 'string' ? prefs.aiModel : null;
+        const savedModel = typeof prefs?.aiModel === 'string' ? prefs.aiModel : null;
+        // Model IDs are provider-scoped. Never keep displaying a saved model
+        // that is absent from the currently selected provider's catalogue.
+        const preferred = savedModel && models.some((model) => model.id === savedModel) ? savedModel : null;
         setChatModel(preferred || models.find((model) => model.id.endsWith(':free'))?.id || models[0]?.id || null);
       } catch {
-        // Chat remains usable with the saved model if the catalogue is unavailable.
+        // Keep the current selection if the provider catalogue is temporarily unavailable.
       }
-    })();
-    return () => { cancelled = true; };
+    };
+    void loadCatalogue();
+    const onProviderChanged = () => { void loadCatalogue(); };
+    window.addEventListener('siggoat:ai-provider-changed', onProviderChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('siggoat:ai-provider-changed', onProviderChanged);
+    };
   }, [currentUser, loadAuthHeaders]);
 
   const chooseChatModel = useCallback(async (modelId: string) => {
@@ -1649,17 +1658,24 @@ export function Chatbot() {
 
 
               {isSending && (
-                <div className="mb-3 rounded-xl border border-line bg-sunken px-3 py-2.5" role="status" aria-live="polite">
-                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-fg">
-                    <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+                <div className="mb-3 overflow-hidden rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 font-mono shadow-inner" role="status" aria-live="polite">
+                  <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-800 pb-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
+                    <span className="flex items-center gap-1.5">
+                      <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+                      SIRGOAT / AGENT TRACE
+                    </span>
+                    <span className="text-slate-500">LIVE</span>
+                  </div>
+                  <div className="mb-2 flex items-start gap-2 text-[11px] leading-relaxed text-emerald-300">
+                    <span className="shrink-0 text-slate-500">&gt;</span>
                     <span>{streamStatus}</span>
                   </div>
                   {researchSteps.length > 0 && (
-                    <ol className="space-y-1 pl-0.5">
+                    <ol className="space-y-1 border-l border-slate-800 pl-2">
                       {researchSteps.map((step, index) => (
-                        <li key={step + index} className="flex min-w-0 items-start gap-2 text-[10px] leading-relaxed text-fg-subtle">
-                          <span className="mt-px shrink-0" aria-hidden="true">{index < researchSteps.length - 1 ? '✓' : '•'}</span>
-                          <span className="min-w-0 break-words">{step}</span>
+                        <li key={step + index} className="flex min-w-0 items-start gap-2 text-[10px] leading-relaxed">
+                          <span className={index < researchSteps.length - 1 ? 'mt-px shrink-0 text-emerald-500' : 'mt-px shrink-0 animate-pulse text-amber-400'} aria-hidden="true">{index < researchSteps.length - 1 ? '✓' : '▸'}</span>
+                          <span className="min-w-0 break-words text-slate-300">{step}</span>
                         </li>
                       ))}
                     </ol>
