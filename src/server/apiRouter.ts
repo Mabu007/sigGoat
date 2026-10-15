@@ -3386,6 +3386,9 @@ apiRouter.post("/robots/:slug/chat", handle(async (req, res) => {
   if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
   const membership = await getPublishedRobotMembership(slug, user.uid);
   if (!membership) return fail(res, 403, "ROBOT_MEMBERSHIP_REQUIRED", "Join this robot before chatting with it.");
+  if (!(await reasoningGateway.hasKeyFor(goat.userId, goat.aiProvider))) {
+    return fail(res, 503, "CREATOR_AI_NOT_CONFIGURED", "The robot creator needs to configure a working AI provider key before this robot can chat.");
+  }
   const chatNow = Date.now();
   const lastChatAt = Date.parse(membership.lastChatAt ?? "");
   if (Number.isFinite(lastChatAt) && chatNow - lastChatAt < 2500) return fail(res, 429, "ROBOT_CHAT_COOLDOWN", "Please wait a few seconds before sending another message.");
