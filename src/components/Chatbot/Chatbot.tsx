@@ -913,7 +913,7 @@ export function Chatbot() {
   useEffect(() => {
     if (!currentUser) return;
     let cancelled = false;
-    void (async () => {
+    const loadCatalogue = async () => {
       try {
         const headers = await loadAuthHeaders();
         const [prefsResponse, modelsResponse] = await Promise.all([
@@ -929,10 +929,16 @@ export function Chatbot() {
         const preferred = typeof prefs?.aiModel === 'string' ? prefs.aiModel : null;
         setChatModel(preferred || models.find((model) => model.id.endsWith(':free'))?.id || models[0]?.id || null);
       } catch {
-        // Chat remains usable with the saved model if the catalogue is unavailable.
+        // Keep the current selection if the provider catalogue is temporarily unavailable.
       }
-    })();
-    return () => { cancelled = true; };
+    };
+    void loadCatalogue();
+    const onProviderChanged = () => { void loadCatalogue(); };
+    window.addEventListener('siggoat:ai-provider-changed', onProviderChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('siggoat:ai-provider-changed', onProviderChanged);
+    };
   }, [currentUser, loadAuthHeaders]);
 
   const chooseChatModel = useCallback(async (modelId: string) => {
