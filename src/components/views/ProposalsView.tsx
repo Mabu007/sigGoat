@@ -261,7 +261,7 @@ export function ProposalsView() {
           setProposals((current) =>
             (current ?? []).map((p) =>
               p.id === proposal.id
-                ? { ...p, error: body?.error?.message ?? 'Risk check failed.' }
+                ? { ...p, error: body?.error?.message ?? (Array.isArray(body?.violations) ? body.violations.join('; ') : 'Risk check failed.') }
                 : p,
             ),
           );
