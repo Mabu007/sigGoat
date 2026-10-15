@@ -630,7 +630,7 @@ export interface BacktestTrade {
 
   pnlPips: number;
   pnlPct: number;
-  /** Realized gross PnL in account currency using the actual affordable risk for this trade. */
+  /** Realized NET PnL in account currency after modeled fees and slippage. */
   pnlDollars?: number;
 
   outcome:
