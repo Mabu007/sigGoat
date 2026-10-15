@@ -49,6 +49,19 @@ export function PublicRobotView({ slug }: { slug: string }) {
   }, [slug]);
 
   useEffect(() => {
+    if (!robot) return;
+    const previousTitle = document.title;
+    const icon = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
+    const previousIcon = icon?.href;
+    document.title = robot.name;
+    if (icon) {
+      icon.type = 'image/svg+xml';
+      icon.href = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23080a0f'/%3E%3Cpath d='M18 22h28v20H18z' fill='%23c4b5fd'/%3E%3Ccircle cx='26' cy='30' r='3' fill='%23080a0f'/%3E%3Ccircle cx='38' cy='30' r='3' fill='%23080a0f'/%3E%3Cpath d='M25 37h14' stroke='%23080a0f' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E";
+    }
+    return () => { document.title = previousTitle; if (icon && previousIcon) icon.href = previousIcon; };
+  }, [robot]);
+
+  useEffect(() => {
     if (!currentUser && authMode !== 'dev') return;
     let cancelled = false;
     void api<{ joined: boolean; membership: Membership; propDaoKeyConfigured: boolean }>('/api/robots/' + encodeURIComponent(slug) + '/me')

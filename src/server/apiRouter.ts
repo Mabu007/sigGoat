@@ -162,6 +162,7 @@ const keyStore = createVaultBackedKeyStore(persistence.keys, credentialVault);
 type PublishedRobotMembership = {
   id: string; robotSlug: string; goatId: string; userId: string;
   joinedAt: string; activatedAt?: string; mode: "PAPER";
+  lastChatAt?: string; chatWindowStartedAt?: string; chatCountInWindow?: number;
 };
 const localPublishedRobotMemberships = new Map<string, PublishedRobotMembership>();
 function publishedRobotMembershipId(slug: string, userId: string): string {
@@ -643,17 +644,21 @@ async function setGoatStatusFor(
   }
 
   const deployingDraft = !paused && goat.deploymentState === 'DRAFT';
-  // Preserve a model the user chose while saving the draft. Only resolve a
-  // current fallback when the draft was created before any model was selected.
   const resolvedModel = deployingDraft && goat.model === LEGACY_DEFAULT_MODEL
     ? await resolveModelForNewGoat(userId, goat.model, false)
     : goat.model;
+  const now = new Date().toISOString();
+  // First deployment publishes this existing GOAT under a shareable white-label URL.
+  const publicBase = goat.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "trading-robot";
+  const publicSuffix = goat.id.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase();
+  const publishOnFirstDeploy = deployingDraft && !goat.publicSlug;
   const updated: FundGoat = {
     ...goat,
     model: resolvedModel,
     status: paused ? "PAUSED" : "WATCHING",
     deploymentState: paused ? (goat.deploymentState ?? 'DEPLOYED') : 'DEPLOYED',
-    updatedAt: new Date().toISOString(),
+    ...(publishOnFirstDeploy ? { publicSlug: publicBase + "-" + publicSuffix, isPublished: true, publishedAt: now } : {}),
+    updatedAt: now,
   };
 
   await persistence.goats.save(updated);
@@ -3381,6 +3386,14 @@ apiRouter.post("/robots/:slug/chat", handle(async (req, res) => {
   if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
   const membership = await getPublishedRobotMembership(slug, user.uid);
   if (!membership) return fail(res, 403, "ROBOT_MEMBERSHIP_REQUIRED", "Join this robot before chatting with it.");
+  const chatNow = Date.now();
+  const lastChatAt = Date.parse(membership.lastChatAt ?? "");
+  if (Number.isFinite(lastChatAt) && chatNow - lastChatAt < 2500) return fail(res, 429, "ROBOT_CHAT_COOLDOWN", "Please wait a few seconds before sending another message.");
+  const priorWindow = Date.parse(membership.chatWindowStartedAt ?? "");
+  const windowExpired = !Number.isFinite(priorWindow) || chatNow - priorWindow >= 3600000;
+  const countInWindow = windowExpired ? 0 : (membership.chatCountInWindow ?? 0);
+  if (countInWindow >= 20) return fail(res, 429, "ROBOT_CHAT_LIMIT", "This robot allows up to 20 chat messages per hour per user.");
+  await savePublishedRobotMembership({ ...membership, lastChatAt: new Date(chatNow).toISOString(), chatWindowStartedAt: windowExpired ? new Date(chatNow).toISOString() : membership.chatWindowStartedAt, chatCountInWindow: countInWindow + 1 });
   const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider }, goat.id, goat.userId);
   const answer = await reasoningGateway.answerGoatQuestion(question, context, model || goat.model, goat.aiProvider);
   res.json({ answer, provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
