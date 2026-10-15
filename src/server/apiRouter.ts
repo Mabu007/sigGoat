@@ -3295,10 +3295,22 @@ apiRouter.get(
 apiRouter.get("/robots/:slug", handle(async (req, res) => {
   const goat = await findPublishedRobot(String(req.params.slug || ""));
   if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  // These are display-only enrichments. A missing profile or a temporary
+  // thesis/signal read failure must not break the robot's public landing page.
+  // Keep the failure visible in server logs while serving a minimal valid page.
   const [creator, theses, signals] = await Promise.all([
-    persistence.profiles.get(goat.userId),
-    persistence.theses.listByGoat(goat.id, 1),
-    persistence.signals.listByGoat(goat.id, 5),
+    persistence.profiles.get(goat.userId).catch((error) => {
+      console.error(`[robots] creator profile lookup failed for published robot ${goat.publicSlug}:`, error);
+      return null;
+    }),
+    persistence.theses.listByGoat(goat.id, 1).catch((error) => {
+      console.error(`[robots] thesis lookup failed for published robot ${goat.publicSlug}:`, error);
+      return [];
+    }),
+    persistence.signals.listByGoat(goat.id, 5).catch((error) => {
+      console.error(`[robots] signal lookup failed for published robot ${goat.publicSlug}:`, error);
+      return [];
+    }),
   ]);
   const thesis = theses[0];
   res.setHeader("Cache-Control", "public, max-age=15, stale-while-revalidate=30");
