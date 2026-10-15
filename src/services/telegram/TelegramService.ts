@@ -33,7 +33,6 @@ import {
   FundGoat,
   GoatSchedule,
 } from "../../types";
-import { normaliseSchedule } from "../durable-object/GoatDurableObject";
 import type { GoatReasoningContext } from "../ai/OpenRouterClient";
 import type { ReasoningGateway } from "../../server/reasoningGateway";
 import { parseTelegramCommand, type TelegramCommand } from "./TelegramCommands";
@@ -677,10 +676,13 @@ export class TelegramService {
             );
             return { handled: true, command: "schedule" };
           }
-          const schedule = normaliseSchedule({
+          // Keep Telegram scheduling independent of the removed Durable Object
+          // module. Clamp user-provided cadence to the supported 5-minute to
+          // 7-day range before passing it into the shared schedule contract.
+          const schedule: GoatSchedule = {
             mode: "INTERVAL",
-            intervalMinutes: minutes,
-          });
+            intervalMinutes: Math.max(5, Math.min(10_080, Math.floor(minutes))),
+          };
           const result = await handlers.changeScheduleForChat(
             chatId,
             resolved.goat.id,
