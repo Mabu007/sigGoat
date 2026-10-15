@@ -351,6 +351,10 @@ describe('BacktestEngine — deterministic fixture scenarios', () => {
       );
     }
     expect(result.equityCurve.every((point) => point.equity >= 0)).toBe(true);
+    for (const trade of [...wins, ...losses]) {
+      expect(trade.pnlDollars).toBeDefined();
+      expect(trade.pnlPct).toBeCloseTo(((trade.pnlDollars ?? 0) / 10_000) * 100, 4);
+    }
   });
 
   test('selected minimum risk/reward skill constraint filters historical setups', async () => {
