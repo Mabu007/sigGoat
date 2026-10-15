@@ -422,6 +422,8 @@ export class GoatRuntime {
       consecutiveFailures: 0,
       dataSource: this.marketProvider.dataMode,
       reasoningMode: 'DEMO',
+      agenticLog: [],
+      activeStage: 'Waiting for a wake',
     };
 
     this.attachMarketListeners();
@@ -682,6 +684,7 @@ export class GoatRuntime {
     this.runtimeState.generationId = generationId;
     this.runtimeState.status = 'INVESTIGATING';
     this.runtimeState.lastEvaluatedAt = this.now();
+    this.logAgentic('Wake accepted', `Starting review: ${reason}`);
 
     const market = targetMarket || this.goatConfig.markets[0] || '';
     if (!market) {
@@ -698,6 +701,7 @@ export class GoatRuntime {
        * known values) is treated as a failure here: reasoning must not be
        * generated from prices we could not confirm.
        */
+      this.logAgentic('Market data', `Checking live quote and ${WAKE_TIMEFRAME} candles for ${market}.`);
       let quote: MarketQuote | undefined;
       let candles: Candle[] = [];
 
@@ -790,6 +794,8 @@ export class GoatRuntime {
         return this.runtimeState;
       }
 
+      this.logAgentic('Market data ready', `Received ${candles.length} candles and a current quote for ${market}.`, 'success');
+
       // ---- Stage 2: deterministic indicators --------------------------
       const struct = analyzeMarketStructure(candles, quote.mid);
       const deterministicIndicators: Record<string, unknown> = {
@@ -805,6 +811,7 @@ export class GoatRuntime {
       // ---- Stage 3: internet research (never fatal) ---------------------
       // Research failure must not break the wake; the prompt is told the
       // research was unavailable so the model cannot imply it searched.
+      this.logAgentic('Evidence research', 'Checking optional market news and context.');
       let news: Awaited<ReturnType<typeof newsService.getNewsForMarkets>> = [];
       try {
         news = await newsService.getNewsForMarkets(
@@ -817,6 +824,7 @@ export class GoatRuntime {
       }
 
       // ---- Stage 4: reasoning (untrusted until validated) -------------
+      this.logAgentic('Evidence ready', `Indicators calculated; ${news.length} news items available.`, 'success');
       const reasoningContext: GoatReasoningContext = {
         userId: this.goatConfig.userId,
         goatId: this.goatConfig.id,
@@ -861,8 +869,10 @@ export class GoatRuntime {
       }
 
       let reasoningResult: ReasoningResult;
+      this.logAgentic('AI reasoning', `Sending market context to the configured model (${this.goatConfig.model || 'provider default'}).`);
       try {
         reasoningResult = await this.reasoning.evaluateGoat(reasoningContext, this.goatConfig.model, this.goatConfig.aiProvider);
+        this.logAgentic('Reasoning validated', 'Provider response parsed and passed the shared reasoning contract.', 'success');
       } catch (err) {
         if (err instanceof ReasoningValidationError) {
           this.recordFailure(`Model response failed validation: ${err.issues.slice(0, 3).join('; ')}`);
@@ -1124,6 +1134,7 @@ export class GoatRuntime {
           ];
 
       // ---- Stage 7: update runtime state -------------------------------
+      this.logAgentic('Persisting review', 'Saving the validated thesis, trackers, and any gated proposal.');
       this.runtimeState.currentThesis = newThesis;
       this.runtimeState.trackers = trackers;
       this.runtimeState.lastEvaluatedAt = this.now();
@@ -1137,12 +1148,14 @@ export class GoatRuntime {
       }
 
       if (actionable) {
+        this.logAgentic('Review complete', 'Risk gate approved a conditional trade idea.', 'success');
         this.runtimeState.status = 'ACTIVE';
         this.runtimeState.latestSignal = latestSignal;
         this.runtimeState.dormancyReason = `Active conditional setup (${latestSignal.orderType} ${latestSignal.direction} ${market} @ ${latestSignal.entry}).`;
         this.runtimeState.nextWatchingCondition = `Waiting for price to reach ${latestSignal.entryZone ? `${latestSignal.entryZone.low} - ${latestSignal.entryZone.high}` : latestSignal.entry} and confirm the setup`;
         this.notifySignal(latestSignal);
       } else {
+        this.logAgentic('Review complete', 'Review saved; no actionable trade passed the gate.', 'success');
         this.runtimeState.status = 'WATCHING';
         this.runtimeState.latestSignal = latestSignal;
         this.runtimeState.dormancyReason = finalReasons[0]
@@ -1648,7 +1661,16 @@ export class GoatRuntime {
   /* Helpers                                                           */
   /* ---------------------------------------------------------------- */
 
+  private logAgentic(stage: string, message: string, level: 'info' | 'success' | 'warning' | 'error' = 'info'): void {
+    const timestamp = this.now();
+    const id = `${this.id}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+    const entry = { id, timestamp, level, stage, message };
+    this.runtimeState.agenticLog = [...(this.runtimeState.agenticLog ?? []).slice(-17), entry];
+    this.runtimeState.activeStage = stage;
+  }
+
   private recordFailure(message: string): void {
+    this.logAgentic('Wake failed', message, 'error');
     this.runtimeState.consecutiveFailures += 1;
     this.runtimeState.lastError = message;
     this.runtimeState.status = 'WATCHING';
