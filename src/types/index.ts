@@ -616,6 +616,17 @@ export interface GoatRuntimeState {
    * DEMO = deterministic/demo reasoning path.
    */
   reasoningMode: 'AI' | 'DEMO';
+
+  /** Recent truthful lifecycle events for the GOAT's live activity panel. */
+  agenticLog?: Array<{
+    id: string;
+    timestamp: number;
+    level: 'info' | 'success' | 'warning' | 'error';
+    stage: string;
+    message: string;
+  }>;
+  /** Current lifecycle stage, updated as the wake pipeline advances. */
+  activeStage?: string;
 }
 
 export interface BacktestTrade {
