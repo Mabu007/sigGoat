@@ -223,10 +223,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
      * Resolve the server's auth mode once. This both labels the session
      * honestly and warms the header cache.
      */
-    void getPlatformStatus().then((status) => {
-      if (!mounted) return;
-      setAuthMode(status?.platform?.authMode ?? 'none');
-    });
+    void getPlatformStatus()
+      .then((status) => {
+        if (!mounted) return;
+        setAuthMode(status?.platform?.authMode ?? 'none');
+      })
+      .catch((error) => {
+        // Do not leave AuthGate in its indefinite "Checking your session" state
+        // if the platform status endpoint is unreachable.
+        console.warn('[auth] Unable to resolve server authentication mode:', error);
+        if (mounted) setAuthMode('none');
+      });
 
     return () => {
       mounted = false;
