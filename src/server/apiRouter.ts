@@ -4296,6 +4296,7 @@ apiRouter.get(
     const catalogue = await reasoningGateway.listModels(user.uid);
     res.json({
       models: catalogue.models,
+      provider: catalogue.provider,
       fetchedAt: catalogue.fetchedAt,
       source: catalogue.source,
     });
