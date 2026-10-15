@@ -1,9 +1,14 @@
 # SIRGOAT
 
-Personal AI market-analysis agents ("GOATs") that perform evidence-based market
-reasoning, deterministic conditional-setup validation, historical backtesting,
-and clearly-labelled market updates. **No automated trade execution — signals
-are informational, and the human always executes manually on their own broker.**
+SIRGOAT is an AI-assisted trading workspace built around individual market
+research agents ("GOATs"). It combines live market data from Hyperliquid,
+provider-backed AI reasoning, deterministic setup/risk checks, historical
+backtesting, trade proposals, and an optional read-only PropDAO account view.
+
+**Important:** PropDAO order execution is disabled by default and remains
+fail-closed unless the server has both execution flags enabled and a recorded
+authorisation reference. Do not assume connecting an API key enables trading.
+AI output can be wrong; historical backtests are not guarantees of future results.
 
 ## Run locally
 
@@ -29,23 +34,29 @@ The server binds to `0.0.0.0:3000` (override with `PORT`).
 
 ## Market data
 
-Live prices come from **biquote.io** -- free, no API key, no signup, 15,000
-requests/minute. Forex, metals, crypto and index CFDs via MetaTrader 5.
+Live market quotes and candles are sourced from **Hyperliquid**, including
+instruments listed by its perpetual and HIP-3 market catalogues. Instrument
+availability is provider-driven; do not assume every conventional FX pair,
+index, or commodity symbol exists.
 
-Four feed behaviours that silently corrupt analysis are handled in
-`src/services/market-data/BiQuoteMarketDataProvider.ts`:
+The provider normalises quotes and OHLC candles in
+`src/services/market-data/hyperliquid/HyperliquidMarketDataProvider.ts`.
+Important integrity rules:
 
-| Feed behaviour | Consequence if ignored | Handling |
-|---|---|---|
-| OHLC bars arrive **newest-first** | every EMA/RSI/ATR/structure value wrong while the app looks healthy | reversed to ascending on read |
-| `volume` is **always 0** (CFD, no exchange tape) | "volume looks strong" fabricated from zeros | real `tickVolume` mapped instead |
-| Forex **closed Fri-Sun** | Friday's close analysed as a live price | `MarketQuote.stale` / `.marketState` / `.quoteAgeSeconds` |
-| batching needs a **repeated** `?symbols=` param | comma form silently returns one symbol | repeated param |
+- Quotes use published mid/mark/oracle values and order-book/impact prices where
+  available. A missing bid/ask or 24-hour high/low is not fabricated to look
+  like a valid quote.
+- Historical replay uses real 5-minute candles. The provider pages requests
+  because the upstream candle endpoint limits the number of bars returned per
+  request. The backtest engine rejects incomplete requested windows rather than
+  quietly presenting a partial sample as a full-period result.
+- The PAPER provider is deterministic and explicitly labelled. It is suitable
+  for UI/development checks, not evidence of trading performance. Production
+  backtests require LIVE market data.
 
-There is **no automatic fallback to PAPER**. A feed outage surfaces as an
-explicit failure rather than silently turning the app into fiction. Set
-`MARKET_DATA_PROVIDER=paper` to force the simulated feed for offline work --
-`dataMode` then reports `PAPER`.
+There is no silent fallback from a live feed outage to PAPER data. A provider
+failure should be shown as unavailable/degraded instead of being represented as
+a real market quote.
 
 ### Shared market state
 
@@ -63,22 +74,26 @@ refuses to run on degraded data so stale prices cannot become a thesis.
 
 Scheduled reviews and GOAT runtime records are backed by Firebase/Firestore. Cloudflare Workers Cron dispatches the authenticated SIRGOAT endpoint every minute while Firebase/Firestore stores durable GOAT state; see [the Cloudflare Worker scheduler runbook](docs/CLOUDFLARE_WORKER_SCHEDULER.md).
 
-## Bring-your-own OpenRouter key (BYOK)
+## AI providers and per-GOAT models
 
-The Settings screen stores a per-account OpenRouter API key on the server. It is
-never sent back to the browser and never shared between accounts.
+SIRGOAT supports account-level AI provider settings and per-GOAT overrides.
+The GOAT editor currently supports **OpenRouter** and **SpaceBunny** overrides;
+GOATs without an explicit override inherit the account's selected provider.
+Provider credentials are resolved server-side and are not sent back to the
+browser.
 
 | Route | Purpose |
 |---|---|
 | `GET /api/settings/keys` | Per-account credential status (booleans only). |
-| `POST /api/settings/keys` | Saves `openRouterKey` / `telegramToken` / `telegramChatId`. Saving a new key invalidates that user's cached OpenRouter client. |
-| `GET /api/ai/models` | Live OpenRouter catalogue resolved with **the caller's** key. |
-| `POST /api/ai/test` | End-to-end probe: one cheap real completion on the caller's key. |
+| `POST /api/settings/keys` | Save supported provider credentials and notification settings. |
+| `GET /api/ai/models` | Resolve the model catalogue using the account provider or an explicitly requested supported provider. |
+| `POST /api/ai/test` | End-to-end provider credential probe. |
 
-There is no hardcoded model allow-list — `GET /api/ai/models` returns the live
-catalogue and `POST /api/goats` only checks that the chosen id is a well-formed
-OpenRouter slug. With no key configured, a GOAT returns a deterministic
-`NO_TRADE` labelled `reasoningMode: "DEMO"`; it never fabricates analysis.
+SpaceBunny uses its documented fixed model, **Space Bunny Alpha**, rather than a
+model catalogue. A GOAT cannot use a provider until its credentials have been
+configured in Settings. If reasoning has no usable credential, the runtime
+must label its state as DEMO rather than presenting demo output as genuine AI
+analysis.
 
 ## The GOAT loop
 
@@ -210,11 +225,14 @@ mode**. Nothing pretends to be real:
   from actual prices, rejects MARKET orders under `LIMIT_ORDERS_ONLY`, enforces
   `MINIMUM_RR_X_TO_Y`, `SPREAD_UNDER_X_PIPS`, `NO_COUNTER_TREND`, and
   evidence/confidence minimums — collecting *all* violations per evaluation.
-- **No automated execution exists.** Signals are conditional, informational
-  plans with explicit entry zone / stop / target / invalidation.
-- **No fake market data.** The only non-live provider is the labelled paper
-  provider; adding a live adapter is a single swap at the `MarketDataProvider`
-  boundary.
+- **Execution is fail-closed.** PropDAO order writes are blocked unless
+  `PROPDAO_EXECUTION_ENABLED`, `PROPDAO_EXECUTION_AUTHORISED`, and a non-empty
+  `PROPDAO_EXECUTION_TERMS_REFERENCE` are configured. The code's policy
+  documents a need for written authorisation for commercial third-party use;
+  credentials alone are not permission to execute.
+- **No fake historical data.** PAPER data is explicitly labelled and is not
+  acceptable as production backtest evidence. Historical backtests require real
+  candles and reject incomplete requested windows.
 
 ## Hosting
 
