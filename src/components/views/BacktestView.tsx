@@ -22,6 +22,29 @@ export const BacktestView: React.FC = () => {
   const { goats, activeGoat } = useGoat();
   const { getApiAuthHeaders } = useAuth();
   const { symbols } = useMarket();
+  const [aiProvider, setAiProvider] = useState<'openrouter' | 'groq' | 'spacebunny'>('openrouter');
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshProvider = async () => {
+      try {
+        const response = await fetch('/api/settings/keys', { headers: await getApiAuthHeaders() });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled && ['openrouter', 'groq', 'spacebunny'].includes(data?.provider)) {
+          setAiProvider(data.provider);
+        }
+      } catch {
+        // The server remains authoritative; keep the last displayed provider.
+      }
+    };
+    void refreshProvider();
+    window.addEventListener('siggoat:ai-provider-changed', refreshProvider);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('siggoat:ai-provider-changed', refreshProvider);
+    };
+  }, [getApiAuthHeaders]);
 
   const [selectedGoatId, setSelectedGoatId] = useState<string>(
     activeGoat?.id || goats[0]?.id || ''
@@ -134,6 +157,9 @@ export const BacktestView: React.FC = () => {
 
             <p className="text-xs text-fg-muted mt-0.5">
               Replay this GOAT's initial AI review, historical condition tracking, AI reassessments and trade lifecycle using historical 5-minute prices only. Historical news is excluded.
+            </p>
+            <p className="mt-1 text-[10px] text-fg-subtle" aria-live="polite">
+              AI reasoning provider: <span className="font-semibold text-fg-muted">{aiProvider === 'spacebunny' ? 'Space Bunny' : aiProvider === 'groq' ? 'Groq' : 'OpenRouter'}</span> · controlled by Settings
             </p>
           </div>
         </div>
