@@ -328,6 +328,7 @@ describe('GoatRuntime wake pipeline', () => {
       signals: persistence.signals,
       theses: {
         listByGoat: async () => [],
+        deleteByGoat: async () => {},
         save: async () => { throw new Error('database unavailable'); },
       },
       wakeEvents: persistence.wakeEvents,
