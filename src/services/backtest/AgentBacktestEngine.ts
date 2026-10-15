@@ -121,6 +121,10 @@ export class AgentBacktestEngine {
     catch (e) { throw new Error('Historical 5m candles unavailable for ' + market + ': ' + (e instanceof Error ? e.message : 'provider error')); }
     const candles = normalize(raw);
     if (candles.length < MIN_HISTORY) throw new Error('Insufficient real 5m history for ' + market + ': received ' + candles.length + ', need at least ' + MIN_HISTORY + '.');
+    const minimumPeriodBars = Math.ceil(requestedBars * 0.98);
+    if (candles.length < minimumPeriodBars) {
+      throw new Error('Insufficient real 5m history for the requested ' + period + ' backtest on ' + market + ': received ' + candles.length + ' of ' + requestedBars + ' requested bars (minimum ' + minimumPeriodBars + '). The provider may not have returned the full historical window; no simulated candles were substituted.');
+    }
     const runId = 'agentbt_' + goat.id + '_' + candles[0].time + '_' + candles[candles.length - 1].time;
     const pip = provider.getMarketMetadata(market)?.pipSize ?? (market.toUpperCase().includes('JPY') ? 0.01 : market.toUpperCase().includes('XAU') ? 0.1 : 0.0001);
     const trades: BacktestTrade[] = [], pending: PendingEntry[] = [], open: OpenPosition[] = [];
