@@ -42,6 +42,7 @@ import {
   floorToLotStep,
   portfolioRiskUsd,
   stopDistance,
+  suggestQuantityForRisk,
   validateTradeIntent,
 } from '../src/services/propdao/PropRiskValidator';
 import type { AccountRiskSnapshot, FundAccountSummary } from '../src/services/propdao/PropFundAccountProvider';
@@ -474,6 +475,18 @@ describe('deterministic risk validation', () => {
     symbol: 'BTCUSDC', side: 'BUY' as const, qty: 0.01,
     entry: 64210.5, stopLoss: 63210.5, takeProfit: 68210.5, leverage: 2,
   };
+
+  test('suggests a lot-step-valid proposal size within risk limits when no size was supplied', () => {
+    const qty = suggestQuantityForRisk({
+      symbol: intent.symbol, side: intent.side, entry: intent.entry,
+      stopLoss: intent.stopLoss, takeProfit: intent.takeProfit,
+    }, goodRisk, markets, []);
+    expect(qty).not.toBeNull();
+    expect(qty!).toBeGreaterThan(0);
+    expect(Number((qty! / 0.00001).toFixed(0)) * 0.00001).toBeCloseTo(qty!, 8);
+    const result = validateTradeIntent({ ...intent, qty: qty! }, account, goodRisk, markets, []);
+    expect(result.ok).toBe(true);
+  });
 
   test('approves a well-formed trade inside the risk budget', () => {
     const result = validateTradeIntent(intent, account, goodRisk, markets, []);
