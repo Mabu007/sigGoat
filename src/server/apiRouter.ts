@@ -5577,12 +5577,12 @@ apiRouter.post(
       ? (period as string)
       : "7d";
 
-    if (!(await reasoningGateway.hasKeyFor(user.uid))) {
+    if (!(await reasoningGateway.hasKeyFor(user.uid, goat.aiProvider))) {
       return fail(
         res,
         400,
         "AI_KEY_REQUIRED",
-        "Agent-driven backtesting requires a working AI credential in Settings. No deterministic or demo strategy will be substituted.",
+        "Agent-driven backtesting requires a working credential for this GOAT's selected AI provider. No deterministic or demo strategy will be substituted.",
       );
     }
 
