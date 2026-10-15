@@ -135,6 +135,39 @@ const EMPTY_MEASURED: RiskCheck['measured'] = {
 };
 
 /**
+ * Computes a conservative, venue-valid quantity for proposal review when the
+ * user has not supplied an order size. This is an estimate for review only;
+ * the actual execution endpoint always requires a user-entered quantity and
+ * reruns the full risk gate immediately before submission.
+ */
+export function suggestQuantityForRisk(
+  intent: Pick<TradeIntent, 'symbol' | 'side' | 'entry' | 'stopLoss' | 'takeProfit'>,
+  risk: AccountRiskSnapshot | null,
+  markets: PropDaoMarket[],
+  openPositions: PropDaoPosition[],
+  limits: RiskLimits = DEFAULT_RISK_LIMITS,
+): number | null {
+  if (!risk || risk.breached || risk.roomUsd === null || !Number.isFinite(risk.roomUsd) || risk.roomUsd <= 0) return null;
+  const market = markets.find((item) => item.symbol === intent.symbol);
+  if (!market || !Number.isFinite(intent.entry) || intent.entry <= 0) return null;
+  const distance = stopDistance(intent.side, intent.entry, intent.stopLoss);
+  const reward = rewardDistance(intent.side, intent.entry, intent.takeProfit);
+  if (distance === null || reward === null || reward / distance < limits.minRiskReward) return null;
+
+  const existingRisk = portfolioRiskUsd(openPositions, new Map(markets.map((item) => [item.symbol, item])));
+  if (existingRisk === null && openPositions.length > 0) return null;
+  const portfolioRoom = risk.roomUsd * limits.maxPortfolioRiskPct - (existingRisk ?? 0);
+  let budget = Math.min(risk.roomUsd * limits.maxRiskPerTradePct, portfolioRoom);
+  if (limits.maxRiskPerTradeUsd !== null) budget = Math.min(budget, limits.maxRiskPerTradeUsd);
+  const riskPerUnit = distance + intent.entry * PROPDAO_FEES.taker * 2;
+  if (!Number.isFinite(budget) || budget <= 0 || riskPerUnit <= 0) return null;
+  const raw = budget / riskPerUnit;
+  const rounded = floorToLotStep(raw, market.lotStep);
+  const qty = rounded === null ? raw : rounded;
+  return Number.isFinite(qty) && qty > 0 ? qty : null;
+}
+
+/**
  * Rounds DOWN to the instrument's lot step.
  *
  * Rounding DOWN matters: rounding to nearest could increase the position
