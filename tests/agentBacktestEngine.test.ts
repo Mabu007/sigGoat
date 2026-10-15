@@ -6,7 +6,7 @@ import type { GoatReasoningContext } from '../src/services/ai/OpenRouterClient';
 import type { ReasoningResult } from '../src/services/agent/contracts';
 
 const start = Date.UTC(2025, 0, 1);
-const candles: Candle[] = Array.from({ length: 110 }, (_, i) => {
+const candles: Candle[] = Array.from({ length: 300 }, (_, i) => {
   const close = 1 + i * 0.0001;
   return { time: start + i * 300_000, open: close - 0.00002, high: close + 0.00004, low: close - 0.00004, close, volume: 100 };
 });
