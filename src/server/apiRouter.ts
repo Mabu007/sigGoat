@@ -4896,6 +4896,11 @@ apiRouter.post(
           ),
       status: input.deploymentState === 'DRAFT' ? "PAUSED" : "WATCHING",
       deploymentState: input.deploymentState,
+      ...(input.deploymentState !== 'DRAFT' ? {
+        publicSlug: ((input.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42)) || "trading-robot") + "-" + goatId.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase(),
+        isPublished: true,
+        publishedAt: now,
+      } : {}),
       schedule: input.schedule,
       timeframe: input.timeframe,
       createdAt: now,
