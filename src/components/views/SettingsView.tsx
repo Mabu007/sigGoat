@@ -290,6 +290,9 @@ export const SettingsView: React.FC = () => {
       }
 
       const body = await res.json().catch(() => null);
+      // Broadcast the account-wide provider change so mounted AI surfaces
+      // (chatbot, GOAT panels and backtest controls) refresh their catalogues.
+      window.dispatchEvent(new CustomEvent('siggoat:ai-provider-changed', { detail: { provider: body?.provider ?? provider } }));
       setKeyStatus((prev) => ({
         openRouterKeyConfigured: body?.openRouterKeyConfigured ?? prev?.openRouterKeyConfigured ?? false,
         groqKeyConfigured: body?.groqKeyConfigured ?? prev?.groqKeyConfigured ?? false,
