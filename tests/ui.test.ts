@@ -66,8 +66,26 @@ describe('product identity', () => {
 
   test('the wordmark renders SIRGOAT', () => {
     const navigation = read('src/components/Navigation.tsx');
-    expect(navigation).toContain('Fund');
-    expect(navigation).toContain('AGoat');
+    expect(navigation).toContain('SIR');
+    expect(navigation).toContain('GOAT');
+  });
+
+  test('the supplied logo is used in the app and favicon with rounded corners', () => {
+    const navigation = read('src/components/Navigation.tsx');
+    const html = read('index.html');
+    expect(navigation).toContain('sirgoat_fmuhqm.jpg');
+    expect(navigation).toContain('rounded-xl object-cover');
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('sirgoat_fmuhqm.jpg');
+    expect(html).toContain('apple-touch-icon');
+  });
+
+  test('signed-out auth buttons do not depend on Firestore connectivity', () => {
+    const landing = read('src/components/LandingAuth.tsx');
+    expect(landing).not.toContain('isFirebaseConnected');
+    expect(landing).toContain("authMode !== 'firebase'");
+    expect(landing).toContain('isFirebaseConfigured');
+    expect(landing).toContain('loginWithGoogle');
   });
 
   test('Telegram copy uses the new name', () => {
