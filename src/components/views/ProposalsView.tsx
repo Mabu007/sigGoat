@@ -52,6 +52,7 @@ import { useGoat } from '../../context/GoatContext';
 interface RiskReport {
   ok: boolean;
   violations: string[];
+  suggestedQty?: number | null;
   measured: {
     notionalUsd: number | null;
     riskUsd: number | null;
@@ -193,13 +194,10 @@ export function ProposalsView() {
    * This never executes anything: it calls the pure validator and returns the
    * verdict, so the user sees the result before approving rather than after.
    *
-   * NOTE THE SYMBOL MISMATCH, which the server — not this view — resolves.
-   *   A proposal is researched against a HYPERLIQUID market (`BTC`,
-   *   `xyz:GOLD`), while orders are placed on a PROPDAO instrument
-   *   (`BTCUSDC`). They are not the same identifier and this view does not
-   *   invent a mapping between them. When the proposal's market is not an
-   *   instrument PropDAO offers, the server returns a clear refusal and that
-   *   is what the user sees.
+   * A proposal is researched against a Hyperliquid market while orders are
+   * placed on PropDAO. Symbols are NOT automatically mapped across venues.
+   * The server requires an exact PropDAO symbol and returns a clear refusal
+   * when no exact match exists; this view must not imply otherwise.
    */
   const evaluate = useCallback(
     async (proposal: Proposal) => {
@@ -246,6 +244,7 @@ export function ProposalsView() {
             symbol: proposal.market,
             side: proposal.direction === 'SHORT' ? 'SELL' : 'BUY',
             qty: 0,
+            suggestSize: true,
             entry: proposal.entry,
             stopLoss: proposal.stopLoss,
             takeProfit: proposal.takeProfit,
@@ -992,6 +991,7 @@ function ProposalDetail({
             <DetailHeading label="Position size & risk" />
             {proposal.risk?.measured ? (
               <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {proposal.risk.suggestedQty != null && <DetailValue label="Suggested size" value={proposal.risk.suggestedQty} />}
                 <DetailValue label="Notional" value={proposal.risk.measured.notionalUsd ?? null} money />
                 <DetailValue label="Risk (USD)" value={proposal.risk.measured.riskUsd ?? null} money />
                 <DetailValue
