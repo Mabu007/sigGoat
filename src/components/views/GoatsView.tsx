@@ -2099,11 +2099,12 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             <div className="space-y-2 p-4 font-mono text-[11px] leading-5">
               <p><span className="text-slate-600">[{inspectedGoat.lastWakeTime ? new Date(inspectedGoat.lastWakeTime).toLocaleTimeString() : '--:--:--'}]</span> <span className="text-emerald-300">SYSTEM</span> GOAT loaded · {inspectedGoat.model || 'no model selected'}</p>
               {inspectedGoat.lastWakeReason && <p><span className="text-slate-600">[wake]</span> <span className="text-sky-300">TRIGGER</span> {inspectedGoat.lastWakeReason}</p>}
-              {inspectedState?.isEvaluating && <p className="animate-pulse text-emerald-200"><span className="text-slate-600">[live]</span> REASONER evaluation in progress…</p>}
+              {inspectedState?.isEvaluating && <p className="animate-pulse text-emerald-200"><span className="text-slate-600">[live]</span> {inspectedState.activeStage || 'Running the review pipeline'}…</p>}
+              {(inspectedState?.agenticLog ?? []).slice(-8).map((event) => <p key={event.id} className={event.level === 'error' ? 'break-words text-rose-300' : event.level === 'warning' ? 'break-words text-amber-200' : event.level === 'success' ? 'break-words text-emerald-200' : 'break-words text-slate-300'}><span className="text-slate-600">[{new Date(event.timestamp).toLocaleTimeString()}]</span> <span className="text-sky-300">[{event.stage}]</span> {event.message}</p>)}
               {inspectedState?.currentThesis && <p><span className="text-slate-600">[thesis]</span> <span className="text-violet-300">THESIS</span> {inspectedState.currentThesis.directionalHypothesis || 'NEUTRAL'} · {inspectedState.currentThesis.summary || 'Thesis persisted'}</p>}
               {inspectedState?.lastError && <p className="break-words text-rose-300"><span className="text-slate-600">[error]</span> ERROR {inspectedState.lastError}</p>}
               {!inspectedGoat.lastWakeReason && !inspectedState?.isEvaluating && !inspectedState?.currentThesis && !inspectedState?.lastError && <p className="text-slate-500">Waiting for the first runtime event. Wake & Re-evaluate to start a fresh review.</p>}
-              <p className="border-t border-white/10 pt-2 text-[10px] text-slate-500">This log shows observed runtime state only; it does not invent intermediate model/tool events.</p>
+              <p className="border-t border-white/10 pt-2 text-[10px] text-slate-500">Live lifecycle events are emitted by the runtime. Model-private chain-of-thought is not exposed; provider calls, validation, gating, persistence, and errors are.</p>
             </div>
           </section>
 
