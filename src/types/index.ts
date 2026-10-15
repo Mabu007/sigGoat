@@ -681,7 +681,7 @@ export interface BacktestProvenance {
 
 export interface BacktestReplayEvent {
   time: number;
-  type: 'INITIAL_REVIEW' | 'TRACKER_ARMED' | 'CONDITION_HIT' | 'AI_REASSESSMENT' | 'SIGNAL_CAPTURED' | 'ORDER_FILLED' | 'TRADE_CLOSED' | 'ORDER_EXPIRED';
+  type: 'INITIAL_REVIEW' | 'TRACKER_ARMED' | 'CONDITION_HIT' | 'AI_REASSESSMENT' | 'AI_REASSESSMENT_SKIPPED' | 'SIGNAL_CAPTURED' | 'ORDER_FILLED' | 'TRADE_CLOSED' | 'ORDER_EXPIRED';
   summary: string;
 }
 
