@@ -5973,7 +5973,14 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
 
 const CHAT_MODEL = "apodex/apodex-1.1-mini:free";
 
-async function resolveChatModel(userId: string, requested?: unknown): Promise<string> {
+async function resolveChatModel(userId: string, requested?: unknown, provider?: AiProvider): Promise<string> {
+  // Provider model IDs are not interchangeable. Never send an OpenRouter slug
+  // to Groq or Space Bunny just because it was selected before the provider changed.
+  if (provider === "spacebunny") return "space-bunny-alpha";
+  if (provider === "groq") {
+    try { return (await reasoningGateway.pickAnyModel(userId)) || "llama-3.3-70b-versatile"; }
+    catch { return "llama-3.3-70b-versatile"; }
+  }
   if (typeof requested === "string" && isValidModel(requested)) return requested;
   const profile = await persistence.profiles.get(userId).catch(() => null);
   if (profile?.aiModel && isValidModel(profile.aiModel)) return profile.aiModel;
@@ -6001,28 +6008,25 @@ const CHAT_SYSTEM_PROMPT =
   "DATA AND RESEARCH: Use the backend's on-demand Hyperliquid instrument discovery, live quote retrieval, historical OHLCV candles, relevant news context, and authenticated SIRGOAT state. Search/fetch every confirmed asset the user asks about; use historical data when relevant; inspect saved GOAT configuration, skills, theses, activity, and proposals for GOAT questions. A greeting does not need market research. Never pretend to have fetched data that is absent. Never fabricate a listing, price, funding, open interest, volume, candle, news item, source, or timestamp. State LIVE versus PAPER accurately, and mention a data gap only when it materially affects the answer. " +
   "When researching, plan what evidence is needed, inspect retrieved data, identify material gaps, use available follow-up research, then synthesize a clear view. For complex trading questions, include the strongest bullish and bearish case, important confirmation/invalidation conditions, and risk only where relevant. Never expose another user's data or credentials. ACTION ORCHESTRATION: When the user asks to create a GOAT, deploy a GOAT, generate a trade proposal, or submit an order, the chat interface opens the matching structured action card. Treat that card and the authenticated server action endpoints as the only route for state changes. Never claim an action completed until the endpoint returns a completed result. GOAT creation saves a draft; deployment requires a separate explicit confirmation. Order submission requires a separate explicit confirmation, a fresh server-side deterministic risk check, an owned PropDAO account, and the provider execution policy to allow it. If execution is disabled or unauthorised, say so plainly and do not suggest that an order was placed. Never execute trades or alter GOAT settings based only on model text.";
 
-/** Resolve the chatbot credential: user OpenRouter key from the vault, else the server fallback. */
-async function resolveChatbotCredential(uid: string): Promise<{
-  provider: AiProvider;
-  key: string | undefined;
-}> {
+/** Resolve only the credential belonging to the user's selected provider. */
+async function resolveChatbotCredential(uid: string): Promise<{ provider: AiProvider; key: string | undefined }> {
+  const provider = await reasoningGateway.providerFor(uid);
+  if (provider === "spacebunny") {
+    const key = (await keyStore.getSpaceBunnyKey?.(uid))?.trim();
+    return { provider, key: key || undefined };
+  }
+  if (provider === "groq") {
+    const userKey = (await keyStore.getGroqKey?.(uid))?.trim();
+    return { provider, key: userKey || process.env.GROQ_API_KEY?.trim() || undefined };
+  }
   const userKey = await keyStore.getOpenRouterKey(uid);
-  if (userKey && isPlausibleOpenRouterKey(userKey)) {
-    return {
-      provider: await reasoningGateway.providerFor(uid),
-      key: userKey.trim(),
-    };
-  }
-  if (userKey) {
-    console.warn(
-      `[chat] Ignoring malformed stored OpenRouter key for user ${uid}. Re-save the key in Settings.`,
-    );
-  }
+  if (userKey && isPlausibleOpenRouterKey(userKey)) return { provider, key: userKey.trim() };
+  if (userKey) console.warn(`[chat] Ignoring malformed stored OpenRouter key for user ${uid}. Re-save the key in Settings.`);
   const serverKey = process.env.OPENROUTER_API_KEY?.trim();
-  return { provider: await reasoningGateway.providerFor(uid), key: serverKey };
+  return { provider, key: serverKey && isPlausibleOpenRouterKey(serverKey) ? serverKey : undefined };
 }
 
-async function generateSemanticChatTitle(key: string, firstMessage: string, model: string = CHAT_MODEL): Promise<string> {
+async function generateSemanticChatTitle(key: string, firstMessage: string, model: string = CHAT_MODEL, provider: AiProvider = "openrouter"): Promise<string> {
   try {
     const result = await sendToModel(key, [
       {
@@ -6030,7 +6034,7 @@ async function generateSemanticChatTitle(key: string, firstMessage: string, mode
         content: "Create a short semantic title for a saved finance/trading chat based on the user's message. Return only the title, 2-6 words, ideally 3-5. Be specific, natural, and scannable. No quotes, emojis, punctuation at the end, or generic titles like Chat or New Chat. Do not answer the message.",
       },
       { role: "user", content: firstMessage.slice(0, 1200) },
-    ], model);
+    ], model, provider);
     const title = result.content.trim().replace(/^["'\`]+|["'\`]+$/g, "").replace(/[.!?]+$/, "").replace(/\s+/g, " ");
     if (title && title.length <= 60 && !/^(new chat|chat|conversation)$/i.test(title)) return title;
   } catch (error) {
@@ -6044,22 +6048,28 @@ async function sendToModel(
   key: string,
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
   model: string = CHAT_MODEL,
-): Promise<{
-  content: string;
-  model: string;
-  usage?: unknown;
-}> {
-  const client = new OpenRouterClient({
-    apiKey: key,
-    headers: { "X-Title": "SIRGOAT" },
+  provider: AiProvider = "openrouter",
+): Promise<{ content: string; model: string; usage?: unknown }> {
+  if (provider === "openrouter") {
+    const client = new OpenRouterClient({ apiKey: key, headers: { "X-Title": "SIRGOAT" } });
+    return client.complete({ model, messages, temperature: 0.3, maxTokens: 2000, responseFormat: false });
+  }
+  const baseUrl = provider === "groq" ? "https://api.groq.com/openai/v1" : "https://spacebunnymodel.com/api/v1";
+  const actualModel = provider === "spacebunny" ? "space-bunny-alpha" : model;
+  const response = await fetch(baseUrl + "/chat/completions", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + key, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ model: actualModel, messages, temperature: 0.3, max_tokens: 2000 }),
+    signal: AbortSignal.timeout(90_000),
   });
-  return client.complete({
-    model,
-    messages,
-    temperature: 0.3,
-    maxTokens: 2000,
-    responseFormat: false,
-  });
+  const payload = await response.json().catch(() => null) as any;
+  if (!response.ok) {
+    const detail = typeof payload?.error?.message === "string" ? payload.error.message : "HTTP " + response.status;
+    throw new Error(provider + " chat request failed (" + response.status + "): " + detail);
+  }
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || !content.trim()) throw new Error(provider + " returned an empty chat response.");
+  return { content: content.trim(), model: actualModel, usage: payload?.usage };
 }
 
 /**
@@ -6072,6 +6082,7 @@ async function runChatResearchLoop(
   userMessage: string,
   initialContext: string,
   model: string = CHAT_MODEL,
+  provider: AiProvider = "openrouter",
 ): Promise<string> {
   if (/^\s*(hey|hello|hi|thanks|thank you|good morning|good afternoon|good evening)[!.\s]*$/i.test(userMessage)) {
     return "\n\nFOLLOW-UP RESEARCH LOOP: skipped for a greeting; no market research was needed.";
@@ -6100,7 +6111,7 @@ async function runChatResearchLoop(
     const planned = await sendToModel(key, [
       { role: "system", content: "You produce small, valid JSON research plans only. No markdown." },
       { role: "user", content: plannerPrompt },
-    ], model);
+    ], model, provider);
     const raw = planned.content.trim();
     const jsonText = raw.match(/\{[\s\S]*\}/)?.[0];
     if (!jsonText) return "\n\nFOLLOW-UP RESEARCH LOOP: planner returned no valid plan; the initial retrieval was used.";
@@ -6505,10 +6516,10 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       return;
     }
 
-    const { key } = await resolveChatbotCredential(user.uid);
-    const activeModel = await resolveChatModel(user.uid, modelId);
+    const { provider, key } = await resolveChatbotCredential(user.uid);
+    const activeModel = await resolveChatModel(user.uid, modelId, provider);
     if (!key) {
-      emit({ type: "error", message: "No AI model key is configured. Add an OpenRouter key in Settings." });
+      emit({ type: "error", message: "No " + provider + " API key is configured. Add the selected provider key in Settings." });
       res.end();
       return;
     }
@@ -6557,36 +6568,40 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
         : message.trim();
     if (clarificationPrompt) effectiveResearchMessage += "\n\nMANDATORY HYPERLIQUID CLARIFICATION: " + clarificationPrompt;
     researchNeeded = !clarificationPrompt && (Boolean(confirmedSymbol) || needsMarketResearch(effectiveResearchMessage));
-    const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim(), activeModel) : Promise.resolve(chat.title);
+    emit({ type: "status", message: "Planning the research and identifying the evidence needed…" });
+    const titlePromise = needsTitle ? generateSemanticChatTitle(key, message.trim(), activeModel, provider) : Promise.resolve(chat.title);
     const title = needsTitle ? await titlePromise : chat.title;
     if (needsTitle && title && title !== "New chat") {
       const titleNow = new Date().toISOString();
       await persistence.chats.update(chat.id, { title, updatedAt: titleNow, lastMessageAt: titleNow });
       chat.title = title;
     }
+    emit({ type: "status", message: researchNeeded ? "Collecting live quotes, historical candles, news, and saved GOAT context…" : "Preparing the conversation context…" });
     const initialResearch = researchNeeded
       ? await buildChatResearchContext(user.uid, effectiveResearchMessage)
       : "\nROUTING: Ordinary conversation; market research tools were not needed. Do not claim market data was fetched.";
     const followUpResearch = researchNeeded
-      ? (emit({ type: "status", message: "Checking whether more market history or news is needed…" }), await runChatResearchLoop(key, effectiveResearchMessage, initialResearch, activeModel))
+      ? (emit({ type: "status", message: "Reviewing evidence gaps and planning follow-up research…" }), await runChatResearchLoop(key, effectiveResearchMessage, initialResearch, activeModel, provider))
       : "";
     const researchContext = initialResearch + followUpResearch;
-    emit({ type: "status", message: researchNeeded ? "Research complete. Streaming the analysis…" : "Replying…" });
+    emit({ type: "status", message: researchNeeded ? "Cross-checking evidence and synthesizing the analysis…" : "Generating the reply…" });
     const history = await persistence.messages.listByChat(chat.id, 40);
     const modelMessages = [
       { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + (clarificationPrompt ? "CLARIFICATION TURN: " + clarificationPrompt + " Do not claim you fetched any data. Keep the response short and ask for confirmation." : "") + "\n\n" + researchContext },
       ...history.map((item) => ({ role: item.role, content: item.content })),
     ];
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const chatBaseUrl = provider === "groq" ? "https://api.groq.com/openai/v1" : provider === "spacebunny" ? "https://spacebunnymodel.com/api/v1" : "https://openrouter.ai/api/v1";
+    const chatRequestModel = provider === "spacebunny" ? "space-bunny-alpha" : activeModel;
+    const response = await fetch(chatBaseUrl + "/chat/completions", {
       method: "POST",
       headers: {
         Authorization: "Bearer " + key,
         "Content-Type": "application/json",
-        "X-Title": "SIRGOAT",
+        ...(provider === "openrouter" ? { "X-Title": "SIRGOAT" } : {}),
       },
       body: JSON.stringify({
-        model: activeModel, messages: modelMessages,
+        model: chatRequestModel, messages: modelMessages,
         temperature: 0.3, max_tokens: 2000, stream: true,
       }),
       signal: AbortSignal.timeout(90000),
@@ -6647,7 +6662,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     const assistantMessage: ChatMessage = {
       id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
       chatId: chat.id, userId: user.uid, role: "assistant", content,
-      model: activeModel, createdAt: new Date().toISOString(),
+      model: chatRequestModel, createdAt: new Date().toISOString(),
     };
     await Promise.all([
       persistence.messages.create(chat.id, assistantMessage),
@@ -6734,7 +6749,8 @@ apiRouter.post("/chat", authMiddleware, async (req, res) => {
       { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + researchContext },
       ...history.map((item) => ({ role: item.role as "user" | "assistant", content: item.content })),
     ];
-    const completion = await sendToModel(key, messages);
+    const model = await resolveChatModel(user.uid, undefined, provider);
+    const completion = await sendToModel(key, messages, model, provider);
 
     const assistantMessage: ChatMessage = {
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
