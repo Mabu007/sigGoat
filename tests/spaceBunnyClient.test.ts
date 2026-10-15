@@ -34,4 +34,15 @@ describe('Space Bunny hosted API adapter', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/credits are insufficient/i);
   });
+
+  test('normalises text-block content from OpenAI-compatible responses', async () => {
+    const client = new SpaceBunnyClient({
+      apiKey: `sb_live_${'a1b2c3d4'.repeat(4)}`,
+      fetchImpl: async () => new Response(JSON.stringify({
+        choices: [{ message: { content: [{ type: 'text', text: 'SIRGOAT_SPACE_BUNNY_CONNECTION_OK' }] } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    });
+    const result = await client.testConnection();
+    expect(result.ok).toBe(true);
+  });
 });
