@@ -25,7 +25,7 @@ import {
   normaliseAutonomyMode,
 } from "../types";
 import { authMiddleware, requireUser, resolveAuthMode } from "./auth";
-import { DEFAULT_TRADING_PROVIDER, isTradingProvider, resolveUserTradingProvider } from "../services/trading-provider/TradingProvider";
+import { isTradingProvider, resolveUserTradingProvider } from "../services/trading-provider/TradingProvider";
 import { getFirebaseAdmin, getFirebaseAdminFailureReason } from "./firebaseAdmin";
 import {
   CredentialValidationError,
