@@ -80,7 +80,7 @@ function activePositionRisk(
   const side = n(trade.tradeSide);
   const entry = n(item.price);
   const stop = n(item.stopLoss);
-  if (!symbol || !usdQuoteSymbol(symbol.symbolName) || volume === null || side === null || entry === null || stop === null) return null;
+  if (!symbol || !usdQuoteSymbol(symbol.symbolName) || volume === null || volume <= 0 || side === null || (side !== 1 && side !== 2) || entry === null || entry <= 0 || stop === null || stop <= 0) return null;
   const qty = volume / 100;
   if (qty <= 0) return null;
   const risk = Math.abs(entry - stop) * qty;
@@ -106,6 +106,8 @@ export class CTraderTradeExecutionService {
     const blocked = (reason: string): CTraderRiskCheck => ({ ok: false, violations: [...violations, reason], measured: empty });
 
     if (!this.executionEnabled) return blocked("cTrader order execution is disabled by the server. Set CTRADER_EXECUTION_ENABLED=true only after validating the demo environment.");
+    if (intent.side !== "BUY" && intent.side !== "SELL") return blocked("The order side must be BUY or SELL.");
+    if (!intent.symbol || !intent.symbol.trim()) return blocked("An exact cTrader symbol is required.");
     if (!intent.intentId || !/^[A-Za-z0-9_-]{8,120}$/.test(intent.intentId)) return blocked("A valid intentId is required for order audit and reconciliation.");
     if (!Number.isFinite(intent.qty) || intent.qty <= 0 || ![intent.entry, intent.stopLoss, intent.takeProfit].every((v) => Number.isFinite(v) && v > 0)) return blocked("Quantity, entry, stop-loss and take-profit must be finite positive numbers.");
     if (intent.side === "BUY" ? !(intent.stopLoss < intent.entry && intent.takeProfit > intent.entry) : !(intent.stopLoss > intent.entry && intent.takeProfit < intent.entry)) return blocked("Stop-loss and take-profit are on the wrong side of the entry.");
@@ -124,6 +126,7 @@ export class CTraderTradeExecutionService {
     if (!depositAsset || depositAsset.name.toUpperCase() !== "USD") return blocked("Risk controls currently require the cTrader account's deposit currency to be USD; this account's currency could not be verified as USD.");
     const symbol = symbols.find((item) => item.symbolName === intent.symbol);
     if (!symbol) return blocked(`cTrader does not list the exact symbol "${intent.symbol}" on the selected account.`);
+    if (symbol.enabled === false) return blocked("The selected cTrader symbol is disabled for trading.");
     if (!usdQuoteSymbol(symbol.symbolName)) return blocked("Risk controls currently support only exact USD-quoted instruments. No cross-currency conversion is inferred.");
     if (symbol.minVolume === undefined || symbol.maxVolume === undefined || symbol.stepVolume === undefined || symbol.stepVolume <= 0) return blocked("cTrader did not provide complete min/max/step volume constraints for this symbol.");
     const volumeCents = Math.round(intent.qty * 100);
@@ -132,7 +135,7 @@ export class CTraderTradeExecutionService {
 
     const quote = await this.client.getQuote(symbol);
     const bid = n(quote.bid), ask = n(quote.ask), timestamp = n(quote.timestamp);
-    if (bid === null || ask === null || timestamp === null || ask < bid || Date.now() - timestamp > 30_000) return blocked("A fresh, valid cTrader bid/ask quote is required immediately before execution.");
+    if (bid === null || ask === null || timestamp === null || ask < bid || timestamp > Date.now() + 5_000 || Date.now() - timestamp > 30_000) return blocked("A fresh, valid cTrader bid/ask quote is required immediately before execution.");
     if (intent.side === "BUY" && intent.entry > ask || intent.side === "SELL" && intent.entry < bid) return blocked("The requested limit price is marketable against the current quote; review the price before submitting.");
 
     const commission = roundTripCommission(symbol, volumeCents, intent.qty, intent.entry);
@@ -168,7 +171,7 @@ export class CTraderTradeExecutionService {
       const volume = trade ? n(trade.volume) : null;
       const entry = n(order.limitPrice) ?? n(order.stopPrice);
       const stop = n(order.stopLoss);
-      if (!native || !trade || !usdQuoteSymbol(native.symbolName) || volume === null || entry === null || stop === null) return blocked("An existing pending cTrader order has missing protective levels or symbol data. Portfolio risk cannot be measured safely.");
+      if (!native || !trade || !usdQuoteSymbol(native.symbolName) || volume === null || volume <= 0 || entry === null || entry <= 0 || stop === null || stop <= 0) return blocked("An existing pending cTrader order has missing protective levels or symbol data. Portfolio risk cannot be measured safely.");
       const qty = volume / 100;
       const pendingCommission = roundTripCommission(native, volume, qty, entry);
       if (pendingCommission === null) return blocked("Commission metadata is missing for an existing pending cTrader order.");

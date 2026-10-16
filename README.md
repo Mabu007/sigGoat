@@ -1,9 +1,11 @@
 # SIRGOAT
 
 SIRGOAT is an AI-assisted trading workspace built around individual market
-research agents ("GOATs"). It combines live market data from Hyperliquid,
-provider-backed AI reasoning, deterministic setup/risk checks, historical
-backtesting, trade proposals, and an optional read-only PropDAO account view.
+research agents ("GOATs"). Saved GOATs are pinned to a trading provider: cTrader GOATs use cTrader market
+data and cTrader execution; legacy and explicitly Hyperliquid GOATs keep
+Hyperliquid market data and the existing PropDAO execution path. The workspace
+also provides provider-backed AI reasoning, deterministic setup/risk checks,
+historical backtesting, trade proposals, and account views.
 
 **Important:** PropDAO order execution is disabled by default and remains
 fail-closed unless the server has both execution flags enabled and a recorded
@@ -32,14 +34,49 @@ AI output can be wrong; historical backtests are not guarantees of future result
 
 The server binds to `0.0.0.0:3000` (override with `PORT`).
 
+## Trading providers
+
+The account-level provider setting is the default for newly created GOATs.
+Each GOAT stores its provider so changing Settings does not silently move an
+existing robot to a different market catalogue or execution venue.
+
+| GOAT provider | Quotes, candles and historical data | Execution |
+|---|---|---|
+| cTrader | Selected user's authorized cTrader account and broker symbol catalogue | cTrader Open API; blocked unless `CTRADER_EXECUTION_ENABLED="true"` |
+| Hyperliquid | Hyperliquid perpetual and HIP-3 market catalogues | Existing PropDAO execution policy and authorization checks |
+
+GOAT runtime, scheduled tracker reviews, proposal handling, chat market context,
+and backtesting must resolve the saved GOAT provider. Unsupported symbols or
+missing historical data are rejected rather than translated to a different
+provider's symbol. Legacy GOAT records without a provider remain on Hyperliquid.
+
+### cTrader connection and safety
+
+Set `CTRADER_CLIENT_ID`, `CTRADER_SECRET`, and `CTRADER_REDIRECT_URI` as
+server-side environment variables. Register the exact redirect URI in the
+cTrader Open API application. OAuth tokens are stored encrypted in the
+credential vault; the browser receives only connection status and selected
+account metadata. A selected account that disappears from the authorized
+account list is cleared and requires the user to select again. Live accounts
+are never selected automatically; a demo account is preferred when there is no
+saved selection.
+
+Order execution is disabled unless `CTRADER_EXECUTION_ENABLED="true"` is
+explicitly configured on the server. Keep it disabled while connecting and
+validating the integration. When enabled, order submission still requires a
+selected authorized account, fresh quotes, supported broker metadata, valid
+protective stop-loss/take-profit levels, and the server-side per-trade and
+portfolio risk checks. An ambiguous order response is not automatically retried;
+inspect cTrader's order list before attempting another submission.
+
 ## Market data
 
-Live market quotes and candles are sourced from **Hyperliquid**, including
-instruments listed by its perpetual and HIP-3 market catalogues. Instrument
-availability is provider-driven; do not assume every conventional FX pair,
-index, or commodity symbol exists.
+Hyperliquid quotes and candles are sourced from its perpetual and HIP-3 market
+catalogues. cTrader quotes and candles are sourced from the selected authorized
+broker account. Instrument availability is provider-driven; do not assume every
+conventional FX pair, index, or commodity symbol exists.
 
-The provider normalises quotes and OHLC candles in
+The Hyperliquid provider normalises quotes and OHLC candles in
 `src/services/market-data/hyperliquid/HyperliquidMarketDataProvider.ts`.
 Important integrity rules:
 

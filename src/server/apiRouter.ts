@@ -3731,7 +3731,8 @@ apiRouter.get(
   handle(async (req, res) => {
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const code = typeof req.query.code === "string" ? req.query.code : "";
-    if (!state || !code) return fail(res, 400, "CTRADER_OAUTH_CALLBACK_INVALID", "cTrader did not return a valid authorization code and state.");
+    const oauthError = typeof req.query.error === "string" ? req.query.error : "";
+    if (!state) return fail(res, 400, "CTRADER_OAUTH_CALLBACK_INVALID", "cTrader did not return the authorization state. Start the connection again.");
     const secret = process.env.CTRADER_SECRET;
     if (!secret) return fail(res, 503, "CTRADER_NOT_CONFIGURED", "cTrader server credentials are not configured.");
     let userId: string;
@@ -3740,9 +3741,25 @@ apiRouter.get(
     } catch (error) {
       return fail(res, 400, "CTRADER_OAUTH_STATE_INVALID", error instanceof Error ? error.message : "Invalid cTrader authorization state.");
     }
-    const token = await exchangeCTraderAuthorizationCode(code);
-    await credentialVault.saveCredential(userId, "ctrader", JSON.stringify(token));
-    const appBase = process.env.SIRGOAT_APP_URL?.trim() || new URL(process.env.CTRADER_REDIRECT_URI as string).origin;
+    // Validate state before handling a provider-side denial, so arbitrary
+    // callers cannot use this public callback to spoof connection status.
+    if (oauthError) {
+      return fail(res, 400, "CTRADER_OAUTH_DENIED", "cTrader authorization was cancelled or denied. No credentials were changed; start the connection again when ready.");
+    }
+    if (!code || code.length > 4096) return fail(res, 400, "CTRADER_OAUTH_CALLBACK_INVALID", "cTrader did not return a valid authorization code. Start the connection again.");
+    try {
+      const token = await exchangeCTraderAuthorizationCode(code);
+      await credentialVault.saveCredential(userId, "ctrader", JSON.stringify(token));
+    } catch (error) {
+      console.warn("[ctrader] OAuth token exchange failed:", error instanceof Error ? error.message : "unknown provider error");
+      return fail(res, 502, "CTRADER_OAUTH_EXCHANGE_FAILED", "cTrader could not complete account authorization. Check the registered redirect URI and app credentials, then reconnect.");
+    }
+    let appBase: string;
+    try {
+      appBase = process.env.SIRGOAT_APP_URL?.trim() || new URL(process.env.CTRADER_REDIRECT_URI as string).origin;
+    } catch {
+      return fail(res, 503, "CTRADER_NOT_CONFIGURED", "Set a valid CTRADER_REDIRECT_URI before connecting cTrader.");
+    }
     const destination = new URL("/", appBase);
     destination.searchParams.set("ctrader", "connected");
     res.redirect(302, destination.toString());
@@ -3800,7 +3817,7 @@ apiRouter.post(
   handle(async (req, res) => {
     const user = requireUser(req);
     const accountId = typeof req.body?.accountId === "string" ? req.body.accountId.trim() : "";
-    if (!/^\\d+$/.test(accountId)) return fail(res, 400, "INVALID_CTRADER_ACCOUNT", "Choose a valid cTrader account ID returned by your own account list.");
+    if (!/^\d+$/.test(accountId)) return fail(res, 400, "INVALID_CTRADER_ACCOUNT", "Choose a valid cTrader account ID returned by your own account list.");
     if (!(await credentialVault.hasCredential(user.uid, "ctrader"))) return fail(res, 409, "CTRADER_NOT_CONNECTED", "Connect your cTrader account first.");
     const accounts = await (await cTraderClientForUser(user.uid)).listAccounts();
     const selected = accounts.find((account) => account.ctidTraderAccountId === accountId);
