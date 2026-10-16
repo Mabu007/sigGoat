@@ -786,6 +786,10 @@ export interface UserProfile {
   id: string;
   /** Default venue for newly created GOATs; absence means cTrader. */
   tradingProvider?: TradingProvider;
+  /** cTrader account ID selected from this user's own OAuth-granted account list. */
+  ctraderAccountId?: string;
+  /** Environment of the explicitly selected cTrader account. */
+  ctraderAccountIsLive?: boolean;
   email: string;
   displayName: string;
 
