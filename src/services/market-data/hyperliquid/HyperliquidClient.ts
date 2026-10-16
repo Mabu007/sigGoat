@@ -412,50 +412,60 @@ export class HyperliquidClient {
     dexes: readonly HyperliquidDex[] = HYPERLIQUID_DEXES,
   ): Promise<HyperliquidMarketSnapshot[]> {
     return this.inflight.run(`markets:${dexes.join(',')}`, async () => {
+      const baseMarkets = await this.getBaseMarkets(dexes);
+      return this.refreshMidPrices(baseMarkets, dexes);
+    });
+  }
+
+  /**
+   * Loads universe metadata and secondary contexts from the ten-minute cache.
+   * This layer deliberately does not refresh prices; discovery-only callers
+   * should not pay even the low allMids weight.
+   */
+  private async getBaseMarkets(
+    dexes: readonly HyperliquidDex[],
+  ): Promise<HyperliquidMarketSnapshot[]> {
+    return this.inflight.run(`meta:${dexes.join(',')}`, async () => {
       const key = `meta:${dexes.join(',')}`;
       const cached = this.metadataCache.get(key);
-      let baseMarkets: HyperliquidMarketSnapshot[];
-
       if (cached && Date.now() - cached.at < HyperliquidClient.METADATA_TTL_MS) {
-        baseMarkets = cached.markets;
-      } else {
-        const collected: HyperliquidMarketSnapshot[] = [];
-        for (const dex of dexes) {
-          let response: unknown;
-          try {
-            response = await this.info<unknown>({ type: 'metaAndAssetCtxs', dex }, WEIGHT.info);
-          } catch (error) {
-            this.onWarn(
-              `dex "${dex || '(default)'}" metadata unavailable: ${
-                error instanceof Error ? error.message : 'unknown error'
-              }`,
-            );
-            continue;
-          }
-
-          const markets = parseMetaAndAssetCtxs(response, dex);
-          if (markets === null) {
-            this.onWarn(`dex "${dex || '(default)'}" returned an unreadable meta payload; skipping.`);
-            continue;
-          }
-
-          const contexts = parseAssetContexts(
-            response,
-            markets.map((market) => market.symbol),
-          );
-          for (const market of markets) {
-            collected.push({
-              market,
-              context: contexts.get(market.symbol.toUpperCase()) ?? nullContext(),
-            });
-          }
-        }
-
-        baseMarkets = collected;
-        this.metadataCache.set(key, { at: Date.now(), markets: baseMarkets });
+        return cached.markets;
       }
 
-      return this.refreshMidPrices(baseMarkets, dexes);
+      const collected: HyperliquidMarketSnapshot[] = [];
+      for (const dex of dexes) {
+        let response: unknown;
+        try {
+          response = await this.info<unknown>({ type: 'metaAndAssetCtxs', dex }, WEIGHT.info);
+        } catch (error) {
+          this.onWarn(
+            `dex "${dex || '(default)'}" metadata unavailable: ${
+              error instanceof Error ? error.message : 'unknown error'
+            }`,
+          );
+          continue;
+        }
+
+        const markets = parseMetaAndAssetCtxs(response, dex);
+        if (markets === null) {
+          this.onWarn(`dex "${dex || '(default)'}" returned an unreadable meta payload; skipping.`);
+          continue;
+        }
+
+        const contexts = parseAssetContexts(
+          response,
+          markets.map((market) => market.symbol),
+        );
+        for (const market of markets) {
+          collected.push({
+            market,
+            context: contexts.get(market.symbol.toUpperCase()) ?? nullContext(),
+          });
+        }
+      }
+
+      this.metadataCache.set(key, { at: Date.now(), markets: collected });
+      return collected;
     });
   }
 
@@ -511,10 +521,9 @@ export class HyperliquidClient {
       };
     });
   }
-
   /** Cached universe without context, for search and routing. */
   async listMarketsCached(dexes: readonly HyperliquidDex[] = HYPERLIQUID_DEXES): Promise<NormalisedMarket[]> {
-    const snapshots = await this.listMarkets(dexes);
+    const snapshots = await this.getBaseMarkets(dexes);
     return snapshots.map((snapshot) => snapshot.market);
   }
 
