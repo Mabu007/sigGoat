@@ -3722,6 +3722,8 @@ async function readUserPreferences(userId: string): Promise<{
   aiModel: string | null;
   aiModelAvailable: boolean | null;
   tradingProvider: TradingProvider;
+  tradingProviderAvailable: boolean;
+  tradingProviderUnavailableReason: string | null;
   /** False when execution is impossible no matter the user's choice. */
   autonomyExecutable: boolean;
   autonomyBlockedReason: string;
@@ -3729,6 +3731,8 @@ async function readUserPreferences(userId: string): Promise<{
   const profile = await persistence.profiles.get(userId).catch(() => null);
   const autonomyMode = normaliseAutonomyMode(profile?.autonomyMode);
   const execution = executionPolicyStatus(process.env);
+  const tradingProvider = resolveUserTradingProvider(profile);
+  const tradingProviderRegistration = getTradingProviderRegistration(tradingProvider);
 
   return {
     autonomyMode,
@@ -3736,7 +3740,9 @@ async function readUserPreferences(userId: string): Promise<{
     autoTradeAccountId: profile?.autoTradeAccountId ?? null,
     autoTradeQty: typeof profile?.autoTradeQty === "number" ? profile.autoTradeQty : null,
     aiModel: profile?.aiModel ?? null,
-    tradingProvider: resolveUserTradingProvider(profile),
+    tradingProvider,
+    tradingProviderAvailable: isTradingProviderReady(tradingProvider),
+    tradingProviderUnavailableReason: tradingProviderRegistration.unavailableReason ?? null,
     /**
      * Null when it cannot be checked (no key configured, or the catalogue is
      * unreachable) — which is different from `false`, meaning "checked and it
