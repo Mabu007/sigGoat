@@ -83,10 +83,10 @@ async function requestToken(params: Record<string, string>, method: "GET" | "POS
   url.searchParams.set("client_id", config.clientId);
   url.searchParams.set("client_secret", config.clientSecret);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-  const response = await fetch(url, { method, headers: { Accept: "application/json" } });
+  const response = await fetch(url, { method, headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`cTrader token endpoint returned HTTP ${response.status}.`);
   const body = await response.json() as TokenResponse;
-  if (body.errorCode || typeof body.accessToken !== "string" || typeof body.refreshToken !== "string" || typeof body.expiresIn !== "number") {
+  if (body.errorCode || typeof body.accessToken !== "string" || !body.accessToken || typeof body.refreshToken !== "string" || !body.refreshToken || typeof body.expiresIn !== "number" || !Number.isFinite(body.expiresIn) || body.expiresIn <= 0) {
     throw new Error("cTrader rejected token authorization. Reconnect the account and verify the app credentials and redirect URI.");
   }
   return {
