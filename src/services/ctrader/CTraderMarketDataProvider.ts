@@ -150,7 +150,15 @@ export class CTraderMarketDataProvider implements MarketDataProvider {
       if (!native) throw new MarketDataUnavailableError(`cTrader does not list the exact symbol "${symbol}" for the selected account. No cross-provider symbol mapping was attempted.`, symbol, "NOT_LISTED");
       return { symbol, native };
     });
-    const events = await (await this.client()).getQuotes(requested.map((item) => item.native));
+    const client = await this.client();
+    const events = new Map<string, CTraderQuoteEvent>();
+    // Keep subscriptions bounded; the full broker catalogue can contain hundreds
+    // of instruments and should not be sent as one oversized Open API request.
+    for (let offset = 0; offset < requested.length; offset += 50) {
+      const chunk = requested.slice(offset, offset + 50);
+      const batch = await client.getQuotes(chunk.map((item) => item.native));
+      for (const [symbolId, event] of batch) events.set(symbolId, event);
+    }
     return requested.map(({ symbol, native }) => {
       const event = events.get(native.symbolId);
       if (!event) throw new MarketDataUnavailableError(`cTrader did not return a quote for "${symbol}".`, symbol, "MISSING_QUOTE");
