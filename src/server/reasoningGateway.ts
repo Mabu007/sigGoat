@@ -39,7 +39,7 @@ import { SpaceBunnyClient, SPACE_BUNNY_MODEL } from '../services/ai/SpaceBunnyCl
 import { buildDemoReasoningResult, DEMO_CHAT_ANSWER } from '../services/ai/demoReasoning';
 import { ReasoningResult } from '../services/agent/contracts';
 import { KeyStore } from './repositories';
-import { isPlausibleOpenRouterKey } from './credentialValidation';
+import { isPlausibleGroqKey, isPlausibleOpenRouterKey } from './credentialValidation';
 
 export type AiProvider = 'openrouter' | 'groq' | 'spacebunny';
 
@@ -156,9 +156,15 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     const provider = await this.providerFor(userId, providerOverride);
 
     if (provider === 'groq') {
-      const userKey = await this.keys.getGroqKey?.(userId);
+      const userKey = (await this.keys.getGroqKey?.(userId))?.trim();
       const serverKey = process.env.GROQ_API_KEY?.trim();
-      return { provider, key: userKey?.trim() || (serverKey ? serverKey : undefined) };
+      // A non-empty string is not proof of a usable credential. Validate both
+      // account and server fallback keys before reporting the provider connected.
+      if (userKey && isPlausibleGroqKey(userKey)) return { provider, key: userKey };
+      return {
+        provider,
+        key: serverKey && isPlausibleGroqKey(serverKey) ? serverKey : undefined,
+      };
     }
     if (provider === 'spacebunny') return { provider, key: (await this.keys.getSpaceBunnyKey?.(userId))?.trim() || undefined };
 
