@@ -118,6 +118,22 @@ describe("cTrader order lifecycle", () => {
     expect(client.getPlaceCalls()).toBe(1);
   });
 
+  test("does not report cancelled or expired broker orders as completed", async () => {
+    const client = fakeClient({ order: {
+      orderId: "456",
+      clientOrderId: intent.intentId,
+      orderStatus: 5,
+      stopLoss: intent.stopLoss,
+      takeProfit: intent.takeProfit,
+      limitPrice: intent.entry,
+      tradeData: { symbolId: "1", volume: 100_000, tradeSide: 1 },
+    } });
+    const result = await new CTraderTradeExecutionService(client as unknown as CTraderOpenApiClient, true).execute(intent);
+    expect(result.status).toBe("inactive");
+    expect(result.accepted).toBe(false);
+    expect(result.message).toMatch(/CANCELLED/);
+  });
+
   test("keeps ambiguous broker outcomes distinct from definite rejection", async () => {
     const rejectedClient = fakeClient({ placeOrderResult: {
       status: "rejected", accepted: false, requestedVolumeCents: 100_000, message: "broker rejected",
