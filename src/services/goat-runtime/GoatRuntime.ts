@@ -1622,6 +1622,16 @@ export class GoatRuntime {
           this.runtimeState.nextWatchingCondition =
             this.runtimeState.nextWatchingCondition;
         } else if (
+          this.runtimeState.consecutiveFailures > 0 &&
+          !this.runtimeState.isEvaluating
+        ) {
+          // A failed AI wake must be retried after backoff even for TRACKERS
+          // schedules, whose healthy ticks normally avoid model calls.
+          await this.wake(
+            `Retry after previous failure (${this.runtimeState.consecutiveFailures} consecutive failures)`,
+            'SCHEDULED',
+          );
+        } else if (
           schedule.mode !== 'TRACKERS' &&
           !this.runtimeState.isEvaluating &&
           (respectSchedule === false ||
