@@ -397,65 +397,113 @@ export class HyperliquidClient {
   }
 
   /**
-   * Lists every instrument on the configured dexes, with live context.
+   * Lists the configured universe with freshly sampled prices.
    *
-   * ONE `metaAndAssetCtxs` per dex yields BOTH halves of the response, so
-   * listing and pricing cost the same single weight-20 request. Fetching the
-   * universe once and the context separately would double the cost for the
-   * entire market list on every refresh.
-   *
-   * Cached for ten minutes (the universe changes weekly, prices do not) and
-   * collapsed while concurrent, so a burst of callers makes one request.
+   * The relatively stable market metadata and secondary asset context are
+   * cached for ten minutes. Prices are refreshed separately with allMids
+   * (weight 2 per dex) on every non-collapsed call, so the metadata TTL can
+   * never make an old price look current. When a price refresh fails or a
+   * listed market has no returned mid, its price fields are nulled rather
+   * than falling back to the cached mark/oracle price.
    */
   async listMarkets(
     dexes: readonly HyperliquidDex[] = HYPERLIQUID_DEXES,
   ): Promise<HyperliquidMarketSnapshot[]> {
-    return this.inflight.run(`meta:${dexes.join(',')}`, async () => {
+    return this.inflight.run(`markets:${dexes.join(',')}`, async () => {
       const key = `meta:${dexes.join(',')}`;
       const cached = this.metadataCache.get(key);
+      let baseMarkets: HyperliquidMarketSnapshot[];
+
       if (cached && Date.now() - cached.at < HyperliquidClient.METADATA_TTL_MS) {
-        return cached.markets;
-      }
+        baseMarkets = cached.markets;
+      } else {
+        const collected: HyperliquidMarketSnapshot[] = [];
+        for (const dex of dexes) {
+          let response: unknown;
+          try {
+            response = await this.info<unknown>({ type: 'metaAndAssetCtxs', dex }, WEIGHT.info);
+          } catch (error) {
+            this.onWarn(
+              `dex "${dex || '(default)'}" metadata unavailable: ${
+                error instanceof Error ? error.message : 'unknown error'
+              }`,
+            );
+            continue;
+          }
 
-      const collected: HyperliquidMarketSnapshot[] = [];
-      for (const dex of dexes) {
-        let response: unknown;
-        try {
-          response = await this.info<unknown>({ type: 'metaAndAssetCtxs', dex }, WEIGHT.info);
-        } catch (error) {
-          // A HIP-3 dex that has been renamed or removed comes back as an
-          // error, not an empty list. That is not fatal — the remaining dexes
-          // still serve — but it must be visible rather than silent.
-          this.onWarn(
-            `dex "${dex || '(default)'}" metadata unavailable: ${
-              error instanceof Error ? error.message : 'unknown error'
-            }`,
+          const markets = parseMetaAndAssetCtxs(response, dex);
+          if (markets === null) {
+            this.onWarn(`dex "${dex || '(default)'}" returned an unreadable meta payload; skipping.`);
+            continue;
+          }
+
+          const contexts = parseAssetContexts(
+            response,
+            markets.map((market) => market.symbol),
           );
-          continue;
+          for (const market of markets) {
+            collected.push({
+              market,
+              context: contexts.get(market.symbol.toUpperCase()) ?? nullContext(),
+            });
+          }
         }
 
-        const markets = parseMetaAndAssetCtxs(response, dex);
-        if (markets === null) {
-          this.onWarn(`dex "${dex || '(default)'}" returned an unreadable meta payload; skipping.`);
-          continue;
-        }
-
-        // Contexts are positional against the universe, so they are captured
-        // here while both halves of the response are in hand.
-        const contexts = parseAssetContexts(
-          response,
-          markets.map((market) => market.symbol),
-        );
-        for (const market of markets) {
-          collected.push({
-            market,
-            context: contexts.get(market.symbol.toUpperCase()) ?? nullContext(),
-          });
-        }
+        baseMarkets = collected;
+        this.metadataCache.set(key, { at: Date.now(), markets: baseMarkets });
       }
 
-      this.metadataCache.set(key, { at: Date.now(), markets: collected });
-      return collected;
+      return this.refreshMidPrices(baseMarkets, dexes);
+    });
+  }
+
+  /**
+   * Refreshes prices independently from the ten-minute metadata cache.
+   * Missing prices deliberately become null: stale mark/oracle values must
+   * not be used as a live fallback when the lightweight endpoint fails.
+   */
+  private async refreshMidPrices(
+    markets: HyperliquidMarketSnapshot[],
+    dexes: readonly HyperliquidDex[],
+  ): Promise<HyperliquidMarketSnapshot[]> {
+    const pricesByDex = new Map<string, Map<string, number>>();
+    await Promise.all(dexes.map(async (dex) => {
+      try {
+        const mids = await this.allMids(dex);
+        pricesByDex.set(
+          dex,
+          new Map(Object.entries(mids).map(([symbol, price]) => [symbol.toUpperCase(), price])),
+        );
+      } catch (error) {
+        this.onWarn(
+          `dex "${dex || '(default)'}" price refresh unavailable: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        );
+        pricesByDex.set(dex, new Map());
+      }
+    }));
+
+    return markets.map((snapshot) => {
+      const { market, context } = snapshot;
+      const dex = market.dex;
+      const dexPrices = pricesByDex.get(dex) ?? new Map<string, number>();
+      const symbol = market.symbol.toUpperCase();
+      const prefix = dex ? `${dex.toUpperCase()}:` : '';
+      const unprefixed = prefix && symbol.startsWith(prefix) ? symbol.slice(prefix.length) : symbol;
+      const mid = dexPrices.get(symbol) ?? dexPrices.get(unprefixed) ?? null;
+
+      return {
+        ...snapshot,
+        context: {
+          ...context,
+          midPx: mid,
+          // If allMids has no current price, do not let the ten-minute-old
+          // context silently resurrect the market as a live quote.
+          markPx: mid === null ? null : context.markPx,
+          oraclePx: mid === null ? null : context.oraclePx,
+        },
+      };
     });
   }
 
