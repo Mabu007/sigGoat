@@ -45,6 +45,12 @@ const GET_TRENDBARS_REQ = 2137;
 const GET_TRENDBARS_RES = 2138;
 const GET_ACCOUNTS_REQ = 2149;
 const GET_ACCOUNTS_RES = 2150;
+const ASSET_LIST_REQ = 2112;
+const ASSET_LIST_RES = 2113;
+const TRADER_REQ = 2121;
+const TRADER_RES = 2122;
+const RECONCILE_REQ = 2124;
+const RECONCILE_RES = 2125;
 
 function id(): string {
   return `sirgoat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -157,6 +163,52 @@ export class CTraderOpenApiClient {
           ...(typeof account.brokerTitleShort === "string" ? { brokerTitleShort: account.brokerTitleShort } : {}),
         }))
         .filter((account) => /^\d+$/.test(account.ctidTraderAccountId));
+    });
+  }
+
+  async getAccountDetails(): Promise<{ balance: number; moneyDigits: number; depositAssetId: string; accessRights: number | null; isLimitedRisk: boolean }> {
+    if (!this.accountId) throw new Error("Select a cTrader trading account in Settings first.");
+    return this.withSocket(async (socket) => {
+      const payload = await this.request(socket, TRADER_REQ, TRADER_RES, { ctidTraderAccountId: this.accountId });
+      const trader = payload.trader && typeof payload.trader === "object" ? payload.trader as Record<string, unknown> : payload;
+      const rawBalance = number(trader.balance);
+      const moneyDigits = number(trader.moneyDigits);
+      const depositAssetId = trader.depositAssetId;
+      if (rawBalance === undefined || moneyDigits === undefined || typeof depositAssetId !== "string" && typeof depositAssetId !== "number") {
+        throw new Error("cTrader did not provide complete account balance/currency details; order execution is blocked.");
+      }
+      return {
+        balance: rawBalance / (10 ** moneyDigits),
+        moneyDigits,
+        depositAssetId: String(depositAssetId),
+        accessRights: number(trader.accessRights) ?? null,
+        isLimitedRisk: trader.isLimitedRisk === true,
+      };
+    });
+  }
+
+  async getAssets(): Promise<Array<{ assetId: string; name: string; displayName?: string }>> {
+    if (!this.accountId) throw new Error("Select a cTrader trading account in Settings first.");
+    return this.withSocket(async (socket) => {
+      const payload = await this.request(socket, ASSET_LIST_REQ, ASSET_LIST_RES, { ctidTraderAccountId: this.accountId });
+      return payloadArray<Record<string, unknown>>(payload, "asset")
+        .map((asset) => ({
+          assetId: String(asset.assetId ?? ""),
+          name: String(asset.name ?? ""),
+          ...(typeof asset.displayName === "string" ? { displayName: asset.displayName } : {}),
+        }))
+        .filter((asset) => /^\\d+$/.test(asset.assetId) && asset.name);
+    });
+  }
+
+  async reconcile(): Promise<{ positions: Array<Record<string, unknown>>; orders: Array<Record<string, unknown>> }> {
+    if (!this.accountId) throw new Error("Select a cTrader trading account in Settings first.");
+    return this.withSocket(async (socket) => {
+      const payload = await this.request(socket, RECONCILE_REQ, RECONCILE_RES, { ctidTraderAccountId: this.accountId });
+      return {
+        positions: payloadArray<Record<string, unknown>>(payload, "position"),
+        orders: payloadArray<Record<string, unknown>>(payload, "order"),
+      };
     });
   }
 
