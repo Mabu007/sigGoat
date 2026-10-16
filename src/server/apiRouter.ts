@@ -1390,21 +1390,37 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           if (resolveGoatTradingProvider(ownedGoat) === "ctrader") {
             if (!profile.ctraderAccountId) return { submitted: false, intentId, message: "Automatic cTrader trading requires a selected cTrader account in Settings." };
             if (process.env.CTRADER_EXECUTION_ENABLED !== "true") return { submitted: false, intentId, message: "cTrader automatic execution is disabled by the server. No order was sent." };
-            const cTraderClient = await cTraderClientForUser(
-              ownedGoat.userId,
-              profile.ctraderAccountId,
-              profile.ctraderAccountIsLive === true,
-            );
-            const outcome = await new CTraderTradeExecutionService(cTraderClient).execute({
-              symbol: candidate.market,
-              side,
-              qty: autoTradeQty,
-              entry: candidate.entry!,
-              stopLoss: candidate.stopLoss!,
-              takeProfit: candidate.takeProfit!,
-              intentId,
+            const fingerprint = JSON.stringify({ userId: ownedGoat.userId, provider: "ctrader", accountId: profile.ctraderAccountId, symbol: candidate.market, side, qty: autoTradeQty, entry: candidate.entry, stopLoss: candidate.stopLoss, takeProfit: candidate.takeProfit });
+            const claim = await goatWorkflowStore.claimExecution({
+              id: intentId, signalId: candidate.id, goatId: ownedGoat.id,
+              userId: ownedGoat.userId, provider: "ctrader", fingerprint,
             });
-            if (!outcome.accepted) return { submitted: false, intentId, message: outcome.message };
+            if (claim.conflict) return { submitted: false, intentId, message: "This execution intent was already bound to a different order shape." };
+            if (!claim.claimed) {
+              if (claim.intent.status === "SUBMITTED") return { submitted: true, ...(claim.intent.orderId ? { orderId: claim.intent.orderId } : {}), intentId, message: "This order intent was already submitted; no duplicate order was sent." };
+              return { submitted: false, intentId, message: claim.intent.message ?? "This order intent was already attempted; no retry was sent. Reconcile broker status first." };
+            }
+            let outcome: Awaited<ReturnType<CTraderTradeExecutionService["execute"]>>;
+            try {
+              outcome = await new CTraderTradeExecutionService(cTraderClient).execute({
+                symbol: candidate.market,
+                side,
+                qty: autoTradeQty,
+                entry: candidate.entry!,
+                stopLoss: candidate.stopLoss!,
+                takeProfit: candidate.takeProfit!,
+                intentId,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "cTrader submission outcome is unknown.";
+              await goatWorkflowStore.finishExecution(intentId, "FAILED", { message }).catch(() => null);
+              return { submitted: false, intentId, message };
+            }
+            if (!outcome.accepted) {
+              await goatWorkflowStore.finishExecution(intentId, "FAILED", { ...(outcome.orderId ? { orderId: outcome.orderId } : {}), message: outcome.message });
+              return { submitted: false, intentId, message: outcome.message };
+            }
+            await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", { ...(outcome.orderId ? { orderId: outcome.orderId } : {}), message: outcome.message });
             return { submitted: true, ...(outcome.orderId ? { orderId: outcome.orderId } : {}), intentId, message: outcome.message };
           }
 
@@ -1437,18 +1453,39 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           if (!riskCheck.ok) {
             return { submitted: false, intentId, message: "PropDAO risk validation blocked automatic execution: " + riskCheck.violations.join("; ") };
           }
-          const outcome = await provider.executeOrder(account.accountId, {
-            symbol: candidate.market,
-            side,
-            qty: autoTradeQty,
-            orderType: "limit",
-            intentId,
-            limitPrice: candidate.entry!,
-            sl: candidate.stopLoss!,
-            tp: candidate.takeProfit!,
-            tif: "gtc",
+          const fingerprint = JSON.stringify({ userId: ownedGoat.userId, provider: "propdao", accountId: account.accountId, symbol: candidate.market, side, qty: autoTradeQty, entry: candidate.entry, stopLoss: candidate.stopLoss, takeProfit: candidate.takeProfit });
+          const claim = await goatWorkflowStore.claimExecution({
+            id: intentId, signalId: candidate.id, goatId: ownedGoat.id,
+            userId: ownedGoat.userId, provider: "propdao", fingerprint,
           });
-          if (!("result" in outcome)) return { submitted: false, intentId, message: outcome.message };
+          if (claim.conflict) return { submitted: false, intentId, message: "This execution intent was already bound to a different order shape." };
+          if (!claim.claimed) {
+            if (claim.intent.status === "SUBMITTED") return { submitted: true, ...(claim.intent.orderId ? { orderId: claim.intent.orderId } : {}), intentId, message: "This order intent was already submitted; no duplicate order was sent." };
+            return { submitted: false, intentId, message: claim.intent.message ?? "This order intent was already attempted; no retry was sent. Reconcile venue status first." };
+          }
+          let outcome: Awaited<ReturnType<typeof provider.executeOrder>>;
+          try {
+            outcome = await provider.executeOrder(account.accountId, {
+              symbol: candidate.market,
+              side,
+              qty: autoTradeQty,
+              orderType: "limit",
+              intentId,
+              limitPrice: candidate.entry!,
+              sl: candidate.stopLoss!,
+              tp: candidate.takeProfit!,
+              tif: "gtc",
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "PropDAO submission outcome is unknown.";
+            await goatWorkflowStore.finishExecution(intentId, "FAILED", { message }).catch(() => null);
+            return { submitted: false, intentId, message };
+          }
+          if (!("result" in outcome)) {
+            await goatWorkflowStore.finishExecution(intentId, "FAILED", { message: outcome.message });
+            return { submitted: false, intentId, message: outcome.message };
+          }
+          await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", { orderId: String(outcome.result.orderId), message: "PropDAO accepted the order request." });
           return { submitted: true, orderId: outcome.result.orderId, intentId, message: "PropDAO accepted the order request." };
         },
       },
