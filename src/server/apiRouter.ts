@@ -5052,6 +5052,12 @@ apiRouter.post(
       return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}`);
     }
 
+    const selectedMarketProvider = await marketDataProviderForUser(user.uid, tradingProvider);
+    const templateMarkets = await resolveMarketsForGoat(template.markets.slice(0, 1), selectedMarketProvider);
+    if ("error" in templateMarkets) {
+      return fail(res, 409, "TEMPLATE_MARKET_UNAVAILABLE", `This template's market is not listed by ${selectedMarketProvider.name}. ${templateMarkets.error} Choose another template or switch providers; no symbol mapping was inferred.`);
+    }
+
     const now = new Date().toISOString();
     const copy: FundGoat = {
       ...template,
@@ -5061,12 +5067,12 @@ apiRouter.post(
       userId: user.uid,
       tradingProvider,
       name: `${template.name}`,
-      markets: template.markets.slice(0, 1),
+      markets: templateMarkets.resolved,
       status: "WATCHING",
       createdAt: now,
       updatedAt: now,
     };
-    const canonicalCopy = migrateGoatMarkets(copy) ?? copy;
+    const canonicalCopy = tradingProvider === "hyperliquid" ? (migrateGoatMarkets(copy) ?? copy) : copy;
 
     /**
      * User-owned skills are copied into the caller's library and the GOAT must
