@@ -1499,6 +1499,8 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           `(${signal.direction} ${signal.market}) — venue execution ` +
           `${outcome.execution.enabled && outcome.execution.authorised ? "authorised" : "disabled"}`,
       );
+      await goatWorkflowStore.resolveApproval(signal.id, goat.userId, goat.id, "ACCEPTED")
+        .catch((error) => console.error("[workflow] automatic approval activity could not be persisted:", error));
       return;
     }
     if (outcome.action === "FAILED") {
