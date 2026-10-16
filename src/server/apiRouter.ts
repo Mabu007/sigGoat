@@ -3580,6 +3580,139 @@ apiRouter.post("/robots/:slug/chat", handle(async (req, res) => {
   res.json({ answer, provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
 }));
 
+// ---- cTrader OAuth / account selection --------------------------------
+
+apiRouter.post(
+  "/ctrader/connect",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    try {
+      res.json({ authorizationUrl: buildCTraderAuthorizationUrl(user.uid), provider: "ctrader" });
+    } catch (error) {
+      return fail(res, 503, "CTRADER_NOT_CONFIGURED", error instanceof Error ? error.message : "cTrader OAuth is not configured.");
+    }
+  }),
+);
+
+/**
+ * Public OAuth callback: the HMAC-signed state binds this callback to the
+ * verified SirGOAT UID that initiated it. OAuth tokens are encrypted by the
+ * credential vault and never returned to the browser.
+ */
+apiRouter.get(
+  "/ctrader/oauth/callback",
+  handle(async (req, res) => {
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    if (!state || !code) return fail(res, 400, "CTRADER_OAUTH_CALLBACK_INVALID", "cTrader did not return a valid authorization code and state.");
+    const secret = process.env.CTRADER_SECRET;
+    if (!secret) return fail(res, 503, "CTRADER_NOT_CONFIGURED", "cTrader server credentials are not configured.");
+    let userId: string;
+    try {
+      userId = verifyCTraderOAuthState(state, secret).userId;
+    } catch (error) {
+      return fail(res, 400, "CTRADER_OAUTH_STATE_INVALID", error instanceof Error ? error.message : "Invalid cTrader authorization state.");
+    }
+    const token = await exchangeCTraderAuthorizationCode(code);
+    await credentialVault.saveCredential(userId, "ctrader", JSON.stringify(token));
+    const appBase = process.env.SIRGOAT_APP_URL?.trim() || new URL(process.env.CTRADER_REDIRECT_URI as string).origin;
+    const destination = new URL("/", appBase);
+    destination.searchParams.set("ctrader", "connected");
+    res.redirect(302, destination.toString());
+  }),
+);
+
+apiRouter.get(
+  "/ctrader/status",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const credential = await credentialVault.getCredentialStatus(user.uid, "ctrader");
+    const profile = await persistence.profiles.get(user.uid).catch(() => null);
+    res.json({
+      provider: "ctrader",
+      configured: Boolean(process.env.CTRADER_CLIENT_ID && process.env.CTRADER_SECRET && process.env.CTRADER_REDIRECT_URI),
+      connected: credential.configured && !/unreadable/.test(credential.maskedHint ?? ""),
+      credential: {
+        configured: credential.configured,
+        updatedAt: credential.updatedAt,
+        maskedHint: credential.maskedHint,
+        needsRotation: credential.needsRotation,
+      },
+      selectedAccountId: profile?.ctraderAccountId ?? null,
+      selectedAccountIsLive: profile?.ctraderAccountIsLive === true,
+      defaultAccountMode: "demo",
+    });
+  }),
+);
+
+apiRouter.get(
+  "/ctrader/accounts",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    if (!(await credentialVault.hasCredential(user.uid, "ctrader"))) {
+      return fail(res, 409, "CTRADER_NOT_CONNECTED", "Connect your cTrader account before listing accounts.");
+    }
+    const selection = await resolveSelectedCTraderAccount(user.uid);
+    res.json({
+      accounts: selection.accounts.map((account) => ({
+        ...account,
+        environment: account.isLive ? "live" : "demo",
+      })),
+      selectedAccountId: selection.selected?.ctidTraderAccountId ?? null,
+      selectedAccountIsLive: selection.selected?.isLive ?? null,
+      liveSelectionRequired: !selection.selected && selection.accounts.some((account) => account.isLive),
+      message: selection.selected
+        ? `Selected ${selection.selected.isLive ? "live" : "demo"} cTrader account.`
+        : "Choose a cTrader account. Demo accounts are preferred; live accounts are never selected automatically.",
+    });
+  }),
+);
+
+apiRouter.post(
+  "/ctrader/account",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const accountId = typeof req.body?.accountId === "string" ? req.body.accountId.trim() : "";
+    if (!/^\\d+$/.test(accountId)) return fail(res, 400, "INVALID_CTRADER_ACCOUNT", "Choose a valid cTrader account ID returned by your own account list.");
+    if (!(await credentialVault.hasCredential(user.uid, "ctrader"))) return fail(res, 409, "CTRADER_NOT_CONNECTED", "Connect your cTrader account first.");
+    const accounts = await (await cTraderClientForUser(user.uid)).listAccounts();
+    const selected = accounts.find((account) => account.ctidTraderAccountId === accountId);
+    if (!selected) return fail(res, 404, "CTRADER_ACCOUNT_NOT_FOUND", "That account was not returned by your own cTrader authorization.");
+    const existing = await persistence.profiles.get(user.uid);
+    const profile: UserProfile = existing ?? defaultProfileForUser(user.uid);
+    profile.ctraderAccountId = selected.ctidTraderAccountId;
+    profile.ctraderAccountIsLive = selected.isLive;
+    profile.updatedAt = new Date().toISOString();
+    await persistence.profiles.save(profile);
+    res.json({
+      success: true,
+      selectedAccount: {
+        ...selected,
+        environment: selected.isLive ? "live" : "demo",
+      },
+      warning: selected.isLive ? "Live trading account selected. Existing risk checks and explicit execution authorization remain mandatory." : null,
+    });
+  }),
+);
+
+apiRouter.delete(
+  "/ctrader/connect",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    await credentialVault.deleteCredential(user.uid, "ctrader");
+    const existing = await persistence.profiles.get(user.uid);
+    if (existing) {
+      delete existing.ctraderAccountId;
+      delete existing.ctraderAccountIsLive;
+      existing.updatedAt = new Date().toISOString();
+      await persistence.profiles.save(existing);
+    }
+    for (const key of [...cTraderProviderCache.keys()]) if (key.startsWith(`${user.uid}:`)) cTraderProviderCache.delete(key);
+    for (const key of [...cTraderMarketStateStores.keys()]) if (key.startsWith(`${user.uid}:`)) cTraderMarketStateStores.delete(key);
+    res.json({ success: true, connected: false });
+  }),
+);
+
 // ---- Settings / keys (user-scoped) ----------------------------------
 
 /**
