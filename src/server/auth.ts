@@ -102,7 +102,9 @@ function devAuthAllowed(): boolean {
  * long-lived production build locally and must keep working.
  */
 export function isProductionRuntime(): boolean {
-  return Boolean(process.env.VERCEL);
+  // Production builds on Docker/Fly/Render/Railway are production too.
+  // Never permit caller-supplied x-dev-user-id identity in those hosts.
+  return process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
 }
 
 export function resolveAuthMode(): AuthMode {

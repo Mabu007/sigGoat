@@ -401,6 +401,7 @@ export class PropFundAccountProvider {
         hasCredential: (await this.client()) !== null,
         accountId,
         accountStatus: account?.status ?? null,
+        accountOwned: account !== null,
       },
       this.env(),
     );
