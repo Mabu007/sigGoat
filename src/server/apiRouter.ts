@@ -57,7 +57,6 @@ import { createVaultBackedKeyStore } from "./security/vaultKeyStore";
 import { autoAcceptSignal } from "./autonomy";
 import type { CanonicalMarketCategory } from "../types";
 import { PropFundAccountProvider } from "../services/propdao/PropFundAccountProvider";
-import { executionPolicyStatus } from "../services/propdao/executionPolicy";
 import {
   DEFAULT_RISK_LIMITS,
   suggestQuantityForRisk,
