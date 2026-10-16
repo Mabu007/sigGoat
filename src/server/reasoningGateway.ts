@@ -36,10 +36,10 @@ import {
 } from '../services/ai/OpenRouterClient';
 import { GroqClient, DEFAULT_GROQ_MODEL } from '../services/ai/GroqClient';
 import { SpaceBunnyClient, SPACE_BUNNY_MODEL } from '../services/ai/SpaceBunnyClient';
-import { buildDemoReasoningResult, DEMO_CHAT_ANSWER } from '../services/ai/demoReasoning';
+import { DEMO_CHAT_ANSWER } from '../services/ai/demoReasoning';
 import { ReasoningResult } from '../services/agent/contracts';
 import { KeyStore } from './repositories';
-import { isPlausibleOpenRouterKey } from './credentialValidation';
+import { isPlausibleGroqKey, isPlausibleOpenRouterKey } from './credentialValidation';
 
 export type AiProvider = 'openrouter' | 'groq' | 'spacebunny';
 
@@ -64,8 +64,8 @@ export interface ProviderTestResult {
 
 export interface ReasoningGateway {
   /**
-   * Runs canonical reasoning for a GOAT. Resolves the owner's credential;
-   * when absent, returns the clearly-labelled DEMO deterministic result.
+   * Runs canonical reasoning for a GOAT. The caller must handle a missing
+   * credential explicitly; this live path never substitutes demo reasoning.
    */
   evaluateGoat(context: GoatReasoningContext, model: string, providerOverride?: AiProvider): Promise<ReasoningResult>;
 
@@ -156,9 +156,15 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     const provider = await this.providerFor(userId, providerOverride);
 
     if (provider === 'groq') {
-      const userKey = await this.keys.getGroqKey?.(userId);
+      const userKey = (await this.keys.getGroqKey?.(userId))?.trim();
       const serverKey = process.env.GROQ_API_KEY?.trim();
-      return { provider, key: userKey?.trim() || (serverKey ? serverKey : undefined) };
+      // A non-empty string is not proof of a usable credential. Validate both
+      // account and server fallback keys before reporting the provider connected.
+      if (userKey && isPlausibleGroqKey(userKey)) return { provider, key: userKey };
+      return {
+        provider,
+        key: serverKey && isPlausibleGroqKey(serverKey) ? serverKey : undefined,
+      };
     }
     if (provider === 'spacebunny') return { provider, key: (await this.keys.getSpaceBunnyKey?.(userId))?.trim() || undefined };
 
@@ -229,12 +235,15 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     const resolved = await this.clientFor(context.userId, providerOverride);
 
     /**
-     * No credential: return the clearly-labelled deterministic DEMO result
-     * instead of pretending a model failed. The runtime reports
-     * `reasoningMode: 'DEMO'`, so this is visible rather than silent.
+     * Callers must preflight credentials and present explicit DEMO state before
+     * invoking reasoning. If a credential disappears between that check and
+     * this call, throwing is safer than returning a demo NO_TRADE that could be
+     * mistaken for a real model response.
      */
     if (!resolved) {
-      return buildDemoReasoningResult(context);
+      throw new Error(
+        'AI_PROVIDER_CREDENTIAL_MISSING: no usable credential is connected for the selected provider.',
+      );
     }
 
     const { provider, client } = resolved;

@@ -19,15 +19,25 @@ export class FirebaseScheduler implements WakeScheduler {
       const snapshot = await ref.get();
       const existing = snapshot.exists ? snapshot.data() : undefined;
       const paused = Boolean(request.paused);
-      if (existing?.generationId === request.generationId && existing?.paused === paused) {
+      const nextWakeAt = paused ? null : request.nextWakeAt;
+      const nextTrackerCheckAt = paused ? null : request.nextTrackerCheckAt;
+      // A GOAT can keep the same generation while its schedule/timeframe changes.
+      // Comparing only generation + paused silently preserved stale due times.
+      if (
+        existing?.generationId === request.generationId &&
+        existing?.paused === paused &&
+        existing?.nextWakeAt === nextWakeAt &&
+        existing?.nextTrackerCheckAt === nextTrackerCheckAt &&
+        existing?.timeframe === request.timeframe
+      ) {
         this.lastSyncAt = this.now();
         this.lastError = undefined;
         return;
       }
       await ref.set({
         goatId: request.goatId,
-        nextWakeAt: paused ? null : request.nextWakeAt,
-        nextTrackerCheckAt: paused ? null : request.nextTrackerCheckAt,
+        nextWakeAt,
+        nextTrackerCheckAt,
         timeframe: request.timeframe,
         generationId: request.generationId,
         paused,

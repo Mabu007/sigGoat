@@ -133,6 +133,8 @@ export interface CredentialVaultOptions {
 export class CredentialVault {
   private readonly store: CredentialRecordStore;
   private readonly keyringOverride: MasterKeyring | null | undefined;
+  /** Cache the resolved ring: ephemeral mode must use one key per process, not per call. */
+  private cachedKeyring: MasterKeyring | null | undefined;
 
   constructor(options: CredentialVaultOptions) {
     this.store = options.store;
@@ -140,26 +142,37 @@ export class CredentialVault {
   }
 
   /**
-   * Resolves the keyring.
+   * Resolves and caches the keyring for this vault instance.
    *
-   * Cached per vault instance so a request does not re-parse the key on every
-   * field access. `resetKeyringCache` exists for tests and for a runtime that
-   * reloads its secret store.
+   * Without this cache, CREDENTIAL_ENCRYPTION_ALLOW_EPHEMERAL generated a
+   * different random key for every save/read/status call, making a credential
+   * unreadable immediately after it was written. Production must still use a
+   * stable configured key because serverless instances do not share memory.
    */
   private keyring(): MasterKeyring {
-    const ring =
-      this.keyringOverride !== undefined
-        ? this.keyringOverride
-        : loadMasterKeyringFromEnv();
+    let ring: MasterKeyring | null;
+    if (this.keyringOverride !== undefined) {
+      ring = this.keyringOverride;
+    } else {
+      if (this.cachedKeyring === undefined) {
+        this.cachedKeyring = loadMasterKeyringFromEnv();
+      }
+      ring = this.cachedKeyring;
+    }
 
     if (!ring) {
       throw new CredentialVaultError(
         'ENCRYPTION_NOT_CONFIGURED',
         'Credential storage is unavailable: CREDENTIAL_ENCRYPTION_KEY is not set on the server. ' +
-          'Credentials cannot be saved until a 32-byte master key is configured.',
+          'Credentials cannot be saved until a stable 32-byte master key is configured.',
       );
     }
     return ring;
+  }
+
+  /** Reload environment key material after an intentional runtime rotation. */
+  resetKeyringCache(): void {
+    if (this.keyringOverride === undefined) this.cachedKeyring = undefined;
   }
 
   isConfigured(): boolean {

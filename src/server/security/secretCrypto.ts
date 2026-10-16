@@ -204,11 +204,21 @@ export function loadMasterKeyringFromEnv(
      * `encryptionAvailable`) say so out loud, which is the only outcome the
      * user can act on.
      */
-    if (envFlag(env.CREDENTIAL_ENCRYPTION_ALLOW_EPHEMERAL)) {      const runtimeKey = randomBytes(KEY_BYTES);
+    if (envFlag(env.CREDENTIAL_ENCRYPTION_ALLOW_EPHEMERAL)) {
+      // Serverless invocations/instances do not share memory. An ephemeral
+      // encryption key is therefore unsafe on Vercel even if explicitly enabled.
+      if (env.NODE_ENV === 'production' || Boolean(env.VERCEL) || env.VERCEL_ENV === 'production' || env.VERCEL_ENV === 'preview') {
+        console.error(
+          '[secretCrypto] Ignoring CREDENTIAL_ENCRYPTION_ALLOW_EPHEMERAL on a production/serverless host. ' +
+            'Configure a stable CREDENTIAL_ENCRYPTION_KEY; stored credentials cannot safely use a per-process key.',
+        );
+        return null;
+      }
+
+      const runtimeKey = randomBytes(KEY_BYTES);
       console.warn(
         '[secretCrypto] CREDENTIAL_ENCRYPTION_ALLOW_EPHEMERAL is set — using a ' +
-          'random per-process key. Stored credentials will be LOST on restart. ' +
-          'Never enable this in production.',
+          'random per-process key for local development only. Stored credentials will be lost on restart.',
       );
       return {
         active: { key: runtimeKey, id: 'runtime' },

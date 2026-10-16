@@ -32,10 +32,10 @@
 
 import type { KeyStore } from '../repositories';
 import type { CredentialVault, CredentialProviderId } from './CredentialVault';
-import { isPlausibleOpenRouterKey, isPlausibleSpaceBunnyKey } from '../credentialValidation';
+import { isPlausibleGroqKey, isPlausibleOpenRouterKey, isPlausibleSpaceBunnyKey } from '../credentialValidation';
 
 /** The slice of `CredentialVault` this adapter needs. */
-export type VaultStore = Pick<CredentialVault, 'getCredential' | 'saveCredential'>;
+export type VaultStore = Pick<CredentialVault, 'getCredential' | 'hasCredential' | 'saveCredential'>;
 
 /**
  * Wraps a legacy key store so vault reads take precedence and vault writes go
@@ -55,9 +55,10 @@ export function createVaultBackedKeyStore(
    * credential saved before the vault existed is still a credential the user
    * believes is configured, and ignoring it would look like silent data loss.
    *
-   * A vault read that THROWS (no master key configured, unreadable envelope)
-   * degrades to "no credential here" rather than propagating — a read path
-   * must not become the place a 503 is raised.
+   * A vault read that THROWS is only eligible for legacy fallback when no
+   * encrypted record exists. If a record exists but cannot be decrypted, the
+   * error propagates so callers can distinguish unreadable credentials from a
+   * genuinely missing key.
    */
   const read = async (
     userId: string,
@@ -68,11 +69,31 @@ export function createVaultBackedKeyStore(
       const fromVault = await vault.getCredential(userId, provider);
       if (fromVault && fromVault.trim()) return fromVault.trim();
     } catch (err) {
-      console.warn(
-        `[keys] Vault read for "${provider}" failed, falling back to the legacy store:`,
-        err instanceof Error ? err.message : err,
-      );
+      // A stored encrypted credential that cannot be decrypted is NOT the same
+      // as a missing credential. Falling back silently made a saved key look
+      // absent and sent GOATs into DEMO mode after an encryption-key mismatch.
+      let hasVaultRecord: boolean;
+      try {
+        hasVaultRecord = await vault.hasCredential(userId, provider);
+      } catch (statusError) {
+        console.error(
+          `[keys] Could not inspect stored "${provider}" credential:`,
+          statusError instanceof Error ? statusError.message : 'storage unavailable',
+        );
+        throw statusError;
+      }
+
+      if (hasVaultRecord) {
+        console.error(
+          `[keys] Stored "${provider}" credential exists but cannot be decrypted. ` +
+            'Check CREDENTIAL_ENCRYPTION_KEY and re-enter the key if the encryption key changed.',
+          err instanceof Error ? err.message : 'decryption failed',
+        );
+        throw err;
+      }
     }
+    // Legacy values are only a migration fallback when no encrypted vault
+    // record exists. They must never mask a broken/unreadable vault record.
     return fallback ? fallback() : undefined;
   };
 
@@ -106,8 +127,14 @@ export function createVaultBackedKeyStore(
       await vault.saveCredential(userId, 'openrouter', key);
     },
 
-    getGroqKey: async (userId) =>
-      read(userId, 'groq', () => legacy.getGroqKey?.(userId)),
+    getGroqKey: async (userId) => {
+      const key = await read(userId, 'groq', () => legacy.getGroqKey?.(userId));
+      if (key && !isPlausibleGroqKey(key)) {
+        console.warn(`[keys] Ignoring malformed stored Groq key for user ${userId}. Re-save the key in Settings.`);
+        return undefined;
+      }
+      return key;
+    },
 
     setGroqKey: async (userId, key) => {
       await vault.saveCredential(userId, 'groq', key);

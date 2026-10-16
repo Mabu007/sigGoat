@@ -512,6 +512,37 @@ export class GoatRuntime {
   }
 
   updateConfig(goat: FundGoat, skills: TradingSkill[]): void {
+    const previous = this.goatConfig;
+    const skillSignature = (items: TradingSkill[]) =>
+      items
+        .map((skill) => `${skill.id}:${skill.updatedAt}:${skill.name}`)
+        .sort()
+        .join('|');
+    const analysisConfigChanged =
+      previous.goal !== goat.goal ||
+      previous.model !== goat.model ||
+      previous.aiProvider !== goat.aiProvider ||
+      JSON.stringify(previous.markets) !== JSON.stringify(goat.markets) ||
+      JSON.stringify(previous.skillIds) !== JSON.stringify(goat.skillIds) ||
+      skillSignature(this.skills) !== skillSignature(skills);
+
+    if (analysisConfigChanged) {
+      // An in-flight model response belongs to the old config and must not
+      // overwrite a newer goal/provider/skill selection when it returns.
+      if (this.runtimeState.isEvaluating) {
+        this.runtimeState.generationId = this.newGenerationId();
+        this.runtimeState.isEvaluating = false;
+      }
+
+      // Any undecided proposal was produced for the previous config. Retire it
+      // immediately so it cannot be approved after the GOAT has been edited.
+      void this.expirePendingProposals('GOAT configuration changed; a fresh market review is required.')
+        .catch((error) => console.error(`[goat ${this.id}] could not expire proposals after config change:`, error));
+      this.runtimeState.status = this.paused || goat.status === 'PAUSED' ? 'PAUSED' : 'WATCHING';
+      this.runtimeState.dormancyReason =
+        'GOAT configuration changed. Run a fresh market review before trusting a proposal.';
+    }
+
     this.goatConfig = goat;
     this.skills = skills;
 
@@ -733,6 +764,18 @@ export class GoatRuntime {
             ),
           ]);
         }
+
+        // A fresh quote alone is not enough to support a market review. Refuse
+        // to ask the model for a thesis when closed-candle history is missing
+        // or the provider returned a non-positive/non-finite price.
+        if (!quote || !Number.isFinite(quote.mid) || quote.mid <= 0) {
+          throw new Error('Market data returned an invalid or missing mid price.');
+        }
+        if (candles.length < WAKE_CANDLE_COUNT) {
+          throw new Error(
+            `Insufficient closed-candle history for ${market}: received ${candles.length}, need ${WAKE_CANDLE_COUNT} ${WAKE_TIMEFRAME} candles. No AI review was run.`,
+          );
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'unknown error';
 
@@ -838,9 +881,36 @@ export class GoatRuntime {
       // Truthful labelling: reasoningMode must reflect whether an AI model
       // is actually connected for this owner. A DEMO fallback result must
       // NEVER be reported as 'AI' (the UI badge depends on it).
-      const hasAiKey = await this.reasoning
-        .hasKeyFor(this.goatConfig.userId, this.goatConfig.aiProvider)
-        .catch(() => false);
+      let hasAiKey: boolean;
+      try {
+        hasAiKey = await this.reasoning.hasKeyFor(
+          this.goatConfig.userId,
+          this.goatConfig.aiProvider,
+        );
+      } catch (credentialError) {
+        // Do not collapse vault/database/decryption failures into "no key".
+        // That sent users to Settings without explaining that their saved key
+        // existed but the server could not read it.
+        const message =
+          'AI credential storage is unreadable or unavailable. Verify that CREDENTIAL_ENCRYPTION_KEY is stable across all deployment instances, then re-enter the provider key in Settings if needed.';
+        this.runtimeState.reasoningMode = 'DEMO';
+        console.error(
+          `[goat ${this.id}] AI credential lookup failed:`,
+          credentialError instanceof Error ? credentialError.message : 'unknown credential lookup error',
+        );
+        this.recordFailure(message);
+        await this.expirePendingProposals(message);
+        await this.recordWakeEvent(
+          reason,
+          triggerType,
+          market,
+          'ERROR',
+          message,
+          'ERROR',
+          generationId,
+        );
+        return this.runtimeState;
+      }
       this.runtimeState.reasoningMode = hasAiKey ? 'AI' : 'DEMO';
 
       if (!hasAiKey) {
@@ -887,16 +957,21 @@ export class GoatRuntime {
            * unfunded OpenRouter account. Say which it is, and point at the fix.
            */
           const raw = err instanceof Error ? err.message : 'unknown error';
+          const missingCredential = /AI_PROVIDER_CREDENTIAL_MISSING/.test(raw);
           const outOfCredits = /insufficient credit|402|payment required|add more credits/i.test(raw);
           const modelRetired = /not listed|no endpoints found|MODEL_NOT_LISTED/i.test(raw);
 
-          const guidance = outOfCredits
-            ? 'The provider reports this account has no credits. Add credit at openrouter.ai/settings/credits, or pick a free model in Settings → AI Reasoning Engine.'
-            : modelRetired
-              ? 'The configured model is no longer offered by OpenRouter. Pick a current model in Settings → AI Reasoning Engine.'
-              : 'Will retry with backoff.';
+          const guidance = missingCredential
+            ? 'The selected provider credential became unavailable during this review. Re-save the key in Settings, then run a fresh review.'
+            : outOfCredits
+              ? 'The provider reports this account has no credits. Add credit at openrouter.ai/settings/credits, or pick a free model in Settings → AI Reasoning Engine.'
+              : modelRetired
+                ? 'The configured model is no longer offered by OpenRouter. Pick a current model in Settings → AI Reasoning Engine.'
+                : 'Will retry with backoff.';
 
-          const failure = `Reasoning model unavailable: ${raw}`;
+          const failure = missingCredential
+            ? 'AI credential unavailable: the selected provider key could not be resolved during reasoning.'
+            : `Reasoning model unavailable: ${raw}`;
           await this.expirePendingProposals(failure);
           this.recordFailure(failure);
           await this.recordWakeEvent(

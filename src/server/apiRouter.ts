@@ -2087,10 +2087,12 @@ apiRouter.get(
       return fail(res, 503, "FIREBASE_SCHEDULER_UNAVAILABLE", "Firebase-backed scheduling is unavailable.");
     }
 
-    const due = await firebaseScheduler.claimDue(Date.now(), 8);
-    // Claim tracker work before executing AI runs. The shared Firestore lease
-    // prevents a GOAT from being claimed for both jobs in the same cron pass.
+    // Tracker checks are deterministic and time-sensitive; claim them first.
+    // The shared Firestore lease prevents one GOAT from being claimed for both
+    // tracker and AI work in a single cron pass. A coincident AI review remains
+    // due and can be claimed on the next pass after the tracker lease is released.
     const trackerDue = await firebaseScheduler.claimDueTrackerChecks(Date.now(), 16);
+    const due = await firebaseScheduler.claimDue(Date.now(), 8);
     let ran = 0;
     let trackerChecks = 0;
     let stale = 0;
@@ -3528,11 +3530,6 @@ apiRouter.post(
     const nextSpaceBunnyKey = normaliseSpaceBunnyKey(spaceBunnyKey).key;
     const nextTelegramToken = normaliseTelegramToken(telegramToken);
 
-    if (nextProvider) {
-      await keyStore.setProvider?.(user.uid, nextProvider);
-      reasoningGateway.setProviderFor(user.uid, nextProvider);
-    }
-
     /**
      * SECRETS GO THROUGH THE VAULT.
      *
@@ -3584,6 +3581,31 @@ apiRouter.post(
         return fail(res, 503, error.code, error.message);
       }
       throw error;
+    }
+
+    // Commit the provider choice only AFTER credential writes have succeeded,
+    // and only when that provider resolves to a usable key. Otherwise a failed
+    // key save could leave the account pointed at an unconfigured provider.
+    if (nextProvider) {
+      let providerHasKey: boolean;
+      try {
+        providerHasKey = await reasoningGateway.hasKeyFor(user.uid, nextProvider);
+      } catch (error) {
+        if (error instanceof CredentialVaultError) {
+          return fail(res, 503, error.code, error.message);
+        }
+        throw error;
+      }
+      if (!providerHasKey) {
+        return fail(
+          res,
+          400,
+          "AI_KEY_REQUIRED",
+          `Save a valid ${nextProvider} provider key before selecting it.`,
+        );
+      }
+      await keyStore.setProvider?.(user.uid, nextProvider);
+      reasoningGateway.setProviderFor(user.uid, nextProvider);
     }
 
     if (telegramChatId !== undefined && telegramChatId !== null) {
@@ -4798,18 +4820,45 @@ async function runtimeFor(
   await runtime.ready();
   const state = runtime.getState();
 
-  const needsReview =
+  const eligibleForReview =
     goat.deploymentState !== 'DRAFT' &&
-    !state.currentThesis && !state.lastWakeEvent && !state.isEvaluating && goat.status !== "PAUSED";
-  if (needsReview) {
-    void runtime
-      .wake("Initial market review", "MANUAL_REEVALUATE", runtime.getConfig().markets[0])
-      .catch((err) => {
-        console.error(
-          `[api] resume of initial review failed for ${goat.id}:`,
-          err,
-        );
-      });
+    !state.isEvaluating &&
+    goat.status !== "PAUSED";
+  const lastFailureDetails = state.lastWakeEvent?.decisionResult === 'ERROR'
+    ? state.lastWakeEvent.details ?? ''
+    : '';
+  const previousCredentialFailure =
+    /AI not connected|No usable AI provider credential is connected|AI credential storage is unreadable or unavailable|AI credential unavailable/i.test(lastFailureDetails);
+  let credentialRecovered = false;
+  if (eligibleForReview && previousCredentialFailure) {
+    // Re-check after a key save. A previous credential error otherwise left a
+    // persisted lastWakeEvent that permanently blocked the resume-on-read path.
+    try {
+      credentialRecovered = await reasoningGateway.hasKeyFor(goat.userId, goat.aiProvider);
+    } catch {
+      credentialRecovered = false;
+    }
+  }
+  const needsInitialReview =
+    eligibleForReview && !state.currentThesis && !state.lastWakeEvent;
+  const needsCredentialRecoveryReview = eligibleForReview && previousCredentialFailure && credentialRecovered;
+  if (needsInitialReview || needsCredentialRecoveryReview) {
+    // Vercel may freeze a function once the response has returned. Register
+    // this non-blocking review with waitUntil so it survives the GET that
+    // resumes an unreviewed GOAT or retries after its AI credential is restored.
+    const reviewReason = needsCredentialRecoveryReview
+      ? "AI credentials restored; retrying market review"
+      : "Initial market review";
+    keepBackgroundTaskAlive(
+      runtime
+        .wake(reviewReason, "MANUAL_REEVALUATE", runtime.getConfig().markets[0])
+        .catch((err) => {
+          console.error(
+            `[api] resume of market review failed for ${goat.id}:`,
+            err,
+          );
+        }),
+    );
   }
 
   return runtime;
