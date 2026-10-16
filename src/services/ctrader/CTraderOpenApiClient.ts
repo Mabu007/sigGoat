@@ -284,9 +284,11 @@ export class CTraderOpenApiClient {
       return new Promise<Map<string, CTraderQuoteEvent>>((resolve, reject) => {
         const results = new Map<string, CTraderQuoteEvent>();
         const timer = setTimeout(() => {
+          // Some broker symbols do not tick while their market is closed. Return
+          // only provider-confirmed spot events rather than failing the whole batch.
           cleanup();
-          reject(new Error(`Timed out waiting for cTrader quotes for ${symbols.filter((symbol) => !results.has(symbol.symbolId)).map((symbol) => symbol.symbolName).join(", ")}.`));
-        }, this.timeoutMs);
+          resolve(results);
+        }, Math.min(this.timeoutMs, 4_000));
         const cleanup = () => {
           clearTimeout(timer);
           socket.removeEventListener("message", onMessage);
