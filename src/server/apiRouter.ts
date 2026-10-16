@@ -3667,7 +3667,8 @@ apiRouter.post("/robots/:slug/chat", handle(async (req, res) => {
   const countInWindow = windowExpired ? 0 : (membership.chatCountInWindow ?? 0);
   if (countInWindow >= 20) return fail(res, 429, "ROBOT_CHAT_LIMIT", "This robot allows up to 20 chat messages per hour per user.");
   await savePublishedRobotMembership({ ...membership, lastChatAt: new Date(chatNow).toISOString(), chatWindowStartedAt: windowExpired ? new Date(chatNow).toISOString() : membership.chatWindowStartedAt, chatCountInWindow: countInWindow + 1 });
-  const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider }, goat.id, goat.userId);
+  const goatMarketProvider = await marketDataProviderForGoat(goat);
+  const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider: goatMarketProvider }, goat.id, goat.userId);
   const answer = await reasoningGateway.answerGoatQuestion(question, context, model || goat.model, goat.aiProvider);
   res.json({ answer, provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
 }));
