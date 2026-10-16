@@ -158,6 +158,9 @@ export const SettingsView: React.FC = () => {
         if (!res.ok) throw new Error(body?.error?.message ?? 'Could not save that preference.');
         // Trust the server's normalised copy, not the optimistic guess.
         setPreferences((prev) => ({ ...prev, ...body }));
+        if (patch.tradingProvider !== undefined) {
+          window.dispatchEvent(new Event('sirgoat:trading-provider-changed'));
+        }
       } catch (err) {
         setPreferences(previous);
         setPreferencesError(err instanceof Error ? err.message : 'Could not save that preference.');
