@@ -401,7 +401,7 @@ export class GroqClient {
         model,
         messages: [
           ...messages,
-          { role: 'assistant' as const, content: completion.content.slice(0, 4_000) },
+          { role: 'assistant' as const, content: finalCompletion.content.slice(0, 4_000) },
           {
             role: 'user' as const,
             content:
