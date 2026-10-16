@@ -7194,8 +7194,10 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
     }
     if (!result.accepted) {
       const unknown = result.status === "unknown";
-      return res.status(unknown ? 202 : 409).json({ action: { type: "execute_trade", status: unknown ? "unknown" : "blocked",
-        title: unknown ? "cTrader order status unknown — do not retry" : "cTrader order rejected or blocked",
+      const inactive = result.status === "inactive";
+      return res.status(unknown ? 202 : 409).json({ action: { type: "execute_trade",
+        status: unknown ? "unknown" : inactive ? "inactive" : "blocked",
+        title: unknown ? "cTrader order status unknown — do not retry" : inactive ? "cTrader order expired or cancelled" : "cTrader order rejected or blocked",
         intentId, orderId: result.orderId ?? null, doNotRetry: unknown, message: result.message, riskCheck, execution } });
     }
     return res.json({ action: { type: "execute_trade", status: "completed",
