@@ -1574,17 +1574,20 @@ export class GoatRuntime {
    * which is the documented test seam.
    */
   private nextScheduledDelay(): number {
+    const failures = this.runtimeState.consecutiveFailures;
     if (!this.goatConfig.schedule) {
-      return computeBackoffDelay(
-        this.baseCheckIntervalMs,
-        this.maxBackoffMs,
-        this.runtimeState.consecutiveFailures,
-      );
+      return computeBackoffDelay(this.baseCheckIntervalMs, this.maxBackoffMs, failures);
     }
 
-    return this.delayForSchedule(
-      normaliseSchedule(this.goatConfig.schedule),
-    );
+    const schedule = normaliseSchedule(this.goatConfig.schedule);
+    // MANUAL means no automatic reasoning retry. For scheduled GOATs, a
+    // failed review gets a bounded retry delay instead of silently waiting
+    // until the next long interval/session. A successful review returns to
+    // the configured schedule.
+    if (failures > 0 && schedule.mode !== 'MANUAL') {
+      return computeBackoffDelay(this.baseCheckIntervalMs, this.maxBackoffMs, failures);
+    }
+    return this.delayForSchedule(schedule);
   }
 
   /**
