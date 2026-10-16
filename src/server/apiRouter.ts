@@ -993,11 +993,12 @@ async function resolveGoatMarket(goat: FundGoat): Promise<string | null> {
  */
 async function resolveMarketsForGoat(
   requested: readonly string[],
+  provider: MarketDataProvider = marketProvider,
 ): Promise<
   | { resolved: string[]; substituted: Array<{ from: string; to: string }> }
   | { error: string }
 > {
-  await marketProvider.getSymbols().catch(() => {
+  await provider.getSymbols().catch(() => {
     // A catalogue outage must not block GOAT creation. `getMarketMetadata`
     // will simply report nothing listed and the request is refused, which is
     // the honest outcome — better than accepting a market we cannot verify.
@@ -1011,15 +1012,15 @@ async function resolveMarketsForGoat(
     const symbol = raw.trim();
     if (!symbol) continue;
 
-    if (marketProvider.getMarketMetadata(symbol)) {
+    if (provider.getMarketMetadata(symbol)) {
       resolved.push(symbol);
       continue;
     }
 
-    const replacement = STALE_MARKET_REPLACEMENTS[symbol.toUpperCase()];
+    const replacement = provider === marketProvider ? STALE_MARKET_REPLACEMENTS[symbol.toUpperCase()] : undefined;
     if (
       replacement &&
-      marketProvider.getMarketMetadata(replacement) &&
+      provider.getMarketMetadata(replacement) &&
       !resolved.includes(replacement)
     ) {
       resolved.push(replacement);
@@ -1034,8 +1035,8 @@ async function resolveMarketsForGoat(
     const suggestions = suggestMarkets(rejected);
     return {
       error:
-        `Hyperliquid does not list ${rejected.map((s) => `"${s}"`).join(", ")}.` +
-        (suggestions.length > 0
+        `${provider.name} does not list ${rejected.map((s) => `"${s}"`).join(", ")}.` +
+        (provider === marketProvider && suggestions.length > 0
           ? ` Did you mean ${suggestions.map((s) => `"${s}"`).join(", ")}?`
           : " Search for it under Markets, or pick another instrument."),
     };
@@ -5266,7 +5267,8 @@ apiRouter.post(
      * an error they cannot act on. Anything with no equivalent is rejected with
      * the live list named, so the correction is obvious.
      */
-    const markets = await resolveMarketsForGoat(input.markets);
+    const selectedMarketProvider = await marketDataProviderForUser(user.uid, tradingProvider);
+    const markets = await resolveMarketsForGoat(input.markets, selectedMarketProvider);
     if ("error" in markets) {
       return fail(res, 400, "UNKNOWN_MARKET", markets.error);
     }
