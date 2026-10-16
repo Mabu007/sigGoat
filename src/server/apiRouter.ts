@@ -5344,7 +5344,7 @@ apiRouter.get(
       }),
     );
 
-    res.json({ goats: withState, dataMode: marketProvider.dataMode });
+    res.json({ goats: withState, dataMode: marketProvider.dataMode, note: "Each GOAT's saved tradingProvider and runtimeState.dataSource identify its actual venue." });
   }),
 );
 
@@ -5613,7 +5613,8 @@ apiRouter.post(
       status: goat.status,
       runtimeState: goat.runtimeState,
       schedule: goat.schedule,
-      dataMode: marketProvider.dataMode,
+      tradingProvider: resolveGoatTradingProvider(goat),
+      dataMode: (await marketDataProviderForGoat(goat).catch(() => null))?.dataMode ?? "UNAVAILABLE",
     });
   }),
 );
@@ -5680,7 +5681,8 @@ apiRouter.patch(
       schedule: updated.schedule,
       timeframe: effectiveTimeframe,
       scheduler: scheduler.health(),
-      dataMode: marketProvider.dataMode,
+      tradingProvider: resolveGoatTradingProvider(updated),
+      dataMode: (await marketDataProviderForGoat(updated).catch(() => null))?.dataMode ?? "UNAVAILABLE",
     });
   }),
 );
@@ -6079,8 +6081,8 @@ apiRouter.post(
        * a recorded ACCEPTANCE is a user decision record, and whether an ORDER
        * exists is governed by this object — never by the button press.
        */
-      execution: propDaoFor(user.uid).policyStatus(),
-      dataMode: marketProvider.dataMode,
+      execution: executionPolicyForGoat(goat),
+      dataMode: (await marketDataProviderForGoat(goat)).dataMode,
     });
   }),
 );
@@ -7059,8 +7061,9 @@ apiRouter.post("/chat/actions/goats/:id/deploy", authMiddleware, handle(async (r
   }
   try {
     const deployed = await setGoatStatusFor(user.uid, req.params.id, false);
+    const goatMarketProvider = await marketDataProviderForGoat(deployed);
     res.json({ action: { type: "deploy_goat", status: "completed", title: "GOAT deployed",
-      goat: deployed, dataMode: marketProvider.dataMode } });
+      goat: deployed, tradingProvider: resolveGoatTradingProvider(deployed), dataMode: goatMarketProvider.dataMode } });
   } catch (error) {
     if (error instanceof NotFoundError) return notFound(res);
     return fail(res, 409, "GOAT_DEPLOY_FAILED", error instanceof Error ? error.message : "Could not deploy this GOAT.");
@@ -7089,9 +7092,10 @@ apiRouter.post("/chat/actions/goats/:id/research", authMiddleware, handle(async 
       return Boolean(latestThesisId) && signal.thesisId === latestThesisId &&
         signal.status === "ACTIONABLE" && !signal.decision && expiry > Date.now();
     });
+    const goatMarketProvider = await marketDataProviderForGoat(goat);
     res.json({ action: { type: "create_trade_proposal", status: "completed",
       title: "GOAT market review complete", goat: { id: goat.id, name: goat.name },
-      runtimeState: state, signals: signals.slice(0, 10), dataMode: marketProvider.dataMode,
+      tradingProvider: resolveGoatTradingProvider(goat), runtimeState: state, signals: signals.slice(0, 10), dataMode: goatMarketProvider.dataMode,
       message: signals.length ? "Fresh actionable proposals are listed below." : "The latest review produced no fresh actionable proposal. Do not force a trade." } });
   } catch (error) {
     console.error("[chat/actions] GOAT research failed", error);
