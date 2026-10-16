@@ -3817,7 +3817,7 @@ apiRouter.post(
   handle(async (req, res) => {
     const user = requireUser(req);
     const accountId = typeof req.body?.accountId === "string" ? req.body.accountId.trim() : "";
-    if (!/^\\d+$/.test(accountId)) return fail(res, 400, "INVALID_CTRADER_ACCOUNT", "Choose a valid cTrader account ID returned by your own account list.");
+    if (!/^\d+$/.test(accountId)) return fail(res, 400, "INVALID_CTRADER_ACCOUNT", "Choose a valid cTrader account ID returned by your own account list.");
     if (!(await credentialVault.hasCredential(user.uid, "ctrader"))) return fail(res, 409, "CTRADER_NOT_CONNECTED", "Connect your cTrader account first.");
     const accounts = await (await cTraderClientForUser(user.uid)).listAccounts();
     const selected = accounts.find((account) => account.ctidTraderAccountId === accountId);
