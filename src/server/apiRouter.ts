@@ -27,6 +27,9 @@ import {
 import { authMiddleware, requireUser, resolveAuthMode } from "./auth";
 import { isTradingProvider, resolveGoatTradingProvider, resolveUserTradingProvider } from "../services/trading-provider/TradingProvider";
 import { getTradingProviderRegistration, isTradingProviderReady } from "../services/trading-provider/TradingProviderRegistry";
+import { buildCTraderAuthorizationUrl, exchangeCTraderAuthorizationCode, resolveValidCTraderToken, verifyCTraderOAuthState, type CTraderAccount } from "../services/ctrader/CTraderOAuthService";
+import { CTraderOpenApiClient } from "../services/ctrader/CTraderOpenApiClient";
+import { CTraderMarketDataProvider } from "../services/ctrader/CTraderMarketDataProvider";
 import { getFirebaseAdmin, getFirebaseAdminFailureReason } from "./firebaseAdmin";
 import {
   CredentialValidationError,
