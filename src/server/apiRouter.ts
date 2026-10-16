@@ -48,6 +48,7 @@ import {
 } from "./repositories";
 import { createGoatWorkflowStore } from "./GoatWorkflowStore";
 import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode } from "./GoatTeamStore";
+import { createGoatCompetitionStore, evaluateCompetition, type GoatCompetition, type CompetitionEnvironment, type CompetitionParticipant, type CompetitionScoringPolicy, type CompetitionOutcomeResult } from "./GoatCompetitionStore";
 import {
   UserScopedReasoningGateway,
   type AiProvider,
@@ -173,6 +174,7 @@ const persistence: PersistenceLayer = createPersistence();
 export const appPersistence = persistence;
 const goatWorkflowStore = createGoatWorkflowStore();
 const goatTeamStore = createGoatTeamStore();
+const goatCompetitionStore = createGoatCompetitionStore();
 
 /**
  * Bind the credential vault to THIS persistence layer, before any route can
@@ -5561,6 +5563,177 @@ apiRouter.delete("/goat-teams/:id", handle(async (req, res) => {
   if (failures.length) return res.status(409).json({ error: { code: "TEAM_PAUSE_FAILED", message: "The team was not deleted because one or more members could not be paused." }, failures });
   await goatTeamStore.deleteForUser(team.id, user.uid);
   res.json({ success: true, deletedId: team.id });
+}));
+
+
+// ---- GOAT competitions: isolated, deterministic evaluation of recorded outcomes ----
+
+apiRouter.get("/goat-competitions", handle(async (req, res) => {
+  const user = requireUser(req);
+  res.json({ competitions: await goatCompetitionStore.listForUser(user.uid) });
+}));
+
+apiRouter.post("/goat-competitions", handle(async (req, res) => {
+  const user = requireUser(req);
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  if (!name || name.length > 100) return res.status(400).json({ error: { code: "INVALID_COMPETITION_NAME", message: "Name must be 1–100 characters." } });
+  const environment = req.body?.environment;
+  if (environment !== "PAPER" && environment !== "LIVE") return res.status(400).json({ error: { code: "INVALID_COMPETITION_ENVIRONMENT", message: "Environment must be PAPER or LIVE. Results from the two environments cannot be mixed." } });
+  const startingEquity = Number(req.body?.startingEquity);
+  if (!Number.isFinite(startingEquity) || startingEquity <= 0) return res.status(400).json({ error: { code: "INVALID_STARTING_EQUITY", message: "Starting equity must be a positive finite number." } });
+  const rawParticipants: unknown = req.body?.participants;
+  if (!Array.isArray(rawParticipants) || rawParticipants.length < 2 || rawParticipants.length > 20) return res.status(400).json({ error: { code: "INVALID_COMPETITION_PARTICIPANTS", message: "Select between 2 and 20 existing GOATs or GOAT teams." } });
+  const participants: CompetitionParticipant[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawParticipants as unknown[]) {
+    if (!raw || typeof raw !== "object") return res.status(400).json({ error: { code: "INVALID_COMPETITION_PARTICIPANT", message: "Each participant must identify an existing GOAT or team." } });
+    const candidate = raw as { kind?: unknown; id?: unknown };
+    if ((candidate.kind !== "GOAT" && candidate.kind !== "TEAM") || typeof candidate.id !== "string" || !candidate.id.trim()) return res.status(400).json({ error: { code: "INVALID_COMPETITION_PARTICIPANT", message: "Each participant must identify an existing GOAT or team." } });
+    const sourceId = candidate.id.trim();
+    const participantId = candidate.kind + ":" + sourceId;
+    if (seen.has(participantId)) return res.status(400).json({ error: { code: "DUPLICATE_COMPETITION_PARTICIPANT", message: "Each participant can appear only once." } });
+    seen.add(participantId);
+    if (candidate.kind === "GOAT") {
+      const goat = await persistence.goats.getForUser(sourceId, user.uid);
+      if (!goat) return res.status(400).json({ error: { code: "COMPETITION_GOAT_NOT_FOUND", message: "A selected GOAT does not belong to this account." } });
+      participants.push({ id: participantId, kind: "GOAT", label: goat.name || sourceId });
+    } else {
+      const team = await goatTeamStore.getForUser(sourceId, user.uid);
+      if (!team) return res.status(400).json({ error: { code: "COMPETITION_TEAM_NOT_FOUND", message: "A selected team does not belong to this account." } });
+      participants.push({ id: participantId, kind: "TEAM", label: team.name });
+    }
+  }
+  const now = new Date().toISOString();
+  const defaultPolicy: CompetitionScoringPolicy = { version: 1, returnWeight: 1, drawdownPenaltyWeight: 1, winRateWeight: 0.1, riskPenaltyWeight: 1, createdAt: now };
+  const competition: GoatCompetition = {
+    id: "competition_" + crypto.randomUUID(),
+    ownerUserId: user.uid,
+    name,
+    ...(typeof req.body?.description === "string" && req.body.description.trim() ? { description: req.body.description.trim().slice(0, 1000) } : {}),
+    status: "DRAFT",
+    environment: environment as CompetitionEnvironment,
+    startingEquity,
+    participants,
+    policies: [defaultPolicy],
+    activePolicyVersion: 1,
+    outcomes: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  res.status(201).json({ competition: await goatCompetitionStore.create(competition) });
+}));
+
+apiRouter.get("/goat-competitions/:id", handle(async (req, res) => {
+  const user = requireUser(req);
+  const competition = await goatCompetitionStore.getForUser(req.params.id, user.uid);
+  if (!competition) return notFound(res);
+  res.json({ competition, standings: evaluateCompetition(competition) });
+}));
+
+apiRouter.get("/goat-competitions/:id/standings", handle(async (req, res) => {
+  const user = requireUser(req);
+  const competition = await goatCompetitionStore.getForUser(req.params.id, user.uid);
+  if (!competition) return notFound(res);
+  res.json({
+    competitionId: competition.id,
+    status: competition.status,
+    environment: competition.environment,
+    policyVersion: competition.activePolicyVersion,
+    outcomeCount: competition.outcomes.length,
+    standings: evaluateCompetition(competition),
+    source: "persisted-outcomes",
+    participantContextIsolation: true,
+  });
+}));
+
+apiRouter.post("/goat-competitions/:id/policies", handle(async (req, res) => {
+  const user = requireUser(req);
+  const competition = await goatCompetitionStore.getForUser(req.params.id, user.uid);
+  if (!competition) return notFound(res);
+  if (competition.status !== "DRAFT") return res.status(409).json({ error: { code: "COMPETITION_POLICY_LOCKED", message: "Scoring policies are immutable after a competition starts." } });
+  const body = req.body ?? {};
+  const fields = ["returnWeight", "drawdownPenaltyWeight", "winRateWeight", "riskPenaltyWeight"] as const;
+  const weights = {} as Record<typeof fields[number], number>;
+  for (const field of fields) {
+    const value = Number(body[field]);
+    if (!Number.isFinite(value) || value < 0 || value > 100) return res.status(400).json({ error: { code: "INVALID_SCORING_POLICY", message: field + " must be between 0 and 100." } });
+    weights[field] = value;
+  }
+  const policy: CompetitionScoringPolicy = { version: Math.max(...competition.policies.map(item => item.version)) + 1, ...weights, createdAt: new Date().toISOString() };
+  const updated = { ...competition, policies: [...competition.policies, policy], activePolicyVersion: policy.version, updatedAt: policy.createdAt };
+  await goatCompetitionStore.save(updated);
+  res.status(201).json({ competitionId: updated.id, policy, activePolicyVersion: updated.activePolicyVersion });
+}));
+
+apiRouter.post("/goat-competitions/:id/status", handle(async (req, res) => {
+  const user = requireUser(req);
+  const competition = await goatCompetitionStore.getForUser(req.params.id, user.uid);
+  if (!competition) return notFound(res);
+  const action = req.body?.action;
+  const now = new Date().toISOString();
+  if (action === "START") {
+    if (competition.status !== "DRAFT") return res.status(409).json({ error: { code: "INVALID_COMPETITION_TRANSITION", message: "Only a draft competition can start." } });
+    const updated = { ...competition, status: "RUNNING" as const, startedAt: now, updatedAt: now };
+    await goatCompetitionStore.save(updated);
+    return res.json({ competition: updated });
+  }
+  if (action === "COMPLETE") {
+    if (competition.status !== "RUNNING") return res.status(409).json({ error: { code: "INVALID_COMPETITION_TRANSITION", message: "Only a running competition can complete." } });
+    const updated = { ...competition, status: "COMPLETED" as const, completedAt: now, updatedAt: now };
+    await goatCompetitionStore.save(updated);
+    return res.json({ competition: updated, standings: evaluateCompetition(updated) });
+  }
+  if (action === "CANCEL") {
+    if (competition.status !== "DRAFT" && competition.status !== "RUNNING") return res.status(409).json({ error: { code: "INVALID_COMPETITION_TRANSITION", message: "Only a draft or running competition can be cancelled." } });
+    const updated = { ...competition, status: "CANCELLED" as const, completedAt: now, updatedAt: now };
+    await goatCompetitionStore.save(updated);
+    return res.json({ competition: updated });
+  }
+  return res.status(400).json({ error: { code: "INVALID_COMPETITION_ACTION", message: "Action must be START, COMPLETE, or CANCEL." } });
+}));
+
+apiRouter.post("/goat-competitions/:id/outcomes", handle(async (req, res) => {
+  const user = requireUser(req);
+  const competition = await goatCompetitionStore.getForUser(req.params.id, user.uid);
+  if (!competition) return notFound(res);
+  const body = req.body ?? {};
+  const participantId = typeof body.participantId === "string" ? body.participantId : "";
+  const sourceRecordId = typeof body.sourceRecordId === "string" ? body.sourceRecordId.trim() : "";
+  const netPnl = Number(body.netPnl);
+  const equityAfter = Number(body.equityAfter);
+  const riskAmount = Number(body.riskAmount);
+  const result = body.result;
+  if (!participantId || !sourceRecordId || sourceRecordId.length > 200 || !competition.participants.some(p => p.id === participantId)) return res.status(400).json({ error: { code: "INVALID_COMPETITION_OUTCOME", message: "A valid participantId and persisted sourceRecordId are required." } });
+  if (![netPnl, equityAfter, riskAmount].every(Number.isFinite) || equityAfter <= 0 || riskAmount < 0 || !["WIN", "LOSS", "FLAT"].includes(result)) return res.status(400).json({ error: { code: "INVALID_COMPETITION_OUTCOME", message: "PnL and risk must be finite, equity must be positive, and result must be WIN, LOSS, or FLAT." } });
+  const prior = competition.outcomes.filter(item => item.participantId === participantId).sort((a, b) => a.recordedAt.localeCompare(b.recordedAt) || a.id.localeCompare(b.id));
+  const expectedEquity = (prior.length ? prior[prior.length - 1].equityAfter : competition.startingEquity) + netPnl;
+  if (Math.abs(expectedEquity - equityAfter) > Math.max(0.01, Math.abs(expectedEquity) * 0.000001)) return res.status(400).json({ error: { code: "COMPETITION_EQUITY_CHAIN_MISMATCH", message: "equityAfter must equal the previous recorded equity plus netPnl." } });
+  const environment = body.environment;
+  if (environment !== competition.environment) return res.status(400).json({ error: { code: "COMPETITION_ENVIRONMENT_MISMATCH", message: "Paper and live outcomes cannot be mixed in one competition." } });
+  const recordedAt = typeof body.recordedAt === "string" && Number.isFinite(Date.parse(body.recordedAt)) ? new Date(body.recordedAt).toISOString() : new Date().toISOString();
+  const outcome = {
+    id: "outcome_" + crypto.randomUUID(),
+    participantId,
+    sourceRecordId,
+    environment: environment as CompetitionEnvironment,
+    recordedAt,
+    netPnl,
+    equityAfter,
+    riskAmount,
+    result: result as CompetitionOutcomeResult,
+  };
+  try {
+    const updated = await goatCompetitionStore.appendOutcome(competition.id, user.uid, outcome);
+    if (!updated) return notFound(res);
+    return res.status(201).json({ outcome, outcomeCount: updated.outcomes.length, standings: evaluateCompetition(updated) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message === "COMPETITION_NOT_RUNNING") return res.status(409).json({ error: { code: message, message: "Outcomes can only be added while the competition is running." } });
+    if (message === "COMPETITION_PARTICIPANT_NOT_FOUND") return res.status(400).json({ error: { code: message, message: "Participant is not part of this competition." } });
+    if (message === "COMPETITION_ENVIRONMENT_MISMATCH") return res.status(400).json({ error: { code: message, message: "Paper and live outcomes cannot be mixed." } });
+    if (message === "COMPETITION_OUTCOME_ALREADY_RECORDED") return res.status(409).json({ error: { code: message, message: "This source record has already been recorded." } });
+    throw error;
+  }
 }));
 
 apiRouter.get(
