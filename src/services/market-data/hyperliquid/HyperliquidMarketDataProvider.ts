@@ -219,14 +219,19 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
 
       const cached = this.quoteCache.get(key);
       if (cached && now - cached.at < QUOTE_TTL_MS) {
-        out.push(cached.quote);
+        out.push({
+          ...cached.quote,
+          quoteAgeSeconds: Math.max(0, (now - cached.quote.timestamp) / 1000),
+        });
         continue;
       }
 
       const quote = this.buildQuote(symbol, snapshot);
       // A market with no price at all is NOT cached: it may be an empty book
       // on one dex that is populated a moment later.
-      if (quote.mid > 0) this.quoteCache.set(key, { at: now, quote });
+      if (quote.mid > 0 && quote.stale !== true && quote.quoteAgeSeconds != null) {
+        this.quoteCache.set(key, { at: now, quote });
+      }
       out.push(quote);
     }
 
@@ -245,6 +250,7 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
   private buildQuote(symbol: string, snapshot: HyperliquidMarketSnapshot): MarketQuote {
     const { market, context } = snapshot;
     const now = Date.now();
+    const priceUpdatedAt = snapshot.priceUpdatedAt ?? null;
 
     const mid = context.midPx ?? context.markPx ?? context.oraclePx ?? 0;
 
@@ -273,11 +279,15 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
       // truthful and the UI already omits absent stats.
       high24h: 0,
       low24h: 0,
-      timestamp: now,
-      // A market with no mid is genuinely unavailable, not merely quiet.
-      stale: mid <= 0,
-      marketState: mid > 0 ? 'open' : 'unknown',
-      quoteAgeSeconds: 0,
+      timestamp: priceUpdatedAt ?? now,
+      // A market with no current allMids sample is unavailable, not merely quiet.
+      stale: mid <= 0 || priceUpdatedAt === null,
+      marketState: mid > 0 && priceUpdatedAt !== null ? 'open' : 'unknown',
+      // Age is measured from the completed allMids request, never stamped as
+      // zero merely because this method just constructed a quote.
+      quoteAgeSeconds: priceUpdatedAt === null
+        ? undefined
+        : Math.max(0, (Date.now() - priceUpdatedAt) / 1000),
       /**
        * Not on the shared interface, but required for truthfulness: it tells
        * the gate and the UI whether `bid`/`ask` came from the provider or are
@@ -442,7 +452,7 @@ function unavailableQuote(symbol: string, now: number, reason: string): MarketQu
     timestamp: now,
     stale: true,
     marketState: 'unknown',
-    quoteAgeSeconds: null as unknown as number,
+    quoteAgeSeconds: undefined,
     unavailableReason: reason,
   } as MarketQuote;
 }
