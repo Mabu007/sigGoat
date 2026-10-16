@@ -265,25 +265,56 @@ export class CTraderOpenApiClient {
   }
 
   async getQuote(symbol: CTraderSymbol): Promise<CTraderQuoteEvent> {
+    const quotes = await this.getQuotes([symbol]);
+    const quote = quotes.get(symbol.symbolId);
+    if (!quote) throw new Error(`cTrader did not return a spot event for "${symbol.symbolName}".`);
+    return quote;
+  }
+
+  async getQuotes(symbols: CTraderSymbol[]): Promise<Map<string, CTraderQuoteEvent>> {
     if (!this.accountId) throw new Error("Select a cTrader trading account in Settings first.");
+    if (!symbols.length) return new Map();
+    const wanted = new Set(symbols.map((symbol) => symbol.symbolId));
     return this.withSocket(async (socket) => {
       await this.request(socket, SUBSCRIBE_SPOTS_REQ, SUBSCRIBE_SPOTS_RES, {
         ctidTraderAccountId: this.accountId,
-        symbolId: [symbol.symbolId],
+        symbolId: symbols.map((symbol) => symbol.symbolId),
         subscribeToSpotTimestamp: true,
       });
-      const payload = await this.waitFor(
-        socket,
-        (message) => message.payloadType === SPOT_EVENT && String(message.payload?.symbolId ?? "") === symbol.symbolId,
-        () => undefined,
-      );
-      return {
-        symbolId: symbol.symbolId,
-        ...(number(payload.bid) !== undefined ? { bid: number(payload.bid)! / 100_000 } : {}),
-        ...(number(payload.ask) !== undefined ? { ask: number(payload.ask)! / 100_000 } : {}),
-        ...(number(payload.sessionClose) !== undefined ? { sessionClose: number(payload.sessionClose)! / 100_000 } : {}),
-        ...(number(payload.timestamp) !== undefined ? { timestamp: number(payload.timestamp)! } : {}),
-      };
+      return new Promise<Map<string, CTraderQuoteEvent>>((resolve, reject) => {
+        const results = new Map<string, CTraderQuoteEvent>();
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error(`Timed out waiting for cTrader quotes for ${symbols.filter((symbol) => !results.has(symbol.symbolId)).map((symbol) => symbol.symbolName).join(", ")}.`));
+        }, this.timeoutMs);
+        const cleanup = () => {
+          clearTimeout(timer);
+          socket.removeEventListener("message", onMessage);
+        };
+        const onMessage = (event: MessageEvent) => {
+          let message: OpenApiMessage;
+          try { message = JSON.parse(String(event.data)) as OpenApiMessage; } catch { return; }
+          if (message.payloadType !== SPOT_EVENT || !message.payload) return;
+          const symbolId = String(message.payload.symbolId ?? "");
+          if (!wanted.has(symbolId) || results.has(symbolId)) return;
+          const bid = number(message.payload.bid);
+          const ask = number(message.payload.ask);
+          const sessionClose = number(message.payload.sessionClose);
+          const timestamp = number(message.payload.timestamp);
+          results.set(symbolId, {
+            symbolId,
+            ...(bid !== undefined ? { bid: bid / 100_000 } : {}),
+            ...(ask !== undefined ? { ask: ask / 100_000 } : {}),
+            ...(sessionClose !== undefined ? { sessionClose: sessionClose / 100_000 } : {}),
+            ...(timestamp !== undefined ? { timestamp } : {}),
+          });
+          if (results.size === wanted.size) {
+            cleanup();
+            resolve(results);
+          }
+        };
+        socket.addEventListener("message", onMessage);
+      });
     });
   }
 
