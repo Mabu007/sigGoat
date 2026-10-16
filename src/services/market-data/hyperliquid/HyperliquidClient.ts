@@ -124,6 +124,8 @@ export interface HyperliquidAssetContext {
 export interface HyperliquidMarketSnapshot {
   market: NormalisedMarket;
   context: HyperliquidAssetContext;
+  /** Time the current lightweight price sample completed; null means unavailable. */
+  priceUpdatedAt?: number | null;
 }
 
 /** Provider error, classified. Never carries a response body verbatim. */
@@ -397,18 +399,31 @@ export class HyperliquidClient {
   }
 
   /**
-   * Lists every instrument on the configured dexes, with live context.
+   * Lists the configured universe with freshly sampled prices.
    *
-   * ONE `metaAndAssetCtxs` per dex yields BOTH halves of the response, so
-   * listing and pricing cost the same single weight-20 request. Fetching the
-   * universe once and the context separately would double the cost for the
-   * entire market list on every refresh.
-   *
-   * Cached for ten minutes (the universe changes weekly, prices do not) and
-   * collapsed while concurrent, so a burst of callers makes one request.
+   * The relatively stable market metadata and secondary asset context are
+   * cached for ten minutes. Prices are refreshed separately with allMids
+   * (weight 2 per dex) on every non-collapsed call, so the metadata TTL can
+   * never make an old price look current. When a price refresh fails or a
+   * listed market has no returned mid, its price fields are nulled rather
+   * than falling back to the cached mark/oracle price.
    */
   async listMarkets(
     dexes: readonly HyperliquidDex[] = HYPERLIQUID_DEXES,
+  ): Promise<HyperliquidMarketSnapshot[]> {
+    return this.inflight.run(`markets:${dexes.join(',')}`, async () => {
+      const baseMarkets = await this.getBaseMarkets(dexes);
+      return this.refreshMidPrices(baseMarkets, dexes);
+    });
+  }
+
+  /**
+   * Loads universe metadata and secondary contexts from the ten-minute cache.
+   * This layer deliberately does not refresh prices; discovery-only callers
+   * should not pay even the low allMids weight.
+   */
+  private async getBaseMarkets(
+    dexes: readonly HyperliquidDex[],
   ): Promise<HyperliquidMarketSnapshot[]> {
     return this.inflight.run(`meta:${dexes.join(',')}`, async () => {
       const key = `meta:${dexes.join(',')}`;
@@ -423,9 +438,6 @@ export class HyperliquidClient {
         try {
           response = await this.info<unknown>({ type: 'metaAndAssetCtxs', dex }, WEIGHT.info);
         } catch (error) {
-          // A HIP-3 dex that has been renamed or removed comes back as an
-          // error, not an empty list. That is not fatal — the remaining dexes
-          // still serve — but it must be visible rather than silent.
           this.onWarn(
             `dex "${dex || '(default)'}" metadata unavailable: ${
               error instanceof Error ? error.message : 'unknown error'
@@ -440,8 +452,6 @@ export class HyperliquidClient {
           continue;
         }
 
-        // Contexts are positional against the universe, so they are captured
-        // here while both halves of the response are in hand.
         const contexts = parseAssetContexts(
           response,
           markets.map((market) => market.symbol),
@@ -459,9 +469,61 @@ export class HyperliquidClient {
     });
   }
 
+  /**
+   * Refreshes prices independently from the ten-minute metadata cache.
+   * Missing prices deliberately become null: stale mark/oracle values must
+   * not be used as a live fallback when the lightweight endpoint fails.
+   */
+  private async refreshMidPrices(
+    markets: HyperliquidMarketSnapshot[],
+    dexes: readonly HyperliquidDex[],
+  ): Promise<HyperliquidMarketSnapshot[]> {
+    const pricesByDex = new Map<string, { prices: Map<string, number>; fetchedAt: number | null }>();
+    await Promise.all(dexes.map(async (dex) => {
+      try {
+        const mids = await this.allMids(dex);
+        pricesByDex.set(dex, {
+          prices: new Map(Object.entries(mids).map(([symbol, price]) => [symbol.toUpperCase(), price])),
+          fetchedAt: Date.now(),
+        });
+      } catch (error) {
+        this.onWarn(
+          `dex "${dex || '(default)'}" price refresh unavailable: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        );
+        pricesByDex.set(dex, { prices: new Map(), fetchedAt: null });
+      }
+    }));
+
+    return markets.map((snapshot) => {
+      const { market, context } = snapshot;
+      const dex = market.dex;
+      const priceSample = pricesByDex.get(dex);
+      const dexPrices = priceSample?.prices ?? new Map<string, number>();
+      const symbol = market.symbol.toUpperCase();
+      const prefix = dex ? `${dex.toUpperCase()}:` : '';
+      const unprefixed = prefix && symbol.startsWith(prefix) ? symbol.slice(prefix.length) : symbol;
+      const mid = dexPrices.get(symbol) ?? dexPrices.get(unprefixed) ?? null;
+      const priceUpdatedAt = mid === null ? null : priceSample?.fetchedAt ?? null;
+
+      return {
+        ...snapshot,
+        priceUpdatedAt,
+        context: {
+          ...context,
+          midPx: mid,
+          // If allMids has no current price, do not let the ten-minute-old
+          // context silently resurrect the market as a live quote.
+          markPx: mid === null ? null : context.markPx,
+          oraclePx: mid === null ? null : context.oraclePx,
+        },
+      };
+    });
+  }
   /** Cached universe without context, for search and routing. */
   async listMarketsCached(dexes: readonly HyperliquidDex[] = HYPERLIQUID_DEXES): Promise<NormalisedMarket[]> {
-    const snapshots = await this.listMarkets(dexes);
+    const snapshots = await this.getBaseMarkets(dexes);
     return snapshots.map((snapshot) => snapshot.market);
   }
 
