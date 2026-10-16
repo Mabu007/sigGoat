@@ -70,6 +70,18 @@ export class SpaceBunnyClient {
       }
       const choice = payload?.choices?.[0];
       const text = choice?.message?.content;
+      // A non-empty response can still be truncated before the JSON closes.
+      // Treat that as budget exhaustion so evaluateGoat uses its larger,
+      // lower-effort recovery request instead of trying to repair broken JSON.
+      if (json && choice?.finish_reason === 'length') {
+        const completionTokens = Number.isFinite(payload?.usage?.completion_tokens)
+          ? payload.usage.completion_tokens
+          : 'unknown';
+        throw new ApiRequestError(
+          `Space Bunny truncated the structured response (finish_reason=length, completion_tokens=${completionTokens}, max_tokens=${maxTokens}).`,
+          { code: 'REASONING_BUDGET_EXHAUSTED', retryable: true },
+        );
+      }
       if (typeof text !== 'string' || !text.trim()) {
         const finishReason = typeof choice?.finish_reason === 'string'
           ? choice.finish_reason
