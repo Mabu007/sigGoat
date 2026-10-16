@@ -202,7 +202,7 @@ export const MarketProvider: React.FC<{
       // Storage unavailable (private browsing); the choice holds for this
       // session only, which is the correct degradation.
     }
-  }, [getApiAuthHeaders]);
+  }, []);
 
   /**
    * Load the available market universe.
@@ -269,7 +269,7 @@ export const MarketProvider: React.FC<{
         );
       }
     }
-  }, []);
+  }, [getApiAuthHeaders]);
 
   /**
    * Fetch all current market quotes.
@@ -295,6 +295,7 @@ export const MarketProvider: React.FC<{
         signal: controller.signal,
         headers: {
           Accept: 'application/json',
+          ...(await getApiAuthHeaders()),
         },
       });
 
@@ -372,7 +373,7 @@ export const MarketProvider: React.FC<{
         setLoading(false);
       }
     }
-  }, []);
+  }, [getApiAuthHeaders]);
 
   /**
    * Fetch historical candles.
@@ -458,7 +459,7 @@ export const MarketProvider: React.FC<{
         );
       }
     },
-    []
+    [getApiAuthHeaders]
   );
 
   /**
