@@ -203,7 +203,7 @@ export class CTraderTradeExecutionService {
   }
 
   async execute(intent: CTraderTradeIntent): Promise<{
-    status: "blocked" | "rejected" | "unknown" | "accepted" | "protection_unconfirmed";
+    status: "blocked" | "rejected" | "inactive" | "unknown" | "accepted" | "protection_unconfirmed";
     accepted: boolean;
     orderId?: string;
     message: string;
@@ -261,12 +261,33 @@ export class CTraderTradeExecutionService {
           protectionVerified: false,
         };
       }
-      if (n(brokerOrder.orderStatus) === 3) {
+      const brokerStatus = n(brokerOrder.orderStatus);
+      if (brokerStatus === 3) {
         return {
           status: "rejected",
           accepted: false,
           orderId: outcome.orderId,
           message: "cTrader's reconciled order state is REJECTED. No retry was attempted; review the broker's rejection details.",
+          protectionVerified: false,
+        };
+      }
+      if (brokerStatus === 4 || brokerStatus === 5) {
+        return {
+          status: "inactive",
+          accepted: false,
+          orderId: outcome.orderId,
+          message: brokerStatus === 4
+            ? "cTrader reports that order " + outcome.orderId + " has EXPIRED and is no longer active. Review the broker state before creating a new intent."
+            : "cTrader reports that order " + outcome.orderId + " has been CANCELLED and is no longer active. Review the broker state before creating a new intent.",
+          protectionVerified: false,
+        };
+      }
+      if (brokerStatus !== 1 && brokerStatus !== 2) {
+        return {
+          status: "protection_unconfirmed",
+          accepted: true,
+          orderId: outcome.orderId,
+          message: "cTrader returned an unrecognized or missing order status for order " + outcome.orderId + ". Do not retry; inspect the order and protective levels in cTrader.",
           protectionVerified: false,
         };
       }
