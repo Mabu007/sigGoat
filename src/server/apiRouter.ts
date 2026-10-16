@@ -7270,9 +7270,13 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
     }
     if (!claim.claimed) {
       if (claim.intent.status === "SUBMITTED") {
-        return res.status(200).json({ action: { type: "execute_trade", status: "completed",
-          title: "This intent was already submitted; no duplicate order was sent", intentId,
-          orderId: claim.intent.orderId ?? null, accepted: true, duplicate: true, doNotRetry: true, execution } });
+        const needsAttention = /protection|unknown|uncertain/i.test(claim.intent.message ?? "");
+        return res.status(needsAttention ? 202 : 200).json({ action: { type: "execute_trade",
+          status: needsAttention ? "needs_attention" : "completed",
+          title: needsAttention ? "Prior cTrader submission needs reconciliation" : "This intent was already submitted; no duplicate order was sent",
+          intentId, orderId: claim.intent.orderId ?? null, accepted: true,
+          protectionVerified: !needsAttention, duplicate: true, doNotRetry: true,
+          message: claim.intent.message ?? "The earlier intent was already claimed; no new order was sent.", execution } });
       }
       return res.status(409).json({ action: { type: "execute_trade", status: "unknown",
         title: "This intent was already attempted; no retry was sent", intentId, doNotRetry: true,
