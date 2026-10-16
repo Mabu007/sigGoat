@@ -171,7 +171,7 @@ export class CTraderTradeExecutionService {
       const volume = trade ? n(trade.volume) : null;
       const entry = n(order.limitPrice) ?? n(order.stopPrice);
       const stop = n(order.stopLoss);
-      if (!native || !trade || !usdQuoteSymbol(native.symbolName) || volume === null || entry === null || stop === null) return blocked("An existing pending cTrader order has missing protective levels or symbol data. Portfolio risk cannot be measured safely.");
+      if (!native || !trade || !usdQuoteSymbol(native.symbolName) || volume === null || volume <= 0 || entry === null || entry <= 0 || stop === null || stop <= 0) return blocked("An existing pending cTrader order has missing protective levels or symbol data. Portfolio risk cannot be measured safely.");
       const qty = volume / 100;
       const pendingCommission = roundTripCommission(native, volume, qty, entry);
       if (pendingCommission === null) return blocked("Commission metadata is missing for an existing pending cTrader order.");
