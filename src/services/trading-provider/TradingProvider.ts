@@ -46,4 +46,4 @@ export function parseTradingProvider(value: unknown): TradingProvider | null {
 }
 
 // Publicly expose the app default alongside the provider resolution helpers.
-export { DEFAULT_TRADING_PROVIDER } from "../../types";
+export { DEFAULT_TRADING_PROVIDER };
