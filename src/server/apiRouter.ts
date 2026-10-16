@@ -5414,8 +5414,13 @@ apiRouter.get("/goat-teams", handle(async (req, res) => {
 apiRouter.post("/goat-teams", handle(async (req, res) => {
   const user = requireUser(req);
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-  const memberGoatIds = Array.isArray(req.body?.goatIds)
-    ? [...new Set(req.body.goatIds.filter((id: unknown): id is string => typeof id === "string" && id.trim().length > 0).map((id: string) => id.trim()))]
+  const requestedGoatIds: unknown = req.body?.goatIds;
+  const memberGoatIds: string[] = Array.isArray(requestedGoatIds)
+    ? Array.from(new Set<string>(
+        (requestedGoatIds as unknown[])
+          .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+          .map(id => id.trim()),
+      ))
     : [];
   const rawMode = req.body?.coordinationMode;
   const coordinationMode: GoatTeamCoordinationMode =
