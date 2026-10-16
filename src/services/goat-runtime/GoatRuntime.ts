@@ -759,6 +759,18 @@ export class GoatRuntime {
             ),
           ]);
         }
+
+        // A fresh quote alone is not enough to support a market review. Refuse
+        // to ask the model for a thesis when closed-candle history is missing
+        // or the provider returned a non-positive/non-finite price.
+        if (!quote || !Number.isFinite(quote.mid) || quote.mid <= 0) {
+          throw new Error('Market data returned an invalid or missing mid price.');
+        }
+        if (candles.length < WAKE_CANDLE_COUNT) {
+          throw new Error(
+            `Insufficient closed-candle history for ${market}: received ${candles.length}, need ${WAKE_CANDLE_COUNT} ${WAKE_TIMEFRAME} candles. No AI review was run.`,
+          );
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'unknown error';
 
