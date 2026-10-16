@@ -6949,15 +6949,22 @@ apiRouter.post("/chat/actions/market-research", authMiddleware, async (req, res)
 
   try {
     const evidence = await buildChatResearchContext(user.uid, query);
-    const failed = /RESEARCH ERROR|QUOTE RETRIEVAL FAILED|DISCOVERY FAILED/i.test(evidence);
+    const selectedProvider = resolveUserTradingProvider(await persistence.profiles.get(user.uid).catch(() => null));
+    let dataMode: string = "UNAVAILABLE";
+    try {
+      const readiness = await tradingProviderReadinessForUser(user.uid, selectedProvider);
+      if (readiness.ready) dataMode = (await marketDataProviderForUser(user.uid, selectedProvider)).dataMode;
+    } catch { /* status remains unavailable; never substitute another venue */ }
+    const failed = /PROVIDER FAILURE|provider is unavailable|no matching listed instrument/i.test(evidence);
     res.json({
       action: {
         id: "market_research_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
         type: "market_research",
         status: failed ? "partial" : "completed",
-        title: "Hyperliquid market research",
+        title: (selectedProvider === "ctrader" ? "cTrader" : "Hyperliquid") + " market research",
         query,
-        dataMode: marketProvider.dataMode,
+        tradingProvider: selectedProvider,
+        dataMode,
         generatedAt: new Date().toISOString(),
         evidence,
       },
@@ -6976,14 +6983,24 @@ apiRouter.post("/chat/actions/market-research", authMiddleware, async (req, res)
  */
 apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
   const user = requireUser(req);
-  const execution = propDaoFor(user.uid).policyStatus();
+  const selectedProvider = resolveUserTradingProvider(await persistence.profiles.get(user.uid).catch(() => null));
+  const execution = selectedProvider === "ctrader"
+    ? {
+        enabled: process.env.CTRADER_EXECUTION_ENABLED === "true",
+        authorised: process.env.CTRADER_EXECUTION_ENABLED === "true",
+        summary: process.env.CTRADER_EXECUTION_ENABLED === "true" ? "cTrader execution is enabled by the server." : "cTrader execution is disabled by the server.",
+        termsSummary: "cTrader orders require a selected account, fresh quotes, supported broker metadata and passing risk checks.",
+      }
+    : propDaoFor(user.uid).policyStatus();
+  const profile = await persistence.profiles.get(user.uid).catch(() => null);
+  const providerReady = await tradingProviderReadinessForUser(user.uid, selectedProvider);
   res.json({
     tools: [
-      { id: "market_research", label: "Research a market", endpoint: "POST /api/chat/actions/market-research", confirmationRequired: false, available: true },
+      { id: "market_research", label: "Research a market", endpoint: "POST /api/chat/actions/market-research", confirmationRequired: false, available: providerReady.ready, blockedReason: providerReady.ready ? null : providerReady.reason },
       { id: "create_goat", label: "Create a GOAT", endpoint: "POST /api/goats", confirmationRequired: true, available: true },
       { id: "deploy_goat", label: "Deploy a GOAT", endpoint: "POST /api/chat/actions/goats/:id/deploy", confirmationRequired: true, available: true },
       { id: "create_trade_proposal", label: "Generate a trade proposal", endpoint: "POST /api/chat/actions/goats/:id/research", confirmationRequired: false, available: true },
-      { id: "execute_trade", label: "Submit a risk-checked order", endpoint: "POST /api/chat/actions/execute-trade", confirmationRequired: true, available: Boolean(execution.enabled && execution.authorised), blockedReason: execution.enabled && execution.authorised ? null : execution.summary },
+      { id: "execute_trade", label: "Submit a risk-checked order", endpoint: "POST /api/chat/actions/execute-trade", confirmationRequired: true, available: Boolean(providerReady.ready && execution.enabled && execution.authorised && (selectedProvider !== "ctrader" || profile?.ctraderAccountId)), blockedReason: !providerReady.ready ? providerReady.reason : selectedProvider === "ctrader" && !profile?.ctraderAccountId ? "Select a cTrader account in Settings." : execution.enabled && execution.authorised ? null : execution.summary },
       { id: "backtest", label: "Run a historical GOAT backtest", endpoint: "POST /api/backtest/run", confirmationRequired: false, available: true },
       { id: "propdao_account", label: "Read PropDAO account details", endpoint: "GET /api/propdao/accounts/:id/details", confirmationRequired: false, available: true },
       { id: "proposal_decision", label: "Accept or reject a proposal", endpoint: "POST /api/goats/:id/signals/:signalId/decision", confirmationRequired: true, available: true },
