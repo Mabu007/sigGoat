@@ -1298,16 +1298,18 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
     const outcome = await autoAcceptSignal(
       {
         persistence,
-        policyStatus: () => propDaoFor(goat.userId).policyStatus(),
+        policyStatus: () => resolveGoatTradingProvider(goat) === "ctrader"
+          ? {
+              enabled: process.env.CTRADER_EXECUTION_ENABLED === "true",
+              authorised: process.env.CTRADER_EXECUTION_ENABLED === "true",
+              summary: process.env.CTRADER_EXECUTION_ENABLED === "true" ? "cTrader execution is enabled by the server." : "cTrader execution is disabled by the server.",
+              termsSummary: "cTrader orders require a selected account, current quotes, supported commission data, and passing server-side risk checks.",
+            }
+          : propDaoFor(goat.userId).policyStatus(),
         executeSignal: async (ownedGoat, candidate, profile) => {
           const autoTradeQty = profile.autoTradeQty;
-          if (!profile.autoTradeAccountId || typeof autoTradeQty !== "number" || !Number.isFinite(autoTradeQty) || autoTradeQty <= 0) {
-            return { submitted: false, message: "Automatic trading is missing an owned PropDAO account or fixed quantity." };
-          }
-          const provider = propDaoFor(ownedGoat.userId);
-          const execution = provider.policyStatus();
-          if (!execution.enabled || !execution.authorised) {
-            return { submitted: false, message: execution.summary + " " + execution.termsSummary };
+          if (typeof autoTradeQty !== "number" || !Number.isFinite(autoTradeQty) || autoTradeQty <= 0) {
+            return { submitted: false, message: "Automatic trading requires a fixed positive order quantity." };
           }
           if (candidate.direction !== "LONG" && candidate.direction !== "SHORT") {
             return { submitted: false, message: "The proposal direction cannot be converted into an order." };
@@ -1315,7 +1317,9 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           if (![candidate.entry, candidate.stopLoss, candidate.takeProfit].every((value) => typeof value === "number" && Number.isFinite(value))) {
             return { submitted: false, message: "The proposal is missing numeric entry, stop-loss, or take-profit levels." };
           }
-          const current = await marketStateStore.getState(candidate.market, "1h");
+          const marketAdapter = await marketDataProviderForGoat(ownedGoat);
+          const stateStore = await marketStateStoreForGoat(ownedGoat, marketAdapter);
+          const current = await stateStore.getState(candidate.market, "1h");
           if (!isUsableMarketState(current) || !current.quote) {
             return { submitted: false, message: "Current market data is unavailable or stale; no automatic order was sent." };
           }
@@ -1325,18 +1329,47 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
             : currentPrice >= candidate.stopLoss! || currentPrice <= candidate.takeProfit!;
           if (invalidated) return { submitted: false, message: "The proposal's stop or target has already been crossed." };
 
+          const side = candidate.direction === "LONG" ? "BUY" : "SELL";
+          const intentId = "sirgoat_auto_" + candidate.id.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
+          if (resolveGoatTradingProvider(ownedGoat) === "ctrader") {
+            if (!profile.ctraderAccountId) return { submitted: false, intentId, message: "Automatic cTrader trading requires a selected cTrader account in Settings." };
+            if (process.env.CTRADER_EXECUTION_ENABLED !== "true") return { submitted: false, intentId, message: "cTrader automatic execution is disabled by the server. No order was sent." };
+            const cTraderClient = await cTraderClientForUser(
+              ownedGoat.userId,
+              profile.ctraderAccountId,
+              profile.ctraderAccountIsLive === true,
+            );
+            const outcome = await new CTraderTradeExecutionService(cTraderClient).execute({
+              symbol: candidate.market,
+              side,
+              qty: autoTradeQty,
+              entry: candidate.entry!,
+              stopLoss: candidate.stopLoss!,
+              takeProfit: candidate.takeProfit!,
+              intentId,
+            });
+            if (!outcome.accepted) return { submitted: false, intentId, message: outcome.message };
+            return { submitted: true, ...(outcome.orderId ? { orderId: outcome.orderId } : {}), intentId, message: outcome.message };
+          }
+
+          if (!profile.autoTradeAccountId) {
+            return { submitted: false, intentId, message: "Automatic Hyperliquid/PropDAO execution requires a selected PropDAO account." };
+          }
+          const provider = propDaoFor(ownedGoat.userId);
+          const execution = provider.policyStatus();
+          if (!execution.enabled || !execution.authorised) {
+            return { submitted: false, intentId, message: execution.summary + " " + execution.termsSummary };
+          }
           const account = await provider.resolveAccount(profile.autoTradeAccountId);
-          if (!account) return { submitted: false, message: "The configured account is not available on this user's PropDAO key." };
+          if (!account) return { submitted: false, intentId, message: "The configured account is not available on this user's PropDAO key." };
           const [risk, markets, positions] = await Promise.all([
             provider.risk(account.accountId),
             provider.markets(),
             provider.positions(account.accountId),
           ]);
-          // Never infer a cross-venue symbol mapping. Auto-trading only uses an exact provider symbol match.
           if (!markets.some((item) => item.symbol === candidate.market)) {
-            return { submitted: false, message: "The proposal's market is not an exact PropDAO instrument symbol. No automatic symbol substitution is allowed." };
+            return { submitted: false, intentId, message: "The proposal's market is not an exact PropDAO instrument symbol. No automatic symbol substitution is allowed." };
           }
-          const side = candidate.direction === "LONG" ? "BUY" : "SELL";
           const riskCheck = validateTradeIntent({
             symbol: candidate.market,
             side,
@@ -1346,9 +1379,8 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
             takeProfit: candidate.takeProfit!,
           }, account, risk, markets, positions, DEFAULT_RISK_LIMITS);
           if (!riskCheck.ok) {
-            return { submitted: false, message: "PropDAO risk validation blocked automatic execution: " + riskCheck.violations.join("; ") };
+            return { submitted: false, intentId, message: "PropDAO risk validation blocked automatic execution: " + riskCheck.violations.join("; ") };
           }
-          const intentId = "sirgoat_auto_" + candidate.id.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
           const outcome = await provider.executeOrder(account.accountId, {
             symbol: candidate.market,
             side,
@@ -1362,6 +1394,7 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           });
           if (!("result" in outcome)) return { submitted: false, intentId, message: outcome.message };
           return { submitted: true, orderId: outcome.result.orderId, intentId, message: "PropDAO accepted the order request." };
+        }
         },
       },
       goat,
