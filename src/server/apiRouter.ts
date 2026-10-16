@@ -3528,11 +3528,6 @@ apiRouter.post(
     const nextSpaceBunnyKey = normaliseSpaceBunnyKey(spaceBunnyKey).key;
     const nextTelegramToken = normaliseTelegramToken(telegramToken);
 
-    if (nextProvider) {
-      await keyStore.setProvider?.(user.uid, nextProvider);
-      reasoningGateway.setProviderFor(user.uid, nextProvider);
-    }
-
     /**
      * SECRETS GO THROUGH THE VAULT.
      *
@@ -3584,6 +3579,31 @@ apiRouter.post(
         return fail(res, 503, error.code, error.message);
       }
       throw error;
+    }
+
+    // Commit the provider choice only AFTER credential writes have succeeded,
+    // and only when that provider resolves to a usable key. Otherwise a failed
+    // key save could leave the account pointed at an unconfigured provider.
+    if (nextProvider) {
+      let providerHasKey: boolean;
+      try {
+        providerHasKey = await reasoningGateway.hasKeyFor(user.uid, nextProvider);
+      } catch (error) {
+        if (error instanceof CredentialVaultError) {
+          return fail(res, 503, error.code, error.message);
+        }
+        throw error;
+      }
+      if (!providerHasKey) {
+        return fail(
+          res,
+          400,
+          "AI_KEY_REQUIRED",
+          `Save a valid ${nextProvider} provider key before selecting it.`,
+        );
+      }
+      await keyStore.setProvider?.(user.uid, nextProvider);
+      reasoningGateway.setProviderFor(user.uid, nextProvider);
     }
 
     if (telegramChatId !== undefined && telegramChatId !== null) {
