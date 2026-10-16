@@ -253,9 +253,10 @@ export const MarketProvider: React.FC<{
       if (mountedRef.current) {
         setSymbols(validSymbols);
       }
+      return validSymbols;
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        return;
+        return [];
       }
 
       console.warn('Market symbols fetch error:', error);
@@ -268,6 +269,7 @@ export const MarketProvider: React.FC<{
           )
         );
       }
+      return [];
     }
   }, [getApiAuthHeaders]);
 
@@ -547,6 +549,18 @@ export const MarketProvider: React.FC<{
 
     void bootstrap();
 
+    const onTradingProviderChanged = () => {
+      void (async () => {
+        const nextSymbols = await fetchSymbols();
+        if (mountedRef.current && nextSymbols.length > 0) {
+          const currentSymbolStillListed = nextSymbols.some((symbol) => symbol.symbol === activeSymbol);
+          if (!currentSymbolStillListed) setActiveSymbolState(nextSymbols[0].symbol);
+        }
+        await refreshQuotes();
+      })();
+    };
+    window.addEventListener('sirgoat:trading-provider-changed', onTradingProviderChanged);
+
     const interval = window.setInterval(() => {
       void refreshQuotes();
     }, QUOTE_REFRESH_INTERVAL_MS);
@@ -555,6 +569,7 @@ export const MarketProvider: React.FC<{
       mountedRef.current = false;
 
       window.clearInterval(interval);
+      window.removeEventListener('sirgoat:trading-provider-changed', onTradingProviderChanged);
 
       symbolsAbortController.current?.abort();
       quotesAbortController.current?.abort();
