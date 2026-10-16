@@ -5488,7 +5488,8 @@ apiRouter.post(
     res.json({
       goat: newGoat,
       runtimeState: runtime?.getState() ?? null,
-      dataMode: marketProvider.dataMode,
+      tradingProvider: resolveGoatTradingProvider(newGoat),
+      dataMode: selectedMarketProvider.dataMode,
       /**
        * Explicit, so the UI can show "first analysis running" rather than an
        * empty state that looks like the GOAT did nothing.
@@ -5580,7 +5581,8 @@ apiRouter.post(
           status: goat.status,
           runtimeState: null,
           schedule: goat.schedule,
-          dataMode: marketProvider.dataMode,
+          tradingProvider: resolveGoatTradingProvider(goat),
+          dataMode: (await marketDataProviderForGoat(goat).catch(() => null))?.dataMode ?? "UNAVAILABLE",
           reset: true,
         });
       } catch (err) {
