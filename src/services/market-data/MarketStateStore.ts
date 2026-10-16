@@ -487,6 +487,20 @@ export class MarketStateStore {
         ),
       ]);
 
+      // Never publish an empty/stale quote as LIVE or compute indicators against zero.
+      // Provider contracts may preserve zero-valued numeric fields for compatibility,
+      // so freshness and price validity must be checked at this boundary.
+      if (quote.stale === true) {
+        throw new Error(`Provider marked ${symbol} quote as stale`);
+      }
+      if (!Number.isFinite(quote.mid) || quote.mid <= 0) {
+        throw new Error(`Provider returned an invalid mid price for ${symbol}`);
+      }
+      if (quote.quoteAgeSeconds != null &&
+          (!Number.isFinite(quote.quoteAgeSeconds) || quote.quoteAgeSeconds < 0 || quote.quoteAgeSeconds > this.ttlMs / 1000)) {
+        throw new Error(`Provider quote for ${symbol} is older than the market-state TTL`);
+      }
+
       const indicators =
         candles.length > 0
           ? computeIndicatorSnapshot(quote, candles)
