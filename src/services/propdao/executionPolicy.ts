@@ -77,6 +77,8 @@ export interface ExecutionPolicyInput {
   accountId?: string | null;
   /** Provider-reported account status, when known. */
   accountStatus?: string | null;
+  /** True only after resolving this account against the caller's key. */
+  accountOwned?: boolean;
   /** Whether the approval is still within its expiry. */
   proposalExpired?: boolean;
 }
@@ -162,6 +164,14 @@ export function evaluateExecution(
       allowed: false,
       code: 'ACCOUNT_NOT_SELECTED',
       message: 'Select the PropDAO account this trade belongs to.',
+    };
+  }
+  // Account ownership must be explicit. Unknown is not the same as owned.
+  if (input.accountOwned !== true) {
+    return {
+      allowed: false,
+      code: "ACCOUNT_NOT_OWNED",
+      message: "This PropDAO account could not be verified as belonging to the connected API key.",
     };
   }
   // 4. The account must be in a state that accepts orders. A breached account
