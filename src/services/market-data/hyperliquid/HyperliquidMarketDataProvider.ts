@@ -248,6 +248,7 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
   private buildQuote(symbol: string, snapshot: HyperliquidMarketSnapshot): MarketQuote {
     const { market, context } = snapshot;
     const now = Date.now();
+    const priceUpdatedAt = snapshot.priceUpdatedAt ?? null;
 
     const mid = context.midPx ?? context.markPx ?? context.oraclePx ?? 0;
 
@@ -276,14 +277,15 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
       // truthful and the UI already omits absent stats.
       high24h: 0,
       low24h: 0,
-      timestamp: now,
-      // A market with no mid is genuinely unavailable, not merely quiet.
-      stale: mid <= 0,
-      marketState: mid > 0 ? 'open' : 'unknown',
-      // listMarkets refreshes this mid through allMids before building
-      // the quote. The age is measured from the provider timestamp rather
-      // than hard-coded, and cached quote reads update it above.
-      quoteAgeSeconds: Math.max(0, (Date.now() - now) / 1000),
+      timestamp: priceUpdatedAt ?? now,
+      // A market with no current allMids sample is unavailable, not merely quiet.
+      stale: mid <= 0 || priceUpdatedAt === null,
+      marketState: mid > 0 && priceUpdatedAt !== null ? 'open' : 'unknown',
+      // Age is measured from the completed allMids request, never stamped as
+      // zero merely because this method just constructed a quote.
+      quoteAgeSeconds: priceUpdatedAt === null
+        ? null as unknown as number
+        : Math.max(0, (Date.now() - priceUpdatedAt) / 1000),
       /**
        * Not on the shared interface, but required for truthfulness: it tells
        * the gate and the UI whether `bid`/`ask` came from the provider or are
