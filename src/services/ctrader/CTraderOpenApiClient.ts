@@ -162,17 +162,26 @@ export class CTraderOpenApiClient {
   }
 
   async listAccounts(): Promise<CTraderAccount[]> {
-    const ids = await this.withSocket(async (socket) => {
+    const accountList = await this.withSocket(async (socket) => {
       const payload = await this.request(socket, GET_ACCOUNTS_REQ, GET_ACCOUNTS_RES, { accessToken: this.token.accessToken });
+      const objects = payloadArray<Record<string, unknown>>(payload, "ctidTraderAccount");
+      if (objects.length && objects.every((account) => typeof account.isLive === "boolean")) {
+        return { accounts: objects.map((account) => ({
+          ctidTraderAccountId: String(account.ctidTraderAccountId ?? ""),
+          isLive: account.isLive === true,
+          ...(number(account.traderLogin) !== undefined ? { traderLogin: String(account.traderLogin) } : {}),
+          ...(typeof account.brokerTitleShort === "string" ? { brokerTitleShort: account.brokerTitleShort } : {}),
+        })).filter((account) => /^\\d+$/.test(account.ctidTraderAccountId)), ids: [] as string[] };
+      }
       const repeated = payload.ctidTraderAccountId;
-      if (Array.isArray(repeated)) return repeated.map((value) => String(value)).filter((value) => /^\\d+$/.test(value));
-      // Compatibility with protocol revisions that return account objects.
-      return payloadArray<Record<string, unknown>>(payload, "ctidTraderAccount")
-        .map((account) => String(account.ctidTraderAccountId ?? ""))
-        .filter((value) => /^\\d+$/.test(value));
+      const ids = Array.isArray(repeated)
+        ? repeated.map((value) => String(value))
+        : objects.map((account) => String(account.ctidTraderAccountId ?? ""));
+      return { accounts: [] as CTraderAccount[], ids: ids.filter((value) => /^\\d+$/.test(value)) };
     });
+    if (accountList.accounts.length) return accountList.accounts;
     const accounts: CTraderAccount[] = [];
-    for (const ctidTraderAccountId of [...new Set(ids)]) {
+    for (const ctidTraderAccountId of [...new Set(accountList.ids)]) {
       // The official account-list response returns IDs, not an isLive flag.
       // Determine environment by authenticating against each official endpoint.
       try {
