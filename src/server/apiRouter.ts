@@ -134,6 +134,30 @@ import {
 export const apiRouter = express.Router();
 apiRouter.use(express.json({ limit: "1mb" }));
 
+/** Public market endpoints remain usable anonymously, but authenticated callers
+ * get the market provider saved in their own Settings. Invalid supplied auth is
+ * never downgraded to anonymous access. */
+const optionalMarketAuth: express.RequestHandler = (req, res, next) => {
+  const hasBearer = Boolean(req.headers.authorization?.startsWith("Bearer "));
+  const hasDevIdentity = Boolean(req.headers["x-dev-user-id"]);
+  if (!hasBearer && !hasDevIdentity) return next();
+  return authMiddleware(req, res, next);
+};
+
+async function marketProviderForRequest(req: Request): Promise<MarketDataProvider> {
+  if (!req.user?.uid) return marketProvider;
+  const profile = await persistence.profiles.get(req.user.uid).catch(() => null);
+  const provider = resolveUserTradingProvider(profile);
+  if (provider === "hyperliquid") return marketProvider;
+  const readiness = await tradingProviderReadinessForUser(req.user.uid, provider);
+  if (!readiness.ready) throw new MarketDataUnavailableError(
+    readiness.reason ?? "Connect cTrader and select an account in Settings.",
+    undefined,
+    "TRADING_PROVIDER_NOT_READY",
+  );
+  return marketDataProviderForUser(req.user.uid, provider);
+}
+
 /** Keep serverless background work alive after returning the HTTP response. */
 function keepBackgroundTaskAlive(task: Promise<unknown>): void {
   if (process.env.VERCEL) waitUntil(task);
