@@ -36,7 +36,7 @@ import {
 } from '../services/ai/OpenRouterClient';
 import { GroqClient, DEFAULT_GROQ_MODEL } from '../services/ai/GroqClient';
 import { SpaceBunnyClient, SPACE_BUNNY_MODEL } from '../services/ai/SpaceBunnyClient';
-import { buildDemoReasoningResult, DEMO_CHAT_ANSWER } from '../services/ai/demoReasoning';
+import { DEMO_CHAT_ANSWER } from '../services/ai/demoReasoning';
 import { ReasoningResult } from '../services/agent/contracts';
 import { KeyStore } from './repositories';
 import { isPlausibleGroqKey, isPlausibleOpenRouterKey } from './credentialValidation';
