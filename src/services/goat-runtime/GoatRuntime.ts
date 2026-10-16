@@ -513,13 +513,18 @@ export class GoatRuntime {
 
   updateConfig(goat: FundGoat, skills: TradingSkill[]): void {
     const previous = this.goatConfig;
+    const skillSignature = (items: TradingSkill[]) =>
+      items
+        .map((skill) => `${skill.id}:${skill.updatedAt}:${skill.name}`)
+        .sort()
+        .join('|');
     const analysisConfigChanged =
       previous.goal !== goat.goal ||
       previous.model !== goat.model ||
       previous.aiProvider !== goat.aiProvider ||
       JSON.stringify(previous.markets) !== JSON.stringify(goat.markets) ||
       JSON.stringify(previous.skillIds) !== JSON.stringify(goat.skillIds) ||
-      JSON.stringify(this.skills) !== JSON.stringify(skills);
+      skillSignature(this.skills) !== skillSignature(skills);
 
     if (analysisConfigChanged) {
       // An in-flight model response belongs to the old config and must not
