@@ -229,7 +229,9 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
       const quote = this.buildQuote(symbol, snapshot);
       // A market with no price at all is NOT cached: it may be an empty book
       // on one dex that is populated a moment later.
-      if (quote.mid > 0) this.quoteCache.set(key, { at: now, quote });
+      if (quote.mid > 0 && quote.stale !== true && quote.quoteAgeSeconds != null) {
+        this.quoteCache.set(key, { at: now, quote });
+      }
       out.push(quote);
     }
 
@@ -450,7 +452,7 @@ function unavailableQuote(symbol: string, now: number, reason: string): MarketQu
     timestamp: now,
     stale: true,
     marketState: 'unknown',
-    quoteAgeSeconds: null as unknown as number,
+    quoteAgeSeconds: undefined,
     unavailableReason: reason,
   } as MarketQuote;
 }
