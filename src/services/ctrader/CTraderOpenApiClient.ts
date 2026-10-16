@@ -36,7 +36,7 @@ type OpenApiMessage = { clientMsgId?: string; payloadType?: number; payload?: Re
 
 /** cTrader account, asset and symbol identifiers are decimal strings. */
 export function isCTraderNumericId(value: string): boolean {
-  return isCTraderNumericId(value);
+  return /^\d+$/.test(value);
 }
 
 const RESPONSE_ERROR = 2142;
