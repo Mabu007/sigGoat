@@ -580,6 +580,9 @@ export const SettingsView: React.FC = () => {
           })}
         </div>
         {preferencesError && <p role="alert" className="text-xs text-red-500">{preferencesError}</p>}
+        {!preferences.tradingProviderAvailable && preferences.tradingProviderUnavailableReason && (
+          <p className="text-xs text-amber-600">{preferences.tradingProviderUnavailableReason}</p>
+        )}
         <p className="text-[10px] text-fg-muted">A GOAT is pinned to the selected provider at creation. Switching this setting does not migrate existing GOATs. A cTrader GOAT requires a connected account and a valid market on that account.</p>
       </div>
 
