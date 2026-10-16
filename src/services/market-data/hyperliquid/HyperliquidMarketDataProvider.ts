@@ -219,7 +219,10 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
 
       const cached = this.quoteCache.get(key);
       if (cached && now - cached.at < QUOTE_TTL_MS) {
-        out.push(cached.quote);
+        out.push({
+          ...cached.quote,
+          quoteAgeSeconds: Math.max(0, (now - cached.quote.timestamp) / 1000),
+        });
         continue;
       }
 
@@ -277,7 +280,10 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
       // A market with no mid is genuinely unavailable, not merely quiet.
       stale: mid <= 0,
       marketState: mid > 0 ? 'open' : 'unknown',
-      quoteAgeSeconds: 0,
+      // listMarkets refreshes this mid through allMids before building
+      // the quote. The age is measured from the provider timestamp rather
+      // than hard-coded, and cached quote reads update it above.
+      quoteAgeSeconds: Math.max(0, (Date.now() - now) / 1000),
       /**
        * Not on the shared interface, but required for truthfulness: it tells
        * the gate and the UI whether `bid`/`ask` came from the provider or are
