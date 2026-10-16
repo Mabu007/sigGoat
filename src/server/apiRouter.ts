@@ -6144,7 +6144,7 @@ apiRouter.post(
     if (!foundGoat) {
       return fail(res, 400, "NO_GOAT", "No GOAT available for backtest.");
     }
-    const migratedGoat = migrateGoatMarkets(foundGoat);
+    const migratedGoat = resolveGoatTradingProvider(foundGoat) === "hyperliquid" ? migrateGoatMarkets(foundGoat) : null;
     const goat = migratedGoat ?? foundGoat;
     if (migratedGoat) {
       await persistence.goats.save(migratedGoat);
@@ -6195,8 +6195,9 @@ apiRouter.post(
      * user gets the real reason and a suggestion instead of a 500 carrying an
      * engine stack message.
      */
-    await resolveMarketsForGoat([selectedMarket]).catch(() => undefined);
-    if (!marketProvider.getMarketMetadata(selectedMarket)) {
+    const selectedMarketProvider = await marketDataProviderForGoat(goat);
+    await resolveMarketsForGoat([selectedMarket], selectedMarketProvider).catch(() => undefined);
+    if (!selectedMarketProvider.getMarketMetadata(selectedMarket)) {
       return fail(
         res,
         400,
@@ -6206,7 +6207,7 @@ apiRouter.post(
     }
     // Production backtests must never report metrics from the simulated PAPER feed.
     // Local/test runs can still opt into PAPER explicitly for deterministic fixtures.
-    if (process.env.NODE_ENV === "production" && marketProvider.dataMode !== "LIVE") {
+    if (process.env.NODE_ENV === "production" && selectedMarketProvider.dataMode !== "LIVE") {
       return fail(
         res,
         503,
@@ -6247,7 +6248,7 @@ apiRouter.post(
       skills,
       market: selectedMarket,
       period: selectedPeriod as "24h" | "7d" | "30d" | "90d",
-      provider: marketProvider,
+      provider: selectedMarketProvider,
       startingBalance,
       riskPerTradePct,
       reason: (context, model) => reasoningGateway.evaluateGoat(context, model, goat.aiProvider),
