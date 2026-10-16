@@ -1253,10 +1253,18 @@ function parseThesis(
     MAX_STRING_LENGTHS.summary,
   );
 
+  // Tracker directives are independently optional automation instructions.
+  // A malformed tracker must not erase an otherwise valid market thesis.
+  const trackerIssues: string[] = [];
   const trackers = parseTrackerDirectives(
     raw.trackers,
-    itemIssues,
+    trackerIssues,
   );
+  if (trackerIssues.length > 0) {
+    console.warn('[GOAT reasoning] discarded invalid tracker directives', {
+      issues: trackerIssues.slice(0, 10),
+    });
+  }
 
   if (
     confidence === undefined ||
@@ -1285,8 +1293,37 @@ function parseThesis(
 
 const ReasoningObjectSchema = z.object({}).passthrough();
 
+/**
+ * Providers occasionally encode an inner section as a JSON string even when
+ * the outer response is valid JSON. Decode only strings that parse as JSON;
+ * leave all other values untouched so normal validation can report the shape.
+ */
+function normalizeJsonSection(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function describeJsonShape(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (typeof value === 'string') return 'string';
+  if (typeof value !== 'object') return typeof value;
+  return `object(keys=${Object.keys(value as Record<string, unknown>).slice(0, 20).join(',')})`;
+}
+
 function noTradeFallback(reason: string): Record<string, unknown> {
-  return { decision: 'NO_TRADE', noTradeReason: reason, triggerSequence: [] };
+  return {
+    decision: 'NO_TRADE',
+    noTradeReason: reason,
+    rationale: 'No trade: the model response did not pass the required validation.',
+    triggerSequence: [],
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1315,13 +1352,30 @@ export function parseReasoningResult(
   }
 
   const normalized: Record<string, unknown> = { ...envelope.data };
+  const originalShapes = {
+    investigation: describeJsonShape(normalized.investigation),
+    thesis: describeJsonShape(normalized.thesis),
+    proposal: describeJsonShape(normalized.proposal),
+    evidence: describeJsonShape(normalized.evidence),
+  };
+
+  // Normalize JSON-encoded sections before running the canonical validators.
+  for (const key of ['investigation', 'thesis', 'proposal', 'evidence'] as const) {
+    normalized[key] = normalizeJsonSection(normalized[key]);
+  }
+
   let criticalSectionMalformed = false;
 
   const investigationObject = ReasoningObjectSchema.safeParse(normalized.investigation);
   const investigationIssues: string[] = [];
   if (!investigationObject.success ||
-      !parseInvestigation(investigationObject.data, investigationIssues) ||
+      !parseInvestigation(investigationObject.success ? investigationObject.data : undefined, investigationIssues) ||
       investigationIssues.length > 0) {
+    console.warn('[GOAT reasoning] invalid investigation section', {
+      receivedShape: originalShapes.investigation,
+      normalizedShape: describeJsonShape(normalized.investigation),
+      issues: investigationIssues.slice(0, 10),
+    });
     normalized.investigation = {
       summary: 'The AI investigation section was malformed. This review cannot support a trade.',
       marketView: 'Malformed AI output; run a fresh validated review.',
@@ -1334,8 +1388,13 @@ export function parseReasoningResult(
   const thesisObject = ReasoningObjectSchema.safeParse(normalized.thesis);
   const thesisIssues: string[] = [];
   if (!thesisObject.success ||
-      !parseThesis(thesisObject.data, thesisIssues) ||
+      !parseThesis(thesisObject.success ? thesisObject.data : undefined, thesisIssues) ||
       thesisIssues.length > 0) {
+    console.warn('[GOAT reasoning] invalid thesis section', {
+      receivedShape: originalShapes.thesis,
+      normalizedShape: describeJsonShape(normalized.thesis),
+      issues: thesisIssues.slice(0, 10),
+    });
     normalized.thesis = {
       directionalBias: 'NEUTRAL',
       summary: 'The AI thesis section was malformed; directional confidence is zero.',
@@ -1351,9 +1410,15 @@ export function parseReasoningResult(
   const proposalObject = ReasoningObjectSchema.safeParse(normalized.proposal);
   const proposalIssues: string[] = [];
   if (!proposalObject.success ||
-      !parseProposal(proposalObject.data, proposalIssues) ||
+      !parseProposal(proposalObject.success ? proposalObject.data : undefined, proposalIssues) ||
       proposalIssues.length > 0 ||
       criticalSectionMalformed) {
+    console.warn('[GOAT reasoning] invalid proposal section', {
+      receivedShape: originalShapes.proposal,
+      normalizedShape: describeJsonShape(normalized.proposal),
+      issues: proposalIssues.slice(0, 10),
+      criticalSectionMalformed,
+    });
     normalized.proposal = noTradeFallback(
       proposalIssues.length > 0
         ? proposalIssues.join('; ')
@@ -1365,7 +1430,13 @@ export function parseReasoningResult(
 
   // Evidence is optional supporting context. Discard malformed entries;
   // it must never invalidate or strengthen an otherwise untrusted proposal.
-  if (!Array.isArray(normalized.evidence)) normalized.evidence = [];
+  if (!Array.isArray(normalized.evidence)) {
+    console.warn('[GOAT reasoning] evidence was not an array; dropping optional evidence', {
+      receivedShape: originalShapes.evidence,
+      normalizedShape: describeJsonShape(normalized.evidence),
+    });
+    normalized.evidence = [];
+  }
   else {
     normalized.evidence = normalized.evidence.filter((item) => {
       const itemIssues: string[] = [];
