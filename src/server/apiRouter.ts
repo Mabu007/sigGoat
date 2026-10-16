@@ -2537,13 +2537,11 @@ apiRouter.get("/settings/status", handle(async (_req, res) => {
 // Market data reads are public (paper feed, no secrets).
 apiRouter.get(
   "/markets/symbols",
-  handle(async (_req, res) => {
-    const symbols = await marketProvider.getSymbols();
-    res.json({
-      symbols,
-      provider: marketProvider.name,
-      dataMode: marketProvider.dataMode,
-    });
+  optionalMarketAuth,
+  handle(async (req, res) => {
+    const provider = await marketProviderForRequest(req);
+    const symbols = await provider.getSymbols();
+    res.json({ symbols, provider: provider.name, dataMode: provider.dataMode });
   }),
 );
 
@@ -2604,6 +2602,7 @@ function byTrackedThenSymbol(
  */
 apiRouter.get(
   "/markets/search",
+  optionalMarketAuth,
   handle(async (req, res) => {
     const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
     const rawLimit = Number(req.query.limit);
@@ -2621,19 +2620,24 @@ apiRouter.get(
       : null;
 
     try {
-      const markets =
-        query.length > 0
-          ? await hyperliquidProvider.searchInstruments(query, limit)
-          : tradableMarkets(
-              await hyperliquidProvider.listMarketsCached(HYPERLIQUID_DEXES),
-            );
+      const provider = await marketProviderForRequest(req);
+      const markets = provider === hyperliquidProvider
+        ? (query.length > 0
+            ? await hyperliquidProvider.searchInstruments(query, limit)
+            : tradableMarkets(await hyperliquidProvider.listMarketsCached(HYPERLIQUID_DEXES)))
+        : (await provider.getSymbols()).filter((market) =>
+            !query || market.symbol.toLowerCase().includes(query.toLowerCase()) || market.name.toLowerCase().includes(query.toLowerCase()),
+          );
 
       const filtered = category
         ? markets.filter((market) => market.category === category)
         : markets;
 
-      const ordered =
-        query.length > 0 ? filtered : [...filtered].sort(byTrackedThenSymbol);
+      const ordered = query.length > 0
+        ? filtered
+        : provider === hyperliquidProvider
+          ? [...filtered].sort(byTrackedThenSymbol)
+          : [...filtered].sort((a, b) => a.symbol.localeCompare(b.symbol));
 
       const limited = ordered.slice(0, limit);
 
@@ -2644,8 +2648,8 @@ apiRouter.get(
         matched: ordered.length,
         query,
         category: category ?? null,
-        provider: marketProvider.name,
-        dataMode: marketProvider.dataMode,
+        provider: provider.name,
+        dataMode: provider.dataMode,
       });
     } catch (error) {
       // Discovery is an ENRICHMENT of the app, not a prerequisite for it. A
@@ -2666,18 +2670,21 @@ apiRouter.get(
 
 apiRouter.get(
   "/markets/quotes",
+  optionalMarketAuth,
   handle(async (req, res) => {
+    const provider = await marketProviderForRequest(req);
     const symbolsParam = req.query.symbols as string | undefined;
     const requested = symbolsParam
       ? symbolsParam.split(",").slice(0, 50)
-      : (await marketProvider.getSymbols()).map((s) => s.symbol);
-    const quotes = await marketProvider.getQuotes(requested);
-    res.json({ quotes, dataMode: marketProvider.dataMode });
+      : (await provider.getSymbols()).map((s) => s.symbol);
+    const quotes = await provider.getQuotes(requested);
+    res.json({ quotes, provider: provider.name, dataMode: provider.dataMode });
   }),
 );
 
 apiRouter.get(
   "/markets/quote",
+  optionalMarketAuth,
   handle(async (req, res) => {
     // No default symbol: an omitted symbol is a client bug and must be reported
     // as one, rather than silently fetching an instrument the venue may not list.
@@ -2685,13 +2692,15 @@ apiRouter.get(
     if (!symbol) {
       return fail(res, 400, "INVALID_INPUT", "symbol is required.");
     }
-    const quote = await marketProvider.getQuote(symbol);
-    res.json({ quote, dataMode: marketProvider.dataMode });
+    const provider = await marketProviderForRequest(req);
+    const quote = await provider.getQuote(symbol);
+    res.json({ quote, provider: provider.name, dataMode: provider.dataMode });
   }),
 );
 
 apiRouter.get(
   "/markets/candles",
+  optionalMarketAuth,
   handle(async (req, res) => {
     const symbol = (req.query.symbol as string) || "";
     if (!symbol) {
@@ -2702,8 +2711,9 @@ apiRouter.get(
       1000,
       Math.max(1, parseInt(req.query.count as string, 10) || 60),
     );
-    const candles = await marketProvider.getCandles(symbol, timeframe, count);
-    res.json({ symbol, timeframe, candles, dataMode: marketProvider.dataMode });
+    const provider = await marketProviderForRequest(req);
+    const candles = await provider.getCandles(symbol, timeframe, count);
+    res.json({ symbol, timeframe, candles, provider: provider.name, dataMode: provider.dataMode });
   }),
 );
 
