@@ -19,7 +19,7 @@ export const SPACE_BUNNY_MODEL = 'space-bunny-alpha';
 const BASE_URL = 'https://spacebunnymodel.com/api/v1';
 const REQUEST_TIMEOUT_MS = 60_000;
 const PROBE_TIMEOUT_MS = 15_000;
-const REASONING_MAX_TOKENS = 3072;
+const REASONING_MAX_TOKENS = 4096;
 
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -45,6 +45,10 @@ export class SpaceBunnyClient {
           messages,
           max_tokens: maxTokens,
           temperature: json ? 0.1 : 0.2,
+          ...(json ? {
+            response_format: { type: 'json_object' },
+            reasoning: { effort: 'medium' },
+          } : {}),
         }),
         signal: controller.signal,
       });
@@ -64,9 +68,22 @@ export class SpaceBunnyClient {
           retryable: response.status === 429 || response.status >= 500,
         });
       }
-      const text = payload?.choices?.[0]?.message?.content;
+      const choice = payload?.choices?.[0];
+      const text = choice?.message?.content;
       if (typeof text !== 'string' || !text.trim()) {
-        throw new ApiRequestError('Space Bunny returned an empty response.', { code: 'EMPTY_RESPONSE', retryable: true });
+        const finishReason = typeof choice?.finish_reason === 'string'
+          ? choice.finish_reason
+          : 'missing';
+        const completionTokens = Number.isFinite(payload?.usage?.completion_tokens)
+          ? payload.usage.completion_tokens
+          : 'unknown';
+        const refusal = typeof choice?.message?.refusal === 'string'
+          ? `; refusal: ${choice.message.refusal.slice(0, 240)}`
+          : '';
+        throw new ApiRequestError(
+          `Space Bunny returned no message content (finish_reason=${finishReason}, completion_tokens=${completionTokens})${refusal}.`,
+          { code: 'EMPTY_RESPONSE', retryable: true },
+        );
       }
       return text.trim();
     } catch (error) {
@@ -85,7 +102,23 @@ export class SpaceBunnyClient {
       { role: 'system', content: buildReasoningSystemPrompt() },
       { role: 'user', content: buildReasoningUserPrompt(context) },
     ];
-    let raw = await this.complete(SPACE_BUNNY_MODEL, messages, REASONING_MAX_TOKENS);
+    let raw: string;
+    try {
+      raw = await this.complete(SPACE_BUNNY_MODEL, messages, REASONING_MAX_TOKENS);
+    } catch (error) {
+      // Empty completions are transient for this provider. Retry once for a
+      // live GOAT review, but keep historical backtests within their request
+      // budget. A second failure bubbles up so the runtime records ERROR and
+      // retries on its normal scheduler backoff; it never becomes NO_TRADE.
+      if (
+        !(error instanceof ApiRequestError) ||
+        error.code !== 'EMPTY_RESPONSE' ||
+        context.wakeReason?.startsWith('BACKTEST_')
+      ) {
+        throw error;
+      }
+      raw = await this.complete(SPACE_BUNNY_MODEL, messages, REASONING_MAX_TOKENS);
+    }
     let parsed = tryParseJson(raw);
     // A historical replay has a strict serverless time budget. Do not spend a
     // second provider request repairing malformed output; fail the replay clearly.
