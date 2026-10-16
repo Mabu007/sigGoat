@@ -246,8 +246,8 @@ export class CTraderTradeExecutionService {
           status: "protection_unconfirmed",
           accepted: true,
           orderId: outcome.orderId,
-        quantityUnits: intent.qty,
-        protocolVolumeCents: outcome.requestedVolumeCents,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
           message: "cTrader accepted the order, but SIRGOAT could not verify its persisted protective stop and target. Do not submit it again. Inspect order " + outcome.orderId + " in cTrader immediately.",
           protectionVerified: false,
         };
@@ -261,8 +261,8 @@ export class CTraderTradeExecutionService {
           status: "protection_unconfirmed",
           accepted: true,
           orderId: outcome.orderId,
-        quantityUnits: intent.qty,
-        protocolVolumeCents: outcome.requestedVolumeCents,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
           message: "cTrader accepted the order, but it was not found in the immediate broker reconciliation. Its status and protective levels are unconfirmed. Do not retry; inspect order " + outcome.orderId + " in cTrader.",
           protectionVerified: false,
         };
@@ -273,8 +273,8 @@ export class CTraderTradeExecutionService {
           status: "rejected",
           accepted: false,
           orderId: outcome.orderId,
-        quantityUnits: intent.qty,
-        protocolVolumeCents: outcome.requestedVolumeCents,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
           message: "cTrader's reconciled order state is REJECTED. No retry was attempted; review the broker's rejection details.",
           protectionVerified: false,
         };
@@ -284,8 +284,8 @@ export class CTraderTradeExecutionService {
           status: "inactive",
           accepted: false,
           orderId: outcome.orderId,
-        quantityUnits: intent.qty,
-        protocolVolumeCents: outcome.requestedVolumeCents,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
           message: brokerStatus === 4
             ? "cTrader reports that order " + outcome.orderId + " has EXPIRED and is no longer active. Review the broker state before creating a new intent."
             : "cTrader reports that order " + outcome.orderId + " has been CANCELLED and is no longer active. Review the broker state before creating a new intent.",
@@ -297,8 +297,8 @@ export class CTraderTradeExecutionService {
           status: "protection_unconfirmed",
           accepted: true,
           orderId: outcome.orderId,
-        quantityUnits: intent.qty,
-        protocolVolumeCents: outcome.requestedVolumeCents,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
           message: "cTrader returned an unrecognized or missing order status for order " + outcome.orderId + ". Do not retry; inspect the order and protective levels in cTrader.",
           protectionVerified: false,
         };
@@ -323,8 +323,8 @@ export class CTraderTradeExecutionService {
           status: "protection_unconfirmed",
           accepted: true,
           orderId: outcome.orderId,
-        quantityUnits: intent.qty,
-        protocolVolumeCents: outcome.requestedVolumeCents,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
           message: "cTrader accepted order " + outcome.orderId + " but the broker's persisted symbol, side, volume, limit price, stop-loss or take-profit did not match the request. Do not retry. Inspect or cancel the order in cTrader before allowing it to fill.",
           protectionVerified: false,
         };
