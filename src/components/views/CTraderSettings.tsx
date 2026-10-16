@@ -87,6 +87,7 @@ export const CTraderSettings: React.FC = () => {
       if (!res.ok) throw new Error(body?.error?.message ?? "Could not select that cTrader account.");
       setSelectedAccountId(accountId);
       setStatus((prev) => prev ? { ...prev, selectedAccountId: accountId, selectedAccountIsLive: body?.selectedAccount?.isLive === true } : prev);
+      window.dispatchEvent(new Event("sirgoat:trading-provider-changed"));
       setNotice(body?.warning ?? "cTrader account selected.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not select cTrader account.");
@@ -103,6 +104,7 @@ export const CTraderSettings: React.FC = () => {
       const body = await res.json().catch(() => null);
       if (!res.ok) throw new Error(body?.error?.message ?? "Could not disconnect cTrader.");
       setAccounts([]); setSelectedAccountId("");
+      window.dispatchEvent(new Event("sirgoat:trading-provider-changed"));
       setNotice("cTrader disconnected. GOATs pinned to cTrader will not run until you reconnect.");
       await load();
     } catch (err) {
