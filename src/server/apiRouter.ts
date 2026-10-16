@@ -5706,7 +5706,10 @@ apiRouter.post("/goat-competitions/:id/outcomes", handle(async (req, res) => {
   if (!participantId || !sourceRecordId || sourceRecordId.length > 200 || !competition.participants.some(p => p.id === participantId)) return res.status(400).json({ error: { code: "INVALID_COMPETITION_OUTCOME", message: "A valid participantId and persisted sourceRecordId are required." } });
   if (![netPnl, equityAfter, riskAmount].every(Number.isFinite) || equityAfter <= 0 || riskAmount < 0 || !["WIN", "LOSS", "FLAT"].includes(result)) return res.status(400).json({ error: { code: "INVALID_COMPETITION_OUTCOME", message: "PnL and risk must be finite, equity must be positive, and result must be WIN, LOSS, or FLAT." } });
   const prior = competition.outcomes.filter(item => item.participantId === participantId).sort((a, b) => a.recordedAt.localeCompare(b.recordedAt) || a.id.localeCompare(b.id));
-  const expectedEquity = (prior.length ? prior[prior.length - 1].equityAfter : competition.startingEquity) + netPnl;
+  const previous = prior[prior.length - 1];
+  const expectedEquity = (previous ? previous.equityAfter : competition.startingEquity) + netPnl;
+  if (previous && typeof body.recordedAt === "string" && Date.parse(body.recordedAt) < Date.parse(previous.recordedAt)) return res.status(400).json({ error: { code: "COMPETITION_OUTCOME_OUT_OF_ORDER", message: "An outcome cannot be recorded before the participant's latest outcome." } });
+  if (result === "WIN" && netPnl <= 0 || result === "LOSS" && netPnl >= 0 || result === "FLAT" && Math.abs(netPnl) > 0.000001) return res.status(400).json({ error: { code: "COMPETITION_OUTCOME_RESULT_MISMATCH", message: "WIN must have positive PnL, LOSS negative PnL, and FLAT zero PnL." } });
   if (Math.abs(expectedEquity - equityAfter) > Math.max(0.01, Math.abs(expectedEquity) * 0.000001)) return res.status(400).json({ error: { code: "COMPETITION_EQUITY_CHAIN_MISMATCH", message: "equityAfter must equal the previous recorded equity plus netPnl." } });
   const environment = body.environment;
   if (environment !== competition.environment) return res.status(400).json({ error: { code: "COMPETITION_ENVIRONMENT_MISMATCH", message: "Paper and live outcomes cannot be mixed in one competition." } });
