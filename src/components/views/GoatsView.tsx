@@ -79,6 +79,44 @@ interface ModelCatalogueResponse {
 
 type ModelState = 'loading' | 'ready' | 'error';
 
+type GoatTeamMode = 'INDEPENDENT' | 'CONSENSUS' | 'LEAD_REVIEW';
+type GoatTeamStatus = 'DRAFT' | 'DEPLOYED' | 'PAUSED' | 'PARTIAL';
+interface GoatTeamSummary {
+  id: string;
+  name: string;
+  memberGoatIds: string[];
+  coordinationMode: GoatTeamMode;
+  leadGoatId?: string;
+  status: GoatTeamStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+interface GoatWorkflowActivityItem {
+  id: string;
+  workflowId: string;
+  goatId: string;
+  type: string;
+  stage: string;
+  at: string;
+  details?: Record<string, string | number | boolean | null>;
+}
+interface GoatTeamAssessment {
+  teamId: string;
+  coordinationMode: GoatTeamMode;
+  assessments: Array<{
+    market: string;
+    outcome: string;
+    votes: Array<{
+      goatId: string;
+      direction: string | null;
+      confidence: number | null;
+      status: string;
+      createdAt: string | null;
+    }>;
+  }>;
+  note: string;
+}
+
 const MODEL_CATALOGUE_ENDPOINT = '/api/ai/models';
 
 /**
@@ -650,6 +688,170 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   const [actionError, setActionError] = useState('');
   const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [readWakeEventIds, setReadWakeEventIds] = useState<Set<string>>(new Set());
+
+  // Durable workflow history for the GOAT inspector.
+  const [workflowActivities, setWorkflowActivities] = useState<GoatWorkflowActivityItem[]>([]);
+  const [workflowActivityLoading, setWorkflowActivityLoading] = useState(false);
+  const [workflowActivityError, setWorkflowActivityError] = useState('');
+
+  // Owner-scoped GOAT teams.
+  const [goatTeams, setGoatTeams] = useState<GoatTeamSummary[]>([]);
+  const [teamName, setTeamName] = useState('');
+  const [teamMode, setTeamMode] = useState<GoatTeamMode>('CONSENSUS');
+  const [teamLeadGoatId, setTeamLeadGoatId] = useState('');
+  const [selectedTeamGoatIds, setSelectedTeamGoatIds] = useState<string[]>([]);
+  const [teamBusy, setTeamBusy] = useState(false);
+  const [teamLoading, setTeamLoading] = useState(false);
+  const [teamError, setTeamError] = useState('');
+  const [teamNotice, setTeamNotice] = useState('');
+  const [teamAssessment, setTeamAssessment] = useState<GoatTeamAssessment | null>(null);
+  const [teamAssessmentLoading, setTeamAssessmentLoading] = useState(false);
+
+  const loadGoatTeams = useCallback(async () => {
+    setTeamLoading(true);
+    setTeamError('');
+    try {
+      const response = await fetch('/api/goat-teams', {
+        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || 'Could not load GOAT teams.');
+      setGoatTeams(Array.isArray(body.teams) ? body.teams : []);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Could not load GOAT teams.');
+    } finally {
+      setTeamLoading(false);
+    }
+  }, [getApiAuthHeaders]);
+
+  useEffect(() => {
+    void loadGoatTeams();
+  }, [loadGoatTeams]);
+
+  const createGoatTeam = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setTeamBusy(true);
+    setTeamError('');
+    setTeamNotice('');
+    try {
+      const response = await fetch('/api/goat-teams', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
+        body: JSON.stringify({
+          name: teamName.trim(),
+          goatIds: selectedTeamGoatIds,
+          coordinationMode: teamMode,
+          ...(teamMode === 'LEAD_REVIEW' ? { leadGoatId: teamLeadGoatId || selectedTeamGoatIds[0] } : {}),
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || 'Could not create GOAT team.');
+      setTeamName('');
+      setSelectedTeamGoatIds([]);
+      setTeamLeadGoatId('');
+      setTeamNotice('GOAT team created.');
+      await loadGoatTeams();
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Could not create GOAT team.');
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const assessGoatTeam = async (team: GoatTeamSummary) => {
+    setTeamAssessmentLoading(true);
+    setTeamError('');
+    setTeamNotice('');
+    try {
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(team.id) + '/assessment', {
+        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || 'Could not assess this team.');
+      setTeamAssessment({
+        teamId: team.id,
+        coordinationMode: body.coordinationMode,
+        assessments: Array.isArray(body.assessments) ? body.assessments : [],
+        note: typeof body.note === 'string' ? body.note : 'Assessment is informational only.',
+      });
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Could not assess this team.');
+    } finally {
+      setTeamAssessmentLoading(false);
+    }
+  };
+
+  const setGoatTeamStatus = async (team: GoatTeamSummary, action: 'PLAY' | 'PAUSE') => {
+    setTeamBusy(true);
+    setTeamError('');
+    setTeamNotice('');
+    try {
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(team.id) + '/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
+        body: JSON.stringify({ action }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || 'Some team members could not be updated.');
+      setTeamNotice(action === 'PLAY' ? 'Team deployment requested.' : 'Team paused.');
+      await loadGoatTeams();
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Could not update GOAT team.');
+      await loadGoatTeams();
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const deleteGoatTeam = async (team: GoatTeamSummary) => {
+    if (!window.confirm(`Delete team “${team.name}”? Its member GOATs will be paused first.`)) return;
+    setTeamBusy(true);
+    setTeamError('');
+    setTeamNotice('');
+    try {
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(team.id), {
+        method: 'DELETE',
+        headers: { ...(await getApiAuthHeaders()) },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || 'Could not delete GOAT team.');
+      setTeamAssessment(current => current?.teamId === team.id ? null : current);
+      setTeamNotice('Team deleted and its members paused.');
+      await loadGoatTeams();
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Could not delete GOAT team.');
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const loadWorkflowActivity = useCallback(async (goatId: string) => {
+    setWorkflowActivityLoading(true);
+    setWorkflowActivityError('');
+    try {
+      const response = await fetch('/api/goats/' + encodeURIComponent(goatId) + '/workflow-activity', {
+        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || 'Workflow history is unavailable.');
+      setWorkflowActivities(Array.isArray(body.activities) ? body.activities : []);
+    } catch (error) {
+      setWorkflowActivities([]);
+      setWorkflowActivityError(error instanceof Error ? error.message : 'Workflow history is unavailable.');
+    } finally {
+      setWorkflowActivityLoading(false);
+    }
+  }, [getApiAuthHeaders]);
+
+  useEffect(() => {
+    if (!detailGoatId) {
+      setWorkflowActivities([]);
+      setWorkflowActivityError('');
+      return;
+    }
+    void loadWorkflowActivity(detailGoatId);
+  }, [detailGoatId, loadWorkflowActivity]);
+
   const [showScheduleEditor, setShowScheduleEditor] =
     useState(false);
 
@@ -1173,6 +1375,88 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               </button>
             </div>
           </div>
+
+          {/* GOAT TEAMS */}
+          <section className="space-y-4 rounded-3xl border border-line bg-surface p-4 sm:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-bold text-fg"><Layers className="h-4 w-4 text-accent-text" /> GOAT teams</h2>
+                <p className="mt-1 max-w-2xl text-xs leading-relaxed text-fg-muted">Group your own GOATs and compare their current signals. Team assessment is read-only: it never submits a trade or bypasses each GOAT’s safeguards.</p>
+              </div>
+              <button type="button" onClick={() => void loadGoatTeams()} disabled={teamLoading} className="rounded-lg border border-line px-3 py-2 text-[10px] font-semibold text-fg-muted disabled:opacity-50">{teamLoading ? 'Refreshing…' : 'Refresh teams'}</button>
+            </div>
+
+            <form onSubmit={createGoatTeam} className="space-y-3 rounded-2xl border border-line bg-sunken/50 p-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-[10px] font-semibold text-fg-muted">Team name
+                  <input value={teamName} onChange={event => setTeamName(event.target.value)} maxLength={80} required placeholder="e.g. London Session Team" className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs text-fg" />
+                </label>
+                <label className="block text-[10px] font-semibold text-fg-muted">Coordination mode
+                  <select value={teamMode} onChange={event => setTeamMode(event.target.value as GoatTeamMode)} className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs text-fg">
+                    <option value="INDEPENDENT">Independent signals</option>
+                    <option value="CONSENSUS">Consensus (all members)</option>
+                    <option value="LEAD_REVIEW">Lead review</option>
+                  </select>
+                </label>
+              </div>
+
+              <div>
+                <p className="mb-2 text-[10px] font-semibold text-fg-muted">Choose 2–10 of your existing GOATs</p>
+                {goats.length < 2 ? <p className="rounded-lg border border-dashed border-line p-3 text-xs text-fg-subtle">Create at least two GOATs before building a team.</p> : <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {goats.map(goat => {
+                    const checked = selectedTeamGoatIds.includes(goat.id);
+                    const locked = !checked && selectedTeamGoatIds.length >= 10;
+                    return <label key={goat.id} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${checked ? 'border-accent/50 bg-accent-soft text-fg' : 'border-line bg-surface text-fg-muted'} ${locked ? 'opacity-40' : 'cursor-pointer'}`}>
+                      <input type="checkbox" checked={checked} disabled={locked || teamBusy} onChange={event => {
+                        setSelectedTeamGoatIds(current => event.target.checked ? [...current, goat.id] : current.filter(id => id !== goat.id));
+                        if (!event.target.checked && teamLeadGoatId === goat.id) setTeamLeadGoatId('');
+                      }} />
+                      <span className="min-w-0 flex-1 truncate">{goat.name}</span>
+                      <span className="text-[9px] uppercase text-fg-subtle">{goat.status}</span>
+                    </label>;
+                  })}
+                </div>}
+                <p className="mt-1 text-[10px] text-fg-subtle">{selectedTeamGoatIds.length} selected</p>
+              </div>
+
+              {teamMode === 'LEAD_REVIEW' && <label className="block text-[10px] font-semibold text-fg-muted">Lead GOAT
+                <select value={teamLeadGoatId} onChange={event => setTeamLeadGoatId(event.target.value)} required className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs text-fg">
+                  <option value="">Choose a lead from the selected members</option>
+                  {goats.filter(goat => selectedTeamGoatIds.includes(goat.id)).map(goat => <option key={goat.id} value={goat.id}>{goat.name}</option>)}
+                </select>
+              </label>}
+
+              <button type="submit" disabled={teamBusy || !teamName.trim() || selectedTeamGoatIds.length < 2 || selectedTeamGoatIds.length > 10 || (teamMode === 'LEAD_REVIEW' && !selectedTeamGoatIds.includes(teamLeadGoatId))} className="rounded-xl bg-accent px-4 py-2.5 text-xs font-bold text-accent-fg disabled:opacity-40">{teamBusy ? 'Working…' : 'Create team'}</button>
+            </form>
+
+            {teamError && <p role="alert" className="rounded-lg border border-negative/30 bg-negative-soft px-3 py-2 text-xs text-negative">{teamError}</p>}
+            {teamNotice && <p role="status" className="rounded-lg border border-positive/30 bg-positive-soft px-3 py-2 text-xs text-positive">{teamNotice}</p>}
+
+            {teamLoading && goatTeams.length === 0 ? <p className="text-xs text-fg-subtle">Loading your teams…</p> : goatTeams.length === 0 ? <p className="rounded-xl border border-dashed border-line p-4 text-xs text-fg-subtle">No teams yet. Select your GOATs above to create your first team.</p> : <div className="space-y-3">
+              {goatTeams.map(team => (
+                <div key={team.id} className="rounded-2xl border border-line p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2"><h3 className="text-xs font-bold text-fg">{team.name}</h3><span className="rounded-full border border-line bg-sunken px-2 py-0.5 text-[9px] font-mono text-fg-muted">{team.status}</span><span className="rounded-full border border-line bg-sunken px-2 py-0.5 text-[9px] text-fg-muted">{team.coordinationMode.replaceAll('_', ' ')}</span></div>
+                      <p className="mt-1 text-[10px] text-fg-subtle">{team.memberGoatIds.map(id => goats.find(goat => goat.id === id)?.name || id).join(' · ')}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button type="button" onClick={() => void assessGoatTeam(team)} disabled={teamAssessmentLoading || teamBusy} className="rounded-lg border border-line px-2.5 py-1.5 text-[10px] font-semibold text-fg-muted disabled:opacity-50">{teamAssessmentLoading && teamAssessment?.teamId === team.id ? 'Assessing…' : 'Assess signals'}</button>
+                      {team.status === 'DEPLOYED' || team.status === 'PARTIAL' ? <button type="button" onClick={() => void setGoatTeamStatus(team, 'PAUSE')} disabled={teamBusy} className="rounded-lg border border-line px-2.5 py-1.5 text-[10px] font-semibold text-fg-muted disabled:opacity-50">Pause team</button> : <button type="button" onClick={() => void setGoatTeamStatus(team, 'PLAY')} disabled={teamBusy} className="rounded-lg border border-positive/30 bg-positive-soft px-2.5 py-1.5 text-[10px] font-semibold text-positive disabled:opacity-50">Deploy team</button>}
+                      <button type="button" onClick={() => void deleteGoatTeam(team)} disabled={teamBusy} className="rounded-lg border border-negative/30 px-2.5 py-1.5 text-[10px] font-semibold text-negative disabled:opacity-50">Delete</button>
+                    </div>
+                  </div>
+                  {teamAssessment?.teamId === team.id && <div className="mt-3 space-y-2 border-t border-line pt-3">
+                    {teamAssessment.assessments.length === 0 ? <p className="text-[10px] text-fg-subtle">No current, unexpired member signals to compare.</p> : teamAssessment.assessments.map(item => <div key={item.market} className="rounded-xl border border-line bg-sunken/50 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-bold text-fg">{item.market}</span><span className="rounded-full border border-line px-2 py-0.5 text-[9px] font-mono text-fg-muted">{item.outcome.replaceAll('_', ' ')}</span></div>
+                      <div className="mt-2 grid gap-1 sm:grid-cols-2 lg:grid-cols-3">{item.votes.map(vote => <div key={vote.goatId} className="rounded-lg bg-surface px-2 py-1.5 text-[10px] text-fg-muted"><span className="font-semibold text-fg">{goats.find(goat => goat.id === vote.goatId)?.name || vote.goatId}</span><span className="block">{vote.direction || vote.status} {vote.confidence == null ? '' : `· ${Math.round(vote.confidence * 100)}% confidence`}</span></div>)}</div>
+                    </div>)}
+                    <p className="text-[10px] leading-relaxed text-fg-subtle">{teamAssessment.note}</p>
+                  </div>}
+                </div>
+              ))}
+            </div>}
+          </section>
 
           {/* GOAT GRID */}
           <section className="space-y-3">
@@ -2104,6 +2388,21 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               {inspectedState?.lastError && <p className="break-words text-rose-300"><span className="text-slate-600">[error]</span> ERROR {inspectedState.lastError}</p>}
               {!inspectedGoat.lastWakeReason && !inspectedState?.isEvaluating && !inspectedState?.currentThesis && !inspectedState?.lastError && <p className="text-slate-500">Waiting for the first runtime event. Wake & Re-evaluate to start a fresh review.</p>}
               <p className="border-t border-white/10 pt-2 text-[10px] text-slate-500">This log shows observed runtime state only; it does not invent intermediate model/tool events.</p>
+              <div className="mt-3 border-t border-white/10 pt-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-300">Durable workflow history</h4>
+                  <button type="button" onClick={() => void loadWorkflowActivity(inspectedGoat.id)} disabled={workflowActivityLoading} className="rounded-md border border-white/10 px-2 py-1 text-[9px] text-slate-400 disabled:opacity-50">{workflowActivityLoading ? 'Loading…' : 'Refresh'}</button>
+                </div>
+                {workflowActivityError && <p role="alert" className="mt-2 text-[10px] text-rose-300">{workflowActivityError}</p>}
+                {!workflowActivityError && workflowActivities.length === 0 && <p className="mt-2 text-[10px] text-slate-500">{workflowActivityLoading ? 'Loading saved workflow events…' : 'No durable workflow events recorded yet.'}</p>}
+                <div className="mt-2 space-y-2">
+                  {workflowActivities.slice(0, 12).map(activity => <div key={activity.id} className="rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-[10px] font-bold text-emerald-200">{activity.type.replaceAll('_', ' ')}</span><time className="text-[9px] text-slate-500">{new Date(activity.at).toLocaleString()}</time></div>
+                    <p className="mt-1 text-[10px] text-slate-400">Stage: {activity.stage.replaceAll('_', ' ')}</p>
+                    {activity.details && Object.keys(activity.details).length > 0 && <p className="mt-1 break-words text-[9px] text-slate-500">{Object.entries(activity.details).map(([key, value]) => `${key}: ${String(value)}`).join(' · ')}</p>}
+                  </div>)}
+                </div>
+              </div>
             </div>
           </section>
 

@@ -52,6 +52,7 @@ import { evaluateTracker } from '../tracker-sdk/DeterministicTrackerEvaluator';
 import { SessionSchedule } from '../tracker-sdk/SessionSchedule';
 import { analyzeMarketStructure, calculateRSI, calculateEMA, calculateATR } from '../tracker-sdk/indicators';
 import { ReasoningGateway } from '../../server/reasoningGateway';
+import { runGoatReasoningGraph } from '../agent/GoatReasoningGraph';
 import { newsService } from '../news/NewsService';
 import {
   SignalRepository,
@@ -59,6 +60,7 @@ import {
   WakeEventRepository,
 } from '../../server/repositories';
 import type { WakeScheduler } from '../../server/scheduler/types';
+import type { GoatWorkflowStore } from '../../server/GoatWorkflowStore';
 
 export interface GoatRuntimeOptions {
   reasoning: ReasoningGateway;
@@ -73,6 +75,8 @@ export interface GoatRuntimeOptions {
   signals?: SignalRepository;
   theses?: ThesisRepository;
   wakeEvents?: WakeEventRepository;
+  /** Durable workflow progress/activity ledger; optional for isolated unit tests. */
+  workflowStore?: GoatWorkflowStore;
   /** Called when the gate approves a signal (Telegram notifier, etc.). */
   onSignal?: (goat: FundGoat, signal: TradeSignal) => void;
   /**
@@ -344,6 +348,7 @@ export class GoatRuntime {
   private readonly signalRepo?: SignalRepository;
   private readonly thesisRepo?: ThesisRepository;
   private readonly wakeEventRepo?: WakeEventRepository;
+  private readonly workflowStore?: GoatWorkflowStore;
   private readonly onSignalCallback?: (goat: FundGoat, signal: TradeSignal) => void;
   private readonly onTrackerTriggeredCallback?: (
     goat: FundGoat,
@@ -393,6 +398,7 @@ export class GoatRuntime {
     this.signalRepo = options.signals;
     this.thesisRepo = options.theses;
     this.wakeEventRepo = options.wakeEvents;
+    this.workflowStore = options.workflowStore;
     this.onSignalCallback = options.onSignal;
     this.onTrackerTriggeredCallback = options.onTrackerTriggered;
     this.baseCheckIntervalMs = options.baseCheckIntervalMs ?? DEFAULT_BASE_INTERVAL_MS;
@@ -685,6 +691,7 @@ export class GoatRuntime {
     triggerType: WakeEvent['triggerType'] = 'MANUAL_REEVALUATE',
     targetMarket?: string,
     calculatedContext?: Record<string, unknown>,
+    workflowEventId?: string,
   ): Promise<GoatRuntimeState> {
     if (this.stopped) {
       return this.runtimeState;
@@ -721,7 +728,34 @@ export class GoatRuntime {
       return this.runtimeState;
     }
 
+    let workflowRunId: string | undefined;
     try {
+      if (this.workflowStore) {
+        const eventId = workflowEventId || generationId;
+        workflowRunId = `wf_${this.id}_${eventId}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 240);
+        const created = await this.workflowStore.createRun({
+          id: workflowRunId,
+          goatId: this.id,
+          userId: this.goatConfig.userId,
+          eventId,
+          generationId,
+          market,
+          triggerType,
+          stage: "market_context",
+          status: "RUNNING",
+          createdAt: new Date(this.now()).toISOString(),
+          updatedAt: new Date(this.now()).toISOString(),
+        });
+        if (!created) {
+          // The same scheduler/manual idempotency key was already claimed.
+          // Never re-run the model for a workflow already in the durable ledger.
+          this.runtimeState.isEvaluating = false;
+          this.runtimeState.status = this.paused ? "PAUSED" : "WATCHING";
+          return this.runtimeState;
+        }
+      }
+
+      await this.workflowStore?.advanceRun(workflowRunId ?? "", "market_data_loading");
       // ---- Stage 1: market context ------------------------------------
       /**
        * Read through the shared store so GOATs waking near each other share
@@ -933,7 +967,16 @@ export class GoatRuntime {
 
       let reasoningResult: ReasoningResult;
       try {
-        reasoningResult = await this.reasoning.evaluateGoat(reasoningContext, this.goatConfig.model, this.goatConfig.aiProvider);
+        await this.workflowStore?.advanceRun(workflowRunId ?? "", "reasoning_started");
+        reasoningResult = await runGoatReasoningGraph({
+          context: reasoningContext,
+          model: this.goatConfig.model,
+          provider: this.goatConfig.aiProvider,
+          evaluate: (context, model, provider) => this.reasoning.evaluateGoat(context, model, provider),
+          onStage: async (stage) => {
+            if (workflowRunId) await this.workflowStore?.advanceRun(workflowRunId, stage);
+          },
+        });
       } catch (err) {
         if (err instanceof ReasoningValidationError) {
           const failure = `Model response failed validation: ${err.issues.slice(0, 3).join('; ')}`;
@@ -1185,6 +1228,15 @@ export class GoatRuntime {
       }
 
       const actionable = gateResult.approved && thesisPersisted && signalPersisted;
+      if (workflowRunId) {
+        await this.workflowStore?.advanceRun(
+          workflowRunId,
+          actionable ? "proposal_persisted" : "review_complete",
+          actionable ? "WAITING_APPROVAL" : "COMPLETED",
+          { signalStatus: latestSignal.status, actionable, persistenceConfirmed: thesisPersisted && signalPersisted },
+          actionable ? latestSignal.id : undefined,
+        );
+      }
       if (gateResult.approved && !actionable) {
         latestSignal = {
           ...latestSignal,
@@ -1266,6 +1318,24 @@ export class GoatRuntime {
         // Even error recording failed; nothing more we can do here.
       }
     } finally {
+      if (workflowRunId && this.workflowStore) {
+        try {
+          const persistedRun = await this.workflowStore.getRun(workflowRunId);
+          if (persistedRun?.status === "RUNNING") {
+            const failed = Boolean(this.runtimeState.lastError);
+            await this.workflowStore.advanceRun(
+              workflowRunId,
+              failed ? "wake_failed" : "wake_finished",
+              failed ? "FAILED" : "COMPLETED",
+              failed ? { error: "wake_failed" } : undefined,
+              undefined,
+              failed ? "WAKE_FAILED" : undefined,
+            );
+          }
+        } catch (ledgerError) {
+          console.error(`[goat ${this.id}] failed to finalize workflow ledger:`, ledgerError);
+        }
+      }
       // A superseded wake must not release the mutex owned by a newer wake.
       if (this.isCurrentGeneration(generationId)) {
         this.runtimeState.isEvaluating = false;

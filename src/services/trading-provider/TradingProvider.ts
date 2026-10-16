@@ -44,3 +44,6 @@ export function isTradingProvider(value: unknown): value is TradingProvider {
 export function parseTradingProvider(value: unknown): TradingProvider | null {
   return isTradingProvider(value) ? value : null;
 }
+
+// Publicly expose the app default alongside the provider resolution helpers.
+export { DEFAULT_TRADING_PROVIDER };
