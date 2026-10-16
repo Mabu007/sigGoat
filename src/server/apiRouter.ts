@@ -7182,7 +7182,7 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
     if (body.confirmed !== true) {
       return res.json({ action: { type: "execute_trade", status: "confirmation_required",
         title: "Confirm cTrader limit order", confirmationRequired: true, intentId,
-        order: { accountId: selectedAccountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage: leverage ?? null, orderType: "limit", provider: "ctrader" },
+        order: { accountId: selectedAccountId, symbol, side, qty, quantityUnit: "instrument_units", entry, stopLoss, takeProfit, leverage: leverage ?? null, orderType: "limit", provider: "ctrader" },
         riskCheck, execution,
         message: "Review the cTrader order and measured risk. Confirmation rechecks account risk immediately before submission." } });
     }
@@ -7190,7 +7190,7 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
     if (result.status === "protection_unconfirmed") {
       return res.status(202).json({ action: { type: "execute_trade", status: "needs_attention",
         title: "cTrader order may be active — protection not verified", intentId, orderId: result.orderId ?? null,
-        accepted: true, protectionVerified: false, doNotRetry: true, message: result.message, riskCheck, execution } });
+        accepted: true, protectionVerified: false, doNotRetry: true, quantityUnits: result.quantityUnits ?? qty, protocolVolumeCents: result.protocolVolumeCents ?? null, message: result.message, riskCheck, execution } });
     }
     if (!result.accepted) {
       const unknown = result.status === "unknown";
@@ -7198,11 +7198,12 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
       return res.status(unknown ? 202 : 409).json({ action: { type: "execute_trade",
         status: unknown ? "unknown" : inactive ? "inactive" : "blocked",
         title: unknown ? "cTrader order status unknown — do not retry" : inactive ? "cTrader order expired or cancelled" : "cTrader order rejected or blocked",
-        intentId, orderId: result.orderId ?? null, doNotRetry: unknown, message: result.message, riskCheck, execution } });
+        intentId, orderId: result.orderId ?? null, quantityUnits: result.quantityUnits ?? qty, protocolVolumeCents: result.protocolVolumeCents ?? null, doNotRetry: unknown, message: result.message, riskCheck, execution } });
     }
     return res.json({ action: { type: "execute_trade", status: "completed",
       title: "cTrader order accepted and protection verified", intentId, orderId: result.orderId ?? null,
       accepted: true, protectionVerified: result.protectionVerified === true,
+      quantityUnits: result.quantityUnits ?? qty, protocolVolumeCents: result.protocolVolumeCents ?? null,
       message: result.message, riskCheck, execution } });
   }
 
