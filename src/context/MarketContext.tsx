@@ -553,8 +553,7 @@ export const MarketProvider: React.FC<{
       void (async () => {
         const nextSymbols = await fetchSymbols();
         if (mountedRef.current && nextSymbols.length > 0) {
-          const currentSymbolStillListed = nextSymbols.some((symbol) => symbol.symbol === activeSymbol);
-          if (!currentSymbolStillListed) setActiveSymbolState(nextSymbols[0].symbol);
+          setActiveSymbolState(nextSymbols[0].symbol);
         }
         await refreshQuotes();
       })();
