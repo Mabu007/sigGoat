@@ -57,6 +57,8 @@ export interface GoatExecutionIntent {
   goatId: string;
   userId: string;
   provider: string;
+  /** Stable hash of the confirmed order shape; reused IDs cannot mutate an intent. */
+  fingerprint?: string;
   status: GoatExecutionStatus;
   createdAt: string;
   updatedAt: string;
@@ -282,7 +284,7 @@ export class GoatWorkflowStore {
    * Claim an execution intent BEFORE contacting a venue. A claim is permanent:
    * an uncertain timeout is never blindly retried as a second order.
    */
-  async claimExecution(intent: Omit<GoatExecutionIntent, "status" | "createdAt" | "updatedAt">): Promise<{ claimed: boolean; intent: GoatExecutionIntent }> {
+  async claimExecution(intent: Omit<GoatExecutionIntent, "status" | "createdAt" | "updatedAt">): Promise<{ claimed: boolean; conflict: boolean; intent: GoatExecutionIntent }> {
     const id = safeId(intent.id);
     const now = this.now();
     const record: GoatExecutionIntent = { ...intent, id, status: "CLAIMED", createdAt: now, updatedAt: now };
@@ -290,16 +292,19 @@ export class GoatWorkflowStore {
       const ref = this.executionsCollection().doc(id);
       return this.firestore.runTransaction(async (tx) => {
         const snapshot = await tx.get(ref);
-        if (snapshot.exists) return { claimed: false, intent: snapshot.data() as GoatExecutionIntent };
+        if (snapshot.exists) {
+          const existing = snapshot.data() as GoatExecutionIntent;
+          return { claimed: false, conflict: Boolean(existing.fingerprint && record.fingerprint && existing.fingerprint !== record.fingerprint), intent: existing };
+        }
         tx.create(ref, record);
-        return { claimed: true, intent: record };
+        return { claimed: true, conflict: false, intent: record };
       });
     }
     const existing = this.db.executions[id];
-    if (existing) return { claimed: false, intent: existing };
+    if (existing) return { claimed: false, conflict: Boolean(existing.fingerprint && record.fingerprint && existing.fingerprint !== record.fingerprint), intent: existing };
     this.db.executions[id] = record;
     this.persist();
-    return { claimed: true, intent: record };
+    return { claimed: true, conflict: false, intent: record };
   }
 
   async finishExecution(
