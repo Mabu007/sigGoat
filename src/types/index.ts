@@ -25,6 +25,12 @@ export function normaliseMarketCategory(category: string): MarketCategory {
   return category === 'forex' ? 'currencies' : (category as MarketCategory);
 }
 
+/** Canonical trading venue selected for a GOAT or user default. */
+export type TradingProvider = 'ctrader' | 'hyperliquid';
+
+/** The provider used for newly created GOATs when a user has no saved preference. */
+export const DEFAULT_TRADING_PROVIDER: TradingProvider = 'ctrader';
+
 /**
  * Where market data came from.
  *
@@ -382,8 +388,14 @@ export interface FundGoat {
   markets: string[];
   skillIds: string[];
   model: string;
-  /** Optional per-GOAT provider override; absent inherits Settings. */
+  /** Optional per-GOAT AI provider override; absent inherits Settings. */
   aiProvider?: 'openrouter' | 'spacebunny';
+  /**
+   * Trading venue this GOAT was created for. New GOATs should persist this
+   * explicitly. Missing values are legacy records and resolve to Hyperliquid
+   * to preserve their existing market/execution behaviour during migration.
+   */
+  tradingProvider?: TradingProvider;
   status: GoatStatus;
   /** Drafts are persisted but never scheduled or analysed until explicitly deployed. */
   deploymentState?: 'DRAFT' | 'DEPLOYED';
@@ -772,6 +784,12 @@ export interface BacktestResult {
 
 export interface UserProfile {
   id: string;
+  /** Default venue for newly created GOATs; absence means cTrader. */
+  tradingProvider?: TradingProvider;
+  /** cTrader account ID selected from this user's own OAuth-granted account list. */
+  ctraderAccountId?: string;
+  /** Environment of the explicitly selected cTrader account. */
+  ctraderAccountIsLive?: boolean;
   email: string;
   displayName: string;
 

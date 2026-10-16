@@ -8,6 +8,7 @@ import React, {
   useState,
 } from 'react';
 
+import { useAuth } from "./AuthContext";
 import {
   MarketQuote,
   MarketSymbol,
@@ -154,6 +155,7 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
 export const MarketProvider: React.FC<{
   children: React.ReactNode;
 }> = ({ children }) => {
+  const { getApiAuthHeaders } = useAuth();
   const [quotes, setQuotes] = useState<Record<string, MarketQuote>>({});
   const [symbols, setSymbols] = useState<MarketSymbol[]>([]);
 
@@ -218,6 +220,7 @@ export const MarketProvider: React.FC<{
         signal: controller.signal,
         headers: {
           Accept: 'application/json',
+          ...(await getApiAuthHeaders()),
         },
       });
 
@@ -250,9 +253,10 @@ export const MarketProvider: React.FC<{
       if (mountedRef.current) {
         setSymbols(validSymbols);
       }
+      return validSymbols;
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        return;
+        return [];
       }
 
       console.warn('Market symbols fetch error:', error);
@@ -265,8 +269,9 @@ export const MarketProvider: React.FC<{
           )
         );
       }
+      return [];
     }
-  }, []);
+  }, [getApiAuthHeaders]);
 
   /**
    * Fetch all current market quotes.
@@ -292,6 +297,7 @@ export const MarketProvider: React.FC<{
         signal: controller.signal,
         headers: {
           Accept: 'application/json',
+          ...(await getApiAuthHeaders()),
         },
       });
 
@@ -369,7 +375,7 @@ export const MarketProvider: React.FC<{
         setLoading(false);
       }
     }
-  }, []);
+  }, [getApiAuthHeaders]);
 
   /**
    * Fetch historical candles.
@@ -408,6 +414,7 @@ export const MarketProvider: React.FC<{
           {
             headers: {
               Accept: 'application/json',
+              ...(await getApiAuthHeaders()),
             },
           }
         );
@@ -454,7 +461,7 @@ export const MarketProvider: React.FC<{
         );
       }
     },
-    []
+    [getApiAuthHeaders]
   );
 
   /**
@@ -542,6 +549,17 @@ export const MarketProvider: React.FC<{
 
     void bootstrap();
 
+    const onTradingProviderChanged = () => {
+      void (async () => {
+        const nextSymbols = await fetchSymbols();
+        if (mountedRef.current && nextSymbols.length > 0) {
+          setActiveSymbolState(nextSymbols[0].symbol);
+        }
+        await refreshQuotes();
+      })();
+    };
+    window.addEventListener('sirgoat:trading-provider-changed', onTradingProviderChanged);
+
     const interval = window.setInterval(() => {
       void refreshQuotes();
     }, QUOTE_REFRESH_INTERVAL_MS);
@@ -550,6 +568,7 @@ export const MarketProvider: React.FC<{
       mountedRef.current = false;
 
       window.clearInterval(interval);
+      window.removeEventListener('sirgoat:trading-provider-changed', onTradingProviderChanged);
 
       symbolsAbortController.current?.abort();
       quotesAbortController.current?.abort();

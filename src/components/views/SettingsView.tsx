@@ -3,6 +3,7 @@ import { Check, Moon, Palette as PaletteIcon, Sun } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { PropDaoSettings } from './PropDaoSettings';
+import { CTraderSettings } from './CTraderSettings';
 import { ModelPicker } from '../ModelPicker';
 import type { AutonomyMode } from '../../types';
 import {
@@ -37,6 +38,9 @@ interface KeyStatus {
 
 /** The `/api/settings/preferences` response shape. */
 interface UserPreferences {
+  tradingProvider: 'ctrader' | 'hyperliquid';
+  tradingProviderAvailable?: boolean;
+  tradingProviderUnavailableReason?: string | null;
   autonomyMode: AutonomyMode;
   aiModel: string | null;
   /** null = not checked, false = checked and no longer offered. */
@@ -127,6 +131,7 @@ export const SettingsView: React.FC = () => {
 
   // Preferences: autonomy mode + preferred reasoning model.
   const [preferences, setPreferences] = useState<UserPreferences>({
+    tradingProvider: 'ctrader',
     autonomyMode: 'PROPOSAL',
     aiModel: null,
     aiModelAvailable: null,
@@ -138,7 +143,7 @@ export const SettingsView: React.FC = () => {
   const [isSavingAutonomy, setIsSavingAutonomy] = useState(false);
 
   const savePreferences = useCallback(
-    async (patch: Partial<Pick<UserPreferences, 'autonomyMode' | 'aiModel'>>) => {
+    async (patch: Partial<Pick<UserPreferences, 'tradingProvider' | 'autonomyMode' | 'aiModel'>>) => {
       setPreferencesError(null);
       const previous = preferences;
       // Optimistic: the toggle must feel instant. Reverted on failure below.
@@ -153,6 +158,9 @@ export const SettingsView: React.FC = () => {
         if (!res.ok) throw new Error(body?.error?.message ?? 'Could not save that preference.');
         // Trust the server's normalised copy, not the optimistic guess.
         setPreferences((prev) => ({ ...prev, ...body }));
+        if (patch.tradingProvider !== undefined) {
+          window.dispatchEvent(new Event('sirgoat:trading-provider-changed'));
+        }
       } catch (err) {
         setPreferences(previous);
         setPreferencesError(err instanceof Error ? err.message : 'Could not save that preference.');
@@ -545,7 +553,42 @@ export const SettingsView: React.FC = () => {
         </div>
       </div>
 
-      {/* ---- PROPDAO ---- */}
+      {/* ---- TRADING PROVIDER ---- */}
+      <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
+        <div>
+          <h2 className="text-[13px] font-semibold text-fg">Trading provider</h2>
+          <p className="text-[11px] text-fg-muted mt-0.5">Choose which venue new GOATs use for market data and order routing. Existing GOATs keep their saved provider.</p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Trading provider">
+          {([
+            { id: 'ctrader' as const, label: 'cTrader', detail: 'Broker symbols, quotes, candles and cTrader orders.' },
+            { id: 'hyperliquid' as const, label: 'Hyperliquid + PropDAO', detail: 'Hyperliquid market data with the configured PropDAO execution path.' },
+          ]).map((option) => {
+            const selected = preferences.tradingProvider === option.id;
+            return (
+              <button key={option.id} type="button" role="radio" aria-checked={selected}
+                disabled={isSavingPreferences}
+                onClick={() => void savePreferences({ tradingProvider: option.id })}
+                className={`flex items-start gap-2 rounded-xl border px-3 py-3 text-left transition-colors disabled:opacity-60 ${selected ? 'border-accent bg-accent-soft' : 'border-line bg-sunken hover:border-line-strong'}`}>
+                <span className={`mt-0.5 h-3.5 w-3.5 rounded-full border ${selected ? 'border-accent bg-accent' : 'border-line-strong'}`} />
+                <span className="min-w-0">
+                  <span className="block text-xs font-semibold text-fg">{option.label}</span>
+                  <span className="mt-1 block text-[10px] leading-relaxed text-fg-muted">{option.detail}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {preferencesError && <p role="alert" className="text-xs text-red-500">{preferencesError}</p>}
+        {!preferences.tradingProviderAvailable && preferences.tradingProviderUnavailableReason && (
+          <p className="text-xs text-amber-600">{preferences.tradingProviderUnavailableReason}</p>
+        )}
+        <p className="text-[10px] text-fg-muted">A GOAT is pinned to the selected provider at creation. Switching this setting does not migrate existing GOATs. A cTrader GOAT requires a connected account and a valid market on that account.</p>
+      </div>
+
+      <CTraderSettings />
+
+      {/* ---- PROPDAO (Hyperliquid alternative) ---- */}
       <PropDaoSettings />
 
       {/* AUTONOMY MODE */}

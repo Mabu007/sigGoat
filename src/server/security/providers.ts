@@ -70,6 +70,24 @@ registerCredentialProvider({
 });
 registerCredentialProvider({ id: 'spacebunny', label: 'Space Bunny', executionCapable: false, normalise: (value) => requireFormat(value, 'Space Bunny', isPlausibleSpaceBunnyKey) });
 
+// cTrader stores an OAuth token bundle here, encrypted at rest like every other credential.
+// Validate the bundle shape without logging or exposing token contents.
+registerCredentialProvider({
+  id: 'ctrader',
+  label: 'cTrader OAuth',
+  executionCapable: true,
+  normalise: (value) => {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    let parsed: unknown;
+    try { parsed = JSON.parse(trimmed); } catch { throw new Error('cTrader credential bundle is invalid. Reconnect your cTrader account.'); }
+    if (!parsed || typeof parsed !== 'object' || typeof (parsed as { accessToken?: unknown }).accessToken !== 'string' || typeof (parsed as { refreshToken?: unknown }).refreshToken !== 'string') {
+      throw new Error('cTrader credential bundle is incomplete. Reconnect your cTrader account.');
+    }
+    return JSON.stringify(parsed);
+  },
+});
+
 registerCredentialProvider({
   id: 'propdao',
   label: 'PropDAO',
@@ -111,7 +129,8 @@ export class PersistenceCredentialRecordStore {
       row.provider === 'groq' ||
       row.provider === 'spacebunny' ||
       row.provider === 'propdao' ||
-      row.provider === 'telegram');
+      row.provider === 'telegram' ||
+      row.provider === 'ctrader');
   }
 }
 
