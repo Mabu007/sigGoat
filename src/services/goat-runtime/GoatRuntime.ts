@@ -838,9 +838,36 @@ export class GoatRuntime {
       // Truthful labelling: reasoningMode must reflect whether an AI model
       // is actually connected for this owner. A DEMO fallback result must
       // NEVER be reported as 'AI' (the UI badge depends on it).
-      const hasAiKey = await this.reasoning
-        .hasKeyFor(this.goatConfig.userId, this.goatConfig.aiProvider)
-        .catch(() => false);
+      let hasAiKey: boolean;
+      try {
+        hasAiKey = await this.reasoning.hasKeyFor(
+          this.goatConfig.userId,
+          this.goatConfig.aiProvider,
+        );
+      } catch (credentialError) {
+        // Do not collapse vault/database/decryption failures into "no key".
+        // That sent users to Settings without explaining that their saved key
+        // existed but the server could not read it.
+        const message =
+          'AI credential storage is unreadable or unavailable. Verify that CREDENTIAL_ENCRYPTION_KEY is stable across all deployment instances, then re-enter the provider key in Settings if needed.';
+        this.runtimeState.reasoningMode = 'DEMO';
+        console.error(
+          `[goat ${this.id}] AI credential lookup failed:`,
+          credentialError instanceof Error ? credentialError.message : 'unknown credential lookup error',
+        );
+        this.recordFailure(message);
+        await this.expirePendingProposals(message);
+        await this.recordWakeEvent(
+          reason,
+          triggerType,
+          market,
+          'ERROR',
+          message,
+          'ERROR',
+          generationId,
+        );
+        return this.runtimeState;
+      }
       this.runtimeState.reasoningMode = hasAiKey ? 'AI' : 'DEMO';
 
       if (!hasAiKey) {
