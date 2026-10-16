@@ -8,6 +8,7 @@ import React, {
   useState,
 } from 'react';
 
+import { useAuth } from "./AuthContext";
 import {
   MarketQuote,
   MarketSymbol,
@@ -154,6 +155,7 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
 export const MarketProvider: React.FC<{
   children: React.ReactNode;
 }> = ({ children }) => {
+  const { getApiAuthHeaders } = useAuth();
   const [quotes, setQuotes] = useState<Record<string, MarketQuote>>({});
   const [symbols, setSymbols] = useState<MarketSymbol[]>([]);
 
@@ -200,7 +202,7 @@ export const MarketProvider: React.FC<{
       // Storage unavailable (private browsing); the choice holds for this
       // session only, which is the correct degradation.
     }
-  }, []);
+  }, [getApiAuthHeaders]);
 
   /**
    * Load the available market universe.
@@ -218,6 +220,7 @@ export const MarketProvider: React.FC<{
         signal: controller.signal,
         headers: {
           Accept: 'application/json',
+          ...(await getApiAuthHeaders()),
         },
       });
 
@@ -408,6 +411,7 @@ export const MarketProvider: React.FC<{
           {
             headers: {
               Accept: 'application/json',
+              ...(await getApiAuthHeaders()),
             },
           }
         );
