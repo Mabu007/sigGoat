@@ -64,8 +64,8 @@ export interface ProviderTestResult {
 
 export interface ReasoningGateway {
   /**
-   * Runs canonical reasoning for a GOAT. Resolves the owner's credential;
-   * when absent, returns the clearly-labelled DEMO deterministic result.
+   * Runs canonical reasoning for a GOAT. The caller must handle a missing
+   * credential explicitly; this live path never substitutes demo reasoning.
    */
   evaluateGoat(context: GoatReasoningContext, model: string, providerOverride?: AiProvider): Promise<ReasoningResult>;
 
