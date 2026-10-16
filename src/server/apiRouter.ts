@@ -5046,7 +5046,6 @@ apiRouter.post(
       const registration = getTradingProviderRegistration(tradingProvider);
       return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}`);
     }
-    }
 
     const now = new Date().toISOString();
     const copy: FundGoat = {
@@ -5319,7 +5318,6 @@ apiRouter.post(
     if (!readiness.ready) {
       const registration = getTradingProviderRegistration(tradingProvider);
       return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}`);
-    }
     }
 
     // Ownership validation: skillIds must reference defaults or the user's own skills.
