@@ -343,8 +343,8 @@ async function marketDataProviderForGoat(goat: FundGoat): Promise<MarketDataProv
   return marketDataProviderForUser(goat.userId, resolveGoatTradingProvider(goat));
 }
 
-function executionPolicyForGoat(goat: FundGoat) {
-  if (resolveGoatTradingProvider(goat) === "ctrader") {
+function executionPolicyForProvider(userId: string, provider: TradingProvider) {
+  if (provider === "ctrader") {
     const enabled = process.env.CTRADER_EXECUTION_ENABLED === "true";
     return {
       enabled,
@@ -353,7 +353,11 @@ function executionPolicyForGoat(goat: FundGoat) {
       termsSummary: "cTrader orders require a selected account, fresh quotes, supported broker metadata and passing server-side risk checks.",
     };
   }
-  return propDaoFor(goat.userId).policyStatus();
+  return propDaoFor(userId).policyStatus();
+}
+
+function executionPolicyForGoat(goat: FundGoat) {
+  return executionPolicyForProvider(goat.userId, resolveGoatTradingProvider(goat));
 }
 
 async function marketStateStoreForGoat(goat: FundGoat, provider: MarketDataProvider): Promise<MarketStateStore> {
@@ -4116,8 +4120,9 @@ async function readUserPreferences(userId: string): Promise<{
 }> {
   const profile = await persistence.profiles.get(userId).catch(() => null);
   const autonomyMode = normaliseAutonomyMode(profile?.autonomyMode);
-  const execution = executionPolicyStatus(process.env);
   const tradingProvider = resolveUserTradingProvider(profile);
+  const execution = executionPolicyForProvider(userId, tradingProvider);
+  const tradingProviderReadiness = await tradingProviderReadinessForUser(userId, tradingProvider);
   const tradingProviderRegistration = getTradingProviderRegistration(tradingProvider);
 
   return {
@@ -4127,8 +4132,8 @@ async function readUserPreferences(userId: string): Promise<{
     autoTradeQty: typeof profile?.autoTradeQty === "number" ? profile.autoTradeQty : null,
     aiModel: profile?.aiModel ?? null,
     tradingProvider,
-    tradingProviderAvailable: isTradingProviderReady(tradingProvider),
-    tradingProviderUnavailableReason: tradingProviderRegistration.unavailableReason ?? null,
+    tradingProviderAvailable: tradingProviderReadiness.ready,
+    tradingProviderUnavailableReason: tradingProviderReadiness.ready ? null : (tradingProviderReadiness.reason ?? tradingProviderRegistration.unavailableReason ?? "Provider unavailable."),
     /**
      * Null when it cannot be checked (no key configured, or the catalogue is
      * unreachable) — which is different from `false`, meaning "checked and it
@@ -4144,7 +4149,7 @@ async function readUserPreferences(userId: string): Promise<{
     autonomyBlockedReason:
       profile?.autoTradeEnabled !== true || (execution.enabled && execution.authorised)
         ? ""
-        : "Automatic order submission is blocked by the server-side PropDAO execution policy. GOATs can still research and auto-accept proposals, but no order will be sent until execution is authorised.",
+        : `Automatic order submission is blocked by the selected ${tradingProvider} execution policy. GOATs can still research and prepare proposals, but no order will be sent until execution is authorised.`,
   };
 }
 
