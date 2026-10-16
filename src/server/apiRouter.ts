@@ -2087,10 +2087,12 @@ apiRouter.get(
       return fail(res, 503, "FIREBASE_SCHEDULER_UNAVAILABLE", "Firebase-backed scheduling is unavailable.");
     }
 
-    const due = await firebaseScheduler.claimDue(Date.now(), 8);
-    // Claim tracker work before executing AI runs. The shared Firestore lease
-    // prevents a GOAT from being claimed for both jobs in the same cron pass.
+    // Tracker checks are deterministic and time-sensitive; claim them first.
+    // The shared Firestore lease prevents one GOAT from being claimed for both
+    // tracker and AI work in a single cron pass. A coincident AI review remains
+    // due and can be claimed on the next pass after the tracker lease is released.
     const trackerDue = await firebaseScheduler.claimDueTrackerChecks(Date.now(), 16);
+    const due = await firebaseScheduler.claimDue(Date.now(), 8);
     let ran = 0;
     let trackerChecks = 0;
     let stale = 0;
