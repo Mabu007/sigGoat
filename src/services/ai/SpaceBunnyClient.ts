@@ -32,7 +32,7 @@ export class SpaceBunnyClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  private async complete(model: string, messages: Message[], maxTokens: number, timeoutMs = REQUEST_TIMEOUT_MS, json = true): Promise<string> {
+  private async complete(model: string, messages: Message[], maxTokens: number, timeoutMs = REQUEST_TIMEOUT_MS, json = true, reasoningEffort: 'low' | 'medium' = 'medium'): Promise<string> {
     if (!this.apiKey) throw new ApiRequestError('Space Bunny API key is not configured.', { code: 'MISSING_API_KEY' });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -47,7 +47,7 @@ export class SpaceBunnyClient {
           temperature: json ? 0.1 : 0.2,
           ...(json ? {
             response_format: { type: 'json_object' },
-            reasoning: { effort: 'medium' },
+            reasoning: { effort: reasoningEffort },
           } : {}),
         }),
         signal: controller.signal,
@@ -80,9 +80,15 @@ export class SpaceBunnyClient {
         const refusal = typeof choice?.message?.refusal === 'string'
           ? `; refusal: ${choice.message.refusal.slice(0, 240)}`
           : '';
+        const exhaustedBudget =
+          finishReason === 'length' ||
+          (typeof completionTokens === 'number' && completionTokens >= maxTokens);
         throw new ApiRequestError(
-          `Space Bunny returned no message content (finish_reason=${finishReason}, completion_tokens=${completionTokens})${refusal}.`,
-          { code: 'EMPTY_RESPONSE', retryable: true },
+          `Space Bunny returned no message content (finish_reason=${finishReason}, completion_tokens=${completionTokens}, max_tokens=${maxTokens})${refusal}.`,
+          {
+            code: exhaustedBudget ? 'REASONING_BUDGET_EXHAUSTED' : 'EMPTY_RESPONSE',
+            retryable: true,
+          },
         );
       }
       return text.trim();
@@ -112,12 +118,23 @@ export class SpaceBunnyClient {
       // retries on its normal scheduler backoff; it never becomes NO_TRADE.
       if (
         !(error instanceof ApiRequestError) ||
-        error.code !== 'EMPTY_RESPONSE' ||
+        !['EMPTY_RESPONSE', 'REASONING_BUDGET_EXHAUSTED'].includes(error.code ?? '') ||
         context.wakeReason?.startsWith('BACKTEST_')
       ) {
         throw error;
       }
-      raw = await this.complete(SPACE_BUNNY_MODEL, messages, REASONING_MAX_TOKENS);
+      // A reasoning-first model can consume the whole completion budget before
+      // emitting the JSON body. Retrying with the same budget/effort repeats
+      // the same failure. Give the recovery attempt more room and lower the
+      // reasoning effort so it prioritises the validated answer payload.
+      raw = await this.complete(
+        SPACE_BUNNY_MODEL,
+        messages,
+        8192,
+        REQUEST_TIMEOUT_MS,
+        true,
+        'low',
+      );
     }
     let parsed = tryParseJson(raw);
     // A historical replay has a strict serverless time budget. Do not spend a
