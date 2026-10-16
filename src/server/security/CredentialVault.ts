@@ -52,7 +52,8 @@ export type CredentialProviderId =
   | 'groq'
   | 'spacebunny'
   | 'propdao'
-  | 'telegram';
+  | 'telegram'
+  | 'ctrader';
 
 export interface CredentialProviderDescriptor {
   id: CredentialProviderId;
