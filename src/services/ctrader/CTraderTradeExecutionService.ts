@@ -108,7 +108,7 @@ export class CTraderTradeExecutionService {
     if (!this.executionEnabled) return blocked("cTrader order execution is disabled by the server. Set CTRADER_EXECUTION_ENABLED=true only after validating the demo environment.");
     if (intent.side !== "BUY" && intent.side !== "SELL") return blocked("The order side must be BUY or SELL.");
     if (!intent.symbol || !intent.symbol.trim()) return blocked("An exact cTrader symbol is required.");
-    if (!intent.intentId || !/^[A-Za-z0-9_-]{8,120}$/.test(intent.intentId)) return blocked("A valid intentId is required for order audit and reconciliation.");
+    if (!intent.intentId || !/^[A-Za-z0-9_-]{8,50}$/.test(intent.intentId)) return blocked("A valid cTrader client order ID of 8–50 alphanumeric, underscore or hyphen characters is required for audit and reconciliation.");
     if (!Number.isFinite(intent.qty) || intent.qty <= 0 || ![intent.entry, intent.stopLoss, intent.takeProfit].every((v) => Number.isFinite(v) && v > 0)) return blocked("Quantity, entry, stop-loss and take-profit must be finite positive numbers.");
     if (intent.side === "BUY" ? !(intent.stopLoss < intent.entry && intent.takeProfit > intent.entry) : !(intent.stopLoss > intent.entry && intent.takeProfit < intent.entry)) return blocked("Stop-loss and take-profit are on the wrong side of the entry.");
     const riskDistance = Math.abs(intent.entry - intent.stopLoss);
