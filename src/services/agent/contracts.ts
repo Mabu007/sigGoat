@@ -30,6 +30,8 @@
  *   decision   = ACTIONABLE | NO_TRADE
  */
 
+import { z } from 'zod';
+
 import {
   TradeDirection,
   OrderType,
@@ -1281,6 +1283,12 @@ function parseThesis(
   };
 }
 
+const ReasoningObjectSchema = z.object({}).passthrough();
+
+function noTradeFallback(reason: string): Record<string, unknown> {
+  return { decision: 'NO_TRADE', noTradeReason: reason, triggerSequence: [] };
+}
+
 /* ------------------------------------------------------------------ */
 /* Top-level parser                                                   */
 /* ------------------------------------------------------------------ */
@@ -1301,16 +1309,74 @@ export function parseReasoningResult(
   raw: unknown,
 ): ReasoningResult {
   const issues: string[] = [];
+  const envelope = ReasoningObjectSchema.safeParse(raw);
+  if (!envelope.success) {
+    throw new ReasoningValidationError(['response must be a JSON object']);
+  }
 
-  if (!isPlainObject(raw)) {
-    throw new ReasoningValidationError([
-      'response must be a JSON object',
-    ]);
+  const normalized: Record<string, unknown> = { ...envelope.data };
+  let criticalSectionMalformed = false;
+
+  const investigationObject = ReasoningObjectSchema.safeParse(normalized.investigation);
+  const investigationIssues: string[] = [];
+  if (!investigationObject.success ||
+      !parseInvestigation(investigationObject.data, investigationIssues) ||
+      investigationIssues.length > 0) {
+    normalized.investigation = {
+      summary: 'The AI investigation section was malformed. This review cannot support a trade.',
+      marketView: 'Malformed AI output; run a fresh validated review.',
+    };
+    criticalSectionMalformed = true;
+  } else {
+    normalized.investigation = investigationObject.data;
+  }
+
+  const thesisObject = ReasoningObjectSchema.safeParse(normalized.thesis);
+  const thesisIssues: string[] = [];
+  if (!thesisObject.success ||
+      !parseThesis(thesisObject.data, thesisIssues) ||
+      thesisIssues.length > 0) {
+    normalized.thesis = {
+      directionalBias: 'NEUTRAL',
+      summary: 'The AI thesis section was malformed; directional confidence is zero.',
+      confidence: 0,
+      trackers: [],
+      observationPlan: 'No automated trade action; require a fresh validated review.',
+    };
+    criticalSectionMalformed = true;
+  } else {
+    normalized.thesis = thesisObject.data;
+  }
+
+  const proposalObject = ReasoningObjectSchema.safeParse(normalized.proposal);
+  const proposalIssues: string[] = [];
+  if (!proposalObject.success ||
+      !parseProposal(proposalObject.data, proposalIssues) ||
+      proposalIssues.length > 0 ||
+      criticalSectionMalformed) {
+    normalized.proposal = noTradeFallback(
+      proposalIssues.length > 0
+        ? proposalIssues.join('; ')
+        : 'The AI response did not satisfy the required proposal schema. No trade was generated.',
+    );
+  } else {
+    normalized.proposal = proposalObject.data;
+  }
+
+  // Evidence is optional supporting context. Discard malformed entries;
+  // it must never invalidate or strengthen an otherwise untrusted proposal.
+  if (!Array.isArray(normalized.evidence)) normalized.evidence = [];
+  else {
+    normalized.evidence = normalized.evidence.filter((item) => {
+      const itemIssues: string[] = [];
+      return parseEvidenceItem(item, 0, 'unknown', itemIssues) !== undefined &&
+        itemIssues.length === 0;
+    });
   }
 
   const investigation =
     parseInvestigation(
-      raw.investigation,
+      normalized.investigation,
       issues,
     );
 
@@ -1321,27 +1387,27 @@ export function parseReasoningResult(
    * by SignalGate.
    */
   const marketFromProposal =
-    isPlainObject(raw.proposal) &&
-    typeof raw.proposal.market === 'string'
-      ? raw.proposal.market.trim()
+    isPlainObject(normalized.proposal) &&
+    typeof normalized.proposal.market === 'string'
+      ? normalized.proposal.market.trim()
       : undefined;
 
   const evidence =
     parseEvidenceList(
-      raw.evidence,
+      normalized.evidence,
       marketFromProposal || 'unknown',
       issues,
     );
 
   const thesis =
     parseThesis(
-      raw.thesis,
+      normalized.thesis,
       issues,
     );
 
   const proposal =
     parseProposal(
-      raw.proposal,
+      normalized.proposal,
       issues,
     );
 
