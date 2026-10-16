@@ -1412,9 +1412,9 @@ export class GoatRuntime {
       const isCross =
         tracker.operator === 'CROSS_ABOVE' || tracker.operator === 'CROSS_BELOW';
       const latestInput = candles.length ? candles[candles.length - 1] : null;
-      const latestEvaluable = isCross && latestInput?.finalized === false
-        ? candles[candles.length - 2]
-        : latestInput;
+      // Market providers return closed historical bars for tracker evaluation.
+      // The shared Candle shape intentionally contains OHLCV only.
+      const latestEvaluable = latestInput;
       const newestCandleMs = latestEvaluable?.time ?? null;
 
       // Level conditions are checked on every five-minute tracker pass, even
