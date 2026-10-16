@@ -42,6 +42,12 @@ export const CTraderSettings: React.FC = () => {
       if (nextStatus.connected) {
         const accountsRes = await fetch("/api/ctrader/accounts", { headers });
         const accountsBody = await accountsRes.json().catch(() => null);
+        if (!accountsRes.ok && accountsBody?.error?.code === "CTRADER_RECONNECT_REQUIRED") {
+          setStatus({ ...nextStatus, connected: false });
+          setAccounts([]);
+          setError(accountsBody?.error?.message ?? "cTrader authorization expired. Reconnect to restore account access.");
+          return;
+        }
         if (!accountsRes.ok) throw new Error(accountsBody?.error?.message ?? "Could not load cTrader accounts.");
         setAccounts(Array.isArray(accountsBody?.accounts) ? accountsBody.accounts : []);
         setSelectedAccountId(accountsBody?.selectedAccountId ?? "");
