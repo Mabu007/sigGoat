@@ -15,8 +15,9 @@ export interface TradingProviderRegistration {
  * A provider is marked ready only when its market-data AND execution paths are
  * both wired. cTrader credentials alone do not make the integration ready.
  * Hyperliquid currently uses Hyperliquid market data and the existing PropDAO
- * execution adapter; cTrader stays unavailable until its OAuth, quote/candle,
- * account and order adapters are implemented.
+ * execution adapter; cTrader has its own OAuth, quote/candle and order adapters.
+ * Runtime execution remains gated by CTRADER_EXECUTION_ENABLED and per-order
+ * broker-data/risk checks.
  */
 export const TRADING_PROVIDER_REGISTRY: Readonly<Record<TradingProvider, TradingProviderRegistration>> = {
   hyperliquid: {
@@ -29,10 +30,9 @@ export const TRADING_PROVIDER_REGISTRY: Readonly<Record<TradingProvider, Trading
   ctrader: {
     id: "ctrader",
     label: "cTrader",
-    marketDataAdapter: null,
-    executionAdapter: null,
-    ready: false,
-    unavailableReason: "cTrader market data and execution adapters are not wired into the GOAT runtime yet.",
+    marketDataAdapter: "ctrader",
+    executionAdapter: "ctrader",
+    ready: true,
   },
 };
 
