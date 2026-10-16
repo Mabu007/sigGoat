@@ -730,7 +730,10 @@ function ensureGoatRuntime(goat: FundGoat) {
       console.error(`[api] failed to persist single-asset migration for ${goat.id}:`, err);
     });
   }
-  subscribeToMarkets(canonicalGoat);
+  // The process-global ingestion service belongs to Hyperliquid only.
+  // cTrader uses its owner/account-scoped MarketStateStore and must not attach
+  // to the Hyperliquid subscription registry.
+  if (provider === "hyperliquid") subscribeToMarkets(canonicalGoat);
   const attached = allSkillsFor(canonicalGoat.userId).then((skills) =>
     skills.filter((s) => canonicalGoat.skillIds.includes(s.id)),
   );
@@ -2855,8 +2858,9 @@ async function buildCommandResolution(
   const skills = (await allSkillsFor(userId)).filter((s) =>
     goat.skillIds.includes(s.id),
   );
+  const goatMarketProvider = await marketDataProviderForGoat(goat);
   const ctx = await buildGoatContext(
-    { goats: persistence.goats, skills: persistence.skills, marketProvider },
+    { goats: persistence.goats, skills: persistence.skills, marketProvider: goatMarketProvider },
     goat.id,
     userId,
   );
@@ -5753,8 +5757,9 @@ apiRouter.post(
     if (!goat) return notFound(res);
 
     await ensureGoatRuntime(goat);
+    const goatMarketProvider = await marketDataProviderForGoat(goat);
     const { context, model } = await buildGoatContext(
-      { goats: persistence.goats, skills: persistence.skills, marketProvider },
+      { goats: persistence.goats, skills: persistence.skills, marketProvider: goatMarketProvider },
       goat.id,
       user.uid,
     );
@@ -6073,8 +6078,9 @@ apiRouter.post(
     }
 
     await ensureGoatRuntime(goat);
+    const goatMarketProvider = await marketDataProviderForGoat(goat);
     const { context, model } = await buildGoatContext(
-      { goats: persistence.goats, skills: persistence.skills, marketProvider },
+      { goats: persistence.goats, skills: persistence.skills, marketProvider: goatMarketProvider },
       goat.id,
       user.uid,
     );
