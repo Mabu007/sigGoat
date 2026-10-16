@@ -288,8 +288,15 @@ export class GoatWorkflowStore {
     const id = safeId(intent.id);
     const now = this.now();
     const record: GoatExecutionIntent = { ...intent, id, status: "CLAIMED", createdAt: now, updatedAt: now };
+    const activity: GoatWorkflowActivity = {
+      id: safeId(`execution_${id}_claimed`), workflowId: `execution:${id}`,
+      goatId: intent.goatId, userId: intent.userId, type: "EXECUTION_CLAIMED",
+      stage: "execution_claimed", at: now,
+      details: { provider: intent.provider, signalId: intent.signalId },
+    };
     if (this.firestore) {
       const ref = this.executionsCollection().doc(id);
+      const activityRef = this.activitiesCollection().doc(activity.id);
       return this.firestore.runTransaction(async (tx) => {
         const snapshot = await tx.get(ref);
         if (snapshot.exists) {
@@ -297,12 +304,14 @@ export class GoatWorkflowStore {
           return { claimed: false, conflict: Boolean(existing.fingerprint && record.fingerprint && existing.fingerprint !== record.fingerprint), intent: existing };
         }
         tx.create(ref, record);
+        tx.create(activityRef, activity);
         return { claimed: true, conflict: false, intent: record };
       });
     }
     const existing = this.db.executions[id];
     if (existing) return { claimed: false, conflict: Boolean(existing.fingerprint && record.fingerprint && existing.fingerprint !== record.fingerprint), intent: existing };
     this.db.executions[id] = record;
+    this.db.activities[activity.id] = activity;
     this.persist();
     return { claimed: true, conflict: false, intent: record };
   }
@@ -321,7 +330,18 @@ export class GoatWorkflowStore {
         const current = snapshot.data() as GoatExecutionIntent;
         if (current.status !== "CLAIMED") return current;
         const updated = { ...current, ...result, status, updatedAt: this.now() };
+        const activity: GoatWorkflowActivity = {
+          id: safeId(`execution_${key}_${status.toLowerCase()}`), workflowId: `execution:${key}`,
+          goatId: current.goatId, userId: current.userId,
+          type: status === "SUBMITTED" ? "EXECUTION_SUBMITTED" : "EXECUTION_FAILED",
+          stage: status === "SUBMITTED" ? "execution_submitted" : "execution_failed",
+          at: updated.updatedAt,
+          details: { provider: current.provider, signalId: current.signalId, ...(result.orderId ? { orderId: result.orderId } : {}) },
+        };
+        const activityRef = this.activitiesCollection().doc(activity.id);
+        const existingActivity = await tx.get(activityRef);
         tx.set(ref, updated);
+        if (!existingActivity.exists) tx.create(activityRef, activity);
         return updated;
       });
     }
@@ -329,7 +349,16 @@ export class GoatWorkflowStore {
     if (!current) return null;
     if (current.status !== "CLAIMED") return current;
     const updated = { ...current, ...result, status, updatedAt: this.now() };
+    const activity: GoatWorkflowActivity = {
+      id: safeId(`execution_${key}_${status.toLowerCase()}`), workflowId: `execution:${key}`,
+      goatId: current.goatId, userId: current.userId,
+      type: status === "SUBMITTED" ? "EXECUTION_SUBMITTED" : "EXECUTION_FAILED",
+      stage: status === "SUBMITTED" ? "execution_submitted" : "execution_failed",
+      at: updated.updatedAt,
+      details: { provider: current.provider, signalId: current.signalId, ...(result.orderId ? { orderId: result.orderId } : {}) },
+    };
     this.db.executions[key] = updated;
+    this.db.activities[activity.id] ??= activity;
     this.persist();
     return updated;
   }
