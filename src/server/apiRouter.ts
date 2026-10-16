@@ -1402,6 +1402,11 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
             }
             let outcome: Awaited<ReturnType<CTraderTradeExecutionService["execute"]>>;
             try {
+              const cTraderClient = await cTraderClientForUser(
+                ownedGoat.userId,
+                profile.ctraderAccountId,
+                profile.ctraderAccountIsLive === true,
+              );
               outcome = await new CTraderTradeExecutionService(cTraderClient).execute({
                 symbol: candidate.market,
                 side,
@@ -2176,7 +2181,7 @@ async function runScheduledWakeInBackground(
       : await ensureGoatRuntime(goat);
     await runtime.ready();
 
-    const reviewedState = await runtime.wake(reason, "SCHEDULED", runtime.getConfig().markets[0], undefined, eventId);
+    const reviewedState = await runtime.wake(reason, "SCHEDULED", runtime.getConfig().markets[0]);
 
     /**
      * The cron dispatcher normally anchors the next wake before this
