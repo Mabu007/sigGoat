@@ -343,6 +343,19 @@ async function marketDataProviderForGoat(goat: FundGoat): Promise<MarketDataProv
   return marketDataProviderForUser(goat.userId, resolveGoatTradingProvider(goat));
 }
 
+function executionPolicyForGoat(goat: FundGoat) {
+  if (resolveGoatTradingProvider(goat) === "ctrader") {
+    const enabled = process.env.CTRADER_EXECUTION_ENABLED === "true";
+    return {
+      enabled,
+      authorised: enabled,
+      summary: enabled ? "cTrader execution is enabled by the server." : "cTrader execution is disabled by the server.",
+      termsSummary: "cTrader orders require a selected account, fresh quotes, supported broker metadata and passing server-side risk checks.",
+    };
+  }
+  return propDaoFor(goat.userId).policyStatus();
+}
+
 async function marketStateStoreForGoat(goat: FundGoat, provider: MarketDataProvider): Promise<MarketStateStore> {
   if (resolveGoatTradingProvider(goat) === "hyperliquid") return marketStateStore;
   const profile = await persistence.profiles.get(goat.userId).catch(() => null);
@@ -5740,7 +5753,8 @@ apiRouter.post(
 
     const state = await runtime.wake(reason, "MANUAL_REEVALUATE", market);
     await notifyGoatMarketReview(goat, state, reason);
-    res.json({ state, dataMode: marketProvider.dataMode });
+    const goatMarketProvider = await marketDataProviderForGoat(goat);
+    res.json({ state, tradingProvider: resolveGoatTradingProvider(goat), dataMode: goatMarketProvider.dataMode });
   }),
 );
 
@@ -5819,7 +5833,7 @@ apiRouter.post(
       model,
       goat.aiProvider,
     );
-    res.json({ answer, dataMode: marketProvider.dataMode });
+    res.json({ answer, tradingProvider: resolveGoatTradingProvider(goat), dataMode: goatMarketProvider.dataMode });
   }),
 );
 
@@ -6111,8 +6125,8 @@ apiRouter.post(
         },
         // Execution restrictions travel WITH the proposal so the assistant can
         // never imply an order is possible when the policy says otherwise.
-        execution: propDaoFor(user.uid).policyStatus(),
-        dataSource: marketProvider.dataMode,
+        execution: executionPolicyForGoat(goat),
+        dataSource: goatMarketProvider.dataMode,
       },
     };
 
@@ -6121,7 +6135,7 @@ apiRouter.post(
       enriched,
       model,
     );
-    res.json({ answer, dataMode: marketProvider.dataMode });
+    res.json({ answer, tradingProvider: resolveGoatTradingProvider(goat), dataMode: goatMarketProvider.dataMode });
   }),
 );
 
