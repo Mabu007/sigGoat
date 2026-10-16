@@ -47,6 +47,7 @@ import {
   NotFoundError,
 } from "./repositories";
 import { createGoatWorkflowStore } from "./GoatWorkflowStore";
+import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode } from "./GoatTeamStore";
 import {
   UserScopedReasoningGateway,
   type AiProvider,
@@ -171,6 +172,7 @@ function keepBackgroundTaskAlive(task: Promise<unknown>): void {
 const persistence: PersistenceLayer = createPersistence();
 export const appPersistence = persistence;
 const goatWorkflowStore = createGoatWorkflowStore();
+const goatTeamStore = createGoatTeamStore();
 
 /**
  * Bind the credential vault to THIS persistence layer, before any route can
@@ -5396,6 +5398,170 @@ async function runtimeFor(
 
   return runtime;
 }
+
+// ---- GOAT teams: persisted groups of existing, owner-scoped GOATs ----
+
+apiRouter.get("/goat-teams", handle(async (req, res) => {
+  const user = requireUser(req);
+  const teams = await goatTeamStore.listForUser(user.uid);
+  const expanded = await Promise.all(teams.map(async team => ({
+    ...team,
+    members: (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, user.uid)))).filter(Boolean),
+  })));
+  res.json({ teams: expanded });
+}));
+
+apiRouter.post("/goat-teams", handle(async (req, res) => {
+  const user = requireUser(req);
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  const requestedGoatIds: unknown = req.body?.goatIds;
+  const memberGoatIds: string[] = Array.isArray(requestedGoatIds)
+    ? Array.from(new Set<string>(
+        (requestedGoatIds as unknown[])
+          .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+          .map(id => id.trim()),
+      ))
+    : [];
+  const rawMode = req.body?.coordinationMode;
+  const coordinationMode: GoatTeamCoordinationMode =
+    rawMode === "CONSENSUS" || rawMode === "LEAD_REVIEW" ? rawMode : "INDEPENDENT";
+  const leadGoatId = typeof req.body?.leadGoatId === "string" ? req.body.leadGoatId : undefined;
+  if (!name || name.length > 80) return fail(res, 400, "INVALID_TEAM_NAME", "Team name must be between 1 and 80 characters.");
+  if (memberGoatIds.length < 2 || memberGoatIds.length > 10) return fail(res, 400, "INVALID_TEAM_MEMBERS", "A team must contain between 2 and 10 distinct GOATs.");
+  if (req.body?.coordinationMode !== undefined && !["INDEPENDENT", "CONSENSUS", "LEAD_REVIEW"].includes(req.body.coordinationMode)) {
+    return fail(res, 400, "INVALID_COORDINATION_MODE", "coordinationMode must be INDEPENDENT, CONSENSUS, or LEAD_REVIEW.");
+  }
+  if (coordinationMode === "LEAD_REVIEW" && (!leadGoatId || !memberGoatIds.includes(leadGoatId))) {
+    return fail(res, 400, "INVALID_TEAM_LEAD", "LEAD_REVIEW teams require leadGoatId to identify one of the team members.");
+  }
+  const members = await Promise.all(memberGoatIds.map(id => persistence.goats.getForUser(id, user.uid)));
+  if (members.some(member => !member)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "Every team member must be an existing GOAT owned by the signed-in user.");
+  const now = new Date().toISOString();
+  const team: GoatTeam = {
+    id: `team_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    ownerUserId: user.uid,
+    name,
+    memberGoatIds,
+    coordinationMode,
+    ...(leadGoatId ? { leadGoatId } : {}),
+    status: "DRAFT",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const saved = await goatTeamStore.create(team);
+  res.status(201).json({ team: saved, members });
+}));
+
+apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+  const members = await Promise.all(team.memberGoatIds.map(async id => {
+    const goat = await persistence.goats.getForUser(id, user.uid);
+    if (!goat) return null;
+    return { ...goat, runtimeState: goatRuntimeRegistry.get(id)?.getState() ?? null };
+  }));
+  res.json({ team, members: members.filter(Boolean) });
+}));
+
+apiRouter.get("/goat-teams/:id/assessment", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+  const memberSignals = await Promise.all(team.memberGoatIds.map(async goatId => {
+    const signals = await persistence.signals.listByGoat(goatId, 100);
+    const latestByMarket = new Map<string, TradeSignal>();
+    for (const signal of signals) {
+      if (signal.status !== "ACTIONABLE" && signal.status !== "NO_TRADE") continue;
+      if (signal.expiresAt && Date.parse(signal.expiresAt) <= Date.now()) continue;
+      const current = latestByMarket.get(signal.market);
+      if (!current || signal.createdAt > current.createdAt) latestByMarket.set(signal.market, signal);
+    }
+    return { goatId, latestByMarket };
+  }));
+  const markets = [...new Set(memberSignals.flatMap(member => [...member.latestByMarket.keys()]))].sort();
+  const assessments = markets.map(market => {
+    const votes = memberSignals.map(member => {
+      const signal = member.latestByMarket.get(market);
+      return {
+        goatId: member.goatId,
+        direction: signal?.direction ?? null,
+        signalId: signal?.id ?? null,
+        confidence: signal?.confidence ?? null,
+        status: signal?.status ?? "NO_CURRENT_SIGNAL",
+        createdAt: signal?.createdAt ?? null,
+      };
+    });
+    const availableVotes = votes.filter(vote => vote.direction !== null);
+    const directions = new Set(availableVotes.map(vote => vote.direction));
+    let outcome: string;
+    if (team.coordinationMode === "INDEPENDENT") {
+      outcome = "INDEPENDENT_SIGNALS";
+    } else if (team.coordinationMode === "CONSENSUS") {
+      outcome = availableVotes.length !== team.memberGoatIds.length
+        ? "WAITING_FOR_ALL_MEMBERS"
+        : directions.size === 1 && availableVotes.every(vote => vote.direction === "LONG" || vote.direction === "SHORT")
+          ? "CONSENSUS_READY"
+          : "NO_CONSENSUS";
+    } else {
+      const lead = votes.find(vote => vote.goatId === team.leadGoatId);
+      if (!lead || !lead.direction) outcome = "LEAD_SIGNAL_MISSING";
+      else if (lead.direction !== "LONG" && lead.direction !== "SHORT") outcome = "LEAD_NO_TRADE";
+      else if (votes.some(vote => vote.goatId !== team.leadGoatId && (vote.direction === "LONG" || vote.direction === "SHORT") && vote.direction !== lead.direction)) outcome = "REVIEW_CONFLICT";
+      else outcome = "LEAD_REVIEW_REQUIRED";
+    }
+    return { market, outcome, votes };
+  });
+  res.json({
+    teamId: team.id,
+    coordinationMode: team.coordinationMode,
+    assessments,
+    executionAllowed: false,
+    note: "Team assessment is informational only. It never creates or submits orders; individual GOAT SignalGate and approval/execution protections remain in force.",
+  });
+}));
+
+apiRouter.post("/goat-teams/:id/status", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+  const action = req.body?.action;
+  if (action !== "PLAY" && action !== "PAUSE") return fail(res, 400, "INVALID_TEAM_ACTION", "Team action must be PLAY or PAUSE.");
+  const results: Array<{ goatId: string; ok: boolean; error?: string }> = [];
+  for (const goatId of team.memberGoatIds) {
+    try {
+      await setGoatStatusFor(user.uid, goatId, action === "PAUSE");
+      results.push({ goatId, ok: true });
+    } catch (error) {
+      results.push({ goatId, ok: false, error: error instanceof Error ? error.message : "Unknown deployment error" });
+    }
+  }
+  const failed = results.some(result => !result.ok);
+  const now = new Date().toISOString();
+  const updated: GoatTeam = {
+    ...team,
+    status: failed ? "PARTIAL" : action === "PAUSE" ? "PAUSED" : "DEPLOYED",
+    updatedAt: now,
+    ...(action === "PLAY" && !failed ? { deployedAt: team.deployedAt ?? now } : {}),
+  };
+  await goatTeamStore.save(updated);
+  if (failed) return res.status(409).json({ error: { code: "TEAM_ACTION_PARTIAL", message: "Some team members could not be updated. Inspect results and retry after resolving the reported issue." }, team: updated, results });
+  res.json({ team: updated, results });
+}));
+
+apiRouter.delete("/goat-teams/:id", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+  const failures: string[] = [];
+  for (const goatId of team.memberGoatIds) {
+    try { await setGoatStatusFor(user.uid, goatId, true); }
+    catch (error) { failures.push(`${goatId}: ${error instanceof Error ? error.message : "pause failed"}`); }
+  }
+  if (failures.length) return res.status(409).json({ error: { code: "TEAM_PAUSE_FAILED", message: "The team was not deleted because one or more members could not be paused." }, failures });
+  await goatTeamStore.deleteForUser(team.id, user.uid);
+  res.json({ success: true, deletedId: team.id });
+}));
 
 apiRouter.get(
   "/goats",
