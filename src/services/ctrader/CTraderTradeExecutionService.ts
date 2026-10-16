@@ -122,6 +122,7 @@ export class CTraderTradeExecutionService {
       this.client.reconcile(),
     ]);
     if (account.accessRights !== 0) return blocked("The selected cTrader account does not report FULL_ACCESS. No order was sent.");
+    if (account.isLimitedRisk) return blocked("This cTrader account uses limited-risk execution rules that require guaranteed-stop-loss and relative SL/TP fields. This adapter does not yet submit those fields, so execution is blocked rather than sending an incompatible order.");
     const depositAsset = assets.find((asset) => asset.assetId === account.depositAssetId);
     if (!depositAsset || depositAsset.name.toUpperCase() !== "USD") return blocked("Risk controls currently require the cTrader account's deposit currency to be USD; this account's currency could not be verified as USD.");
     const symbol = symbols.find((item) => item.symbolName === intent.symbol);
@@ -136,7 +137,8 @@ export class CTraderTradeExecutionService {
     const quote = await this.client.getQuote(symbol);
     const bid = n(quote.bid), ask = n(quote.ask), timestamp = n(quote.timestamp);
     if (bid === null || ask === null || timestamp === null || ask < bid || timestamp > Date.now() + 5_000 || Date.now() - timestamp > 30_000) return blocked("A fresh, valid cTrader bid/ask quote is required immediately before execution.");
-    if (intent.side === "BUY" && intent.entry > ask || intent.side === "SELL" && intent.entry < bid) return blocked("The requested limit price is marketable against the current quote; review the price before submitting.");
+    if (intent.side === "BUY" && intent.entry >= ask || intent.side === "SELL" && intent.entry <= bid) return blocked("The requested limit price is marketable against the current quote; review the price before submitting.");
+    if (intent.side === "BUY" && (intent.stopLoss >= bid || intent.takeProfit <= ask) || intent.side === "SELL" && (intent.stopLoss <= ask || intent.takeProfit >= bid)) return blocked("The current bid/ask has already crossed or invalidated the proposed stop-loss or take-profit. Request a fresh proposal.");
 
     const commission = roundTripCommission(symbol, volumeCents, intent.qty, intent.entry);
     if (commission === null) return blocked("The broker did not provide supported commission metadata. Execution is blocked rather than assuming zero fees.");
