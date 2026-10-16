@@ -6,15 +6,22 @@ import { ThemeProvider } from './context/ThemeContext';
 
 import { Header } from './components/Header';
 import { Navigation, type TabId } from './components/Navigation';
-import { QuotesView } from './components/views/QuotesView';
-import { GoatsView } from './components/views/GoatsView';
-import { ProposalsView } from './components/views/ProposalsView';
-import { SkillsView } from './components/views/SkillsView';
-import { BacktestView } from './components/views/BacktestView';
-import { SettingsView } from './components/views/SettingsView';
 import { AuthGate } from './components/AuthGate';
-import { Chatbot } from './components/Chatbot/Chatbot';
-import { PublicRobotView } from './components/PublicRobotView';
+
+const QuotesView = React.lazy(() => import('./components/views/QuotesView').then(module => ({ default: module.QuotesView })));
+const GoatsView = React.lazy(() => import('./components/views/GoatsView').then(module => ({ default: module.GoatsView })));
+const ProposalsView = React.lazy(() => import('./components/views/ProposalsView').then(module => ({ default: module.ProposalsView })));
+const SkillsView = React.lazy(() => import('./components/views/SkillsView').then(module => ({ default: module.SkillsView })));
+const BacktestView = React.lazy(() => import('./components/views/BacktestView').then(module => ({ default: module.BacktestView })));
+const SettingsView = React.lazy(() => import('./components/views/SettingsView').then(module => ({ default: module.SettingsView })));
+const Chatbot = React.lazy(() => import('./components/Chatbot/Chatbot').then(module => ({ default: module.Chatbot })));
+const PublicRobotView = React.lazy(() => import('./components/PublicRobotView').then(module => ({ default: module.PublicRobotView })));
+
+const ViewLoadingFallback: React.FC = () => (
+  <div role="status" className="flex min-h-40 items-center justify-center text-sm text-fg-muted">
+    Loading view…
+  </div>
+);
 
 /**
  * Deep-link support without a router dependency.
@@ -75,24 +82,26 @@ const MainApp: React.FC = () => {
         />
 
         <main className="mx-auto w-full max-w-7xl flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
-          {activeTab === 'markets' && <QuotesView />}
+          <React.Suspense fallback={<ViewLoadingFallback />}>
+            {activeTab === 'markets' && <QuotesView />}
 
-          {activeTab === 'goats' && (
-            <GoatsView
-              isOpenCreateModal={isOpenCreateGoatModal}
-              onCloseCreateModal={() => setIsOpenCreateGoatModal(false)}
-              onOpenCreateModal={() => setIsOpenCreateGoatModal(true)}
-            />
-          )}
+            {activeTab === 'goats' && (
+              <GoatsView
+                isOpenCreateModal={isOpenCreateGoatModal}
+                onCloseCreateModal={() => setIsOpenCreateGoatModal(false)}
+                onOpenCreateModal={() => setIsOpenCreateGoatModal(true)}
+              />
+            )}
 
-          {activeTab === 'proposals' && <ProposalsView />}
+            {activeTab === 'proposals' && <ProposalsView />}
 
-          {/* Reachable from a GOAT, not a top-level destination. */}
-          {activeTab === 'skills' && <SkillsView />}
+            {/* Reachable from a GOAT, not a top-level destination. */}
+            {activeTab === 'skills' && <SkillsView />}
 
-          {activeTab === 'backtest' && <BacktestView />}
+            {activeTab === 'backtest' && <BacktestView />}
 
-          {activeTab === 'settings' && <SettingsView />}
+            {activeTab === 'settings' && <SettingsView />}
+          </React.Suspense>
         </main>
       </div>
     </div>
@@ -141,14 +150,14 @@ export default function App() {
       <AuthProvider>
         <AuthGate>
             {typeof window !== 'undefined' && /^\/robot\/[^/]+\/?$/.test(window.location.pathname)
-              ? <PublicRobotView slug={decodeURIComponent(window.location.pathname.split('/')[2] || '')} />
+              ? <React.Suspense fallback={<ViewLoadingFallback />}><PublicRobotView slug={decodeURIComponent(window.location.pathname.split('/')[2] || '')} /></React.Suspense>
               : <>
                   <MarketProvider>
                     <GoatProvider>
                       <MainApp />
                     </GoatProvider>
                   </MarketProvider>
-                  <Chatbot />
+                  <React.Suspense fallback={null}><Chatbot /></React.Suspense>
                 </>}
         </AuthGate>
       </AuthProvider>
