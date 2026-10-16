@@ -5,9 +5,10 @@
  * ReasoningGateway remains the only way to invoke a model. Trading decisions,
  * SignalGate, provider selection and execution stay in their existing owners.
  *
- * This first graph deliberately has no checkpointing: its state is short-lived
- * and contains no credentials. Durable checkpoints and resumable workflows are
- * a later phase, after a persistence strategy is selected.
+ * The graph itself keeps model context in memory; the runtime now records
+ * durable stage transitions in GoatWorkflowStore without persisting prompts,
+ * raw market context, model output, or credentials. Approval decisions and
+ * order-intent claims are persisted separately by the same workflow ledger.
  */
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { parseReasoningResult, type ReasoningResult } from "../agent/contracts";
@@ -23,7 +24,7 @@ export interface GoatReasoningGraphInput {
     model: string,
     provider?: AiProvider,
   ) => Promise<ReasoningResult>;
-  /** Called after a graph node completes; persist only stage metadata, never state payloads. */
+  /** Called at each node's completion boundary; persist metadata only, never state payloads. */
   onStage?: (stage: string) => Promise<void> | void;
 }
 
