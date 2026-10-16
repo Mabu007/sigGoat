@@ -46,6 +46,7 @@ import {
   PersistenceLayer,
   NotFoundError,
 } from "./repositories";
+import { createGoatWorkflowStore } from "./GoatWorkflowStore";
 import {
   UserScopedReasoningGateway,
   type AiProvider,
@@ -169,6 +170,7 @@ function keepBackgroundTaskAlive(task: Promise<unknown>): void {
 
 const persistence: PersistenceLayer = createPersistence();
 export const appPersistence = persistence;
+const goatWorkflowStore = createGoatWorkflowStore();
 
 /**
  * Bind the credential vault to THIS persistence layer, before any route can
@@ -589,7 +591,7 @@ async function runScheduledWakeSync(
     : await ensureGoatRuntime(goat);
 
   try {
-    const reviewedState = await runtime.wake(reason, "SCHEDULED", goat.markets[0]);
+    const reviewedState = await runtime.wake(reason, "SCHEDULED", goat.markets[0], undefined, eventId);
     await notifyGoatMarketReview(goat, reviewedState, reason);
   } finally {
     const refreshed = await persistence.goats.get(goatId);
@@ -735,6 +737,7 @@ const runtimeOptions = {
   signals: persistence.signals,
   theses: persistence.theses,
   wakeEvents: persistence.wakeEvents,
+  workflowStore: goatWorkflowStore,
   scheduler,
 };
 
@@ -2134,7 +2137,7 @@ async function runScheduledWakeInBackground(
       : await ensureGoatRuntime(goat);
     await runtime.ready();
 
-    const reviewedState = await runtime.wake(reason, "SCHEDULED", runtime.getConfig().markets[0]);
+    const reviewedState = await runtime.wake(reason, "SCHEDULED", runtime.getConfig().markets[0], undefined, eventId);
 
     /**
      * The cron dispatcher normally anchors the next wake before this
