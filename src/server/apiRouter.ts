@@ -6742,6 +6742,13 @@ const CHAT_SYSTEM_PROMPT =
   "When researching, plan what evidence is needed, inspect retrieved data, identify material gaps, use available follow-up research, then synthesize a clear view. For complex trading questions, include the strongest bullish and bearish case, important confirmation/invalidation conditions, and risk only where relevant. Never expose another user's data or credentials. ACTION ORCHESTRATION: When the user asks to create a GOAT, deploy a GOAT, generate a trade proposal, or submit an order, the chat interface opens the matching structured action card. Treat that card and the authenticated server action endpoints as the only route for state changes. Never claim an action completed until the endpoint returns a completed result. GOAT creation saves a draft; deployment requires a separate explicit confirmation. Order submission requires a separate explicit confirmation, a fresh server-side deterministic risk check, an owned PropDAO account, and the provider execution policy to allow it. If execution is disabled or unauthorised, say so plainly and do not suggest that an order was placed. Never execute trades or alter GOAT settings based only on model text.";
 
 /** Resolve only the credential belonging to the user's selected provider. */
+function chatSystemPromptForTradingProvider(provider: TradingProvider): string {
+  if (provider === "ctrader") {
+    return CHAT_SYSTEM_PROMPT + "\n\nACTIVE VENUE OVERRIDE (takes precedence over any conflicting venue-specific instructions above): The user's selected trading provider is cTrader. Use only exact broker symbols, quotes, and candles in ON-DEMAND CTRADER RESEARCH RESULTS. Never label broker data as Hyperliquid data, never require a Hyperliquid ticker, never invent a broker symbol mapping, and never fall back to Hyperliquid when cTrader data is unavailable. If cTrader is not connected or the exact symbol is absent, state that clearly.";
+  }
+  return CHAT_SYSTEM_PROMPT + "\n\nACTIVE VENUE: The user's selected trading provider is Hyperliquid for market research. Use exact Hyperliquid-listed tickers and clearly distinguish its research feed from the PropDAO execution venue.";
+}
+
 async function resolveChatbotCredential(uid: string): Promise<{ provider: AiProvider; key: string | undefined }> {
   const provider = await reasoningGateway.providerFor(uid);
   if (provider === "spacebunny") {
@@ -7297,6 +7304,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
 
     const { provider, key } = await resolveChatbotCredential(user.uid);
     const activeModel = await resolveChatModel(user.uid, modelId, provider);
+    const userTradingProvider = resolveUserTradingProvider(await persistence.profiles.get(user.uid).catch(() => null));
     if (!key) {
       emit({ type: "error", message: "No " + provider + " API key is configured. Add the selected provider key in Settings." });
       res.end();
@@ -7325,7 +7333,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       /\b(price|quote|market|chart|buy|sell|trade|trading|analysis|analyse|analyze|situation|think|look|doing|opportunit|support|resistance|trend|right now|live)\b/i.test(message) &&
       !/\bxyz:(EUR|GBP|JPY)\b/i.test(message);
     let clarificationPrompt = "";
-    if (!confirmedSymbol && requestedPair) {
+    if (userTradingProvider === "hyperliquid" && !confirmedSymbol && requestedPair) {
       const left = requestedPair[1].toUpperCase(), right = requestedPair[2].toUpperCase();
       const currency = left === "USD" ? right : right === "USD" ? left : "";
       if (currency && ["EUR", "GBP", "JPY"].includes(currency)) {
@@ -7334,7 +7342,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       } else {
         clarificationPrompt = "The user named conventional pair " + left + "/" + right + " with no direct exact ticker established. Do not fetch market data or guess. Ask which listed Hyperliquid instrument they mean, naming only plausible supported symbols such as xyz:EUR or xyz:GBP if relevant. Do not discuss external spot FX or another data provider.";
       }
-    } else if (!confirmedSymbol && bareCurrency) {
+    } else if (userTradingProvider === "hyperliquid" && !confirmedSymbol && bareCurrency) {
       const symbol = /\b(euro|eur)\b/i.test(message) ? "xyz:EUR" : /\b(pound|sterling|gbp)\b/i.test(message) ? "xyz:GBP" : "xyz:JPY";
       clarificationPrompt = "The user referred vaguely to a currency rather than an exact ticker. Do not fetch data yet. Ask exactly one short confirmation: 'Do you mean Hyperliquid's " + symbol + " market?' Do not discuss external spot FX or another data provider.";
     }
@@ -7366,7 +7374,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     emit({ type: "status", message: researchNeeded ? "Cross-checking evidence and synthesizing the analysis…" : "Generating the reply…" });
     const history = await persistence.messages.listByChat(chat.id, 40);
     const modelMessages = [
-      { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + (clarificationPrompt ? "CLARIFICATION TURN: " + clarificationPrompt + " Do not claim you fetched any data. Keep the response short and ask for confirmation." : "") + "\n\n" + researchContext },
+      { role: "system", content: chatSystemPromptForTradingProvider(userTradingProvider) + "\n\n" + (clarificationPrompt ? "CLARIFICATION TURN: " + clarificationPrompt + " Do not claim you fetched any data. Keep the response short and ask for confirmation." : "") + "\n\n" + researchContext },
       ...history.map((item) => ({ role: item.role, content: item.content })),
     ];
 
@@ -7525,7 +7533,7 @@ apiRouter.post("/chat", authMiddleware, async (req, res) => {
     const researchContext = await buildChatResearchContext(user.uid, message.trim());
     const history = await persistence.messages.listByChat(chat.id, 40);
     const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
-      { role: "system", content: CHAT_SYSTEM_PROMPT + "\n\n" + researchContext },
+      { role: "system", content: chatSystemPromptForTradingProvider(resolveUserTradingProvider(await persistence.profiles.get(user.uid).catch(() => null))) + "\n\n" + researchContext },
       ...history.map((item) => ({ role: item.role as "user" | "assistant", content: item.content })),
     ];
     const model = await resolveChatModel(user.uid, undefined, provider);
