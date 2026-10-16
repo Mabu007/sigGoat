@@ -847,6 +847,7 @@ export class GoatRuntime {
         const message =
           'AI not connected: add a valid OpenRouter/provider API key in Settings before deploying this GOAT.';
         this.recordFailure(message);
+        await this.expirePendingProposals(message);
         await this.recordWakeEvent(
           reason,
           triggerType,
@@ -865,7 +866,9 @@ export class GoatRuntime {
         reasoningResult = await this.reasoning.evaluateGoat(reasoningContext, this.goatConfig.model, this.goatConfig.aiProvider);
       } catch (err) {
         if (err instanceof ReasoningValidationError) {
-          this.recordFailure(`Model response failed validation: ${err.issues.slice(0, 3).join('; ')}`);
+          const failure = `Model response failed validation: ${err.issues.slice(0, 3).join('; ')}`;
+          await this.expirePendingProposals(failure);
+          this.recordFailure(failure);
           await this.recordWakeEvent(
             reason,
             triggerType,
@@ -893,7 +896,9 @@ export class GoatRuntime {
               ? 'The configured model is no longer offered by OpenRouter. Pick a current model in Settings → AI Reasoning Engine.'
               : 'Will retry with backoff.';
 
-          this.recordFailure(`Reasoning model unavailable: ${raw}`);
+          const failure = `Reasoning model unavailable: ${raw}`;
+          await this.expirePendingProposals(failure);
+          this.recordFailure(failure);
           await this.recordWakeEvent(
             reason,
             triggerType,
@@ -1653,6 +1658,49 @@ export class GoatRuntime {
     this.runtimeState.lastError = message;
     this.runtimeState.status = 'WATCHING';
     console.error(`[goat ${this.id}] ${message} (consecutive failures: ${this.runtimeState.consecutiveFailures})`);
+  }
+
+  /**
+   * A failed current review cannot leave an older, undecided ACTIONABLE signal
+   * presented as the GOAT's trusted recommendation. Retire persisted pending
+   * proposals and mirror that status in the live actor state. Finalised user
+   * decisions are immutable and are deliberately not changed.
+   */
+  private async expirePendingProposals(reason: string): Promise<void> {
+    const now = new Date(this.now()).toISOString();
+    const current = this.runtimeState.latestSignal;
+    if (current?.status === 'ACTIONABLE' && !current.decision) {
+      this.runtimeState.latestSignal = {
+        ...current,
+        status: 'EXPIRED',
+        updatedAt: now,
+        rationale: `${current.rationale} Expired because the latest AI review failed: ${reason.slice(0, 300)}`,
+      };
+    }
+
+    if (!this.signalRepo) return;
+    try {
+      const signals = await this.signalRepo.listByGoat(this.id, 500);
+      for (const signal of signals) {
+        if (signal.status !== 'ACTIONABLE' || signal.decision) continue;
+        const expired: TradeSignal = {
+          ...signal,
+          status: 'EXPIRED',
+          updatedAt: now,
+          rationale: `${signal.rationale} Expired because the latest AI review failed: ${reason.slice(0, 300)}`,
+        };
+        const saved = await this.signalRepo.update(expired);
+        if (!saved) {
+          console.warn(`[goat ${this.id}] pending proposal ${signal.id} could not be expired after review failure.`);
+          continue;
+        }
+        if (this.runtimeState.latestSignal?.id === signal.id) {
+          this.runtimeState.latestSignal = expired;
+        }
+      }
+    } catch (error) {
+      console.error(`[goat ${this.id}] could not expire pending proposals after review failure:`, error);
+    }
   }
 
   private isCurrentGeneration(generationId: string): boolean {
