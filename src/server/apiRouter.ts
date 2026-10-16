@@ -762,6 +762,9 @@ const KNOWN_LISTED_MARKETS = new Set([
  * (there is no fabricated alias), and the remaining markets are kept.
  */
 export function migrateGoatMarkets(goat: FundGoat): FundGoat | null {
+  // Legacy aliases only apply to the live Hyperliquid venue. Paper has its own canonical symbols.
+  if (marketProvider.dataMode === "PAPER") return null;
+
   const migrated = goat.markets.map((market) => {
     const replacement = STALE_MARKET_REPLACEMENTS[market.toUpperCase()];
     if (!replacement) return market;
@@ -2244,7 +2247,7 @@ apiRouter.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-apiRouter.get("/settings/status", async (_req, res) => {
+apiRouter.get("/settings/status", handle(async (_req, res) => {
   const mode = resolveAuthMode();
   const symbols = await marketProvider.getSymbols();
 
@@ -2316,7 +2319,7 @@ apiRouter.get("/settings/status", async (_req, res) => {
     filesystemPersistence: isEphemeralRuntime() ? "disabled" : "enabled",
     notifications: await notificationOutbox.health(),
   });
-});
+}));
 
 // Market data reads are public (paper feed, no secrets).
 apiRouter.get(
