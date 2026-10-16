@@ -156,18 +156,40 @@ export class CTraderOpenApiClient {
     });
   }
 
+  async authenticateAccount(): Promise<void> {
+    if (!this.accountId) throw new Error("A cTrader account ID is required for account authentication.");
+    await this.withSocket(async () => undefined);
+  }
+
   async listAccounts(): Promise<CTraderAccount[]> {
-    return this.withSocket(async (socket) => {
+    const ids = await this.withSocket(async (socket) => {
       const payload = await this.request(socket, GET_ACCOUNTS_REQ, GET_ACCOUNTS_RES, { accessToken: this.token.accessToken });
+      const repeated = payload.ctidTraderAccountId;
+      if (Array.isArray(repeated)) return repeated.map((value) => String(value)).filter((value) => /^\\d+$/.test(value));
+      // Compatibility with protocol revisions that return account objects.
       return payloadArray<Record<string, unknown>>(payload, "ctidTraderAccount")
-        .map((account) => ({
-          ctidTraderAccountId: String(account.ctidTraderAccountId ?? ""),
-          isLive: account.isLive === true,
-          ...(number(account.traderLogin) !== undefined ? { traderLogin: String(account.traderLogin) } : {}),
-          ...(typeof account.brokerTitleShort === "string" ? { brokerTitleShort: account.brokerTitleShort } : {}),
-        }))
-        .filter((account) => /^\d+$/.test(account.ctidTraderAccountId));
+        .map((account) => String(account.ctidTraderAccountId ?? ""))
+        .filter((value) => /^\\d+$/.test(value));
     });
+    const accounts: CTraderAccount[] = [];
+    for (const ctidTraderAccountId of [...new Set(ids)]) {
+      // The official account-list response returns IDs, not an isLive flag.
+      // Determine environment by authenticating against each official endpoint.
+      try {
+        await new CTraderOpenApiClient(this.token, this.clientId, this.clientSecret, ctidTraderAccountId, false, this.timeoutMs).authenticateAccount();
+        accounts.push({ ctidTraderAccountId, isLive: false });
+        continue;
+      } catch {
+        // Try live only after demo authentication fails.
+      }
+      try {
+        await new CTraderOpenApiClient(this.token, this.clientId, this.clientSecret, ctidTraderAccountId, true, this.timeoutMs).authenticateAccount();
+        accounts.push({ ctidTraderAccountId, isLive: true });
+      } catch {
+        // If neither endpoint verifies access, fail closed and omit the account.
+      }
+    }
+    return accounts;
   }
 
   async getAccountDetails(): Promise<{ balance: number; moneyDigits: number; depositAssetId: string; accessRights: number | null; isLimitedRisk: boolean }> {
