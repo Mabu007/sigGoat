@@ -512,6 +512,32 @@ export class GoatRuntime {
   }
 
   updateConfig(goat: FundGoat, skills: TradingSkill[]): void {
+    const previous = this.goatConfig;
+    const analysisConfigChanged =
+      previous.goal !== goat.goal ||
+      previous.model !== goat.model ||
+      previous.aiProvider !== goat.aiProvider ||
+      JSON.stringify(previous.markets) !== JSON.stringify(goat.markets) ||
+      JSON.stringify(previous.skillIds) !== JSON.stringify(goat.skillIds) ||
+      JSON.stringify(this.skills) !== JSON.stringify(skills);
+
+    if (analysisConfigChanged) {
+      // An in-flight model response belongs to the old config and must not
+      // overwrite a newer goal/provider/skill selection when it returns.
+      if (this.runtimeState.isEvaluating) {
+        this.runtimeState.generationId = this.newGenerationId();
+        this.runtimeState.isEvaluating = false;
+      }
+
+      // Any undecided proposal was produced for the previous config. Retire it
+      // immediately so it cannot be approved after the GOAT has been edited.
+      void this.expirePendingProposals('GOAT configuration changed; a fresh market review is required.')
+        .catch((error) => console.error(`[goat ${this.id}] could not expire proposals after config change:`, error));
+      this.runtimeState.status = this.paused || goat.status === 'PAUSED' ? 'PAUSED' : 'WATCHING';
+      this.runtimeState.dormancyReason =
+        'GOAT configuration changed. Run a fresh market review before trusting a proposal.';
+    }
+
     this.goatConfig = goat;
     this.skills = skills;
 
