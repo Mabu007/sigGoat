@@ -2915,9 +2915,11 @@ async function createProcessFromTelegram(
 
   const profile = await persistence.profiles.get(owner.userId).catch(() => null);
   const tradingProvider = resolveUserTradingProvider(profile);
-  if (!isTradingProviderReady(tradingProvider)) {
+  const readiness = await tradingProviderReadinessForUser(owner.userId, tradingProvider);
+  if (!readiness.ready) {
     const registration = getTradingProviderRegistration(tradingProvider);
-    return { ok: false, message: `Cannot create a GOAT on ${registration.label}: ${registration.unavailableReason ?? "provider unavailable"} Switch your Settings trading provider to Hyperliquid + PropDAO until cTrader is fully integrated.` };
+    return { ok: false, message: `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}` };
+  }
   }
 
   const name = goal.length > 60 ? `${goal.slice(0, 57)}…` : goal;
@@ -4954,9 +4956,11 @@ apiRouter.post(
 
     const profile = await persistence.profiles.get(user.uid).catch(() => null);
     const tradingProvider = resolveUserTradingProvider(profile);
-    if (!isTradingProviderReady(tradingProvider)) {
+    const readiness = await tradingProviderReadinessForUser(user.uid, tradingProvider);
+    if (!readiness.ready) {
       const registration = getTradingProviderRegistration(tradingProvider);
-      return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} cannot create GOATs yet. ${registration.unavailableReason ?? "The provider is unavailable."} Switch Settings to Hyperliquid + PropDAO until cTrader is fully integrated.`);
+      return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}`);
+    }
     }
 
     const now = new Date().toISOString();
@@ -5226,9 +5230,11 @@ apiRouter.post(
 
     const profile = await persistence.profiles.get(user.uid).catch(() => null);
     const tradingProvider = resolveUserTradingProvider(profile);
-    if (!isTradingProviderReady(tradingProvider)) {
+    const readiness = await tradingProviderReadinessForUser(user.uid, tradingProvider);
+    if (!readiness.ready) {
       const registration = getTradingProviderRegistration(tradingProvider);
-      return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} cannot create GOATs yet. ${registration.unavailableReason ?? "The provider is unavailable."} Switch Settings to Hyperliquid + PropDAO until cTrader is fully integrated.`);
+      return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}`);
+    }
     }
 
     // Ownership validation: skillIds must reference defaults or the user's own skills.
