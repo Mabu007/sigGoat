@@ -9,6 +9,10 @@ export interface CTraderSymbol {
   minVolume?: number;
   maxVolume?: number;
   stepVolume?: number;
+  commissionType?: number;
+  preciseTradingCommissionRate?: number;
+  preciseMinCommission?: number;
+  lotSize?: number;
 }
 
 export interface CTraderQuoteEvent {
@@ -229,6 +233,10 @@ export class CTraderOpenApiClient {
           ...(number(symbol.minVolume) !== undefined ? { minVolume: number(symbol.minVolume) } : {}),
           ...(number(symbol.maxVolume) !== undefined ? { maxVolume: number(symbol.maxVolume) } : {}),
           ...(number(symbol.stepVolume) !== undefined ? { stepVolume: number(symbol.stepVolume) } : {}),
+          ...(number(symbol.commissionType) !== undefined ? { commissionType: number(symbol.commissionType) } : {}),
+          ...(number(symbol.preciseTradingCommissionRate) !== undefined ? { preciseTradingCommissionRate: number(symbol.preciseTradingCommissionRate) } : {}),
+          ...(number(symbol.preciseMinCommission) !== undefined ? { preciseMinCommission: number(symbol.preciseMinCommission) } : {}),
+          ...(number(symbol.lotSize) !== undefined ? { lotSize: number(symbol.lotSize) } : {}),
         }))
         .filter((symbol) => /^\d+$/.test(symbol.symbolId) && symbol.symbolName && symbol.enabled);
     });
