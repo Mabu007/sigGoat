@@ -117,20 +117,20 @@ export class CTraderMarketDataProvider implements MarketDataProvider {
   private quoteFromEvent(symbol: string, event: CTraderQuoteEvent): MarketQuote {
     const bid = finite(event.bid, "bid price");
     const ask = finite(event.ask, "ask price");
-    if (bid <= 0 || ask <= 0 || ask < bid) throw new MarketDataUnavailableError(`cTrader returned invalid bid/ask values for "${symbol}".`, symbol, "INVALID_QUOTE");
+    const timestamp = finite(event.timestamp, "provider quote timestamp");
+    if (bid <= 0 || ask <= 0 || ask < bid || timestamp <= 0) throw new MarketDataUnavailableError(`cTrader returned invalid bid/ask/timestamp values for "${symbol}".`, symbol, "INVALID_QUOTE");
     const mid = (bid + ask) / 2;
-    const previous = event.sessionClose;
-    const change = previous !== undefined && previous > 0 ? mid - previous : 0;
-    const changePct = previous !== undefined && previous > 0 ? change / previous * 100 : 0;
+    // sessionClose is not guaranteed to represent a rolling 24-hour close.
+    // Do not mislabel a broker session change as a 24h performance figure.
     const quote: MarketQuote = {
       symbol, bid, ask, mid, spread: ask - bid,
-      change24h: change, change24hPct: changePct,
+      change24h: 0, change24hPct: 0,
       high24h: 0, low24h: 0,
-      timestamp: event.timestamp ?? (this.options.now ?? Date.now)(),
+      timestamp,
       bidProvided: true, askProvided: true,
-      change24hProvided: previous !== undefined && previous > 0,
+      change24hProvided: false,
       high24hProvided: false, low24hProvided: false,
-      ...(event.timestamp !== undefined ? { quoteAgeSeconds: Math.max(0, ((this.options.now ?? Date.now)() - event.timestamp) / 1000) } : {}),
+      quoteAgeSeconds: Math.max(0, ((this.options.now ?? Date.now)() - timestamp) / 1000),
     };
     this.quoteCache.set(symbol, quote);
     return quote;
