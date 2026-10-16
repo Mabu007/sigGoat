@@ -295,24 +295,27 @@ async function tradingProviderReadinessForUser(
 const cTraderProviderCache = new Map<string, CTraderMarketDataProvider>();
 const cTraderMarketStateStores = new Map<string, MarketStateStore>();
 
-async function marketDataProviderForGoat(goat: FundGoat): Promise<MarketDataProvider> {
-  const provider = resolveGoatTradingProvider(goat);
+async function marketDataProviderForUser(userId: string, provider: TradingProvider): Promise<MarketDataProvider> {
   if (provider === "hyperliquid") return marketProvider;
-  const profile = await persistence.profiles.get(goat.userId).catch(() => null);
+  const profile = await persistence.profiles.get(userId).catch(() => null);
   if (!profile?.ctraderAccountId) {
     throw new Error("This cTrader GOAT has no selected cTrader account. Connect cTrader and choose an account in Settings.");
   }
-  const key = `${goat.userId}:${profile.ctraderAccountId}:${profile.ctraderAccountIsLive === true ? "live" : "demo"}`;
+  const key = `${userId}:${profile.ctraderAccountId}:${profile.ctraderAccountIsLive === true ? "live" : "demo"}`;
   let adapter = cTraderProviderCache.get(key);
   if (!adapter) {
     adapter = new CTraderMarketDataProvider({
-      userId: goat.userId,
+      userId,
       accountId: profile.ctraderAccountId,
       isLive: profile.ctraderAccountIsLive === true,
     });
     cTraderProviderCache.set(key, adapter);
   }
   return adapter;
+}
+
+async function marketDataProviderForGoat(goat: FundGoat): Promise<MarketDataProvider> {
+  return marketDataProviderForUser(goat.userId, resolveGoatTradingProvider(goat));
 }
 
 async function marketStateStoreForGoat(goat: FundGoat, provider: MarketDataProvider): Promise<MarketStateStore> {
