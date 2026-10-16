@@ -144,6 +144,11 @@ import { ChatActionsPanel, type ActionMode } from './ChatActionsPanel';
 
 
 
+interface ChatModelOption {
+  id: string;
+  name: string;
+}
+
 interface ChatItem {
 
   id: string;
