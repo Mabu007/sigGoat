@@ -63,11 +63,20 @@ saved selection.
 
 Order execution is disabled unless `CTRADER_EXECUTION_ENABLED="true"` is
 explicitly configured on the server. Keep it disabled while connecting and
-validating the integration. When enabled, order submission still requires a
-selected authorized account, fresh quotes, supported broker metadata, valid
-protective stop-loss/take-profit levels, and the server-side per-trade and
-portfolio risk checks. An ambiguous order response is not automatically retried;
-inspect cTrader's order list before attempting another submission.
+validating the integration. cTrader order quantity is expressed in **instrument
+units**, not lots; the API converts units to cTrader protocol volume cents
+(`units × 100`) only when sending the order, and checks the broker's min/max/
+step-volume constraints first.
+
+When enabled, order submission still requires a selected authorized account,
+fresh quotes, supported broker metadata, valid protective stop-loss/take-profit
+levels, and the server-side per-trade and portfolio risk checks. A broker
+acceptance event alone is not treated as completion: SIRGOAT reconciles the
+broker order and verifies the persisted symbol, side, volume, limit price,
+stop-loss and take-profit before reporting success. If this verification fails
+or the response is ambiguous, the result explicitly says the order may be
+active and must not be retried blindly. Inspect the order in cTrader and cancel
+it manually if its protection is missing or mismatched.
 
 ## Market data
 

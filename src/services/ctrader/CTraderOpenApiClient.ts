@@ -39,6 +39,22 @@ export function isCTraderNumericId(value: string): boolean {
   return /^\d+$/.test(value);
 }
 
+function numericId(value: unknown): string | undefined {
+  if (typeof value === "string" && isCTraderNumericId(value)) return value;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return undefined;
+}
+
+/** Convert human instrument units to ProtoOA volume cents (units × 100). */
+export function cTraderVolumeCents(units: number): number {
+  if (!Number.isFinite(units) || units <= 0) throw new Error("Order quantity must be a finite positive number.");
+  const volumeCents = Math.round(units * 100);
+  if (!Number.isSafeInteger(volumeCents) || volumeCents <= 0 || Math.abs(volumeCents / 100 - units) > 1e-7) {
+    throw new Error("Order quantity cannot be represented in cTrader 0.01-unit volume precision.");
+  }
+  return volumeCents;
+}
+
 const RESPONSE_ERROR = 2142;
 const APP_AUTH_REQ = 2100;
 const APP_AUTH_RES = 2101;
@@ -397,55 +413,57 @@ export class CTraderOpenApiClient {
     stopLoss?: number;
     takeProfit?: number;
     clientOrderId: string;
-  }): Promise<{ accepted: boolean; orderId?: string; executionType?: number; message: string }> {
+  }): Promise<{ status: "accepted" | "rejected" | "unknown" | "not_submitted"; accepted: boolean; orderId?: string; executionType?: number; requestedVolumeCents: number; message: string }> {
     if (!this.accountId) throw new Error("Select a cTrader trading account in Settings first.");
     if (!Number.isFinite(input.volumeUnits) || input.volumeUnits <= 0) throw new Error("Order quantity must be positive.");
     if (input.orderType === "LIMIT" && (!Number.isFinite(input.limitPrice) || (input.limitPrice ?? 0) <= 0)) throw new Error("A valid limit price is required for a limit order.");
-    const volume = Math.round(input.volumeUnits * 100);
-    if (volume <= 0) throw new Error("Order quantity is below cTrader's supported volume precision.");
-    return this.withSocket(async (socket) => {
+    if (!input.clientOrderId || input.clientOrderId.length > 50 || !/^[A-Za-z0-9_-]+$/.test(input.clientOrderId)) throw new Error("cTrader clientOrderId must be 1-50 alphanumeric, underscore or hyphen characters.");
+    // ProtoOA volume is cents: 1,000 units = 100,000. Keep qty in units for risk math.
+    const requestedVolumeCents = cTraderVolumeCents(input.volumeUnits);
+    if ((input.stopLoss !== undefined && (!Number.isFinite(input.stopLoss) || input.stopLoss <= 0)) || (input.takeProfit !== undefined && (!Number.isFinite(input.takeProfit) || input.takeProfit <= 0))) throw new Error("Protective stop-loss and take-profit prices must be finite positive values.");
+    try {
+      return await this.withSocket(async (socket) => {
       const clientMsgId = id();
-      const clientOrderId = input.clientOrderId.slice(0, 50);
-      const payload = await this.waitFor(
-        socket,
-        (message) => {
-          if (message.payloadType !== 2126 && message.payloadType !== 2132 && message.payloadType !== RESPONSE_ERROR) return false;
-          if (message.payloadType === RESPONSE_ERROR) return !message.clientMsgId || message.clientMsgId === clientMsgId;
-          const order = message.payload?.order && typeof message.payload.order === "object" ? message.payload.order as Record<string, unknown> : {};
-          return String(order.clientOrderId ?? message.payload?.clientOrderId ?? "") === clientOrderId;
-        },
-        () => socket.send(JSON.stringify({
-          clientMsgId,
-          payloadType: NEW_ORDER_REQ,
-          payload: {
-            ctidTraderAccountId: this.accountId,
-            symbolId: input.symbol.symbolId,
-            orderType: input.orderType === "LIMIT" ? 2 : 1,
-            tradeSide: input.side === "BUY" ? 1 : 2,
-            volume,
-            ...(input.limitPrice !== undefined ? { limitPrice: input.limitPrice } : {}),
-            ...(input.stopLoss !== undefined ? { stopLoss: input.stopLoss } : {}),
-            ...(input.takeProfit !== undefined ? { takeProfit: input.takeProfit } : {}),
-            clientOrderId,
-            label: "SIRGOAT",
-            comment: "Submitted by SIRGOAT",
-          },
-        })),
-      );
+      const clientOrderId = input.clientOrderId;
+      let payload: Record<string, unknown>;
+      try {
+        payload = await this.waitFor(socket, (message) => {
+          if (message.payloadType === 2126) {
+            const order = message.payload?.order && typeof message.payload.order === "object" ? message.payload.order as Record<string, unknown> : {};
+            return String(order.clientOrderId ?? message.payload?.clientOrderId ?? "") === clientOrderId;
+          }
+          if (message.payloadType === 2132) {
+            const body = message.payload ?? {};
+            const order = body.order && typeof body.order === "object" ? body.order as Record<string, unknown> : {};
+            return message.clientMsgId === clientMsgId || String(order.clientOrderId ?? body.clientOrderId ?? "") === clientOrderId;
+          }
+          return message.payloadType === RESPONSE_ERROR && (!message.clientMsgId || message.clientMsgId === clientMsgId);
+        }, () => socket.send(JSON.stringify({
+          clientMsgId, payloadType: NEW_ORDER_REQ,
+          payload: { ctidTraderAccountId: this.accountId, symbolId: input.symbol.symbolId, orderType: input.orderType === "LIMIT" ? 2 : 1, tradeSide: input.side === "BUY" ? 1 : 2, volume: requestedVolumeCents, ...(input.limitPrice !== undefined ? { limitPrice: input.limitPrice } : {}), ...(input.stopLoss !== undefined ? { stopLoss: input.stopLoss } : {}), ...(input.takeProfit !== undefined ? { takeProfit: input.takeProfit } : {}), clientOrderId, label: "SIRGOAT", comment: "Submitted by SIRGOAT" },
+        })));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown cTrader response failure.";
+        if (/cTrader Open API error \d+:/i.test(message)) return { status: "rejected", accepted: false, requestedVolumeCents, message: "cTrader rejected the order: " + message };
+        return { status: "unknown", accepted: false, requestedVolumeCents, message: "cTrader order status is unknown. Check cTrader orders for client order ID " + clientOrderId + " before retrying; SIRGOAT did not automatically resubmit." };
+      }
       const executionType = number(payload.executionType);
       const order = payload.order && typeof payload.order === "object" ? payload.order as Record<string, unknown> : {};
-      if (payload.errorCode || payload.description && executionType === undefined) {
-        return { accepted: false, ...(number(order.orderId) !== undefined ? { orderId: String(order.orderId) } : {}), message: `cTrader rejected the order: ${String(payload.description ?? payload.errorCode)}` };
-      }
-      if (executionType !== 2 && executionType !== 3 && executionType !== 11) {
-        return { accepted: false, ...(number(order.orderId) !== undefined ? { orderId: String(order.orderId) } : {}), ...(executionType !== undefined ? { executionType } : {}), message: "cTrader did not confirm order acceptance or fill." };
-      }
-      return {
-        accepted: true,
-        ...(number(order.orderId) !== undefined ? { orderId: String(order.orderId) } : {}),
-        executionType,
-        message: executionType === 3 ? "cTrader confirmed the order filled." : executionType === 11 ? "cTrader confirmed a partial fill." : "cTrader accepted the order; fill is not yet confirmed.",
-      };
+      const orderId = numericId(order.orderId) ?? numericId(payload.orderId);
+      if (payload.errorCode || (payload.description && executionType === undefined)) return { status: "rejected", accepted: false, ...(orderId ? { orderId } : {}), requestedVolumeCents, message: "cTrader rejected the order: " + String(payload.description ?? payload.errorCode) };
+      if (executionType === 7) return { status: "rejected", accepted: false, ...(orderId ? { orderId } : {}), executionType, requestedVolumeCents, message: "cTrader rejected the order during validation" + (payload.description ? ": " + String(payload.description) : ".") };
+      if (executionType !== 2 && executionType !== 3 && executionType !== 11) return { status: "unknown", accepted: false, ...(orderId ? { orderId } : {}), ...(executionType !== undefined ? { executionType } : {}), requestedVolumeCents, message: "cTrader returned an unrecognized execution status. Inspect the broker order list before retrying." };
+      if (!orderId) return { status: "unknown", accepted: false, executionType, requestedVolumeCents, message: "cTrader reported an order event without an order ID. Inspect the broker order list by client order ID before retrying." };
+      return { status: "accepted", accepted: true, orderId, executionType, requestedVolumeCents, message: executionType === 3 ? "cTrader confirmed the order filled; protective levels must still be verified against broker state." : executionType === 11 ? "cTrader confirmed a partial fill; protective levels must still be verified against broker state." : "cTrader accepted the order; fill and protective levels must still be verified against broker state." };
     });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown cTrader connection failure.";
+      return {
+        status: "not_submitted",
+        accepted: false,
+        requestedVolumeCents,
+        message: "cTrader connection or account authorization failed before an order response could be received. No order was submitted by this request: " + message,
+      };
+    }
   }
 }

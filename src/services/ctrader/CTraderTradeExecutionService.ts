@@ -108,7 +108,7 @@ export class CTraderTradeExecutionService {
     if (!this.executionEnabled) return blocked("cTrader order execution is disabled by the server. Set CTRADER_EXECUTION_ENABLED=true only after validating the demo environment.");
     if (intent.side !== "BUY" && intent.side !== "SELL") return blocked("The order side must be BUY or SELL.");
     if (!intent.symbol || !intent.symbol.trim()) return blocked("An exact cTrader symbol is required.");
-    if (!intent.intentId || !/^[A-Za-z0-9_-]{8,120}$/.test(intent.intentId)) return blocked("A valid intentId is required for order audit and reconciliation.");
+    if (!intent.intentId || !/^[A-Za-z0-9_-]{8,50}$/.test(intent.intentId)) return blocked("A valid cTrader client order ID of 8–50 alphanumeric, underscore or hyphen characters is required for audit and reconciliation.");
     if (!Number.isFinite(intent.qty) || intent.qty <= 0 || ![intent.entry, intent.stopLoss, intent.takeProfit].every((v) => Number.isFinite(v) && v > 0)) return blocked("Quantity, entry, stop-loss and take-profit must be finite positive numbers.");
     if (intent.side === "BUY" ? !(intent.stopLoss < intent.entry && intent.takeProfit > intent.entry) : !(intent.stopLoss > intent.entry && intent.takeProfit < intent.entry)) return blocked("Stop-loss and take-profit are on the wrong side of the entry.");
     const riskDistance = Math.abs(intent.entry - intent.stopLoss);
@@ -122,6 +122,7 @@ export class CTraderTradeExecutionService {
       this.client.reconcile(),
     ]);
     if (account.accessRights !== 0) return blocked("The selected cTrader account does not report FULL_ACCESS. No order was sent.");
+    if (account.isLimitedRisk) return blocked("This cTrader account uses limited-risk execution rules that require guaranteed-stop-loss and relative SL/TP fields. This adapter does not yet submit those fields, so execution is blocked rather than sending an incompatible order.");
     const depositAsset = assets.find((asset) => asset.assetId === account.depositAssetId);
     if (!depositAsset || depositAsset.name.toUpperCase() !== "USD") return blocked("Risk controls currently require the cTrader account's deposit currency to be USD; this account's currency could not be verified as USD.");
     const symbol = symbols.find((item) => item.symbolName === intent.symbol);
@@ -136,7 +137,8 @@ export class CTraderTradeExecutionService {
     const quote = await this.client.getQuote(symbol);
     const bid = n(quote.bid), ask = n(quote.ask), timestamp = n(quote.timestamp);
     if (bid === null || ask === null || timestamp === null || ask < bid || timestamp > Date.now() + 5_000 || Date.now() - timestamp > 30_000) return blocked("A fresh, valid cTrader bid/ask quote is required immediately before execution.");
-    if (intent.side === "BUY" && intent.entry > ask || intent.side === "SELL" && intent.entry < bid) return blocked("The requested limit price is marketable against the current quote; review the price before submitting.");
+    if (intent.side === "BUY" && intent.entry >= ask || intent.side === "SELL" && intent.entry <= bid) return blocked("The requested limit price is marketable against the current quote; review the price before submitting.");
+    if (intent.side === "BUY" && (intent.stopLoss >= bid || intent.takeProfit <= ask) || intent.side === "SELL" && (intent.stopLoss <= ask || intent.takeProfit >= bid)) return blocked("The current bid/ask has already crossed or invalidated the proposed stop-loss or take-profit. Request a fresh proposal.");
 
     const commission = roundTripCommission(symbol, volumeCents, intent.qty, intent.entry);
     if (commission === null) return blocked("The broker did not provide supported commission metadata. Execution is blocked rather than assuming zero fees.");
@@ -200,12 +202,20 @@ export class CTraderTradeExecutionService {
     };
   }
 
-  async execute(intent: CTraderTradeIntent): Promise<{ accepted: boolean; orderId?: string; message: string }> {
+  async execute(intent: CTraderTradeIntent): Promise<{
+    status: "blocked" | "rejected" | "inactive" | "unknown" | "accepted" | "protection_unconfirmed";
+    accepted: boolean;
+    orderId?: string;
+    quantityUnits?: number;
+    protocolVolumeCents?: number;
+    message: string;
+    protectionVerified?: boolean;
+  }> {
     const risk = await this.preflight(intent);
-    if (!risk.ok) return { accepted: false, message: risk.violations.join(" ") };
+    if (!risk.ok) return { status: "blocked", accepted: false, message: risk.violations.join(" ") };
     const symbols = await this.client.getSymbols();
     const symbol = symbols.find((item) => item.symbolName === intent.symbol);
-    if (!symbol) return { accepted: false, message: "The exact cTrader symbol is no longer available. No order was sent." };
+    if (!symbol) return { status: "blocked", accepted: false, message: "The exact cTrader symbol is no longer available. No order was sent." };
     try {
       const outcome = await this.client.placeOrder({
         symbol,
@@ -217,16 +227,119 @@ export class CTraderTradeExecutionService {
         takeProfit: intent.takeProfit,
         clientOrderId: intent.intentId,
       });
-      if (!outcome.accepted) return { accepted: false, message: outcome.message };
-      return {
-        accepted: true,
+      if (!outcome.accepted) return {
+        status: outcome.status === "rejected" ? "rejected" : outcome.status === "not_submitted" ? "blocked" : "unknown",
+        accepted: false,
         ...(outcome.orderId ? { orderId: outcome.orderId } : {}),
         message: outcome.message,
       };
+
+      // An acceptance event only confirms broker validation; it does not prove
+      // that the persisted pending order has the intended SL/TP. Reconcile
+      // against broker state before reporting the lifecycle as complete.
+      let orders: Array<Record<string, unknown>>;
+      try {
+        const reconciled = await this.client.reconcile();
+        orders = reconciled.orders;
+      } catch {
+        return {
+          status: "protection_unconfirmed",
+          accepted: true,
+          orderId: outcome.orderId,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
+          message: "cTrader accepted the order, but SIRGOAT could not verify its persisted protective stop and target. Do not submit it again. Inspect order " + outcome.orderId + " in cTrader immediately.",
+          protectionVerified: false,
+        };
+      }
+      const brokerOrder = orders.find((order) =>
+        String(order.clientOrderId ?? "") === intent.intentId ||
+        (outcome.orderId && String(order.orderId ?? "") === outcome.orderId),
+      );
+      if (!brokerOrder) {
+        return {
+          status: "protection_unconfirmed",
+          accepted: true,
+          orderId: outcome.orderId,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
+          message: "cTrader accepted the order, but it was not found in the immediate broker reconciliation. Its status and protective levels are unconfirmed. Do not retry; inspect order " + outcome.orderId + " in cTrader.",
+          protectionVerified: false,
+        };
+      }
+      const brokerStatus = n(brokerOrder.orderStatus);
+      if (brokerStatus === 3) {
+        return {
+          status: "rejected",
+          accepted: false,
+          orderId: outcome.orderId,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
+          message: "cTrader's reconciled order state is REJECTED. No retry was attempted; review the broker's rejection details.",
+          protectionVerified: false,
+        };
+      }
+      if (brokerStatus === 4 || brokerStatus === 5) {
+        return {
+          status: "inactive",
+          accepted: false,
+          orderId: outcome.orderId,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
+          message: brokerStatus === 4
+            ? "cTrader reports that order " + outcome.orderId + " has EXPIRED and is no longer active. Review the broker state before creating a new intent."
+            : "cTrader reports that order " + outcome.orderId + " has been CANCELLED and is no longer active. Review the broker state before creating a new intent.",
+          protectionVerified: false,
+        };
+      }
+      if (brokerStatus !== 1 && brokerStatus !== 2) {
+        return {
+          status: "protection_unconfirmed",
+          accepted: true,
+          orderId: outcome.orderId,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
+          message: "cTrader returned an unrecognized or missing order status for order " + outcome.orderId + ". Do not retry; inspect the order and protective levels in cTrader.",
+          protectionVerified: false,
+        };
+      }
+      const brokerTrade = record(brokerOrder.tradeData);
+      const brokerVolumeCents = brokerTrade ? n(brokerTrade.volume) : null;
+      const brokerSymbolId = brokerTrade ? String(brokerTrade.symbolId ?? "") : "";
+      const brokerSide = brokerTrade ? n(brokerTrade.tradeSide) : null;
+      const brokerLimitPrice = n(brokerOrder.limitPrice);
+      const priceTolerance = Math.max(1e-10, 0.5 * Math.pow(10, -symbol.digits));
+      const orderMatches = brokerVolumeCents === outcome.requestedVolumeCents &&
+        brokerSymbolId === symbol.symbolId &&
+        brokerSide === (intent.side === "BUY" ? 1 : 2) &&
+        brokerLimitPrice !== null &&
+        Math.abs(brokerLimitPrice - intent.entry) <= priceTolerance;
+      const actualStop = n(brokerOrder.stopLoss);
+      const actualTarget = n(brokerOrder.takeProfit);
+      const stopMatches = actualStop !== null && Math.abs(actualStop - intent.stopLoss) <= priceTolerance;
+      const targetMatches = actualTarget !== null && Math.abs(actualTarget - intent.takeProfit) <= priceTolerance;
+      if (!orderMatches || !stopMatches || !targetMatches) {
+        return {
+          status: "protection_unconfirmed",
+          accepted: true,
+          orderId: outcome.orderId,
+          quantityUnits: intent.qty,
+          protocolVolumeCents: outcome.requestedVolumeCents,
+          message: "cTrader accepted order " + outcome.orderId + " but the broker's persisted symbol, side, volume, limit price, stop-loss or take-profit did not match the request. Do not retry. Inspect or cancel the order in cTrader before allowing it to fill.",
+          protectionVerified: false,
+        };
+      }
+      return {
+        status: "accepted",
+        accepted: true,
+        orderId: outcome.orderId,
+        quantityUnits: intent.qty,
+        protocolVolumeCents: outcome.requestedVolumeCents,
+        message: "cTrader accepted order " + outcome.orderId + " and broker reconciliation confirmed the requested stop-loss and take-profit are attached.",
+        protectionVerified: true,
+      };
     } catch {
-      // A timeout after sending cannot distinguish "not received" from
-      // "accepted but response lost". Never auto-retry a money-moving request.
-      return { accepted: false, message: "cTrader order status is unknown because the response was not confirmed. Check cTrader orders before retrying; SIRGOAT did not automatically resubmit." };
+      return { status: "unknown", accepted: false, message: "cTrader order status is unknown because the response was not confirmed. Check cTrader orders before retrying; SIRGOAT did not automatically resubmit." };
     }
   }
 }
