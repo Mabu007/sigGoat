@@ -1013,8 +1013,7 @@ export class GoatRuntime {
       const preservePlan =
         triggerType !== 'MANUAL_REEVALUATE' &&
         activePlan.length > 0 &&
-        (triggerType === 'TRACKER_TRIGGERED' ||
-          activePlan.some((condition) => !condition.isTriggered));
+        activePlan.some((condition) => !condition.isTriggered);
       const trackers: TrackerCondition[] = preservePlan
         ? activePlan.map((condition) => ({ ...condition }))
         : proposedTrackers;
@@ -1267,7 +1266,10 @@ export class GoatRuntime {
         // Even error recording failed; nothing more we can do here.
       }
     } finally {
-      this.runtimeState.isEvaluating = false;
+      // A superseded wake must not release the mutex owned by a newer wake.
+      if (this.isCurrentGeneration(generationId)) {
+        this.runtimeState.isEvaluating = false;
+      }
     }
 
     return this.runtimeState;
