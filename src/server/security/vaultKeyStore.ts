@@ -55,9 +55,10 @@ export function createVaultBackedKeyStore(
    * credential saved before the vault existed is still a credential the user
    * believes is configured, and ignoring it would look like silent data loss.
    *
-   * A vault read that THROWS (no master key configured, unreadable envelope)
-   * degrades to "no credential here" rather than propagating — a read path
-   * must not become the place a 503 is raised.
+   * A vault read that THROWS is only eligible for legacy fallback when no
+   * encrypted record exists. If a record exists but cannot be decrypted, the
+   * error propagates so callers can distinguish unreadable credentials from a
+   * genuinely missing key.
    */
   const read = async (
     userId: string,
