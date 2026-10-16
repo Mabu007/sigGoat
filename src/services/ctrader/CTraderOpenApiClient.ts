@@ -42,6 +42,8 @@ const ACCOUNT_AUTH_RES = 2103;
 const NEW_ORDER_REQ = 2106;
 const SYMBOLS_LIST_REQ = 2114;
 const SYMBOLS_LIST_RES = 2115;
+const SYMBOL_BY_ID_REQ = 2116;
+const SYMBOL_BY_ID_RES = 2117;
 const SUBSCRIBE_SPOTS_REQ = 2127;
 const SUBSCRIBE_SPOTS_RES = 2128;
 const SPOT_EVENT = 2131;
@@ -254,22 +256,46 @@ export class CTraderOpenApiClient {
         ctidTraderAccountId: this.accountId,
         includeArchivedSymbols: false,
       });
-      return payloadArray<Record<string, unknown>>(payload, "symbol")
+      const lightSymbols = payloadArray<Record<string, unknown>>(payload, "symbol")
         .map((symbol) => ({
           symbolId: String(symbol.symbolId ?? ""),
           symbolName: String(symbol.symbolName ?? ""),
           enabled: symbol.enabled !== false,
-          digits: number(symbol.digits) ?? 5,
-          pipPosition: number(symbol.pipPosition) ?? 4,
-          ...(number(symbol.minVolume) !== undefined ? { minVolume: number(symbol.minVolume) } : {}),
-          ...(number(symbol.maxVolume) !== undefined ? { maxVolume: number(symbol.maxVolume) } : {}),
-          ...(number(symbol.stepVolume) !== undefined ? { stepVolume: number(symbol.stepVolume) } : {}),
-          ...(number(symbol.commissionType) !== undefined ? { commissionType: number(symbol.commissionType) } : {}),
-          ...(number(symbol.preciseTradingCommissionRate) !== undefined ? { preciseTradingCommissionRate: number(symbol.preciseTradingCommissionRate) } : {}),
-          ...(number(symbol.preciseMinCommission) !== undefined ? { preciseMinCommission: number(symbol.preciseMinCommission) } : {}),
-          ...(number(symbol.lotSize) !== undefined ? { lotSize: number(symbol.lotSize) } : {}),
         }))
-        .filter((symbol) => /^\d+$/.test(symbol.symbolId) && symbol.symbolName && symbol.enabled);
+        .filter((symbol) => /^\\d+$/.test(symbol.symbolId) && symbol.symbolName && symbol.enabled);
+      const complete: CTraderSymbol[] = [];
+      // SymbolsList returns light symbols; it is not authoritative for digits,
+      // volume limits, or commissions. Fetch full broker metadata in bounded
+      // batches and never invent defaults for missing trading constraints.
+      for (let offset = 0; offset < lightSymbols.length; offset += 100) {
+        const batch = lightSymbols.slice(offset, offset + 100);
+        const details = await this.request(socket, SYMBOL_BY_ID_REQ, SYMBOL_BY_ID_RES, {
+          ctidTraderAccountId: this.accountId,
+          symbolId: batch.map((symbol) => symbol.symbolId),
+        });
+        const detailById = new Map(payloadArray<Record<string, unknown>>(details, "symbol")
+          .map((symbol) => [String(symbol.symbolId ?? ""), symbol]));
+        for (const light of batch) {
+          const symbol = detailById.get(light.symbolId);
+          if (!symbol) continue;
+          const digits = number(symbol.digits);
+          const pipPosition = number(symbol.pipPosition);
+          if (digits === undefined || pipPosition === undefined || digits < 0 || pipPosition < 0) continue;
+          complete.push({
+            ...light,
+            digits,
+            pipPosition,
+            ...(number(symbol.minVolume) !== undefined ? { minVolume: number(symbol.minVolume) } : {}),
+            ...(number(symbol.maxVolume) !== undefined ? { maxVolume: number(symbol.maxVolume) } : {}),
+            ...(number(symbol.stepVolume) !== undefined ? { stepVolume: number(symbol.stepVolume) } : {}),
+            ...(number(symbol.commissionType) !== undefined ? { commissionType: number(symbol.commissionType) } : {}),
+            ...(number(symbol.preciseTradingCommissionRate) !== undefined ? { preciseTradingCommissionRate: number(symbol.preciseTradingCommissionRate) } : {}),
+            ...(number(symbol.preciseMinCommission) !== undefined ? { preciseMinCommission: number(symbol.preciseMinCommission) } : {}),
+            ...(number(symbol.lotSize) !== undefined ? { lotSize: number(symbol.lotSize) } : {}),
+          });
+        }
+      }
+      return complete;
     });
   }
 
