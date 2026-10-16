@@ -7215,20 +7215,55 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
         riskCheck, execution,
         message: "Review the cTrader order and measured risk. Confirmation rechecks account risk immediately before submission." } });
     }
-    const result = await executor.execute(intent);
+    if (!execution.enabled || !execution.authorised) {
+      return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+        title: "cTrader execution disabled", intentId, message: execution.summary, riskCheck, execution } });
+    }
+    const fingerprint = JSON.stringify({ userId: user.uid, provider: "ctrader", accountId: selectedAccountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage: leverage ?? null });
+    const claim = await goatWorkflowStore.claimExecution({
+      id: intentId, signalId: typeof body.signalId === "string" ? body.signalId : intentId,
+      goatId: typeof body.goatId === "string" ? body.goatId : "manual",
+      userId: user.uid, provider: "ctrader", fingerprint,
+    });
+    if (claim.conflict) {
+      return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+        title: "Intent ID already belongs to a different order", intentId, doNotRetry: true, execution } });
+    }
+    if (!claim.claimed) {
+      if (claim.intent.status === "SUBMITTED") {
+        return res.status(200).json({ action: { type: "execute_trade", status: "completed",
+          title: "This intent was already submitted; no duplicate order was sent", intentId,
+          orderId: claim.intent.orderId ?? null, accepted: true, duplicate: true, doNotRetry: true, execution } });
+      }
+      return res.status(409).json({ action: { type: "execute_trade", status: "unknown",
+        title: "This intent was already attempted; no retry was sent", intentId, doNotRetry: true,
+        message: claim.intent.message ?? "The earlier submission may have reached the broker. Reconcile the order before trying again.", execution } });
+    }
+
+    let result: Awaited<ReturnType<typeof executor.execute>>;
+    try {
+      result = await executor.execute(intent);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "cTrader submission failed with an unknown outcome.";
+      await goatWorkflowStore.finishExecution(intentId, "FAILED", { message }).catch(() => null);
+      throw error;
+    }
     if (result.status === "protection_unconfirmed") {
+      await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", { ...(result.orderId ? { orderId: result.orderId } : {}), message: result.message });
       return res.status(202).json({ action: { type: "execute_trade", status: "needs_attention",
         title: "cTrader order may be active — protection not verified", intentId, orderId: result.orderId ?? null,
         accepted: true, protectionVerified: false, doNotRetry: true, quantityUnits: result.quantityUnits ?? qty, protocolVolumeCents: result.protocolVolumeCents ?? null, message: result.message, riskCheck, execution } });
     }
     if (!result.accepted) {
+      await goatWorkflowStore.finishExecution(intentId, "FAILED", { ...(result.orderId ? { orderId: result.orderId } : {}), message: result.message });
       const unknown = result.status === "unknown";
       const inactive = result.status === "inactive";
       return res.status(unknown ? 202 : 409).json({ action: { type: "execute_trade",
         status: unknown ? "unknown" : inactive ? "inactive" : "blocked",
         title: unknown ? "cTrader order status unknown — do not retry" : inactive ? "cTrader order expired or cancelled" : "cTrader order rejected or blocked",
-        intentId, orderId: result.orderId ?? null, quantityUnits: result.quantityUnits ?? qty, protocolVolumeCents: result.protocolVolumeCents ?? null, doNotRetry: unknown, message: result.message, riskCheck, execution } });
+        intentId, orderId: result.orderId ?? null, quantityUnits: result.quantityUnits ?? qty, protocolVolumeCents: result.protocolVolumeCents ?? null, doNotRetry: true, message: result.message, riskCheck, execution } });
     }
+    await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", { ...(result.orderId ? { orderId: result.orderId } : {}), message: result.message });
     return res.json({ action: { type: "execute_trade", status: "completed",
       title: "cTrader order accepted and protection verified", intentId, orderId: result.orderId ?? null,
       accepted: true, protectionVerified: result.protectionVerified === true,
