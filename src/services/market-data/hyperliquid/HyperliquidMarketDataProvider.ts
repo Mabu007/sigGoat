@@ -286,7 +286,7 @@ export class HyperliquidMarketDataProvider implements MarketDataProvider {
       // Age is measured from the completed allMids request, never stamped as
       // zero merely because this method just constructed a quote.
       quoteAgeSeconds: priceUpdatedAt === null
-        ? null as unknown as number
+        ? undefined
         : Math.max(0, (Date.now() - priceUpdatedAt) / 1000),
       /**
        * Not on the shared interface, but required for truthfulness: it tells
