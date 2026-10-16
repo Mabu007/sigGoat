@@ -1190,7 +1190,7 @@ export async function restoreRuntimes(): Promise<void> {
        * memory would re-add the dead symbol on the restart after next. The
        * goat's other fields are untouched.
        */
-      const migrated = migrateGoatMarkets(goat);
+      const migrated = resolveGoatTradingProvider(goat) === "hyperliquid" ? migrateGoatMarkets(goat) : null;
       if (migrated) {
         await persistence.goats.save(migrated);
         console.log(
@@ -1199,7 +1199,11 @@ export async function restoreRuntimes(): Promise<void> {
       }
 
       if (goat.status !== "PAUSED") {
-        await ensureGoatRuntime(migrated ?? goat);
+        try {
+          await ensureGoatRuntime(migrated ?? goat);
+        } catch (error) {
+          console.warn(`[api] could not restore GOAT ${goat.id} on its pinned provider:`, error instanceof Error ? error.message : "provider unavailable");
+        }
       }
     }
     console.log(
@@ -1228,7 +1232,7 @@ export async function reconcileRuntime(): Promise<{
 
   const subscriptions: IngestionSubscription[] = [];
   for (const goat of goats) {
-    const migrated = migrateGoatMarkets(goat);
+    const migrated = resolveGoatTradingProvider(goat) === "hyperliquid" ? migrateGoatMarkets(goat) : null;
     const canonicalGoat = migrated ?? goat;
     if (migrated) {
       await persistence.goats.save(migrated).catch((err) => {
@@ -1236,6 +1240,7 @@ export async function reconcileRuntime(): Promise<{
       });
     }
     if (canonicalGoat.status === "PAUSED") continue;
+     if (resolveGoatTradingProvider(canonicalGoat) === "ctrader") continue;
     const instrument = canonicalGoat.markets[0];
     if (!instrument) continue;
     subscriptions.push({
