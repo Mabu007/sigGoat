@@ -39,6 +39,16 @@ export function isCTraderNumericId(value: string): boolean {
   return /^\d+$/.test(value);
 }
 
+/** Convert human instrument units to ProtoOA volume cents (units × 100). */
+export function cTraderVolumeCents(units: number): number {
+  if (!Number.isFinite(units) || units <= 0) throw new Error("Order quantity must be a finite positive number.");
+  const volumeCents = Math.round(units * 100);
+  if (!Number.isSafeInteger(volumeCents) || volumeCents <= 0 || Math.abs(volumeCents / 100 - units) > 1e-7) {
+    throw new Error("Order quantity cannot be represented in cTrader 0.01-unit volume precision.");
+  }
+  return volumeCents;
+}
+
 const RESPONSE_ERROR = 2142;
 const APP_AUTH_REQ = 2100;
 const APP_AUTH_RES = 2101;
@@ -403,8 +413,7 @@ export class CTraderOpenApiClient {
     if (input.orderType === "LIMIT" && (!Number.isFinite(input.limitPrice) || (input.limitPrice ?? 0) <= 0)) throw new Error("A valid limit price is required for a limit order.");
     if (!input.clientOrderId || input.clientOrderId.length > 50 || !/^[A-Za-z0-9_-]+$/.test(input.clientOrderId)) throw new Error("cTrader clientOrderId must be 1-50 alphanumeric, underscore or hyphen characters.");
     // ProtoOA volume is cents: 1,000 units = 100,000. Keep qty in units for risk math.
-    const requestedVolumeCents = Math.round(input.volumeUnits * 100);
-    if (!Number.isSafeInteger(requestedVolumeCents) || requestedVolumeCents <= 0 || Math.abs(requestedVolumeCents / 100 - input.volumeUnits) > 1e-7) throw new Error("Order quantity cannot be represented in cTrader 0.01-unit volume precision.");
+    const requestedVolumeCents = cTraderVolumeCents(input.volumeUnits);
     if ((input.stopLoss !== undefined && (!Number.isFinite(input.stopLoss) || input.stopLoss <= 0)) || (input.takeProfit !== undefined && (!Number.isFinite(input.takeProfit) || input.takeProfit <= 0))) throw new Error("Protective stop-loss and take-profit prices must be finite positive values.");
     return this.withSocket(async (socket) => {
       const clientMsgId = id();
