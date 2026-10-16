@@ -124,6 +124,8 @@ export interface HyperliquidAssetContext {
 export interface HyperliquidMarketSnapshot {
   market: NormalisedMarket;
   context: HyperliquidAssetContext;
+  /** Time the current lightweight price sample completed; null means unavailable. */
+  priceUpdatedAt?: number | null;
 }
 
 /** Provider error, classified. Never carries a response body verbatim. */
@@ -466,35 +468,38 @@ export class HyperliquidClient {
     markets: HyperliquidMarketSnapshot[],
     dexes: readonly HyperliquidDex[],
   ): Promise<HyperliquidMarketSnapshot[]> {
-    const pricesByDex = new Map<string, Map<string, number>>();
+    const pricesByDex = new Map<string, { prices: Map<string, number>; fetchedAt: number | null }>();
     await Promise.all(dexes.map(async (dex) => {
       try {
         const mids = await this.allMids(dex);
-        pricesByDex.set(
-          dex,
-          new Map(Object.entries(mids).map(([symbol, price]) => [symbol.toUpperCase(), price])),
-        );
+        pricesByDex.set(dex, {
+          prices: new Map(Object.entries(mids).map(([symbol, price]) => [symbol.toUpperCase(), price])),
+          fetchedAt: Date.now(),
+        });
       } catch (error) {
         this.onWarn(
           `dex "${dex || '(default)'}" price refresh unavailable: ${
             error instanceof Error ? error.message : 'unknown error'
           }`,
         );
-        pricesByDex.set(dex, new Map());
+        pricesByDex.set(dex, { prices: new Map(), fetchedAt: null });
       }
     }));
 
     return markets.map((snapshot) => {
       const { market, context } = snapshot;
       const dex = market.dex;
-      const dexPrices = pricesByDex.get(dex) ?? new Map<string, number>();
+      const priceSample = pricesByDex.get(dex);
+      const dexPrices = priceSample?.prices ?? new Map<string, number>();
       const symbol = market.symbol.toUpperCase();
       const prefix = dex ? `${dex.toUpperCase()}:` : '';
       const unprefixed = prefix && symbol.startsWith(prefix) ? symbol.slice(prefix.length) : symbol;
       const mid = dexPrices.get(symbol) ?? dexPrices.get(unprefixed) ?? null;
+      const priceUpdatedAt = mid === null ? null : priceSample?.fetchedAt ?? null;
 
       return {
         ...snapshot,
+        priceUpdatedAt,
         context: {
           ...context,
           midPx: mid,
