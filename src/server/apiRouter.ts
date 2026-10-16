@@ -2897,7 +2897,15 @@ async function createProcessFromTelegram(
    * a regex. A GOAT watching a symbol the feed does not serve would never
    * produce data, and that failure would only surface as a silent no-signal.
    */
-  const known = await marketProvider.getSymbols();
+  const profile = await persistence.profiles.get(owner.userId).catch(() => null);
+  const tradingProvider = resolveUserTradingProvider(profile);
+  const readiness = await tradingProviderReadinessForUser(owner.userId, tradingProvider);
+  if (!readiness.ready) {
+    const registration = getTradingProviderRegistration(tradingProvider);
+    return { ok: false, message: `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}` };
+  }
+  const provider = await marketDataProviderForUser(owner.userId, tradingProvider);
+  const known = await provider.getSymbols();
   const match = known.find((s) => s.symbol.toUpperCase() === instrument);
 
   if (!goal || !match) {
@@ -2911,15 +2919,6 @@ async function createProcessFromTelegram(
           .join(", ")}.\n\n` +
         "Usage: `/create <goal> <market> [1m|5m|15m|1h|4h]`",
     };
-  }
-
-  const profile = await persistence.profiles.get(owner.userId).catch(() => null);
-  const tradingProvider = resolveUserTradingProvider(profile);
-  const readiness = await tradingProviderReadinessForUser(owner.userId, tradingProvider);
-  if (!readiness.ready) {
-    const registration = getTradingProviderRegistration(tradingProvider);
-    return { ok: false, message: `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}` };
-  }
   }
 
   const name = goal.length > 60 ? `${goal.slice(0, 57)}…` : goal;
