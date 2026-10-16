@@ -29,6 +29,7 @@ import { isTradingProvider, resolveGoatTradingProvider, resolveUserTradingProvid
 import { getTradingProviderRegistration, isTradingProviderReady } from "../services/trading-provider/TradingProviderRegistry";
 import { buildCTraderAuthorizationUrl, exchangeCTraderAuthorizationCode, resolveValidCTraderToken, verifyCTraderOAuthState, type CTraderAccount } from "../services/ctrader/CTraderOAuthService";
 import { CTraderOpenApiClient } from "../services/ctrader/CTraderOpenApiClient";
+import { CTraderTradeExecutionService } from "../services/ctrader/CTraderTradeExecutionService";
 import { CTraderMarketDataProvider } from "../services/ctrader/CTraderMarketDataProvider";
 import { getFirebaseAdmin, getFirebaseAdminFailureReason } from "./firebaseAdmin";
 import {
@@ -6917,14 +6918,60 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
   const user = requireUser(req);
   const body = req.body ?? {};
   const { accountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage } = body;
-  if (typeof accountId !== "string" || !accountId ||
+  const userProfile = await persistence.profiles.get(user.uid).catch(() => null);
+  const selectedTradingProvider = resolveUserTradingProvider(userProfile);
+  if ((selectedTradingProvider === "hyperliquid" && (typeof accountId !== "string" || !accountId)) ||
       typeof symbol !== "string" || !symbol ||
       (side !== "BUY" && side !== "SELL") ||
       ![qty, entry, stopLoss, takeProfit].every((v) => typeof v === "number" && Number.isFinite(v)) ||
       (leverage !== undefined && (typeof leverage !== "number" || !Number.isFinite(leverage)))) {
     return fail(res, 400, "INVALID_TRADE_INTENT",
-      "accountId, symbol, BUY/SELL side, finite qty/entry/stopLoss/takeProfit, and optional finite leverage are required.");
+      "A valid account selection, symbol, BUY/SELL side, finite qty/entry/stopLoss/takeProfit, and optional finite leverage are required.");
   }
+
+  if (selectedTradingProvider === "ctrader") {
+    const selectedAccountId = userProfile?.ctraderAccountId;
+    if (!selectedAccountId) return fail(res, 409, "CTRADER_ACCOUNT_REQUIRED", "Connect cTrader and select a trading account in Settings first.");
+    if (typeof accountId === "string" && accountId && accountId !== selectedAccountId) {
+      return fail(res, 403, "CTRADER_ACCOUNT_MISMATCH", "The requested account does not match the cTrader account selected in your own Settings.");
+    }
+    const intentIdFromBody = typeof body.intentId === "string" && /^[A-Za-z0-9_-]{8,120}$/.test(body.intentId) ? body.intentId : "";
+    if (body.confirmed === true && !intentIdFromBody) {
+      return fail(res, 400, "PREFLIGHT_REQUIRED", "Run risk preflight first, then confirm using the intentId returned in its confirmation card.");
+    }
+    const intentId = intentIdFromBody || ("sirgoat_" + Date.now() + "_" + Math.random().toString(36).slice(2, 12));
+    const cTraderClient = await cTraderClientForUser(user.uid, selectedAccountId, userProfile?.ctraderAccountIsLive === true);
+    const executor = new CTraderTradeExecutionService(cTraderClient);
+    const intent = { symbol, side, qty, entry, stopLoss, takeProfit, intentId } as const;
+    const riskCheck = await executor.preflight(intent);
+    const execution = {
+      enabled: process.env.CTRADER_EXECUTION_ENABLED === "true",
+      authorised: process.env.CTRADER_EXECUTION_ENABLED === "true",
+      summary: process.env.CTRADER_EXECUTION_ENABLED === "true"
+        ? "cTrader execution is enabled by the server."
+        : "cTrader execution is disabled by the server. No order will be sent.",
+    };
+    if (!riskCheck.ok) {
+      return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+        title: "cTrader order blocked by risk controls", intentId, riskCheck, execution } });
+    }
+    if (body.confirmed !== true) {
+      return res.json({ action: { type: "execute_trade", status: "confirmation_required",
+        title: "Confirm cTrader limit order", confirmationRequired: true, intentId,
+        order: { accountId: selectedAccountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage: leverage ?? null, orderType: "limit", provider: "ctrader" },
+        riskCheck, execution,
+        message: "Review the cTrader order and measured risk. Confirmation rechecks account risk immediately before submission." } });
+    }
+    const result = await executor.execute(intent);
+    if (!result.accepted) {
+      return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+        title: "cTrader order not confirmed", intentId, message: result.message, riskCheck, execution } });
+    }
+    return res.json({ action: { type: "execute_trade", status: "completed",
+      title: "cTrader order accepted", intentId, orderId: result.orderId ?? null,
+      message: result.message, riskCheck, execution } });
+  }
+
   const provider = propDaoFor(user.uid);
   const account = await provider.resolveAccount(accountId);
   if (!account) return fail(res, 404, "ACCOUNT_NOT_FOUND", "That account is not available on your PropDAO key.");
