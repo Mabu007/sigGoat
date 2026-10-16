@@ -698,7 +698,7 @@ function ensureGoatRuntime(goat: FundGoat) {
     const registration = getTradingProviderRegistration(provider);
     throw new Error(registration.unavailableReason ?? `Trading provider "${provider}" is not ready.`);
   }
-  const migrated = migrateGoatMarkets(goat);
+  const migrated = provider === "hyperliquid" ? migrateGoatMarkets(goat) : null;
   const canonicalGoat = migrated ?? goat;
   if (migrated) {
     void persistence.goats.save(migrated).catch((err) => {
@@ -709,9 +709,15 @@ function ensureGoatRuntime(goat: FundGoat) {
   const attached = allSkillsFor(canonicalGoat.userId).then((skills) =>
     skills.filter((s) => canonicalGoat.skillIds.includes(s.id)),
   );
-  return attached.then((attachedSkills) =>
-    goatRuntimeRegistry.getOrCreate(canonicalGoat, attachedSkills, runtimeOptions),
-  );
+  return attached.then(async (attachedSkills) => {
+    const providerAdapter = await marketDataProviderForGoat(canonicalGoat);
+    const stateStore = await marketStateStoreForGoat(canonicalGoat, providerAdapter);
+    return goatRuntimeRegistry.getOrCreate(canonicalGoat, attachedSkills, {
+      ...runtimeOptions,
+      marketProvider: providerAdapter,
+      marketStateStore: stateStore,
+    });
+  });
 }
 
 /**
@@ -829,6 +835,12 @@ async function setGoatStatusFor(
  * Firestore-backed scheduling is separate and survives API cold starts.
  */
 function subscribeToMarkets(goat: FundGoat): void {
+  // cTrader symbols and quotes are broker/account-specific. Never subscribe
+  // them to the process-global Hyperliquid ingestion service.
+  if (resolveGoatTradingProvider(goat) === "ctrader") {
+    marketIngestion.unsubscribeAll(goat.id);
+    return;
+  }
   // The serverless cron dispatcher checks trackers directly from Firestore due times;
   // it must not start process-local market ingestion loops.
   if (process.env.SIRGOAT_SCHEDULER_ONLY === "true") return;
@@ -956,11 +968,14 @@ export function migrateGoatMarkets(goat: FundGoat): FundGoat | null {
  * chose.
  */
 async function resolveGoatMarket(goat: FundGoat): Promise<string | null> {
-  const migrated = migrateGoatMarkets(goat);
+  const provider = await marketDataProviderForGoat(goat).catch(() => null);
+  if (!provider) return null;
+  await provider.getSymbols().catch(() => undefined);
+  const migrated = provider === marketProvider ? migrateGoatMarkets(goat) : null;
   const candidate = migrated ?? goat;
 
   const listed = candidate.markets.find((market) =>
-    Boolean(marketProvider.getMarketMetadata(market)),
+    Boolean(provider.getMarketMetadata(market)),
   );
 
   if (listed && migrated) {
