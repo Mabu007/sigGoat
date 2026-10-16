@@ -4828,7 +4828,7 @@ async function runtimeFor(
     ? state.lastWakeEvent.details ?? ''
     : '';
   const previousCredentialFailure =
-    /AI not connected|AI credential storage is unreadable or unavailable/i.test(lastFailureDetails);
+    /AI not connected|No usable AI provider credential is connected|AI credential storage is unreadable or unavailable|AI credential unavailable/i.test(lastFailureDetails);
   let credentialRecovered = false;
   if (eligibleForReview && previousCredentialFailure) {
     // Re-check after a key save. A previous credential error otherwise left a
