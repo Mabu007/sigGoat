@@ -1412,8 +1412,8 @@ export class GoatRuntime {
       const isCross =
         tracker.operator === 'CROSS_ABOVE' || tracker.operator === 'CROSS_BELOW';
       const latestInput = candles.length ? candles[candles.length - 1] : null;
-      // Market providers return closed historical bars for tracker evaluation.
-      // The shared Candle shape intentionally contains OHLCV only.
+      // The shared Candle contract exposes OHLCV, not bar-finalization state.
+      // Use the newest supplied bar rather than reading an unsupported field.
       const latestEvaluable = latestInput;
       const newestCandleMs = latestEvaluable?.time ?? null;
 
