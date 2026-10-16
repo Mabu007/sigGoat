@@ -71,7 +71,7 @@ describe('Space Bunny hosted API adapter', () => {
     expect(chatBody?.response_format).toBeUndefined();
   });
 
-  test('retries one empty structured completion and exposes finish diagnostics', async () => {
+  test('retries a truncated structured completion with a larger token budget', async () => {
     let calls = 0;
     const requestBodies: Record<string, unknown>[] = [];
     const context = { userId: 'user-1', goatId: 'goat-1', wakeReason: 'MANUAL_REEVALUATE' } as unknown as GoatReasoningContext;
@@ -81,7 +81,7 @@ describe('Space Bunny hosted API adapter', () => {
         calls += 1;
         requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(JSON.stringify(calls === 1
-          ? { choices: [{ message: { content: '', reasoning: 'long internal reasoning' }, finish_reason: 'length' }], usage: { completion_tokens: 4096 } }
+          ? { choices: [{ message: { content: '{"investigation":', reasoning: 'long internal reasoning' }, finish_reason: 'length' }], usage: { completion_tokens: 4096 } }
           : { choices: [{ message: { content: '{}' }, finish_reason: 'stop' }] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
