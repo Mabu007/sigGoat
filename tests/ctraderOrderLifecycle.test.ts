@@ -74,7 +74,7 @@ describe("cTrader order lifecycle", () => {
 
   test("blocks limit prices that equal the market and already-invalidated protection", async () => {
     const client = fakeClient();
-    const result = await new CTraderTradeExecutionService(client as unknown as CTraderOpenApiClient, true).execute({ ...intent, entry: 1.08 });
+    const result = await new CTraderTradeExecutionService(client as unknown as CTraderOpenApiClient, true).execute({ ...intent, entry: 1.08, takeProfit: 1.12 });
     expect(result.status).toBe("blocked");
     expect(result.message).toMatch(/marketable/);
     expect(client.getPlaceCalls()).toBe(0);
