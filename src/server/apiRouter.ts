@@ -1394,7 +1394,6 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           });
           if (!("result" in outcome)) return { submitted: false, intentId, message: outcome.message };
           return { submitted: true, orderId: outcome.result.orderId, intentId, message: "PropDAO accepted the order request." };
-        }
         },
       },
       goat,
