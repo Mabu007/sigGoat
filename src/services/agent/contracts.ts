@@ -30,6 +30,8 @@
  *   decision   = ACTIONABLE | NO_TRADE
  */
 
+import { z } from 'zod';
+
 import {
   TradeDirection,
   OrderType,
