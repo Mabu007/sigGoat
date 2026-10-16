@@ -5459,6 +5459,63 @@ apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
   res.json({ team, members: members.filter(Boolean) });
 }));
 
+apiRouter.get("/goat-teams/:id/assessment", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+  const memberSignals = await Promise.all(team.memberGoatIds.map(async goatId => {
+    const signals = await persistence.signals.listByGoat(goatId, 100);
+    const latestByMarket = new Map<string, TradeSignal>();
+    for (const signal of signals) {
+      if (signal.status !== "ACTIONABLE" && signal.status !== "NO_TRADE") continue;
+      if (signal.expiresAt && Date.parse(signal.expiresAt) <= Date.now()) continue;
+      const current = latestByMarket.get(signal.market);
+      if (!current || signal.createdAt > current.createdAt) latestByMarket.set(signal.market, signal);
+    }
+    return { goatId, latestByMarket };
+  }));
+  const markets = [...new Set(memberSignals.flatMap(member => [...member.latestByMarket.keys()]))].sort();
+  const assessments = markets.map(market => {
+    const votes = memberSignals.map(member => {
+      const signal = member.latestByMarket.get(market);
+      return {
+        goatId: member.goatId,
+        direction: signal?.direction ?? null,
+        signalId: signal?.id ?? null,
+        confidence: signal?.confidence ?? null,
+        status: signal?.status ?? "NO_CURRENT_SIGNAL",
+        createdAt: signal?.createdAt ?? null,
+      };
+    });
+    const availableVotes = votes.filter(vote => vote.direction !== null);
+    const directions = new Set(availableVotes.map(vote => vote.direction));
+    let outcome: string;
+    if (team.coordinationMode === "INDEPENDENT") {
+      outcome = "INDEPENDENT_SIGNALS";
+    } else if (team.coordinationMode === "CONSENSUS") {
+      outcome = availableVotes.length !== team.memberGoatIds.length
+        ? "WAITING_FOR_ALL_MEMBERS"
+        : directions.size === 1 && availableVotes.every(vote => vote.direction === "LONG" || vote.direction === "SHORT")
+          ? "CONSENSUS_READY"
+          : "NO_CONSENSUS";
+    } else {
+      const lead = votes.find(vote => vote.goatId === team.leadGoatId);
+      if (!lead || !lead.direction) outcome = "LEAD_SIGNAL_MISSING";
+      else if (lead.direction !== "LONG" && lead.direction !== "SHORT") outcome = "LEAD_NO_TRADE";
+      else if (votes.some(vote => vote.goatId !== team.leadGoatId && (vote.direction === "LONG" || vote.direction === "SHORT") && vote.direction !== lead.direction)) outcome = "REVIEW_CONFLICT";
+      else outcome = "LEAD_REVIEW_REQUIRED";
+    }
+    return { market, outcome, votes };
+  });
+  res.json({
+    teamId: team.id,
+    coordinationMode: team.coordinationMode,
+    assessments,
+    executionAllowed: false,
+    note: "Team assessment is informational only. It never creates or submits orders; individual GOAT SignalGate and approval/execution protections remain in force.",
+  });
+}));
+
 apiRouter.post("/goat-teams/:id/status", handle(async (req, res) => {
   const user = requireUser(req);
   const team = await goatTeamStore.getForUser(req.params.id, user.uid);
