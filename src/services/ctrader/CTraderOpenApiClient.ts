@@ -269,7 +269,7 @@ export class CTraderOpenApiClient {
     return this.withSocket(async (socket) => {
       await this.request(socket, SUBSCRIBE_SPOTS_REQ, SUBSCRIBE_SPOTS_RES, {
         ctidTraderAccountId: this.accountId,
-        symbolId: symbol.symbolId,
+        symbolId: [symbol.symbolId],
         subscribeToSpotTimestamp: true,
       });
       const payload = await this.waitFor(
