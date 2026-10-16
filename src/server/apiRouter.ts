@@ -2591,10 +2591,12 @@ apiRouter.get(
  * ordering, never truncation.
  */
 function byTrackedThenSymbol(
-  a: { symbol: string; tracked: boolean },
-  b: { symbol: string; tracked: boolean },
+  a: { symbol: string; tracked?: boolean },
+  b: { symbol: string; tracked?: boolean },
 ): number {
-  if (a.tracked !== b.tracked) return a.tracked ? -1 : 1;
+  const aTracked = a.tracked === true;
+  const bTracked = b.tracked === true;
+  if (aTracked !== bTracked) return aTracked ? -1 : 1;
   return a.symbol.localeCompare(b.symbol);
 }
 
