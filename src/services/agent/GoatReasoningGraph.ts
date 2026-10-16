@@ -23,6 +23,8 @@ export interface GoatReasoningGraphInput {
     model: string,
     provider?: AiProvider,
   ) => Promise<ReasoningResult>;
+  /** Called after a graph node completes; persist only stage metadata, never state payloads. */
+  onStage?: (stage: string) => Promise<void> | void;
 }
 
 const GoatReasoningGraphState = Annotation.Root({
@@ -62,11 +64,13 @@ export async function runGoatReasoningGraph(
     ) {
       throw new Error("GOAT_REASONING_GRAPH_INVALID_INPUT: user, GOAT, market and model are required.");
     }
+    await input.onStage?.("context_prepared");
     return { stages: ["context_prepared"] };
   };
 
   const invokeReasoning = async (state: typeof GoatReasoningGraphState.State) => {
     const result = await input.evaluate(state.context, state.model, input.provider);
+    await input.onStage?.("reasoning_completed");
     return { result, stages: [...state.stages, "reasoning_completed"] };
   };
 
@@ -77,6 +81,7 @@ export async function runGoatReasoningGraph(
     // Re-parse even though provider clients currently validate their output.
     // This keeps the graph boundary safe if another provider is added later.
     const result = parseReasoningResult(state.result);
+    await input.onStage?.("contract_validated");
     return { result, stages: [...state.stages, "contract_validated"] };
   };
 
