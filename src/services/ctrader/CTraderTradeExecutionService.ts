@@ -226,7 +226,7 @@ export class CTraderTradeExecutionService {
         clientOrderId: intent.intentId,
       });
       if (!outcome.accepted) return {
-        status: outcome.status === "rejected" ? "rejected" : "unknown",
+        status: outcome.status === "rejected" ? "rejected" : outcome.status === "not_submitted" ? "blocked" : "unknown",
         accepted: false,
         ...(outcome.orderId ? { orderId: outcome.orderId } : {}),
         message: outcome.message,
