@@ -407,7 +407,7 @@ export class CTraderOpenApiClient {
     stopLoss?: number;
     takeProfit?: number;
     clientOrderId: string;
-  }): Promise<{ status: "accepted" | "rejected" | "unknown"; accepted: boolean; orderId?: string; executionType?: number; requestedVolumeCents: number; message: string }> {
+  }): Promise<{ status: "accepted" | "rejected" | "unknown" | "not_submitted"; accepted: boolean; orderId?: string; executionType?: number; requestedVolumeCents: number; message: string }> {
     if (!this.accountId) throw new Error("Select a cTrader trading account in Settings first.");
     if (!Number.isFinite(input.volumeUnits) || input.volumeUnits <= 0) throw new Error("Order quantity must be positive.");
     if (input.orderType === "LIMIT" && (!Number.isFinite(input.limitPrice) || (input.limitPrice ?? 0) <= 0)) throw new Error("A valid limit price is required for a limit order.");
@@ -415,7 +415,8 @@ export class CTraderOpenApiClient {
     // ProtoOA volume is cents: 1,000 units = 100,000. Keep qty in units for risk math.
     const requestedVolumeCents = cTraderVolumeCents(input.volumeUnits);
     if ((input.stopLoss !== undefined && (!Number.isFinite(input.stopLoss) || input.stopLoss <= 0)) || (input.takeProfit !== undefined && (!Number.isFinite(input.takeProfit) || input.takeProfit <= 0))) throw new Error("Protective stop-loss and take-profit prices must be finite positive values.");
-    return this.withSocket(async (socket) => {
+    try {
+      return await this.withSocket(async (socket) => {
       const clientMsgId = id();
       const clientOrderId = input.clientOrderId;
       let payload: Record<string, unknown>;
@@ -450,5 +451,14 @@ export class CTraderOpenApiClient {
       if (!orderId) return { status: "unknown", accepted: false, executionType, requestedVolumeCents, message: "cTrader reported an order event without an order ID. Inspect the broker order list by client order ID before retrying." };
       return { status: "accepted", accepted: true, orderId, executionType, requestedVolumeCents, message: executionType === 3 ? "cTrader confirmed the order filled; protective levels must still be verified against broker state." : executionType === 11 ? "cTrader confirmed a partial fill; protective levels must still be verified against broker state." : "cTrader accepted the order; fill and protective levels must still be verified against broker state." };
     });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown cTrader connection failure.";
+      return {
+        status: "not_submitted",
+        accepted: false,
+        requestedVolumeCents,
+        message: "cTrader connection or account authorization failed before an order response could be received. No order was submitted by this request: " + message,
+      };
+    }
   }
 }
