@@ -2248,10 +2248,18 @@ async function decideTrackerCheck(
     };
   }
 
-  const state = await marketStateStore.getState(
-    market,
-    normaliseTrackingTimeframe(goat.timeframe),
-  );
+  let state: Awaited<ReturnType<MarketStateStore["getState"]>>;
+  try {
+    const provider = await marketDataProviderForGoat(goat);
+    const stateStore = await marketStateStoreForGoat(goat, provider);
+    state = await stateStore.getState(market, normaliseTrackingTimeframe(goat.timeframe));
+  } catch (error) {
+    return {
+      handled: false,
+      nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
+      reason: error instanceof Error ? error.message : "market provider unavailable",
+    };
+  }
 
   if (!isUsableMarketState(state) || !state.quote) {
     return {
