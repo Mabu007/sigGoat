@@ -235,12 +235,15 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     const resolved = await this.clientFor(context.userId, providerOverride);
 
     /**
-     * No credential: return the clearly-labelled deterministic DEMO result
-     * instead of pretending a model failed. The runtime reports
-     * `reasoningMode: 'DEMO'`, so this is visible rather than silent.
+     * Callers must preflight credentials and present explicit DEMO state before
+     * invoking reasoning. If a credential disappears between that check and
+     * this call, throwing is safer than returning a demo NO_TRADE that could be
+     * mistaken for a real model response.
      */
     if (!resolved) {
-      return buildDemoReasoningResult(context);
+      throw new Error(
+        'AI_PROVIDER_CREDENTIAL_MISSING: no usable credential is connected for the selected provider.',
+      );
     }
 
     const { provider, client } = resolved;
