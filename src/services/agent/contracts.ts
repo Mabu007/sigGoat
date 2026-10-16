@@ -1283,6 +1283,12 @@ function parseThesis(
   };
 }
 
+const ReasoningObjectSchema = z.object({}).passthrough();
+
+function noTradeFallback(reason: string): Record<string, unknown> {
+  return { decision: 'NO_TRADE', noTradeReason: reason, triggerSequence: [] };
+}
+
 /* ------------------------------------------------------------------ */
 /* Top-level parser                                                   */
 /* ------------------------------------------------------------------ */
