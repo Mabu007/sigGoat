@@ -1011,10 +1011,12 @@ class FirestoreSignalRepository implements SignalRepository {
   async deleteByGoat(goatId: string) { await deleteGoatDocuments(this.db, SIGNALS, goatId); }
   async update(signal: TradeSignal) {
     const ref = this.db.collection(SIGNALS).doc(signal.id);
-    const snap = await ref.get();
-    if (!snap.exists) return false;
-    await ref.set(firestoreSafe({ ...signal }));
-    return true;
+    return this.db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists) return false;
+      transaction.set(ref, firestoreSafe({ ...signal }));
+      return true;
+    });
   }
 }
 
