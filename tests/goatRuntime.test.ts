@@ -14,7 +14,8 @@ function makeGoat(): FundGoat {
     goal: 'Test disciplined conditional setups.',
     markets: ['EUR/USD'],
     skillIds: [],
-    model: 'openai/gpt-4o-mini',
+    model: 'space-bunny-alpha',
+    aiProvider: 'spacebunny',
     status: 'WATCHING',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -29,7 +30,8 @@ function makeGateway(
   return {
     evaluateGoat: evaluate,
     answerGoatQuestion: async () => 'ok',
-    hasKeyFor: async () => true,
+    // The runtime must check the same provider it passes to evaluateGoat.
+    hasKeyFor: async (_userId, providerOverride) => providerOverride === 'spacebunny',
     listModels: async () => ({ models: [], provider: 'openrouter', fetchedAt: 0, source: 'stub' }),
     providerFor: async () => 'openrouter',
     testKeyFor: async () => ({ ok: false, provider: 'openrouter', latencyMs: 0, error: 'not used here' }),
