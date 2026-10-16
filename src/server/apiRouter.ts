@@ -6410,6 +6410,17 @@ function inferChatCandleCount(message: string, timeframe: string): number {
 
 async function buildChatResearchContext(userId: string, userMessage: string): Promise<string> {
   const now = new Date();
+  const profile = await persistence.profiles.get(userId).catch(() => null);
+  const tradingProvider = resolveUserTradingProvider(profile);
+  let researchProvider: MarketDataProvider | null = null;
+  let providerFailure: string | null = null;
+  try {
+    const readiness = await tradingProviderReadinessForUser(userId, tradingProvider);
+    if (!readiness.ready) throw new Error(readiness.reason ?? "Selected trading provider is not ready.");
+    researchProvider = await marketDataProviderForUser(userId, tradingProvider);
+  } catch (error) {
+    providerFailure = error instanceof Error ? error.message : "Selected market provider is unavailable.";
+  }
   const lower = userMessage.toLowerCase();
   const lowerMessage = userMessage.toLowerCase();
   const includeUserState = /\b(goat|my agent|my setup|my proposal|my signal|my strategy|my portfolio|my account|my trades|my activity)\b/i.test(userMessage);
@@ -6431,14 +6442,15 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
 
   const sections: string[] = [
     "CURRENT SERVER TIME (UTC): " + now.toISOString(),
-    "MARKET DATA SOURCE: " + marketProvider.name + "; mode=" + marketProvider.dataMode +
-      ". Only describe quotes as live if the returned timestamp is recent and dataMode is LIVE.",
+    "MARKET DATA SOURCE: " + (researchProvider ? researchProvider.name + "; mode=" + researchProvider.dataMode : tradingProvider + " unavailable") +
+      ". Only describe quotes as live if the returned timestamp is recent and dataMode is LIVE." +
+      (providerFailure ? " PROVIDER FAILURE: " + providerFailure + ". Do not fall back to another venue or invent data." : ""),
   ];
 
   const [goats, skills, symbols, newsGroups] = await Promise.all([
     includeUserState ? persistence.goats.listByUser(userId).catch(() => []) : Promise.resolve([]),
     includeUserState ? persistence.skills.listByUser(userId).catch(() => []) : Promise.resolve([]),
-    marketProvider.getSymbols().catch(() => []),
+    researchProvider ? researchProvider.getSymbols().catch(() => []) : Promise.resolve([]),
     Promise.all(newsQueries.slice(0, 4).map(fetchChatNews)),
   ]);
   const news = newsGroups.flat().slice(0, 16);
@@ -6621,7 +6633,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
       symbol.symbol.toLowerCase().endsWith(":" + query.toLowerCase())
     ).forEach(addMarket);
   }
-  if (marketProvider.dataMode === "LIVE") {
+  if (researchProvider && researchProvider === hyperliquidProvider && researchProvider.dataMode === "LIVE") {
     const searchResults = await Promise.all(marketQueries.map(async (query) => {
       try { return await hyperliquidProvider.searchInstruments(query, 8); }
       catch { return []; }
@@ -6649,27 +6661,30 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
     const candleCount = inferChatCandleCount(userMessage, timeframe);
     const quotes = await Promise.all(matchingSymbols.map(async (symbol) => {
       try {
-        const quote = await marketProvider.getQuote(symbol.symbol);
+        if (!researchProvider) throw new Error(providerFailure ?? "Selected market provider is unavailable.");
+        const quote = await researchProvider.getQuote(symbol.symbol);
         let candles: unknown[] = [];
         let candleError: string | undefined;
         try {
-          candles = (await marketProvider.getCandles(symbol.symbol, timeframe, candleCount)).map((c) => ({
+          candles = (await researchProvider.getCandles(symbol.symbol, timeframe, candleCount)).map((c) => ({
             time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
           }));
         } catch (error) {
           candleError = error instanceof Error ? error.message : "Historical candles unavailable.";
         }
-        return { symbol: symbol.symbol, name: symbol.name, quote, timeframe, requestedCandleCount: candleCount, returnedCandleCount: candles.length, historicalCandles: candles, candleError, dataMode: marketProvider.dataMode };
+        return { symbol: symbol.symbol, name: symbol.name, quote, timeframe, requestedCandleCount: candleCount, returnedCandleCount: candles.length, historicalCandles: candles, candleError, dataMode: researchProvider?.dataMode ?? "UNAVAILABLE" };
       } catch (error) {
         return { symbol: symbol.symbol, name: symbol.name, unavailable: error instanceof Error ? error.message : "quote unavailable", dataMode: marketProvider.dataMode };
       }
     }));
     sections.push(
-      "ON-DEMAND HYPERLIQUID RESEARCH RESULTS (historical candles oldest-to-newest; unavailable fields are not zero):\n" +
+      "ON-DEMAND " + tradingProvider.toUpperCase() + " RESEARCH RESULTS (historical candles oldest-to-newest; unavailable fields are not zero):\n" +
       JSON.stringify({ fetchedAt: now.toISOString(), timeframe, requestedCandleCount: candleCount, results: quotes }).slice(0, 30000),
     );
   } else {
-    sections.push("LIVE MARKET SNAPSHOTS: no matching listed instrument was identified from the current message or this user's GOAT markets. Do not invent a quote; ask which listed symbol they mean if needed.");
+    sections.push(providerFailure
+      ? "LIVE MARKET SNAPSHOTS: the selected " + tradingProvider + " provider is unavailable: " + providerFailure + ". Do not fall back to another venue or invent a quote."
+      : "LIVE MARKET SNAPSHOTS: no matching listed instrument was identified from the selected " + tradingProvider + " market universe and this user's GOAT markets. Do not invent a quote; ask which listed symbol they mean if needed.");
   }
 
   if (includeNews) {
