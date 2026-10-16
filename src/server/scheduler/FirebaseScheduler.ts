@@ -1,4 +1,4 @@
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentSnapshot, Firestore } from 'firebase-admin/firestore';
 import type { FiredWake, ScheduleRequest, SchedulerHealth, WakeScheduler } from './types';
 
 /** Firestore owns due times and leases; Cloudflare Worker Cron dispatches the existing Node/AI workflow. */
@@ -67,7 +67,7 @@ export class FirebaseScheduler implements WakeScheduler {
     for (const doc of snapshot.docs) {
       if (claimed.length >= limit) break;
       const event = await this.db.runTransaction(async transaction => {
-        const fresh = await transaction.get(doc.ref);
+        const fresh = await transaction.get(doc.ref) as unknown as DocumentSnapshot;
         if (!fresh.exists) return null;
         const row = fresh.data()!;
         if (row.paused || typeof row.nextWakeAt !== 'string' || row.nextWakeAt > dueIso) return null;
@@ -98,7 +98,7 @@ export class FirebaseScheduler implements WakeScheduler {
     for (const doc of snapshot.docs) {
       if (claimed.length >= limit) break;
       const event = await this.db.runTransaction(async transaction => {
-        const fresh = await transaction.get(doc.ref);
+        const fresh = await transaction.get(doc.ref) as unknown as DocumentSnapshot;
         if (!fresh.exists) return null;
         const row = fresh.data()!;
         if (row.paused || typeof row.nextTrackerCheckAt !== 'string' || row.nextTrackerCheckAt > dueIso) return null;
@@ -125,7 +125,7 @@ export class FirebaseScheduler implements WakeScheduler {
   async completeTrackerCheck(goatId: string, generationId: string, nextTrackerCheckAt: string | null): Promise<void> {
     const ref = this.schedules.doc(goatId);
     await this.db.runTransaction(async transaction => {
-      const snapshot = await transaction.get(ref);
+      const snapshot = await transaction.get(ref) as unknown as DocumentSnapshot;
       if (!snapshot.exists || snapshot.data()?.generationId !== generationId) return;
       transaction.update(ref, {
         nextTrackerCheckAt,
@@ -138,7 +138,7 @@ export class FirebaseScheduler implements WakeScheduler {
   async complete(goatId: string, generationId: string, nextWakeAt: string | null, nextTrackerCheckAt: string | null): Promise<void> {
     const ref = this.schedules.doc(goatId);
     await this.db.runTransaction(async transaction => {
-      const snapshot = await transaction.get(ref);
+      const snapshot = await transaction.get(ref) as unknown as DocumentSnapshot;
       if (!snapshot.exists || snapshot.data()?.generationId !== generationId) return;
       transaction.update(ref, {
         nextWakeAt,
