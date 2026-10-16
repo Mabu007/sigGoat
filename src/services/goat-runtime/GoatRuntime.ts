@@ -952,16 +952,21 @@ export class GoatRuntime {
            * unfunded OpenRouter account. Say which it is, and point at the fix.
            */
           const raw = err instanceof Error ? err.message : 'unknown error';
+          const missingCredential = /AI_PROVIDER_CREDENTIAL_MISSING/.test(raw);
           const outOfCredits = /insufficient credit|402|payment required|add more credits/i.test(raw);
           const modelRetired = /not listed|no endpoints found|MODEL_NOT_LISTED/i.test(raw);
 
-          const guidance = outOfCredits
-            ? 'The provider reports this account has no credits. Add credit at openrouter.ai/settings/credits, or pick a free model in Settings → AI Reasoning Engine.'
-            : modelRetired
-              ? 'The configured model is no longer offered by OpenRouter. Pick a current model in Settings → AI Reasoning Engine.'
-              : 'Will retry with backoff.';
+          const guidance = missingCredential
+            ? 'The selected provider credential became unavailable during this review. Re-save the key in Settings, then run a fresh review.'
+            : outOfCredits
+              ? 'The provider reports this account has no credits. Add credit at openrouter.ai/settings/credits, or pick a free model in Settings → AI Reasoning Engine.'
+              : modelRetired
+                ? 'The configured model is no longer offered by OpenRouter. Pick a current model in Settings → AI Reasoning Engine.'
+                : 'Will retry with backoff.';
 
-          const failure = `Reasoning model unavailable: ${raw}`;
+          const failure = missingCredential
+            ? 'AI credential unavailable: the selected provider key could not be resolved during reasoning.'
+            : `Reasoning model unavailable: ${raw}`;
           await this.expirePendingProposals(failure);
           this.recordFailure(failure);
           await this.recordWakeEvent(
