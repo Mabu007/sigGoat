@@ -4822,14 +4822,19 @@ async function runtimeFor(
     goat.deploymentState !== 'DRAFT' &&
     !state.currentThesis && !state.lastWakeEvent && !state.isEvaluating && goat.status !== "PAUSED";
   if (needsReview) {
-    void runtime
-      .wake("Initial market review", "MANUAL_REEVALUATE", runtime.getConfig().markets[0])
-      .catch((err) => {
-        console.error(
-          `[api] resume of initial review failed for ${goat.id}:`,
-          err,
-        );
-      });
+    // Vercel may freeze a function once the response has returned. Register
+    // this non-blocking initial review with waitUntil so it survives the GET
+    // that caused the first review to resume.
+    keepBackgroundTaskAlive(
+      runtime
+        .wake("Initial market review", "MANUAL_REEVALUATE", runtime.getConfig().markets[0])
+        .catch((err) => {
+          console.error(
+            `[api] resume of initial review failed for ${goat.id}:`,
+            err,
+          );
+        }),
+    );
   }
 
   return runtime;
