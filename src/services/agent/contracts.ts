@@ -1428,6 +1428,14 @@ export function parseReasoningResult(
     normalized.proposal = proposalObject.data;
   }
 
+  // Critical reasoning sections must never be returned as synthetic, authoritative data.
+  // Throwing lets the runtime reject the entire model result instead of persisting a fake thesis.
+  if (criticalSectionMalformed) {
+    throw new ReasoningValidationError([
+      'The AI response contained a malformed investigation or thesis section; reject the entire result.',
+    ]);
+  }
+
   // Evidence is optional supporting context. Discard malformed entries;
   // it must never invalidate or strengthen an otherwise untrusted proposal.
   if (!Array.isArray(normalized.evidence)) {
