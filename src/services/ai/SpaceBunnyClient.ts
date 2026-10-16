@@ -13,7 +13,7 @@ import {
   tryParseJson,
   type GoatReasoningContext,
 } from './OpenRouterClient';
-import { parseReasoningResult, type ReasoningResult } from '../agent/contracts';
+import { parseReasoningResult, ReasoningValidationError, type ReasoningResult } from '../agent/contracts';
 
 export const SPACE_BUNNY_MODEL = 'space-bunny-alpha';
 const BASE_URL = 'https://spacebunnymodel.com/api/v1';
@@ -163,7 +163,43 @@ export class SpaceBunnyClient {
       parsed = tryParseJson(raw);
     }
     if (parsed === undefined) throw new ApiRequestError('Space Bunny did not return the required JSON reasoning contract after a repair attempt.', { code: 'UNPARSEABLE', retryable: true });
-    return { result: parseReasoningResult(parsed), model: SPACE_BUNNY_MODEL };
+    let result: ReasoningResult;
+    try {
+      result = parseReasoningResult(parsed);
+    } catch (validationError) {
+      if (!(validationError instanceof ReasoningValidationError)) throw validationError;
+      raw = await this.complete(SPACE_BUNNY_MODEL, [
+        ...messages,
+        { role: 'assistant', content: raw.slice(0, 4_000) },
+        {
+          role: 'user',
+          content:
+            'Your previous reply was valid JSON but failed SIRGOAT runtime validation. ' +
+            'Fix every issue and return the complete corrected JSON object ONLY. ' +
+            'The investigation, thesis and proposal fields must be JSON objects; evidence must be an array. ' +
+            'Validation issues: ' + validationError.issues.join('; '),
+        },
+      ], 8192, REQUEST_TIMEOUT_MS, true, 'low');
+      const repairedParsed = tryParseJson(raw);
+      if (repairedParsed === undefined) {
+        throw new ApiRequestError(
+          'Space Bunny returned invalid JSON while repairing its reasoning contract.',
+          { code: 'UNPARSEABLE', retryable: true },
+        );
+      }
+      try {
+        result = parseReasoningResult(repairedParsed);
+      } catch (repairError) {
+        if (repairError instanceof ReasoningValidationError) {
+          throw new ApiRequestError(
+            'Space Bunny response still fails SIRGOAT validation: ' + repairError.issues.join('; '),
+            { code: 'INVALID_REASONING_SCHEMA', retryable: true },
+          );
+        }
+        throw repairError;
+      }
+    }
+    return { result, model: SPACE_BUNNY_MODEL };
   }
 
   async answerQuestion(question: string, context: GoatReasoningContext, _model = SPACE_BUNNY_MODEL): Promise<{ answer: string; model: string }> {
