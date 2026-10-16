@@ -4209,12 +4209,30 @@ apiRouter.post(
       if (normaliseAutonomyMode(profile.autonomyMode) !== "AUTONOMOUS") {
         return fail(res, 409, "AUTO_TRADE_REQUIRES_AUTONOMOUS_MODE", "Set autonomyMode to AUTONOMOUS before enabling automatic order submission.");
       }
-      if (!profile.autoTradeAccountId || !profile.autoTradeQty) {
-        return fail(res, 409, "AUTO_TRADE_CONFIGURATION_REQUIRED", "Select your owned PropDAO account and set a fixed order quantity before enabling automatic trading.");
+      if (typeof profile.autoTradeQty !== "number" || !Number.isFinite(profile.autoTradeQty) || profile.autoTradeQty <= 0) {
+        return fail(res, 409, "AUTO_TRADE_CONFIGURATION_REQUIRED", "Set a fixed positive order quantity before enabling automatic trading.");
       }
-      const execution = propDaoFor(user.uid).policyStatus();
-      if (!execution.enabled || !execution.authorised) {
-        return fail(res, 409, "EXECUTION_NOT_AUTHORISED", execution.summary + " " + execution.termsSummary);
+      const activeGoats = (await persistence.goats.listByUser(user.uid).catch(() => []))
+        .filter((goat) => goat.deploymentState !== "DRAFT" && goat.status !== "PAUSED");
+      const preferredProvider = resolveUserTradingProvider(profile);
+      const needsCTrader = preferredProvider === "ctrader" || activeGoats.some((goat) => resolveGoatTradingProvider(goat) === "ctrader");
+      const needsPropDao = preferredProvider === "hyperliquid" || activeGoats.some((goat) => resolveGoatTradingProvider(goat) === "hyperliquid");
+
+      if (needsCTrader) {
+        const readiness = await tradingProviderReadinessForUser(user.uid, "ctrader");
+        if (!readiness.ready) return fail(res, 409, "CTRADER_EXECUTION_NOT_READY", readiness.reason ?? "cTrader is not ready for automatic execution.");
+        if (process.env.CTRADER_EXECUTION_ENABLED !== "true") {
+          return fail(res, 409, "EXECUTION_NOT_AUTHORISED", "cTrader automatic execution is disabled by the server. No order will be sent.");
+        }
+      }
+      if (needsPropDao) {
+        if (!profile.autoTradeAccountId) {
+          return fail(res, 409, "AUTO_TRADE_CONFIGURATION_REQUIRED", "Select your owned PropDAO account to enable automatic execution for Hyperliquid GOATs.");
+        }
+        const execution = propDaoFor(user.uid).policyStatus();
+        if (!execution.enabled || !execution.authorised) {
+          return fail(res, 409, "EXECUTION_NOT_AUTHORISED", execution.summary + " " + execution.termsSummary);
+        }
       }
     }
 
