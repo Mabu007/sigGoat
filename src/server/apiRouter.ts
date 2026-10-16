@@ -5106,7 +5106,7 @@ apiRouter.post(
     await persistence.goats.save(ownedCopy);
 
     await syncSchedule(ownedCopy);
-    subscribeToMarkets(ownedCopy);
+    if (resolveGoatTradingProvider(ownedCopy) === "hyperliquid") subscribeToMarkets(ownedCopy);
 
     res.status(201).json({ goat: ownedCopy, copiedFrom: template.id });
   }),
@@ -5324,10 +5324,12 @@ apiRouter.get(
     const goat = await persistence.goats.getForUser(req.params.id, user.uid);
     if (!goat) return notFound(res);
     const runtime = await runtimeFor(goat);
+    const goatMarketProvider = await marketDataProviderForGoat(goat);
     res.json({
       goat,
       runtimeState: runtime?.getState() ?? null,
-      dataMode: marketProvider.dataMode,
+      tradingProvider: resolveGoatTradingProvider(goat),
+      dataMode: goatMarketProvider.dataMode,
     });
   }),
 );
@@ -5490,7 +5492,8 @@ apiRouter.patch(
       try { runtime.updateConfig(updated, (await allSkillsFor(user.uid)).filter(skill => updated.skillIds.includes(skill.id))); }
       catch (err) { console.warn(`[api] GOAT ${updated.id} saved but runtime config refresh failed:`, err); }
     }
-    res.json({ goat: updated, runtimeState: runtime?.getState() ?? null, dataMode: marketProvider.dataMode });
+    const goatMarketProvider = await marketDataProviderForGoat(updated);
+    res.json({ goat: updated, runtimeState: runtime?.getState() ?? null, tradingProvider: resolveGoatTradingProvider(updated), dataMode: goatMarketProvider.dataMode });
   }),
 );
 
