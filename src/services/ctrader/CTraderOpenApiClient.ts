@@ -119,7 +119,7 @@ export class CTraderOpenApiClient {
   ): Promise<Record<string, unknown>> {
     const clientMsgId = id();
     return this.waitFor(socket, (message) =>
-      message.payloadType === responseType ||
+      (message.payloadType === responseType && (!message.clientMsgId || message.clientMsgId === clientMsgId)) ||
       (message.payloadType === RESPONSE_ERROR && (!message.clientMsgId || message.clientMsgId === clientMsgId)),
       () => socket.send(JSON.stringify({ clientMsgId, payloadType: requestType, payload })),
     );
@@ -309,21 +309,39 @@ export class CTraderOpenApiClient {
     const volume = Math.round(input.volumeUnits * 100);
     if (volume <= 0) throw new Error("Order quantity is below cTrader's supported volume precision.");
     return this.withSocket(async (socket) => {
-      const payload = await this.request(socket, NEW_ORDER_REQ, 2126, {
-        ctidTraderAccountId: this.accountId,
-        symbolId: input.symbol.symbolId,
-        orderType: input.orderType === "LIMIT" ? 2 : 1,
-        tradeSide: input.side === "BUY" ? 1 : 2,
-        volume,
-        ...(input.limitPrice !== undefined ? { limitPrice: input.limitPrice } : {}),
-        ...(input.stopLoss !== undefined ? { stopLoss: input.stopLoss } : {}),
-        ...(input.takeProfit !== undefined ? { takeProfit: input.takeProfit } : {}),
-        clientOrderId: input.clientOrderId.slice(0, 50),
-        label: "SIRGOAT",
-        comment: "Submitted by SIRGOAT",
-      });
+      const clientMsgId = id();
+      const clientOrderId = input.clientOrderId.slice(0, 50);
+      const payload = await this.waitFor(
+        socket,
+        (message) => {
+          if (message.payloadType !== 2126 && message.payloadType !== 2132 && message.payloadType !== RESPONSE_ERROR) return false;
+          if (message.payloadType === RESPONSE_ERROR) return !message.clientMsgId || message.clientMsgId === clientMsgId;
+          const order = message.payload?.order && typeof message.payload.order === "object" ? message.payload.order as Record<string, unknown> : {};
+          return String(order.clientOrderId ?? message.payload?.clientOrderId ?? "") === clientOrderId;
+        },
+        () => socket.send(JSON.stringify({
+          clientMsgId,
+          payloadType: NEW_ORDER_REQ,
+          payload: {
+            ctidTraderAccountId: this.accountId,
+            symbolId: input.symbol.symbolId,
+            orderType: input.orderType === "LIMIT" ? 2 : 1,
+            tradeSide: input.side === "BUY" ? 1 : 2,
+            volume,
+            ...(input.limitPrice !== undefined ? { limitPrice: input.limitPrice } : {}),
+            ...(input.stopLoss !== undefined ? { stopLoss: input.stopLoss } : {}),
+            ...(input.takeProfit !== undefined ? { takeProfit: input.takeProfit } : {}),
+            clientOrderId,
+            label: "SIRGOAT",
+            comment: "Submitted by SIRGOAT",
+          },
+        })),
+      );
       const executionType = number(payload.executionType);
       const order = payload.order && typeof payload.order === "object" ? payload.order as Record<string, unknown> : {};
+      if (payload.errorCode || payload.description && executionType === undefined) {
+        return { accepted: false, ...(number(order.orderId) !== undefined ? { orderId: String(order.orderId) } : {}), message: `cTrader rejected the order: ${String(payload.description ?? payload.errorCode)}` };
+      }
       if (executionType !== 2 && executionType !== 3 && executionType !== 11) {
         return { accepted: false, ...(number(order.orderId) !== undefined ? { orderId: String(order.orderId) } : {}), ...(executionType !== undefined ? { executionType } : {}), message: "cTrader did not confirm order acceptance or fill." };
       }
