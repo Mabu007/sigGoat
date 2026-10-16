@@ -46,6 +46,7 @@ import {
   PersistenceLayer,
   NotFoundError,
 } from "./repositories";
+import { createGoatWorkflowStore } from "./GoatWorkflowStore";
 import {
   UserScopedReasoningGateway,
   type AiProvider,
@@ -169,6 +170,7 @@ function keepBackgroundTaskAlive(task: Promise<unknown>): void {
 
 const persistence: PersistenceLayer = createPersistence();
 export const appPersistence = persistence;
+const goatWorkflowStore = createGoatWorkflowStore();
 
 /**
  * Bind the credential vault to THIS persistence layer, before any route can
@@ -589,7 +591,7 @@ async function runScheduledWakeSync(
     : await ensureGoatRuntime(goat);
 
   try {
-    const reviewedState = await runtime.wake(reason, "SCHEDULED", goat.markets[0]);
+    const reviewedState = await runtime.wake(reason, "SCHEDULED", goat.markets[0], undefined, eventId);
     await notifyGoatMarketReview(goat, reviewedState, reason);
   } finally {
     const refreshed = await persistence.goats.get(goatId);
@@ -735,6 +737,7 @@ const runtimeOptions = {
   signals: persistence.signals,
   theses: persistence.theses,
   wakeEvents: persistence.wakeEvents,
+  workflowStore: goatWorkflowStore,
   scheduler,
 };
 
@@ -1387,21 +1390,42 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           if (resolveGoatTradingProvider(ownedGoat) === "ctrader") {
             if (!profile.ctraderAccountId) return { submitted: false, intentId, message: "Automatic cTrader trading requires a selected cTrader account in Settings." };
             if (process.env.CTRADER_EXECUTION_ENABLED !== "true") return { submitted: false, intentId, message: "cTrader automatic execution is disabled by the server. No order was sent." };
-            const cTraderClient = await cTraderClientForUser(
-              ownedGoat.userId,
-              profile.ctraderAccountId,
-              profile.ctraderAccountIsLive === true,
-            );
-            const outcome = await new CTraderTradeExecutionService(cTraderClient).execute({
-              symbol: candidate.market,
-              side,
-              qty: autoTradeQty,
-              entry: candidate.entry!,
-              stopLoss: candidate.stopLoss!,
-              takeProfit: candidate.takeProfit!,
-              intentId,
+            const fingerprint = JSON.stringify({ userId: ownedGoat.userId, provider: "ctrader", accountId: profile.ctraderAccountId, symbol: candidate.market, side, qty: autoTradeQty, entry: candidate.entry, stopLoss: candidate.stopLoss, takeProfit: candidate.takeProfit });
+            const claim = await goatWorkflowStore.claimExecution({
+              id: intentId, signalId: candidate.id, goatId: ownedGoat.id,
+              userId: ownedGoat.userId, provider: "ctrader", fingerprint,
             });
-            if (!outcome.accepted) return { submitted: false, intentId, message: outcome.message };
+            if (claim.conflict) return { submitted: false, intentId, message: "This execution intent was already bound to a different order shape." };
+            if (!claim.claimed) {
+              if (claim.intent.status === "SUBMITTED") return { submitted: true, ...(claim.intent.orderId ? { orderId: claim.intent.orderId } : {}), intentId, message: "This order intent was already submitted; no duplicate order was sent." };
+              return { submitted: false, intentId, message: claim.intent.message ?? "This order intent was already attempted; no retry was sent. Reconcile broker status first." };
+            }
+            let outcome: Awaited<ReturnType<CTraderTradeExecutionService["execute"]>>;
+            try {
+              const cTraderClient = await cTraderClientForUser(
+                ownedGoat.userId,
+                profile.ctraderAccountId,
+                profile.ctraderAccountIsLive === true,
+              );
+              outcome = await new CTraderTradeExecutionService(cTraderClient).execute({
+                symbol: candidate.market,
+                side,
+                qty: autoTradeQty,
+                entry: candidate.entry!,
+                stopLoss: candidate.stopLoss!,
+                takeProfit: candidate.takeProfit!,
+                intentId,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "cTrader submission outcome is unknown.";
+              await goatWorkflowStore.finishExecution(intentId, "FAILED", { message }).catch(() => null);
+              return { submitted: false, intentId, message };
+            }
+            if (!outcome.accepted) {
+              await goatWorkflowStore.finishExecution(intentId, "FAILED", { ...(outcome.orderId ? { orderId: outcome.orderId } : {}), message: outcome.message });
+              return { submitted: false, intentId, message: outcome.message };
+            }
+            await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", { ...(outcome.orderId ? { orderId: outcome.orderId } : {}), message: outcome.message });
             return { submitted: true, ...(outcome.orderId ? { orderId: outcome.orderId } : {}), intentId, message: outcome.message };
           }
 
@@ -1434,18 +1458,39 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           if (!riskCheck.ok) {
             return { submitted: false, intentId, message: "PropDAO risk validation blocked automatic execution: " + riskCheck.violations.join("; ") };
           }
-          const outcome = await provider.executeOrder(account.accountId, {
-            symbol: candidate.market,
-            side,
-            qty: autoTradeQty,
-            orderType: "limit",
-            intentId,
-            limitPrice: candidate.entry!,
-            sl: candidate.stopLoss!,
-            tp: candidate.takeProfit!,
-            tif: "gtc",
+          const fingerprint = JSON.stringify({ userId: ownedGoat.userId, provider: "propdao", accountId: account.accountId, symbol: candidate.market, side, qty: autoTradeQty, entry: candidate.entry, stopLoss: candidate.stopLoss, takeProfit: candidate.takeProfit });
+          const claim = await goatWorkflowStore.claimExecution({
+            id: intentId, signalId: candidate.id, goatId: ownedGoat.id,
+            userId: ownedGoat.userId, provider: "propdao", fingerprint,
           });
-          if (!("result" in outcome)) return { submitted: false, intentId, message: outcome.message };
+          if (claim.conflict) return { submitted: false, intentId, message: "This execution intent was already bound to a different order shape." };
+          if (!claim.claimed) {
+            if (claim.intent.status === "SUBMITTED") return { submitted: true, ...(claim.intent.orderId ? { orderId: claim.intent.orderId } : {}), intentId, message: "This order intent was already submitted; no duplicate order was sent." };
+            return { submitted: false, intentId, message: claim.intent.message ?? "This order intent was already attempted; no retry was sent. Reconcile venue status first." };
+          }
+          let outcome: Awaited<ReturnType<typeof provider.executeOrder>>;
+          try {
+            outcome = await provider.executeOrder(account.accountId, {
+              symbol: candidate.market,
+              side,
+              qty: autoTradeQty,
+              orderType: "limit",
+              intentId,
+              limitPrice: candidate.entry!,
+              sl: candidate.stopLoss!,
+              tp: candidate.takeProfit!,
+              tif: "gtc",
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "PropDAO submission outcome is unknown.";
+            await goatWorkflowStore.finishExecution(intentId, "FAILED", { message }).catch(() => null);
+            return { submitted: false, intentId, message };
+          }
+          if (!("result" in outcome)) {
+            await goatWorkflowStore.finishExecution(intentId, "FAILED", { message: outcome.message });
+            return { submitted: false, intentId, message: outcome.message };
+          }
+          await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", { orderId: String(outcome.result.orderId), message: "PropDAO accepted the order request." });
           return { submitted: true, orderId: outcome.result.orderId, intentId, message: "PropDAO accepted the order request." };
         },
       },
@@ -1459,6 +1504,8 @@ goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
           `(${signal.direction} ${signal.market}) — venue execution ` +
           `${outcome.execution.enabled && outcome.execution.authorised ? "authorised" : "disabled"}`,
       );
+      await goatWorkflowStore.resolveApproval(signal.id, goat.userId, goat.id, "ACCEPTED")
+        .catch((error) => console.error("[workflow] automatic approval activity could not be persisted:", error));
       return;
     }
     if (outcome.action === "FAILED") {
@@ -6104,6 +6151,14 @@ apiRouter.post(
       return fail(res, 404, "NOT_FOUND", "That proposal no longer exists.");
     }
 
+    // The signal decision is authoritative; the workflow ledger adds the
+    // durable approval/resume activity without making order execution implicit.
+    try {
+      await goatWorkflowStore.resolveApproval(signal.id, user.uid, goat.id, decision);
+    } catch (error) {
+      console.error("[workflow] approval activity could not be persisted:", error);
+    }
+
     res.json({
       signal: updated,
       decision,
@@ -6131,6 +6186,22 @@ apiRouter.post(
  * assistant is READ-ONLY by construction: there is no code path from this
  * route to a proposal mutation or an order.
  */
+apiRouter.get(
+  "/goats/:id/workflow-activity",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
+    try {
+      const activities = await goatWorkflowStore.listActivities(goat.id, 100);
+      res.json({ activities });
+    } catch (error) {
+      console.error("[workflow] activity history unavailable:", error);
+      return fail(res, 503, "WORKFLOW_HISTORY_UNAVAILABLE", "Workflow activity history is temporarily unavailable.");
+    }
+  }),
+);
+
 apiRouter.post(
   "/goats/:id/signals/:signalId/ask",
   handle(async (req, res) => {
@@ -7188,20 +7259,59 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
         riskCheck, execution,
         message: "Review the cTrader order and measured risk. Confirmation rechecks account risk immediately before submission." } });
     }
-    const result = await executor.execute(intent);
+    if (!execution.enabled || !execution.authorised) {
+      return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+        title: "cTrader execution disabled", intentId, message: execution.summary, riskCheck, execution } });
+    }
+    const fingerprint = JSON.stringify({ userId: user.uid, provider: "ctrader", accountId: selectedAccountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage: leverage ?? null });
+    const claim = await goatWorkflowStore.claimExecution({
+      id: intentId, signalId: typeof body.signalId === "string" ? body.signalId : intentId,
+      goatId: typeof body.goatId === "string" ? body.goatId : "manual",
+      userId: user.uid, provider: "ctrader", fingerprint,
+    });
+    if (claim.conflict) {
+      return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+        title: "Intent ID already belongs to a different order", intentId, doNotRetry: true, execution } });
+    }
+    if (!claim.claimed) {
+      if (claim.intent.status === "SUBMITTED") {
+        const needsAttention = /protection|unknown|uncertain/i.test(claim.intent.message ?? "");
+        return res.status(needsAttention ? 202 : 200).json({ action: { type: "execute_trade",
+          status: needsAttention ? "needs_attention" : "completed",
+          title: needsAttention ? "Prior cTrader submission needs reconciliation" : "This intent was already submitted; no duplicate order was sent",
+          intentId, orderId: claim.intent.orderId ?? null, accepted: true,
+          protectionVerified: !needsAttention, duplicate: true, doNotRetry: true,
+          message: claim.intent.message ?? "The earlier intent was already claimed; no new order was sent.", execution } });
+      }
+      return res.status(409).json({ action: { type: "execute_trade", status: "unknown",
+        title: "This intent was already attempted; no retry was sent", intentId, doNotRetry: true,
+        message: claim.intent.message ?? "The earlier submission may have reached the broker. Reconcile the order before trying again.", execution } });
+    }
+
+    let result: Awaited<ReturnType<typeof executor.execute>>;
+    try {
+      result = await executor.execute(intent);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "cTrader submission failed with an unknown outcome.";
+      await goatWorkflowStore.finishExecution(intentId, "FAILED", { message }).catch(() => null);
+      throw error;
+    }
     if (result.status === "protection_unconfirmed") {
+      await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", { ...(result.orderId ? { orderId: result.orderId } : {}), message: result.message });
       return res.status(202).json({ action: { type: "execute_trade", status: "needs_attention",
         title: "cTrader order may be active — protection not verified", intentId, orderId: result.orderId ?? null,
         accepted: true, protectionVerified: false, doNotRetry: true, quantityUnits: result.quantityUnits ?? qty, protocolVolumeCents: result.protocolVolumeCents ?? null, message: result.message, riskCheck, execution } });
     }
     if (!result.accepted) {
+      await goatWorkflowStore.finishExecution(intentId, "FAILED", { ...(result.orderId ? { orderId: result.orderId } : {}), message: result.message });
       const unknown = result.status === "unknown";
       const inactive = result.status === "inactive";
       return res.status(unknown ? 202 : 409).json({ action: { type: "execute_trade",
         status: unknown ? "unknown" : inactive ? "inactive" : "blocked",
         title: unknown ? "cTrader order status unknown — do not retry" : inactive ? "cTrader order expired or cancelled" : "cTrader order rejected or blocked",
-        intentId, orderId: result.orderId ?? null, quantityUnits: result.quantityUnits ?? qty, protocolVolumeCents: result.protocolVolumeCents ?? null, doNotRetry: unknown, message: result.message, riskCheck, execution } });
+        intentId, orderId: result.orderId ?? null, quantityUnits: result.quantityUnits ?? qty, protocolVolumeCents: result.protocolVolumeCents ?? null, doNotRetry: true, message: result.message, riskCheck, execution } });
     }
+    await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", { ...(result.orderId ? { orderId: result.orderId } : {}), message: result.message });
     return res.json({ action: { type: "execute_trade", status: "completed",
       title: "cTrader order accepted and protection verified", intentId, orderId: result.orderId ?? null,
       accepted: true, protectionVerified: result.protectionVerified === true,
@@ -7243,16 +7353,52 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
         : execution.summary + " The order will not be submitted while execution is disabled or unauthorised." } });
   }
 
-  const result = await provider.executeOrder(accountId, {
-    symbol, side, qty, orderType: "limit", intentId,
-    limitPrice: entry, sl: stopLoss, tp: takeProfit,
-    ...(typeof leverage === "number" ? { leverage } : {}),
-    tif: "gtc",
+  if (!execution.enabled || !execution.authorised) {
+    return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+      title: "Execution disabled", intentId, message: execution.summary, riskCheck, execution } });
+  }
+  const fingerprint = JSON.stringify({ userId: user.uid, provider: "propdao", accountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage: leverage ?? null });
+  const claim = await goatWorkflowStore.claimExecution({
+    id: intentId, signalId: typeof body.signalId === "string" ? body.signalId : intentId,
+    goatId: typeof body.goatId === "string" ? body.goatId : "manual",
+    userId: user.uid, provider: "propdao", fingerprint,
   });
+  if (claim.conflict) {
+    return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+      title: "Intent ID already belongs to a different order", intentId, doNotRetry: true, riskCheck, execution } });
+  }
+  if (!claim.claimed) {
+    if (claim.intent.status === "SUBMITTED") {
+      return res.status(200).json({ action: { type: "execute_trade", status: "completed",
+        title: "This intent was already submitted; no duplicate order was sent", intentId,
+        orderId: claim.intent.orderId ?? null, duplicate: true, doNotRetry: true, riskCheck, execution } });
+    }
+    return res.status(409).json({ action: { type: "execute_trade", status: "unknown",
+      title: "This intent was already attempted; no retry was sent", intentId, doNotRetry: true,
+      message: claim.intent.message ?? "The earlier submission may have reached the venue. Reconcile the order before trying again.", riskCheck, execution } });
+  }
+
+  let result: Awaited<ReturnType<typeof provider.executeOrder>>;
+  try {
+    result = await provider.executeOrder(accountId, {
+      symbol, side, qty, orderType: "limit", intentId,
+      limitPrice: entry, sl: stopLoss, tp: takeProfit,
+      ...(typeof leverage === "number" ? { leverage } : {}),
+      tif: "gtc",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Venue submission failed with an unknown outcome.";
+    await goatWorkflowStore.finishExecution(intentId, "FAILED", { message }).catch(() => null);
+    throw error;
+  }
   if (!("result" in result)) {
+    await goatWorkflowStore.finishExecution(intentId, "FAILED", { message: result.message });
     return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
       title: "Order not submitted", intentId, code: result.code, message: result.message, riskCheck, execution } });
   }
+  await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", {
+    orderId: String(result.result.orderId), message: "Venue accepted the order request.",
+  });
   res.json({ action: { type: "execute_trade", status: "completed",
     title: "Order submitted", intentId, result: result.result, riskCheck, execution } });
 }));
