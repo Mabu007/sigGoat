@@ -46,6 +46,7 @@ export class CTraderMarketDataProvider implements MarketDataProvider {
   private symbolCache: CTraderSymbol[] = [];
   private symbolCacheAt = 0;
   private quoteCache = new Map<string, MarketQuote>();
+  private quoteBatchOffset = 0;
 
   constructor(private readonly options: CTraderMarketDataProviderOptions) {
     if (!options.userId || !options.accountId) throw new Error("cTrader market data requires an authenticated owner and a selected account.");
@@ -150,19 +151,31 @@ export class CTraderMarketDataProvider implements MarketDataProvider {
       if (!native) throw new MarketDataUnavailableError(`cTrader does not list the exact symbol "${symbol}" for the selected account. No cross-provider symbol mapping was attempted.`, symbol, "NOT_LISTED");
       return { symbol, native };
     });
-    const client = await this.client();
-    const events = new Map<string, CTraderQuoteEvent>();
-    // Keep subscriptions bounded; the full broker catalogue can contain hundreds
-    // of instruments and should not be sent as one oversized Open API request.
-    for (let offset = 0; offset < requested.length; offset += 50) {
-      const chunk = requested.slice(offset, offset + 50);
-      const batch = await client.getQuotes(chunk.map((item) => item.native));
-      for (const [symbolId, event] of batch) events.set(symbolId, event);
+    const now = (this.options.now ?? Date.now)();
+    const needsRefresh = requested.filter(({ symbol }) => {
+      const cached = this.quoteCache.get(symbol);
+      return !cached || now - cached.timestamp > 10_000;
+    });
+    if (needsRefresh.length) {
+      // Refresh a bounded rotating slice per request. This keeps the Markets
+      // screen from opening hundreds of WebSockets every few seconds.
+      const count = Math.min(50, needsRefresh.length);
+      const startIndex = this.quoteBatchOffset % needsRefresh.length;
+      const batch = Array.from({ length: count }, (_, index) => needsRefresh[(startIndex + index) % needsRefresh.length]);
+      this.quoteBatchOffset = (startIndex + count) % Math.max(1, needsRefresh.length);
+      const client = await this.client();
+      const events = await client.getQuotes(batch.map((item) => item.native));
+      for (const item of batch) {
+        const event = events.get(item.native.symbolId);
+        if (event) this.quoteFromEvent(item.symbol, event);
+      }
     }
-    return requested.map(({ symbol, native }) => {
-      const event = events.get(native.symbolId);
-      if (!event) throw new MarketDataUnavailableError(`cTrader did not return a quote for "${symbol}".`, symbol, "MISSING_QUOTE");
-      return this.quoteFromEvent(symbol, event);
+    const currentTime = (this.options.now ?? Date.now)();
+    return requested.flatMap(({ symbol }) => {
+      const cached = this.quoteCache.get(symbol);
+      if (!cached) return [];
+      const ageSeconds = Math.max(0, (currentTime - cached.timestamp) / 1000);
+      return [{ ...cached, stale: ageSeconds > 30, quoteAgeSeconds: ageSeconds }];
     });
   }
 
