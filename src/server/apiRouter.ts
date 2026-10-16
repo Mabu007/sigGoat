@@ -209,6 +209,132 @@ function propDaoFor(userId: string): PropFundAccountProvider {
   });
 }
 
+/** One user-scoped cTrader Open API client factory. OAuth tokens are refreshed and re-encrypted before use. */
+async function cTraderClientForUser(
+  userId: string,
+  accountId?: string,
+  isLive = false,
+): Promise<CTraderOpenApiClient> {
+  const clientId = process.env.CTRADER_CLIENT_ID;
+  const clientSecret = process.env.CTRADER_SECRET;
+  if (!clientId || !clientSecret) throw new Error("cTrader is not configured on the server. Set CTRADER_CLIENT_ID and CTRADER_SECRET.");
+  const raw = await credentialVault.getCredential(userId, "ctrader");
+  const token = await resolveValidCTraderToken(raw, (bundle) =>
+    credentialVault.saveCredential(userId, "ctrader", JSON.stringify(bundle)),
+  );
+  return new CTraderOpenApiClient(token, clientId, clientSecret, accountId, isLive);
+}
+
+function defaultProfileForUser(userId: string): UserProfile {
+  return {
+    id: userId,
+    email: `${userId}@sirgoat.internal`,
+    displayName: "SIRGOAT Trader",
+    telegramNotificationsEnabled: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Select demo automatically only when the user has not selected any account.
+ * Live accounts are never selected implicitly. A stale selection is cleared
+ * rather than silently switching the GOAT to a different account/environment.
+ */
+async function resolveSelectedCTraderAccount(userId: string): Promise<{ accounts: CTraderAccount[]; selected: CTraderAccount | null }> {
+  const client = await cTraderClientForUser(userId);
+  const accounts = await client.listAccounts();
+  const existing = await persistence.profiles.get(userId).catch(() => null);
+  const profile = existing ?? defaultProfileForUser(userId);
+
+  if (profile.ctraderAccountId) {
+    const selected = accounts.find((account) => account.ctidTraderAccountId === profile.ctraderAccountId);
+    if (selected && selected.isLive === (profile.ctraderAccountIsLive === true)) return { accounts, selected };
+    delete profile.ctraderAccountId;
+    delete profile.ctraderAccountIsLive;
+    profile.updatedAt = new Date().toISOString();
+    await persistence.profiles.save(profile);
+    return { accounts, selected: null };
+  }
+
+  const demo = accounts.find((account) => !account.isLive);
+  if (!demo) return { accounts, selected: null };
+  profile.ctraderAccountId = demo.ctidTraderAccountId;
+  profile.ctraderAccountIsLive = false;
+  profile.updatedAt = new Date().toISOString();
+  await persistence.profiles.save(profile);
+  return { accounts, selected: demo };
+}
+
+async function tradingProviderReadinessForUser(
+  userId: string,
+  provider: TradingProvider,
+): Promise<{ ready: boolean; reason?: string }> {
+  const registration = getTradingProviderRegistration(provider);
+  if (!registration.ready) return { ready: false, reason: registration.unavailableReason };
+  if (provider === "hyperliquid") return { ready: true };
+  try {
+    if (!(await credentialVault.hasCredential(userId, "ctrader"))) {
+      return { ready: false, reason: "Connect your cTrader account in Settings first." };
+    }
+    const selection = await resolveSelectedCTraderAccount(userId);
+    if (!selection.selected) {
+      return {
+        ready: false,
+        reason: selection.accounts.length
+          ? "No demo account was selected automatically. Choose a cTrader account in Settings; live accounts require explicit selection."
+          : "No cTrader accounts were granted to this application. Reconnect cTrader and grant account access.",
+      };
+    }
+    return { ready: true };
+  } catch (error) {
+    return { ready: false, reason: error instanceof Error ? error.message : "Could not verify the cTrader connection." };
+  }
+}
+
+const cTraderProviderCache = new Map<string, CTraderMarketDataProvider>();
+const cTraderMarketStateStores = new Map<string, MarketStateStore>();
+
+async function marketDataProviderForGoat(goat: FundGoat): Promise<MarketDataProvider> {
+  const provider = resolveGoatTradingProvider(goat);
+  if (provider === "hyperliquid") return marketProvider;
+  const profile = await persistence.profiles.get(goat.userId).catch(() => null);
+  if (!profile?.ctraderAccountId) {
+    throw new Error("This cTrader GOAT has no selected cTrader account. Connect cTrader and choose an account in Settings.");
+  }
+  const key = `${goat.userId}:${profile.ctraderAccountId}:${profile.ctraderAccountIsLive === true ? "live" : "demo"}`;
+  let adapter = cTraderProviderCache.get(key);
+  if (!adapter) {
+    adapter = new CTraderMarketDataProvider({
+      userId: goat.userId,
+      accountId: profile.ctraderAccountId,
+      isLive: profile.ctraderAccountIsLive === true,
+    });
+    cTraderProviderCache.set(key, adapter);
+  }
+  return adapter;
+}
+
+async function marketStateStoreForGoat(goat: FundGoat, provider: MarketDataProvider): Promise<MarketStateStore> {
+  if (resolveGoatTradingProvider(goat) === "hyperliquid") return marketStateStore;
+  const profile = await persistence.profiles.get(goat.userId).catch(() => null);
+  if (!profile?.ctraderAccountId) throw new Error("Select a cTrader account before running this GOAT.");
+  const key = `${goat.userId}:${profile.ctraderAccountId}:${profile.ctraderAccountIsLive === true ? "live" : "demo"}`;
+  let store = cTraderMarketStateStores.get(key);
+  if (!store) {
+    // Separate caches by owner/account: two brokers can quote the same symbol
+    // differently, so cTrader snapshots must never share Hyperliquid/global state.
+    store = new MarketStateStore(provider, {
+      ttlMs: 30_000,
+      pollIntervalMs: 5_000,
+      timeframe: "15m",
+      candleCount: 120,
+    });
+    cTraderMarketStateStores.set(key, store);
+  }
+  return store;
+}
+
 const reasoningGateway = new UserScopedReasoningGateway(keyStore);
 /**
  * Market data source: the Hyperliquid public info API (no API key required).
