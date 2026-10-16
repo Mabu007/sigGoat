@@ -268,17 +268,27 @@ export class CTraderTradeExecutionService {
           protectionVerified: false,
         };
       }
+      const brokerTrade = record(brokerOrder.tradeData);
+      const brokerVolumeCents = brokerTrade ? n(brokerTrade.volume) : null;
+      const brokerSymbolId = brokerTrade ? String(brokerTrade.symbolId ?? "") : "";
+      const brokerSide = brokerTrade ? n(brokerTrade.tradeSide) : null;
+      const brokerLimitPrice = n(brokerOrder.limitPrice);
+      const priceTolerance = Math.max(1e-10, 0.5 * Math.pow(10, -symbol.digits));
+      const orderMatches = brokerVolumeCents === outcome.requestedVolumeCents &&
+        brokerSymbolId === symbol.symbolId &&
+        brokerSide === (intent.side === "BUY" ? 1 : 2) &&
+        brokerLimitPrice !== null &&
+        Math.abs(brokerLimitPrice - intent.entry) <= priceTolerance;
       const actualStop = n(brokerOrder.stopLoss);
       const actualTarget = n(brokerOrder.takeProfit);
-      const priceTolerance = Math.max(1e-10, 0.5 * Math.pow(10, -symbol.digits));
       const stopMatches = actualStop !== null && Math.abs(actualStop - intent.stopLoss) <= priceTolerance;
       const targetMatches = actualTarget !== null && Math.abs(actualTarget - intent.takeProfit) <= priceTolerance;
-      if (!stopMatches || !targetMatches) {
+      if (!orderMatches || !stopMatches || !targetMatches) {
         return {
           status: "protection_unconfirmed",
           accepted: true,
           orderId: outcome.orderId,
-          message: "cTrader accepted order " + outcome.orderId + " but the broker's persisted stop-loss/take-profit do not match the requested levels. Do not retry. Check or cancel the order in cTrader before allowing it to fill.",
+          message: "cTrader accepted order " + outcome.orderId + " but the broker's persisted symbol, side, volume, limit price, stop-loss or take-profit did not match the request. Do not retry. Inspect or cancel the order in cTrader before allowing it to fill.",
           protectionVerified: false,
         };
       }
