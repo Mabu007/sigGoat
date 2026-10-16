@@ -20,10 +20,12 @@ import {
   Chat,
   ChatMessage,
   UserProfile,
+  TradingProvider,
   AutonomyMode,
   normaliseAutonomyMode,
 } from "../types";
 import { authMiddleware, requireUser, resolveAuthMode } from "./auth";
+import { DEFAULT_TRADING_PROVIDER, isTradingProvider, resolveUserTradingProvider } from "../services/trading-provider/TradingProvider";
 import { getFirebaseAdmin, getFirebaseAdminFailureReason } from "./firebaseAdmin";
 import {
   CredentialValidationError,
@@ -3705,6 +3707,7 @@ async function readUserPreferences(userId: string): Promise<{
   autoTradeQty: number | null;
   aiModel: string | null;
   aiModelAvailable: boolean | null;
+  tradingProvider: TradingProvider;
   /** False when execution is impossible no matter the user's choice. */
   autonomyExecutable: boolean;
   autonomyBlockedReason: string;
@@ -3719,6 +3722,7 @@ async function readUserPreferences(userId: string): Promise<{
     autoTradeAccountId: profile?.autoTradeAccountId ?? null,
     autoTradeQty: typeof profile?.autoTradeQty === "number" ? profile.autoTradeQty : null,
     aiModel: profile?.aiModel ?? null,
+    tradingProvider: resolveUserTradingProvider(profile),
     /**
      * Null when it cannot be checked (no key configured, or the catalogue is
      * unreachable) — which is different from `false`, meaning "checked and it
@@ -3775,6 +3779,13 @@ apiRouter.post(
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+
+    if (body.tradingProvider !== undefined) {
+      if (!isTradingProvider(body.tradingProvider)) {
+        return fail(res, 400, "INVALID_TRADING_PROVIDER", "tradingProvider must be ctrader or hyperliquid.");
+      }
+      profile.tradingProvider = body.tradingProvider;
+    }
 
     if (body.autonomyMode !== undefined) {
       if (
