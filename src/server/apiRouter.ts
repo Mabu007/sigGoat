@@ -98,6 +98,7 @@ import {
   msUntilNextScheduledTime,
   normaliseSchedule,
   describeSchedule,
+  computeBackoffDelay,
 } from "../services/goat-runtime/GoatRuntime";
 import {
   TRACKING_TIMEFRAMES,
@@ -1879,14 +1880,34 @@ async function runScheduledWakeInBackground(
       : await ensureGoatRuntime(goat);
     await runtime.ready();
 
-    await runtime.wake(reason, "SCHEDULED", runtime.getConfig().markets[0]);
+    const reviewedState = await runtime.wake(reason, "SCHEDULED", runtime.getConfig().markets[0]);
 
     /**
-     * The schedule was already anchored to the start of this run when the
-     * alarm acked, so there is nothing to republish here. That is exactly
-     * "every N minutes" semantics: a fixed cadence from when the run started,
-     * not a drifting cadence from when it finished.
+     * The cron dispatcher normally anchors the next wake before this
+     * background work starts. TRACKERS schedules have no normal AI wake, so
+     * a failed tracker-triggered review would otherwise have no future event
+     * to retry it. Re-arm only failed non-MANUAL reviews using the runtime's
+     * bounded exponential backoff. A successful review keeps the normal
+     * schedule and does not add an extra AI call.
      */
+    if (
+      firebaseScheduler &&
+      reviewedState.consecutiveFailures > 0 &&
+      normaliseSchedule(goat.schedule).mode !== "MANUAL"
+    ) {
+      const retryDelay = computeBackoffDelay(
+        45_000,
+        30 * 60_000,
+        reviewedState.consecutiveFailures,
+      );
+      const nextTracker = computeNextTrackerCheckAt(goat);
+      await firebaseScheduler.complete(
+        goat.id,
+        scheduleGeneration(goat),
+        new Date(Date.now() + retryDelay).toISOString(),
+        nextTracker === null ? null : new Date(nextTracker).toISOString(),
+      );
+    }
   } catch (err) {
     /**
      * A background failure must never crash the instance. Failures are recorded

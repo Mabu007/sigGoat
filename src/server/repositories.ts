@@ -1110,13 +1110,17 @@ class FirestoreThesisRepository implements ThesisRepository {
   constructor(private db: Firestore) {}
   async deleteByGoat(goatId: string) { await deleteGoatDocuments(this.db, THESES, goatId); }
   async listByGoat(goatId: string, limit = 50) {
+    // Filter by the automatic single-field goatId index, then sort in memory.
+    // The compound where(goatId)+orderBy(createdAt) query requires a composite
+    // Firestore index; without it, public robot pages fail while loading a thesis.
     const snap = await this.db
       .collection(THESES)
       .where('goatId', '==', goatId)
-      .orderBy('createdAt', 'desc')
-      .limit(limit)
       .get();
-    return snap.docs.map((d) => d.data() as MarketThesis);
+    return snap.docs
+      .map((d) => d.data() as MarketThesis)
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, limit);
   }
   async save(thesis: MarketThesis) {
     await this.db.collection(THESES).doc(thesis.id).set(firestoreSafe({ ...thesis }));
@@ -1127,13 +1131,16 @@ class FirestoreWakeEventRepository implements WakeEventRepository {
   constructor(private db: Firestore) {}
   async deleteByGoat(goatId: string) { await deleteGoatDocuments(this.db, WAKE_EVENTS, goatId); }
   async listByGoat(goatId: string, limit = 50) {
+    // Avoid a composite Firestore index dependency for the same reason as
+    // thesis history. Sort the owner's already-filtered event records locally.
     const snap = await this.db
       .collection(WAKE_EVENTS)
       .where('goatId', '==', goatId)
-      .orderBy('timestamp', 'desc')
-      .limit(limit)
       .get();
-    return snap.docs.map((d) => d.data() as WakeEvent);
+    return snap.docs
+      .map((d) => d.data() as WakeEvent)
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, limit);
   }
   async save(event: WakeEvent) {
     await this.db.collection(WAKE_EVENTS).doc(event.id).set(firestoreSafe({ ...event }));
