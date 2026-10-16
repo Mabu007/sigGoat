@@ -6674,7 +6674,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
         }
         return { symbol: symbol.symbol, name: symbol.name, quote, timeframe, requestedCandleCount: candleCount, returnedCandleCount: candles.length, historicalCandles: candles, candleError, dataMode: researchProvider?.dataMode ?? "UNAVAILABLE" };
       } catch (error) {
-        return { symbol: symbol.symbol, name: symbol.name, unavailable: error instanceof Error ? error.message : "quote unavailable", dataMode: marketProvider.dataMode };
+        return { symbol: symbol.symbol, name: symbol.name, unavailable: error instanceof Error ? error.message : "quote unavailable", dataMode: researchProvider?.dataMode ?? "UNAVAILABLE" };
       }
     }));
     sections.push(
