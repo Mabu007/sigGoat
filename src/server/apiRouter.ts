@@ -4820,19 +4820,41 @@ async function runtimeFor(
   await runtime.ready();
   const state = runtime.getState();
 
-  const needsReview =
+  const eligibleForReview =
     goat.deploymentState !== 'DRAFT' &&
-    !state.currentThesis && !state.lastWakeEvent && !state.isEvaluating && goat.status !== "PAUSED";
-  if (needsReview) {
+    !state.isEvaluating &&
+    goat.status !== "PAUSED";
+  const lastFailureDetails = state.lastWakeEvent?.decisionResult === 'ERROR'
+    ? state.lastWakeEvent.details ?? ''
+    : '';
+  const previousCredentialFailure =
+    /AI not connected|AI credential storage is unreadable or unavailable/i.test(lastFailureDetails);
+  let credentialRecovered = false;
+  if (eligibleForReview && previousCredentialFailure) {
+    // Re-check after a key save. A previous credential error otherwise left a
+    // persisted lastWakeEvent that permanently blocked the resume-on-read path.
+    try {
+      credentialRecovered = await reasoningGateway.hasKeyFor(goat.userId, goat.aiProvider);
+    } catch {
+      credentialRecovered = false;
+    }
+  }
+  const needsInitialReview =
+    eligibleForReview && !state.currentThesis && !state.lastWakeEvent;
+  const needsCredentialRecoveryReview = eligibleForReview && previousCredentialFailure && credentialRecovered;
+  if (needsInitialReview || needsCredentialRecoveryReview) {
     // Vercel may freeze a function once the response has returned. Register
-    // this non-blocking initial review with waitUntil so it survives the GET
-    // that caused the first review to resume.
+    // this non-blocking review with waitUntil so it survives the GET that
+    // resumes an unreviewed GOAT or retries after its AI credential is restored.
+    const reviewReason = needsCredentialRecoveryReview
+      ? "AI credentials restored; retrying market review"
+      : "Initial market review";
     keepBackgroundTaskAlive(
       runtime
-        .wake("Initial market review", "MANUAL_REEVALUATE", runtime.getConfig().markets[0])
+        .wake(reviewReason, "MANUAL_REEVALUATE", runtime.getConfig().markets[0])
         .catch((err) => {
           console.error(
-            `[api] resume of initial review failed for ${goat.id}:`,
+            `[api] resume of market review failed for ${goat.id}:`,
             err,
           );
         }),
