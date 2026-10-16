@@ -39,6 +39,12 @@ export function isCTraderNumericId(value: string): boolean {
   return /^\d+$/.test(value);
 }
 
+function numericId(value: unknown): string | undefined {
+  if (typeof value === "string" && isCTraderNumericId(value)) return value;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return undefined;
+}
+
 /** Convert human instrument units to ProtoOA volume cents (units × 100). */
 export function cTraderVolumeCents(units: number): number {
   if (!Number.isFinite(units) || units <= 0) throw new Error("Order quantity must be a finite positive number.");
@@ -443,8 +449,7 @@ export class CTraderOpenApiClient {
       }
       const executionType = number(payload.executionType);
       const order = payload.order && typeof payload.order === "object" ? payload.order as Record<string, unknown> : {};
-      const orderIdValue = number(order.orderId) ?? number(payload.orderId);
-      const orderId = orderIdValue !== undefined ? String(orderIdValue) : undefined;
+      const orderId = numericId(order.orderId) ?? numericId(payload.orderId);
       if (payload.errorCode || (payload.description && executionType === undefined)) return { status: "rejected", accepted: false, ...(orderId ? { orderId } : {}), requestedVolumeCents, message: "cTrader rejected the order: " + String(payload.description ?? payload.errorCode) };
       if (executionType === 7) return { status: "rejected", accepted: false, ...(orderId ? { orderId } : {}), executionType, requestedVolumeCents, message: "cTrader rejected the order during validation" + (payload.description ? ": " + String(payload.description) : ".") };
       if (executionType !== 2 && executionType !== 3 && executionType !== 11) return { status: "unknown", accepted: false, ...(orderId ? { orderId } : {}), ...(executionType !== undefined ? { executionType } : {}), requestedVolumeCents, message: "cTrader returned an unrecognized execution status. Inspect the broker order list before retrying." };
