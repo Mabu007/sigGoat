@@ -6107,6 +6107,14 @@ apiRouter.post(
       return fail(res, 404, "NOT_FOUND", "That proposal no longer exists.");
     }
 
+    // The signal decision is authoritative; the workflow ledger adds the
+    // durable approval/resume activity without making order execution implicit.
+    try {
+      await goatWorkflowStore.resolveApproval(signal.id, user.uid, goat.id, decision);
+    } catch (error) {
+      console.error("[workflow] approval activity could not be persisted:", error);
+    }
+
     res.json({
       signal: updated,
       decision,
@@ -6134,6 +6142,22 @@ apiRouter.post(
  * assistant is READ-ONLY by construction: there is no code path from this
  * route to a proposal mutation or an order.
  */
+apiRouter.get(
+  "/goats/:id/workflow-activity",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+    if (!goat) return notFound(res);
+    try {
+      const activities = await goatWorkflowStore.listActivities(goat.id, 100);
+      res.json({ activities });
+    } catch (error) {
+      console.error("[workflow] activity history unavailable:", error);
+      return fail(res, 503, "WORKFLOW_HISTORY_UNAVAILABLE", "Workflow activity history is temporarily unavailable.");
+    }
+  }),
+);
+
 apiRouter.post(
   "/goats/:id/signals/:signalId/ask",
   handle(async (req, res) => {
