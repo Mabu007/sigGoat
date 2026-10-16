@@ -73,13 +73,15 @@ describe('Space Bunny hosted API adapter', () => {
 
   test('retries one empty structured completion and exposes finish diagnostics', async () => {
     let calls = 0;
+    const requestBodies: Record<string, unknown>[] = [];
     const context = { userId: 'user-1', goatId: 'goat-1', wakeReason: 'MANUAL_REEVALUATE' } as unknown as GoatReasoningContext;
     const client = new SpaceBunnyClient({
       apiKey: `sb_live_${'a1b2c3d4'.repeat(4)}`,
-      fetchImpl: async () => {
+      fetchImpl: async (_url, init) => {
         calls += 1;
+        requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response(JSON.stringify(calls === 1
-          ? { choices: [{ message: { content: '' }, finish_reason: 'length' }], usage: { completion_tokens: 4096 } }
+          ? { choices: [{ message: { content: '', reasoning: 'long internal reasoning' }, finish_reason: 'length' }], usage: { completion_tokens: 4096 } }
           : { choices: [{ message: { content: '{}' }, finish_reason: 'stop' }] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -89,6 +91,9 @@ describe('Space Bunny hosted API adapter', () => {
 
     await expect(client.evaluateGoat(context)).rejects.toThrow(/Reasoning result failed validation/i);
     expect(calls).toBe(2);
+    expect(requestBodies[0].max_tokens).toBe(4096);
+    expect(requestBodies[1].max_tokens).toBe(8192);
+    expect(requestBodies[1].reasoning).toEqual({ effort: 'low' });
   });
 
   test('does not spend a second provider request retrying an empty backtest completion', async () => {
