@@ -355,6 +355,7 @@ export class GroqClient {
       maxTokens: REASONING_MAX_TOKENS,
     });
 
+    let finalCompletion = completion;
     let parsed = tryParseJson(completion.content);
 
     if (parsed === undefined) {
@@ -362,7 +363,7 @@ export class GroqClient {
         model,
         messages: [
           ...messages,
-          { role: 'assistant' as const, content: completion.content.slice(0, 4_000) },
+          { role: 'assistant' as const, content: finalCompletion.content.slice(0, 4_000) },
           {
             role: 'user' as const,
             content:
@@ -376,6 +377,7 @@ export class GroqClient {
       });
 
       parsed = tryParseJson(repaired.content);
+      finalCompletion = repaired;
 
       if (parsed === undefined) {
         throw new ApiRequestError(
@@ -390,7 +392,6 @@ export class GroqClient {
      * can still violate the contract; request one targeted correction before
      * failing the wake.
      */
-    let finalCompletion = completion;
     let result: ReasoningResult;
     try {
       result = parseReasoningResult(parsed);
