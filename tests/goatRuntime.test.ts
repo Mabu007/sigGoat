@@ -4,7 +4,7 @@ import type { ReasoningGateway } from '../src/server/reasoningGateway';
 import { PaperMarketDataProvider } from '../src/services/market-data/PaperMarketDataProvider';
 import { InMemoryPersistence } from '../src/server/repositories';
 import { ReasoningValidationError, parseReasoningResult } from '../src/services/agent/contracts';
-import { FundGoat, TradingSkill } from '../src/types';
+import { FundGoat, TradeSignal, TradingSkill } from '../src/types';
 
 function makeGoat(): FundGoat {
   return {
@@ -79,6 +79,44 @@ describe('GoatRuntime wake pipeline', () => {
     expect(state.isEvaluating).toBe(false);
     // A provider failure is an ERROR, never a synthetic NO_TRADE proposal.
     expect(await persistence.signals.listByGoat('goat_test_1')).toHaveLength(0);
+    expect(await persistence.theses.listByGoat('goat_test_1')).toHaveLength(0);
+  });
+
+  test('a failed fresh review expires prior undecided actionable proposals', async () => {
+    const gateway = makeGateway(async () => {
+      throw new Error('Space Bunny returned no message content (finish_reason=length, completion_tokens=4096).');
+    });
+    ({ actor, persistence } = makeObject(gateway));
+    const signal: TradeSignal = {
+      id: 'signal_pending_1',
+      userId: 'user_1',
+      goatId: 'goat_test_1',
+      thesisId: 'old_thesis_1',
+      market: 'EUR/USD',
+      direction: 'LONG',
+      orderType: 'LIMIT',
+      entry: 1.08,
+      stopLoss: 1.07,
+      takeProfit: 1.10,
+      confidence: 80,
+      thesis: 'Old thesis',
+      rationale: 'Old pending setup',
+      confirmationRequired: 'Wait for confirmation',
+      invalidation: 'Close below stop',
+      supportingEvidence: [],
+      createdAt: new Date().toISOString(),
+      status: 'ACTIONABLE',
+      updatedAt: new Date().toISOString(),
+    };
+    await persistence.signals.save(signal);
+
+    const state = await actor.wake('fresh review', 'MANUAL_REEVALUATE');
+    const stored = await persistence.signals.listByGoat('goat_test_1');
+
+    expect(state.lastWakeEvent?.decisionResult).toBe('ERROR');
+    expect(stored[0].status).toBe('EXPIRED');
+    expect(stored[0].rationale).toContain('latest AI review failed');
+    expect(state.latestSignal?.status).not.toBe('ACTIONABLE');
     expect(await persistence.theses.listByGoat('goat_test_1')).toHaveLength(0);
   });
 
