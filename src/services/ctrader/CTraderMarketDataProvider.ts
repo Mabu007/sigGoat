@@ -1,6 +1,6 @@
 import type { Candle, MarketCategory, MarketQuote, MarketSymbol } from "../../types";
 import { MarketDataUnavailableError, type MarketDataProvider } from "../market-data/MarketDataProvider";
-import { CTraderOpenApiClient, type CTraderSymbol } from "./CTraderOpenApiClient";
+import { CTraderOpenApiClient, type CTraderQuoteEvent, type CTraderSymbol } from "./CTraderOpenApiClient";
 import { resolveValidCTraderToken } from "./CTraderOAuthService";
 import { credentialVault } from "../../server/security/instance";
 
@@ -113,9 +113,7 @@ export class CTraderMarketDataProvider implements MarketDataProvider {
     };
   }
 
-  async getQuote(symbol: string): Promise<MarketQuote> {
-    const native = await this.nativeSymbol(symbol);
-    const event = await (await this.client()).getQuote(native);
+  private quoteFromEvent(symbol: string, event: CTraderQuoteEvent): MarketQuote {
     const bid = finite(event.bid, "bid price");
     const ask = finite(event.ask, "ask price");
     if (bid <= 0 || ask <= 0 || ask < bid) throw new MarketDataUnavailableError(`cTrader returned invalid bid/ask values for "${symbol}".`, symbol, "INVALID_QUOTE");
@@ -124,31 +122,40 @@ export class CTraderMarketDataProvider implements MarketDataProvider {
     const change = previous !== undefined && previous > 0 ? mid - previous : 0;
     const changePct = previous !== undefined && previous > 0 ? change / previous * 100 : 0;
     const quote: MarketQuote = {
-      symbol,
-      bid,
-      ask,
-      mid,
-      spread: ask - bid,
-      change24h: change,
-      change24hPct: changePct,
-      high24h: 0,
-      low24h: 0,
+      symbol, bid, ask, mid, spread: ask - bid,
+      change24h: change, change24hPct: changePct,
+      high24h: 0, low24h: 0,
       timestamp: event.timestamp ?? (this.options.now ?? Date.now)(),
-      bidProvided: true,
-      askProvided: true,
+      bidProvided: true, askProvided: true,
       change24hProvided: previous !== undefined && previous > 0,
-      high24hProvided: false,
-      low24hProvided: false,
+      high24hProvided: false, low24hProvided: false,
       ...(event.timestamp !== undefined ? { quoteAgeSeconds: Math.max(0, ((this.options.now ?? Date.now)() - event.timestamp) / 1000) } : {}),
     };
     this.quoteCache.set(symbol, quote);
     return quote;
   }
 
+  async getQuote(symbol: string): Promise<MarketQuote> {
+    const native = await this.nativeSymbol(symbol);
+    const event = await (await this.client()).getQuote(native);
+    return this.quoteFromEvent(symbol, event);
+  }
+
   async getQuotes(symbols: string[]): Promise<MarketQuote[]> {
-    const quotes: MarketQuote[] = [];
-    for (const symbol of symbols) quotes.push(await this.getQuote(symbol));
-    return quotes;
+    if (!symbols.length) return [];
+    const nativeSymbols = await this.nativeSymbols();
+    const nativeByName = new Map(nativeSymbols.map((item) => [item.symbolName, item]));
+    const requested = symbols.map((symbol) => {
+      const native = nativeByName.get(symbol);
+      if (!native) throw new MarketDataUnavailableError(`cTrader does not list the exact symbol "${symbol}" for the selected account. No cross-provider symbol mapping was attempted.`, symbol, "NOT_LISTED");
+      return { symbol, native };
+    });
+    const events = await (await this.client()).getQuotes(requested.map((item) => item.native));
+    return requested.map(({ symbol, native }) => {
+      const event = events.get(native.symbolId);
+      if (!event) throw new MarketDataUnavailableError(`cTrader did not return a quote for "${symbol}".`, symbol, "MISSING_QUOTE");
+      return this.quoteFromEvent(symbol, event);
+    });
   }
 
   async getCandles(symbol: string, timeframe: string, count = 200): Promise<Candle[]> {
