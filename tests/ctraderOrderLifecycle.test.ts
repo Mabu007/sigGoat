@@ -29,19 +29,21 @@ const intent = {
 function fakeClient(options: {
   order?: Record<string, unknown>;
   placeOrderResult?: Record<string, unknown>;
+  account?: Record<string, unknown>;
+  quote?: Record<string, unknown>;
 } = {}) {
   let reconcileCalls = 0;
   let placeCalls = 0;
   const order = options.order;
   const client = {
-    getAccountDetails: async () => ({ balance: 10_000, moneyDigits: 2, depositAssetId: "1", accessRights: 0, isLimitedRisk: false }),
+    getAccountDetails: async () => options.account ?? ({ balance: 10_000, moneyDigits: 2, depositAssetId: "1", accessRights: 0, isLimitedRisk: false }),
     getAssets: async () => [{ assetId: "1", name: "USD" }],
     getSymbols: async () => [symbol],
     reconcile: async () => {
       reconcileCalls += 1;
       return { positions: [], orders: reconcileCalls === 1 ? [] : order ? [order] : [] };
     },
-    getQuote: async () => ({ symbolId: "1", bid: 1.0799, ask: 1.08, timestamp: Date.now() }),
+    getQuote: async () => options.quote ?? ({ symbolId: "1", bid: 1.0799, ask: 1.08, timestamp: Date.now() }),
     placeOrder: async () => {
       placeCalls += 1;
       return options.placeOrderResult ?? { status: "accepted", accepted: true, orderId: "456", executionType: 2, requestedVolumeCents: 100_000, message: "accepted" };
@@ -60,6 +62,22 @@ describe("cTrader order lifecycle", () => {
     expect(() => cTraderVolumeCents(0)).toThrow();
     expect(() => cTraderVolumeCents(-1)).toThrow();
     expect(() => cTraderVolumeCents(1.001)).toThrow(/0.01-unit/);
+  });
+
+  test("blocks limited-risk accounts until guaranteed relative protection is implemented", async () => {
+    const client = fakeClient({ account: { balance: 10_000, moneyDigits: 2, depositAssetId: "1", accessRights: 0, isLimitedRisk: true } });
+    const result = await new CTraderTradeExecutionService(client as unknown as CTraderOpenApiClient, true).execute(intent);
+    expect(result.status).toBe("blocked");
+    expect(result.message).toMatch(/limited-risk execution rules/);
+    expect(client.getPlaceCalls()).toBe(0);
+  });
+
+  test("blocks limit prices that equal the market and already-invalidated protection", async () => {
+    const client = fakeClient();
+    const result = await new CTraderTradeExecutionService(client as unknown as CTraderOpenApiClient, true).execute({ ...intent, entry: 1.08 });
+    expect(result.status).toBe("blocked");
+    expect(result.message).toMatch(/marketable/);
+    expect(client.getPlaceCalls()).toBe(0);
   });
 
   test("reports completion only after broker reconciliation confirms both protective levels", async () => {
