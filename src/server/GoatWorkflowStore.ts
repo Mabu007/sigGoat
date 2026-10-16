@@ -269,10 +269,10 @@ export class GoatWorkflowStore {
     }
     const current = Object.values(this.db.runs).find((run) => run.signalId === signalId);
     if (!current || current.userId !== userId || current.goatId !== goatId) return null;
-    const desired = decision === "ACCEPTED" ? "APPROVED" : "REJECTED";
+    const desired: GoatWorkflowStatus = decision === "ACCEPTED" ? "APPROVED" : "REJECTED";
     if (current.status === desired) return current;
     if (current.status !== "WAITING_APPROVAL") return null;
-    const updated = { ...current, status: desired, stage: "approval_resolved", updatedAt: this.now(), completedAt: this.now() };
+    const updated: GoatWorkflowRun = { ...current, status: desired, stage: "approval_resolved", updatedAt: this.now(), completedAt: this.now() };
     const activity = this.activity(updated, desired, updated.stage, { decision });
     this.db.runs[current.id] = updated;
     this.db.activities[activity.id] ??= activity;
