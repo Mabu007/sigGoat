@@ -3801,7 +3801,7 @@ apiRouter.get(
       selection = await resolveSelectedCTraderAccount(user.uid);
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
-      const authorizationLost = /HTTP (400|401|403)|invalid_grant|invalid token|token (?:is )?(?:expired|invalid)|unauthori[sz]ed|access token/i.test(message);
+      const authorizationLost = /HTTP (400|401|403)|invalid_grant|invalid token|token (?:is )?(?:expired|invalid)|TOKEN_EXPIRED|INVALID_TOKEN|AUTHENTICATION_FAILED|NOT_AUTHORIZED|unauthori[sz]ed|access token/i.test(message);
       if (authorizationLost) {
         return fail(res, 409, "CTRADER_RECONNECT_REQUIRED", "cTrader authorization is expired or no longer valid. Reconnect cTrader to restore account access; no orders were submitted.");
       }
