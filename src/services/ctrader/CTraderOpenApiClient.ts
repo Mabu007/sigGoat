@@ -173,13 +173,13 @@ export class CTraderOpenApiClient {
           isLive: account.isLive === true,
           ...(number(account.traderLogin) !== undefined ? { traderLogin: String(account.traderLogin) } : {}),
           ...(typeof account.brokerTitleShort === "string" ? { brokerTitleShort: account.brokerTitleShort } : {}),
-        })).filter((account) => /^\\d+$/.test(account.ctidTraderAccountId)), ids: [] as string[] };
+        })).filter((account) => /^\d+$/.test(account.ctidTraderAccountId)), ids: [] as string[] };
       }
       const repeated = payload.ctidTraderAccountId;
       const ids = Array.isArray(repeated)
         ? repeated.map((value) => String(value))
         : objects.map((account) => String(account.ctidTraderAccountId ?? ""));
-      return { accounts: [] as CTraderAccount[], ids: ids.filter((value) => /^\\d+$/.test(value)) };
+      return { accounts: [] as CTraderAccount[], ids: ids.filter((value) => /^\d+$/.test(value)) };
     });
     if (accountList.accounts.length) return accountList.accounts;
     const accounts: CTraderAccount[] = [];
@@ -234,7 +234,7 @@ export class CTraderOpenApiClient {
           name: String(asset.name ?? ""),
           ...(typeof asset.displayName === "string" ? { displayName: asset.displayName } : {}),
         }))
-        .filter((asset) => /^\\d+$/.test(asset.assetId) && asset.name);
+        .filter((asset) => /^\d+$/.test(asset.assetId) && asset.name);
     });
   }
 
@@ -262,7 +262,7 @@ export class CTraderOpenApiClient {
           symbolName: String(symbol.symbolName ?? ""),
           enabled: symbol.enabled !== false,
         }))
-        .filter((symbol) => /^\\d+$/.test(symbol.symbolId) && symbol.symbolName && symbol.enabled);
+        .filter((symbol) => /^\d+$/.test(symbol.symbolId) && symbol.symbolName && symbol.enabled);
       const complete: CTraderSymbol[] = [];
       // SymbolsList returns light symbols; it is not authoritative for digits,
       // volume limits, or commissions. Fetch full broker metadata in bounded
