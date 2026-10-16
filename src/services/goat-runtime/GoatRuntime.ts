@@ -839,7 +839,7 @@ export class GoatRuntime {
       // is actually connected for this owner. A DEMO fallback result must
       // NEVER be reported as 'AI' (the UI badge depends on it).
       const hasAiKey = await this.reasoning
-        .hasKeyFor(this.goatConfig.userId)
+        .hasKeyFor(this.goatConfig.userId, this.goatConfig.aiProvider)
         .catch(() => false);
       this.runtimeState.reasoningMode = hasAiKey ? 'AI' : 'DEMO';
 
