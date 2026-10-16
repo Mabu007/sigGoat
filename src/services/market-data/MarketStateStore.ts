@@ -496,9 +496,14 @@ export class MarketStateStore {
       if (!Number.isFinite(quote.mid) || quote.mid <= 0) {
         throw new Error(`Provider returned an invalid mid price for ${symbol}`);
       }
-      if (quote.quoteAgeSeconds != null &&
-          (!Number.isFinite(quote.quoteAgeSeconds) || quote.quoteAgeSeconds < 0 || quote.quoteAgeSeconds > this.ttlMs / 1000)) {
-        throw new Error(`Provider quote for ${symbol} is older than the market-state TTL`);
+      if (
+        (this.provider.dataMode === 'LIVE' && quote.quoteAgeSeconds == null) ||
+        (quote.quoteAgeSeconds != null &&
+          (!Number.isFinite(quote.quoteAgeSeconds) ||
+            quote.quoteAgeSeconds < 0 ||
+            quote.quoteAgeSeconds > this.ttlMs / 1000))
+      ) {
+        throw new Error(`Provider quote for ${symbol} is missing a valid freshness age or is older than the market-state TTL`);
       }
 
       const indicators =
