@@ -7305,16 +7305,52 @@ apiRouter.post("/chat/actions/execute-trade", authMiddleware, handle(async (req,
         : execution.summary + " The order will not be submitted while execution is disabled or unauthorised." } });
   }
 
-  const result = await provider.executeOrder(accountId, {
-    symbol, side, qty, orderType: "limit", intentId,
-    limitPrice: entry, sl: stopLoss, tp: takeProfit,
-    ...(typeof leverage === "number" ? { leverage } : {}),
-    tif: "gtc",
+  if (!execution.enabled || !execution.authorised) {
+    return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+      title: "Execution disabled", intentId, message: execution.summary, riskCheck, execution } });
+  }
+  const fingerprint = JSON.stringify({ userId: user.uid, provider: "propdao", accountId, symbol, side, qty, entry, stopLoss, takeProfit, leverage: leverage ?? null });
+  const claim = await goatWorkflowStore.claimExecution({
+    id: intentId, signalId: typeof body.signalId === "string" ? body.signalId : intentId,
+    goatId: typeof body.goatId === "string" ? body.goatId : "manual",
+    userId: user.uid, provider: "propdao", fingerprint,
   });
+  if (claim.conflict) {
+    return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
+      title: "Intent ID already belongs to a different order", intentId, doNotRetry: true, riskCheck, execution } });
+  }
+  if (!claim.claimed) {
+    if (claim.intent.status === "SUBMITTED") {
+      return res.status(200).json({ action: { type: "execute_trade", status: "completed",
+        title: "This intent was already submitted; no duplicate order was sent", intentId,
+        orderId: claim.intent.orderId ?? null, duplicate: true, doNotRetry: true, riskCheck, execution } });
+    }
+    return res.status(409).json({ action: { type: "execute_trade", status: "unknown",
+      title: "This intent was already attempted; no retry was sent", intentId, doNotRetry: true,
+      message: claim.intent.message ?? "The earlier submission may have reached the venue. Reconcile the order before trying again.", riskCheck, execution } });
+  }
+
+  let result: Awaited<ReturnType<typeof provider.executeOrder>>;
+  try {
+    result = await provider.executeOrder(accountId, {
+      symbol, side, qty, orderType: "limit", intentId,
+      limitPrice: entry, sl: stopLoss, tp: takeProfit,
+      ...(typeof leverage === "number" ? { leverage } : {}),
+      tif: "gtc",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Venue submission failed with an unknown outcome.";
+    await goatWorkflowStore.finishExecution(intentId, "FAILED", { message }).catch(() => null);
+    throw error;
+  }
   if (!("result" in result)) {
+    await goatWorkflowStore.finishExecution(intentId, "FAILED", { message: result.message });
     return res.status(409).json({ action: { type: "execute_trade", status: "blocked",
       title: "Order not submitted", intentId, code: result.code, message: result.message, riskCheck, execution } });
   }
+  await goatWorkflowStore.finishExecution(intentId, "SUBMITTED", {
+    orderId: String(result.result.orderId), message: "Venue accepted the order request.",
+  });
   res.json({ action: { type: "execute_trade", status: "completed",
     title: "Order submitted", intentId, result: result.result, riskCheck, execution } });
 }));
