@@ -430,7 +430,7 @@ interface FileDbShape {
     openRouter: Record<string, string>;
     groq: Record<string, string>;
     telegram: Record<string, string>;
-    providers: Record<string, 'openrouter' | 'groq'>;
+    providers: Record<string, 'openrouter' | 'groq' | 'spacebunny'>;
     bots: Record<string, TelegramBotRecord>;
   };
   recaps: Record<string, DailyMarketRecap>;
