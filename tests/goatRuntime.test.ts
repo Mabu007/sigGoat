@@ -29,7 +29,7 @@ function makeGateway(
   return {
     evaluateGoat: evaluate,
     answerGoatQuestion: async () => 'ok',
-    hasKeyFor: async () => false,
+    hasKeyFor: async () => true,
     listModels: async () => ({ models: [], provider: 'openrouter', fetchedAt: 0, source: 'stub' }),
     providerFor: async () => 'openrouter',
     testKeyFor: async () => ({ ok: false, provider: 'openrouter', latencyMs: 0, error: 'not used here' }),
@@ -75,6 +75,9 @@ describe('GoatRuntime wake pipeline', () => {
     expect(state.lastWakeEvent?.details).toContain('MODEL_UNAVAILABLE');
     expect(state.consecutiveFailures).toBe(1);
     expect(state.isEvaluating).toBe(false);
+    // A provider failure is an ERROR, never a synthetic NO_TRADE proposal.
+    expect(await persistence.signals.listByGoat('goat_test_1')).toHaveLength(0);
+    expect(await persistence.theses.listByGoat('goat_test_1')).toHaveLength(0);
   });
 
   test('reasoning contract violations are recorded as REASONING_ERROR', async () => {
