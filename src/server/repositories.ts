@@ -1014,6 +1014,10 @@ class FirestoreSignalRepository implements SignalRepository {
     return this.db.runTransaction(async (transaction) => {
       const snap = await transaction.get(ref);
       if (!snap.exists) return false;
+      const existing = snap.data() as TradeSignal | undefined;
+      // A decision is write-once. The transaction retries on contention and
+      // rechecks the committed document, so simultaneous ACCEPT/REJECT cannot both win.
+      if (signal.decision && existing?.decision) return false;
       transaction.set(ref, firestoreSafe({ ...signal }));
       return true;
     });
