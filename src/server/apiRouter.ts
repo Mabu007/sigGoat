@@ -25,7 +25,8 @@ import {
   normaliseAutonomyMode,
 } from "../types";
 import { authMiddleware, requireUser, resolveAuthMode } from "./auth";
-import { isTradingProvider, resolveUserTradingProvider } from "../services/trading-provider/TradingProvider";
+import { isTradingProvider, resolveGoatTradingProvider, resolveUserTradingProvider } from "../services/trading-provider/TradingProvider";
+import { getTradingProviderRegistration, isTradingProviderReady } from "../services/trading-provider/TradingProviderRegistry";
 import { getFirebaseAdmin, getFirebaseAdminFailureReason } from "./firebaseAdmin";
 import {
   CredentialValidationError,
@@ -560,6 +561,11 @@ const runtimeOptions = {
 };
 
 function ensureGoatRuntime(goat: FundGoat) {
+  const provider = resolveGoatTradingProvider(goat);
+  if (!isTradingProviderReady(provider)) {
+    const registration = getTradingProviderRegistration(provider);
+    throw new Error(registration.unavailableReason ?? `Trading provider "${provider}" is not ready.`);
+  }
   const migrated = migrateGoatMarkets(goat);
   const canonicalGoat = migrated ?? goat;
   if (migrated) {
@@ -2778,11 +2784,19 @@ async function createProcessFromTelegram(
     };
   }
 
+  const profile = await persistence.profiles.get(owner.userId).catch(() => null);
+  const tradingProvider = resolveUserTradingProvider(profile);
+  if (!isTradingProviderReady(tradingProvider)) {
+    const registration = getTradingProviderRegistration(tradingProvider);
+    return { ok: false, message: `Cannot create a GOAT on ${registration.label}: ${registration.unavailableReason ?? "provider unavailable"} Switch your Settings trading provider to Hyperliquid + PropDAO until cTrader is fully integrated.` };
+  }
+
   const name = goal.length > 60 ? `${goal.slice(0, 57)}…` : goal;
 
   const goat: FundGoat = {
     id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     userId: owner.userId,
+    tradingProvider,
     name,
     goal,
     markets: [match.symbol],
@@ -4670,6 +4684,13 @@ apiRouter.post(
 
     if (!template) return notFound(res);
 
+    const profile = await persistence.profiles.get(user.uid).catch(() => null);
+    const tradingProvider = resolveUserTradingProvider(profile);
+    if (!isTradingProviderReady(tradingProvider)) {
+      const registration = getTradingProviderRegistration(tradingProvider);
+      return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} cannot create GOATs yet. ${registration.unavailableReason ?? "The provider is unavailable."} Switch Settings to Hyperliquid + PropDAO until cTrader is fully integrated.`);
+    }
+
     const now = new Date().toISOString();
     const copy: FundGoat = {
       ...template,
@@ -4677,6 +4698,7 @@ apiRouter.post(
       // copy `id: 'system'` and make the copy collide with the template itself.
       id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       userId: user.uid,
+      tradingProvider,
       name: `${template.name}`,
       markets: template.markets.slice(0, 1),
       status: "WATCHING",
@@ -4934,6 +4956,13 @@ apiRouter.post(
       );
     }
 
+    const profile = await persistence.profiles.get(user.uid).catch(() => null);
+    const tradingProvider = resolveUserTradingProvider(profile);
+    if (!isTradingProviderReady(tradingProvider)) {
+      const registration = getTradingProviderRegistration(tradingProvider);
+      return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} cannot create GOATs yet. ${registration.unavailableReason ?? "The provider is unavailable."} Switch Settings to Hyperliquid + PropDAO until cTrader is fully integrated.`);
+    }
+
     // Ownership validation: skillIds must reference defaults or the user's own skills.
     const skills = await allSkillsFor(user.uid);
     const knownIds = new Set(skills.map((s) => s.id));
@@ -4977,6 +5006,7 @@ apiRouter.post(
     const newGoat: FundGoat = {
       id: goatId,
       userId: user.uid,
+      tradingProvider,
       name: input.name,
       goal: input.goal,
       markets: markets.resolved,
