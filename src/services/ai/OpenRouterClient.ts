@@ -12,6 +12,7 @@ import { NewsService } from '../news/NewsService';
 import {
   parseReasoningResult,
   ReasoningResult,
+  ReasoningValidationError,
 } from '../../services/agent/contracts';
 
 /* ============================================================================
@@ -2551,6 +2552,7 @@ export class OpenRouterClient {
       options: {
         reasoningDisabled?: boolean;
         repairOf?: string;
+        repairIssues?: string[];
         maxTokens?: number;
       } = {},
     ): Promise<{ parsed: unknown; content: string; model: string; usage?: OpenRouterUsage; requestId?: string }> => {
@@ -2570,11 +2572,16 @@ export class OpenRouterClient {
               role:
                 'user' as const,
 
-              content:
-                'Your previous reply could not be parsed as JSON. ' +
-                'Reply again with the JSON object ONLY: no prose, no explanation, ' +
-                'no markdown, no code fences. It must have exactly the four ' +
-                'top-level keys investigation, thesis, proposal and evidence.',
+              content: options.repairIssues?.length
+                ? 'Your previous reply was valid JSON but failed SIRGOAT runtime validation. ' +
+                  'Fix every issue below and return the complete corrected JSON object ONLY. ' +
+                  'Do not omit required objects or replace objects with strings. Validation issues: ' +
+                  options.repairIssues.join('; ') +
+                  '. The required top-level keys are investigation, thesis, proposal and evidence.'
+                : 'Your previous reply could not be parsed as JSON. ' +
+                  'Reply again with the JSON object ONLY: no prose, no explanation, ' +
+                  'no markdown, no code fences. It must have exactly the four ' +
+                  'top-level keys investigation, thesis, proposal and evidence.',
             },
           ]
         : messages;
@@ -2702,10 +2709,38 @@ export class OpenRouterClient {
       );
     }
 
-    const result =
-      parseReasoningResult(
-        last.parsed,
-      );
+    let result: ReasoningResult;
+    try {
+      result = parseReasoningResult(last.parsed);
+    } catch (validationError) {
+      if (!(validationError instanceof ReasoningValidationError)) throw validationError;
+
+      // Valid JSON is not necessarily a valid SIRGOAT contract. Repair that
+      // distinct failure mode instead of permanently wedging the GOAT.
+      const repaired = await attemptWithinBudget({
+        repairOf: last.content,
+        repairIssues: validationError.issues,
+      });
+      if (repaired.parsed === undefined) {
+        throw new ApiRequestError(
+          'The model could not repair its JSON reasoning contract after validation failed.',
+          { code: 'INVALID_REASONING_SCHEMA', retryable: true },
+        );
+      }
+      try {
+        result = parseReasoningResult(repaired.parsed);
+      } catch (repairError) {
+        if (repairError instanceof ReasoningValidationError) {
+          throw new ApiRequestError(
+            'The model response still fails SIRGOAT validation after one repair: ' +
+              repairError.issues.join('; '),
+            { code: 'INVALID_REASONING_SCHEMA', retryable: true },
+          );
+        }
+        throw repairError;
+      }
+      last = repaired;
+    }
 
     return {
       result,
