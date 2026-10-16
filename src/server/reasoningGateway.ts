@@ -289,7 +289,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
 
     const selectedModel = typeof model === 'string' && model.includes('/')
       ? model
-      : (await this.pickAnyModel(context.userId)) || model;
+      : (await this.pickAnyModel(context.userId, provider)) || model;
     const answer = await (client as OpenRouterClient).answerQuestion(context, question, selectedModel);
     return answer.answer;
   }
@@ -326,8 +326,8 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
    * is unreachable: the caller has a fallback and a catalogue outage should
    * not be the reason a GOAT cannot be created.
    */
-  async pickAnyModel(userId: string): Promise<string | null> {
-    const resolved = await this.clientFor(userId);
+  async pickAnyModel(userId: string, providerOverride?: AiProvider): Promise<string | null> {
+    const resolved = await this.clientFor(userId, providerOverride);
     if (!resolved) return null;
 
     const { provider, client } = resolved;
