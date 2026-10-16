@@ -43,7 +43,7 @@ import {
   type GoatReasoningContext,
   type OpenRouterUsage,
 } from './OpenRouterClient';
-import { parseReasoningResult, type ReasoningResult } from '../agent/contracts';
+import { parseReasoningResult, ReasoningValidationError, type ReasoningResult } from '../agent/contracts';
 
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 
@@ -355,6 +355,7 @@ export class GroqClient {
       maxTokens: REASONING_MAX_TOKENS,
     });
 
+    let finalCompletion = completion;
     let parsed = tryParseJson(completion.content);
 
     if (parsed === undefined) {
@@ -362,7 +363,7 @@ export class GroqClient {
         model,
         messages: [
           ...messages,
-          { role: 'assistant' as const, content: completion.content.slice(0, 4_000) },
+          { role: 'assistant' as const, content: finalCompletion.content.slice(0, 4_000) },
           {
             role: 'user' as const,
             content:
@@ -376,6 +377,7 @@ export class GroqClient {
       });
 
       parsed = tryParseJson(repaired.content);
+      finalCompletion = repaired;
 
       if (parsed === undefined) {
         throw new ApiRequestError(
@@ -386,17 +388,58 @@ export class GroqClient {
     }
 
     /**
-     * The shared validator is the ONLY gate. Groq output is not trusted because
-     * it came from Groq; it is trusted because it passed exactly the same
-     * contract check as OpenRouter output.
+     * The shared validator is the ONLY gate. A syntactically valid response
+     * can still violate the contract; request one targeted correction before
+     * failing the wake.
      */
-    const result = parseReasoningResult(parsed);
+    let result: ReasoningResult;
+    try {
+      result = parseReasoningResult(parsed);
+    } catch (validationError) {
+      if (!(validationError instanceof ReasoningValidationError)) throw validationError;
+      const repaired = await this.complete({
+        model,
+        messages: [
+          ...messages,
+          { role: 'assistant' as const, content: finalCompletion.content.slice(0, 4_000) },
+          {
+            role: 'user' as const,
+            content:
+              'Your previous reply was valid JSON but failed SIRGOAT runtime validation. ' +
+              'Fix every issue and return the complete corrected JSON object ONLY. ' +
+              'The top-level investigation, thesis and proposal fields must be JSON objects; ' +
+              'evidence must be an array. Validation issues: ' + validationError.issues.join('; '),
+          },
+        ],
+        temperature: 0,
+        maxTokens: REASONING_MAX_TOKENS,
+      });
+      const repairedParsed = tryParseJson(repaired.content);
+      if (repairedParsed === undefined) {
+        throw new ApiRequestError(
+          `${model} did not return valid JSON while repairing its reasoning contract.`,
+          { code: 'UNPARSEABLE', retryable: true },
+        );
+      }
+      try {
+        result = parseReasoningResult(repairedParsed);
+      } catch (repairError) {
+        if (repairError instanceof ReasoningValidationError) {
+          throw new ApiRequestError(
+            `${model} response still fails SIRGOAT validation: ${repairError.issues.join('; ')}`,
+            { code: 'INVALID_REASONING_SCHEMA', retryable: true },
+          );
+        }
+        throw repairError;
+      }
+      finalCompletion = repaired;
+    }
 
     return {
       result,
-      model: completion.model,
-      usage: completion.usage,
-      requestId: completion.requestId,
+      model: finalCompletion.model,
+      usage: finalCompletion.usage,
+      requestId: finalCompletion.requestId,
       jsonMode: 'response_format',
     };
   }
