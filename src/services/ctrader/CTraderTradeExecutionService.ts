@@ -200,12 +200,18 @@ export class CTraderTradeExecutionService {
     };
   }
 
-  async execute(intent: CTraderTradeIntent): Promise<{ accepted: boolean; orderId?: string; message: string }> {
+  async execute(intent: CTraderTradeIntent): Promise<{
+    status: "blocked" | "rejected" | "unknown" | "accepted" | "protection_unconfirmed";
+    accepted: boolean;
+    orderId?: string;
+    message: string;
+    protectionVerified?: boolean;
+  }> {
     const risk = await this.preflight(intent);
-    if (!risk.ok) return { accepted: false, message: risk.violations.join(" ") };
+    if (!risk.ok) return { status: "blocked", accepted: false, message: risk.violations.join(" ") };
     const symbols = await this.client.getSymbols();
     const symbol = symbols.find((item) => item.symbolName === intent.symbol);
-    if (!symbol) return { accepted: false, message: "The exact cTrader symbol is no longer available. No order was sent." };
+    if (!symbol) return { status: "blocked", accepted: false, message: "The exact cTrader symbol is no longer available. No order was sent." };
     try {
       const outcome = await this.client.placeOrder({
         symbol,
@@ -217,16 +223,74 @@ export class CTraderTradeExecutionService {
         takeProfit: intent.takeProfit,
         clientOrderId: intent.intentId,
       });
-      if (!outcome.accepted) return { accepted: false, message: outcome.message };
-      return {
-        accepted: true,
+      if (!outcome.accepted) return {
+        status: outcome.status === "rejected" ? "rejected" : "unknown",
+        accepted: false,
         ...(outcome.orderId ? { orderId: outcome.orderId } : {}),
         message: outcome.message,
       };
+
+      // An acceptance event only confirms broker validation; it does not prove
+      // that the persisted pending order has the intended SL/TP. Reconcile
+      // against broker state before reporting the lifecycle as complete.
+      let orders: Array<Record<string, unknown>>;
+      try {
+        const reconciled = await this.client.reconcile();
+        orders = reconciled.orders;
+      } catch {
+        return {
+          status: "protection_unconfirmed",
+          accepted: true,
+          orderId: outcome.orderId,
+          message: "cTrader accepted the order, but SIRGOAT could not verify its persisted protective stop and target. Do not submit it again. Inspect order " + outcome.orderId + " in cTrader immediately.",
+          protectionVerified: false,
+        };
+      }
+      const brokerOrder = orders.find((order) =>
+        String(order.clientOrderId ?? "") === intent.intentId ||
+        (outcome.orderId && String(order.orderId ?? "") === outcome.orderId),
+      );
+      if (!brokerOrder) {
+        return {
+          status: "protection_unconfirmed",
+          accepted: true,
+          orderId: outcome.orderId,
+          message: "cTrader accepted the order, but it was not found in the immediate broker reconciliation. Its status and protective levels are unconfirmed. Do not retry; inspect order " + outcome.orderId + " in cTrader.",
+          protectionVerified: false,
+        };
+      }
+      if (n(brokerOrder.orderStatus) === 3) {
+        return {
+          status: "rejected",
+          accepted: false,
+          orderId: outcome.orderId,
+          message: "cTrader's reconciled order state is REJECTED. No retry was attempted; review the broker's rejection details.",
+          protectionVerified: false,
+        };
+      }
+      const actualStop = n(brokerOrder.stopLoss);
+      const actualTarget = n(brokerOrder.takeProfit);
+      const priceTolerance = Math.max(1e-10, 0.5 * Math.pow(10, -symbol.digits));
+      const stopMatches = actualStop !== null && Math.abs(actualStop - intent.stopLoss) <= priceTolerance;
+      const targetMatches = actualTarget !== null && Math.abs(actualTarget - intent.takeProfit) <= priceTolerance;
+      if (!stopMatches || !targetMatches) {
+        return {
+          status: "protection_unconfirmed",
+          accepted: true,
+          orderId: outcome.orderId,
+          message: "cTrader accepted order " + outcome.orderId + " but the broker's persisted stop-loss/take-profit do not match the requested levels. Do not retry. Check or cancel the order in cTrader before allowing it to fill.",
+          protectionVerified: false,
+        };
+      }
+      return {
+        status: "accepted",
+        accepted: true,
+        orderId: outcome.orderId,
+        message: "cTrader accepted order " + outcome.orderId + " and broker reconciliation confirmed the requested stop-loss and take-profit are attached.",
+        protectionVerified: true,
+      };
     } catch {
-      // A timeout after sending cannot distinguish "not received" from
-      // "accepted but response lost". Never auto-retry a money-moving request.
-      return { accepted: false, message: "cTrader order status is unknown because the response was not confirmed. Check cTrader orders before retrying; SIRGOAT did not automatically resubmit." };
+      return { status: "unknown", accepted: false, message: "cTrader order status is unknown because the response was not confirmed. Check cTrader orders before retrying; SIRGOAT did not automatically resubmit." };
     }
   }
 }
