@@ -52,6 +52,7 @@ import { evaluateTracker } from '../tracker-sdk/DeterministicTrackerEvaluator';
 import { SessionSchedule } from '../tracker-sdk/SessionSchedule';
 import { analyzeMarketStructure, calculateRSI, calculateEMA, calculateATR } from '../tracker-sdk/indicators';
 import { ReasoningGateway } from '../../server/reasoningGateway';
+import { runGoatReasoningGraph } from '../agent/GoatReasoningGraph';
 import { newsService } from '../news/NewsService';
 import {
   SignalRepository,
@@ -933,7 +934,12 @@ export class GoatRuntime {
 
       let reasoningResult: ReasoningResult;
       try {
-        reasoningResult = await this.reasoning.evaluateGoat(reasoningContext, this.goatConfig.model, this.goatConfig.aiProvider);
+        reasoningResult = await runGoatReasoningGraph({
+          context: reasoningContext,
+          model: this.goatConfig.model,
+          provider: this.goatConfig.aiProvider,
+          evaluate: (context, model, provider) => this.reasoning.evaluateGoat(context, model, provider),
+        });
       } catch (err) {
         if (err instanceof ReasoningValidationError) {
           const failure = `Model response failed validation: ${err.issues.slice(0, 3).join('; ')}`;
