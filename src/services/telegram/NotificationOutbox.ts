@@ -1,4 +1,4 @@
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentSnapshot, Firestore } from 'firebase-admin/firestore';
 
 /**
  * NOTIFICATION OUTBOX
@@ -227,7 +227,7 @@ export class FirestoreOutboxStore implements OutboxStore {
   async enqueue(record: OutboxRecord): Promise<boolean> {
     const ref = this.collection.doc(record.id);
     return this.db.runTransaction(async transaction => {
-      const existing = await transaction.get(ref);
+      const existing = await transaction.get(ref) as unknown as DocumentSnapshot;
       if (existing.exists) return false;
       transaction.create(ref, record);
       return true;

@@ -995,7 +995,7 @@ export const GoatProvider: React.FC<{
   const setGoatStatus = useCallback(
     async (
       goatId: string,
-      action: 'PAUSE' | 'PLAY'
+      action: 'PAUSE' | 'PLAY' | 'STOP'
     ): Promise<FundGoat> => {
       const id = goatId.trim();
 

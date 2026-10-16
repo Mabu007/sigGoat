@@ -824,7 +824,11 @@ function sanitiseSkill(
 function compactSkills(
   skills: TradingSkill[],
 ): Record<string, unknown>[] {
-  return skills
+  // Treat an absent or malformed skills collection as no attached skills.
+  // Runtime context can be reconstructed from persisted records after deploys;
+  // one incomplete legacy record must not crash every provider's GOAT review.
+  const availableSkills = Array.isArray(skills) ? skills : [];
+  return availableSkills
     .slice(0, MAX_SKILLS)
     .map(sanitiseSkill);
 }
