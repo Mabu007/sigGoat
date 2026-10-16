@@ -639,10 +639,15 @@ async function runTrackerCheckSync(
       nextAt: isoOrNull(computeNextTrackerCheckAt(goat)),
     };
 
-  const state = await marketStateStore.getState(
-    market,
-    normaliseTrackingTimeframe(goat.timeframe),
-  );
+  let state: Awaited<ReturnType<MarketStateStore["getState"]>>;
+  try {
+    const provider = await marketDataProviderForGoat(goat);
+    const stateStore = await marketStateStoreForGoat(goat, provider);
+    state = await stateStore.getState(market, normaliseTrackingTimeframe(goat.timeframe));
+  } catch (error) {
+    console.warn(`[scheduler] market state unavailable for GOAT ${goat.id}:`, error instanceof Error ? error.message : "provider unavailable");
+    return { handled: false, nextAt: isoOrNull(computeNextTrackerCheckAt(goat)) };
+  }
 
   if (!isUsableMarketState(state) || !state.quote) {
     return {
@@ -1589,6 +1594,8 @@ export async function routeMarketEvent(event: MarketEvent): Promise<{
         stopped += 1;
         continue;
       }
+      // This event came from the global Hyperliquid ingestion service.
+      if (resolveGoatTradingProvider(goat) !== "hyperliquid") continue;
 
       /**
        * Only events the GOAT's own trackers care about may wake it. A
@@ -2282,10 +2289,9 @@ async function runTrackerCheckInBackground(goatId: string): Promise<void> {
     const market = await resolveGoatMarket(goat);
     if (!market) return;
 
-    const state = await marketStateStore.getState(
-      market,
-      normaliseTrackingTimeframe(goat.timeframe),
-    );
+    const provider = await marketDataProviderForGoat(goat);
+    const stateStore = await marketStateStoreForGoat(goat, provider);
+    const state = await stateStore.getState(market, normaliseTrackingTimeframe(goat.timeframe));
     if (!isUsableMarketState(state) || !state.quote) return;
 
     const runtime = goatRuntimeRegistry.get(goatId)
@@ -5991,7 +5997,9 @@ apiRouter.post(
       // Recheck current, provider-confirmed market data at the point of approval.
       // A fresh thesis cannot authorize an order after its stop/target has already
       // been crossed or when the provider is serving stale/degraded data.
-      const liveMarketState = await marketStateStore.getState(signal.market, "1h");
+      const goatMarketProvider = await marketDataProviderForGoat(goat);
+      const goatStateStore = await marketStateStoreForGoat(goat, goatMarketProvider);
+      const liveMarketState = await goatStateStore.getState(signal.market, "1h");
       if (!isUsableMarketState(liveMarketState) || !liveMarketState.quote) {
         return fail(
           res,
