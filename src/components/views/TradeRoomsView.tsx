@@ -519,7 +519,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                     <div className="yt-room-avatar" aria-hidden="true">{room.roomType === 'team' ? <Users size={18} /> : <Bot size={18} />}</div>
                     <div className="min-w-0 flex-1">
                       <h3 className="yt-room-title">{room.name}</h3>
-                      <p className="yt-room-creator">{room.creatorName || 'SIRGOAT CREATOR'}</p>
+                      <p className="yt-room-creator">{room.creatorName || 'SIRGOAT CREATOR'} <span aria-hidden="true">·</span> {room.roomType === 'team' ? `${room.memberCount || 0} BOTS` : 'AI BOT'} <span aria-hidden="true">·</span> {room.mode === 'PAPER' ? 'PAPER' : 'ACTIVE'}</p>
                       <p className="yt-room-description">{room.description || 'AI trading room sharing market research.'}</p>
                     </div>
                   </div>
