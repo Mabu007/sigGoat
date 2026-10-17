@@ -17,6 +17,7 @@ const BacktestView = React.lazy(() => import('./components/views/BacktestView').
 const SettingsView = React.lazy(() => import('./components/views/SettingsView').then(module => ({ default: module.SettingsView })));
 const Chatbot = React.lazy(() => import('./components/Chatbot/Chatbot').then(module => ({ default: module.Chatbot })));
 const PublicRobotView = React.lazy(() => import('./components/PublicRobotView').then(module => ({ default: module.PublicRobotView })));
+const PublicTeamView = React.lazy(() => import('./components/PublicTeamView').then(module => ({ default: module.PublicTeamView })));
 
 const ViewLoadingFallback: React.FC = () => (
   <div role="status" className="flex min-h-40 items-center justify-center text-sm text-fg-muted">
@@ -48,6 +49,7 @@ function tabFromHash(): TabId {
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
   const [isOpenCreateGoatModal, setIsOpenCreateGoatModal] = useState(false);
+  const [createTeamRequested, setCreateTeamRequested] = useState(false);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
@@ -79,13 +81,14 @@ const MainApp: React.FC = () => {
           displayName={profile?.displayName ?? null}
           email={currentUser?.email ?? null}
           onOpenSettings={() => navigate('settings')}
+          onCreateBotTeam={() => { navigate('rooms'); setCreateTeamRequested(true); }}
           onRefresh={() => void refreshQuotes()}
           lastUpdatedMs={lastUpdatedMs}
         />
 
         <main className="mx-auto w-full max-w-7xl flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {activeTab === 'rooms' && <TradeRoomsView onCreateRoom={() => { setIsOpenCreateGoatModal(true); navigate('goats'); }} onOpenMyRooms={() => navigate('goats')} />}
+            {activeTab === 'rooms' && <TradeRoomsView createTeamRequested={createTeamRequested} onCreateTeamRequestHandled={() => setCreateTeamRequested(false)} onCreateRoom={() => { setIsOpenCreateGoatModal(true); navigate('goats'); }} onOpenMyRooms={() => navigate('goats')} />}
 
             {activeTab === 'trades' && <ProposalsView />}
 
