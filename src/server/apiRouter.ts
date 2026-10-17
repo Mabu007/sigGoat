@@ -3792,8 +3792,13 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   const goat = await persistence.goats.getForUser(memberId, team.ownerUserId);
   if (!goat) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "That team bot is no longer available.");
   const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
-  const symbol = requestedSymbol && goat.markets.includes(requestedSymbol) ? requestedSymbol : goat.markets[0];
-  if (!symbol) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This team bot has no configured market.");
+  // A shareable chart should still render before the GOAT has a configured market.
+  // Use a native default for that GOAT's provider, without changing the GOAT's saved markets.
+  const providerKind = resolveGoatTradingProvider(goat);
+  const fallbackSymbol = providerKind === "ctrader" ? "EURUSD" : "BTC";
+  const symbol = requestedSymbol && goat.markets.includes(requestedSymbol)
+    ? requestedSymbol
+    : goat.markets[0] || fallbackSymbol;
   try {
     const provider = await marketDataProviderForGoat(goat);
     const [quotes, candles] = await Promise.all([

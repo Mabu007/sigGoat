@@ -49,16 +49,18 @@ function tabFromHash(): TabId {
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
   const [createTeamRequested, setCreateTeamRequested] = useState(false);
+  const [selectedRoom, setSelectedRoom] = useState<{ type: 'team' | 'bot'; slug: string } | null>(null);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
   useEffect(() => {
-    const onHashChange = () => setActiveTab(tabFromHash());
+    const onHashChange = () => { setSelectedRoom(null); setActiveTab(tabFromHash()); };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
   const navigate = useCallback((tab: TabId) => {
+    setSelectedRoom(null);
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
       window.location.hash = `/${tab}`;
@@ -72,10 +74,8 @@ const MainApp: React.FC = () => {
   );
 
   return (
-    <div className="premium-shell flex min-h-screen flex-col text-fg md:flex-row">
-      <Navigation activeTab={activeTab} onSelect={navigate} />
-
-      <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-16 md:pb-0">
+    <div className="premium-shell flex min-h-screen flex-col text-fg">
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-20">
         <Header
           displayName={profile?.displayName ?? null}
           email={currentUser?.email ?? null}
@@ -85,21 +85,25 @@ const MainApp: React.FC = () => {
           lastUpdatedMs={lastUpdatedMs}
         />
 
-        <main className="mx-auto w-full max-w-7xl flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
+        <main className="w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
+          <TradeRoomsView
+            createTeamRequested={createTeamRequested}
+            onCreateTeamRequestHandled={() => setCreateTeamRequested(false)}
+            showDirectoryContent={activeTab === 'rooms' && !selectedRoom}
+            onOpenRoom={(type, slug) => { setSelectedRoom({ type, slug }); setActiveTab('rooms'); }}
+            onShowDirectory={() => navigate('rooms')}
+          />
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {activeTab === 'rooms' && <TradeRoomsView createTeamRequested={createTeamRequested} onCreateTeamRequestHandled={() => setCreateTeamRequested(false)} />}
-
-            {activeTab === 'trades' && <ProposalsView />}
-
-            {/* Reachable from a team member, not a top-level destination. */}
-            {activeTab === 'skills' && <SkillsView />}
-
-            {activeTab === 'backtest' && <BacktestView />}
-
-            {activeTab === 'settings' && <SettingsView />}
+            {selectedRoom?.type === 'team' && <PublicTeamView slug={selectedRoom.slug} onBack={() => setSelectedRoom(null)} />}
+            {selectedRoom?.type === 'bot' && <PublicRobotView slug={selectedRoom.slug} onBack={() => setSelectedRoom(null)} />}
+            {!selectedRoom && activeTab === 'trades' && <ProposalsView />}
+            {!selectedRoom && activeTab === 'skills' && <SkillsView />}
+            {!selectedRoom && activeTab === 'backtest' && <BacktestView />}
+            {!selectedRoom && activeTab === 'settings' && <SettingsView />}
           </React.Suspense>
         </main>
       </div>
+      <Navigation activeTab={activeTab} onSelect={navigate} />
     </div>
   );
 };
