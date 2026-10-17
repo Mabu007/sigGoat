@@ -413,9 +413,9 @@ export function ProposalsView() {
     <div className="space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-fg">Proposals</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-fg">Trades</h1>
           <p className="mt-0.5 text-[13px] text-fg-muted">
-            Trade ideas from your agents, checked against deterministic risk rules.
+            Your recorded trade ideas and decisions, with risk checks and status history.
           </p>
         </div>
         <button type="button" onClick={() => void load()} className="btn btn-secondary">
@@ -433,7 +433,7 @@ export function ProposalsView() {
       {proposals?.length === 0 ? (
         <div className="panel p-8 text-center">
           <Clock size={20} className="mx-auto text-fg-subtle" aria-hidden="true" />
-          <p className="mt-2 text-[13px] font-medium text-fg">No proposals yet</p>
+          <p className="mt-2 text-[13px] font-medium text-fg">No trades recorded yet</p>
           <p className="mx-auto mt-1 max-w-sm text-[12px] text-fg-muted">
             Agents produce proposals after their next evaluation. Create an agent and give it a market to
             watch.

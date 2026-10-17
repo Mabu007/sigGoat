@@ -728,15 +728,19 @@ export const SettingsView: React.FC = () => {
           </div>
           <div className="flex items-center justify-between">
             <span className="text-fg-muted">Provider:</span>
-            <span className="text-fg font-mono">{marketData?.provider ?? '—'}</span>
+            <span className="text-fg font-mono">{preferences.tradingProvider === 'ctrader' ? 'cTrader (selected)' : (marketData?.provider ?? 'Hyperliquid')}</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-fg-muted">Supported Asset Classes:</span>
-            <span className="text-fg">Forex Majors &amp; Crosses, Gold, Silver, Crude Oil, Major Indices</span>
+            <span className="text-fg text-right">{preferences.tradingProvider === 'ctrader' ? 'Forex, metals, energies, indices (broker account dependent)' : 'Crypto, Forex, Commodities, Indices (venue dependent)'}</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-fg-muted">Symbols Available:</span>
-            <span className="font-mono text-accent-text">{marketData?.symbolsCount ?? '—'}</span>
+            <span className="font-mono text-accent-text">{preferences.tradingProvider === 'ctrader' ? 'Broker account dependent' : (marketData?.symbolsCount ?? '—')}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-fg-muted">Available providers:</span>
+            <span className="text-right text-fg">cTrader · Hyperliquid</span>
           </div>
         </div>
       </div>

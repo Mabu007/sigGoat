@@ -11,7 +11,7 @@
  *   real state indicator rather than a decorative pill.
  */
 
-import { RefreshCw, Sparkles, TrendingUp, Users } from 'lucide-react';
+import { RefreshCw, Sparkles, Users } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { BrandMark } from './Navigation';
 import { useMarket } from '../context/MarketContext';
@@ -59,10 +59,6 @@ export function Header({
 
         {/* Feed state */}
         <div className="flex min-w-0 items-center gap-2">
-          <TrendingUp size={14} className="shrink-0 text-fg-subtle" aria-hidden="true" />
-          <span className="truncate text-[12px] font-medium text-fg-muted">
-            Hyperliquid
-          </span>
           <span className={`badge badge-${sourceState.tone}`}>
             <span className="sr-only">Market data status: </span>
             {sourceState.label}
