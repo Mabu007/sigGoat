@@ -30,6 +30,7 @@ interface ChartProps {
   digits?: number;
   roomName?: string;
   agentEvents?: AgentChartEvent[];
+  dataMode?: string;
 }
 
 function readChartPalette() {
@@ -69,7 +70,7 @@ function isFreshQuote(quote: MarketQuote | null) {
 }
 
 export const TradingViewLightweightChart: React.FC<ChartProps> = ({
-  candles, activeQuote, timeframe, symbol, digits = 5, roomName, agentEvents = [],
+  candles, activeQuote, timeframe, symbol, digits = 5, roomName, agentEvents = [], dataMode = '',
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
@@ -240,10 +241,10 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
         chart.timeScale().setVisibleLogicalRange({ from, to });
       }
     }
-    lastBarsRef.current = normalized.map(c => ({ time: Math.floor(c.time / 1000), open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+    lastBarsRef.current = normalized.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
 
-    const firstTime = normalized[0].time / 1000;
-    const lastTime = normalized[normalized.length - 1].time / 1000;
+    const firstTime = normalized[0].time;
+    const lastTime = normalized[normalized.length - 1].time;
     const markers: SeriesMarker<Time>[] = agentEvents
       .filter(event => Number.isFinite(event.time) && event.time > 0 && event.time / 1000 >= firstTime && event.time / 1000 <= lastTime)
       .map(event => {
@@ -267,22 +268,22 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
       priceLineRef.current = null;
     }
     if (!activeQuote || !Number.isFinite(activeQuote.mid) || activeQuote.mid <= 0) return;
-    const fresh = isFreshQuote(activeQuote);
+    const fresh = isFreshQuote(activeQuote) && dataMode.toUpperCase() !== 'PAPER';
     priceLineRef.current = series.createPriceLine({
       price: activeQuote.mid,
       color: fresh ? '#79e5c2' : '#d7a85c',
       lineWidth: 1,
       lineStyle: fresh ? 0 : 2,
       axisLabelVisible: true,
-      title: fresh ? 'NOW' : 'LAST',
+      title: dataMode.toUpperCase() === 'PAPER' ? 'PAPER' : fresh ? 'NOW' : 'LAST',
     });
-  }, [activeQuote, timeframe]);
+  }, [activeQuote, timeframe, dataMode]);
 
   return (
     <div className="sg-pulse-chart" data-theme={theme}>
       <div className="sg-pulse-watermark" aria-hidden="true">{roomName || 'SIRGOAT'}</div>
       <div ref={containerRef} className="sg-pulse-canvas" aria-label={symbol + ' ' + timeframe + ' candlestick chart'} />
-      {activeQuote && isFreshQuote(activeQuote) && <div className="sg-pulse-live-pip" aria-hidden="true" />}
+      {activeQuote && isFreshQuote(activeQuote) && dataMode.toUpperCase() !== 'PAPER' && <div className="sg-pulse-live-pip" aria-hidden="true" />}
     </div>
   );
 };
