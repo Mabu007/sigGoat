@@ -1,16 +1,5 @@
-/**
- * APPLICATION HEADER
- * ==================
- * Sticky top bar: identity on the left, market-data source and account
- * actions on the right.
- *
- * Feed health is no longer surfaced here. It was a three-state badge, but the
- * only value it ever carried was "Feed offline", which said nothing actionable
- * and duplicated state the market views already own. Where it matters, PAPER
- * versus LIVE is now labelled per view, at the point the data is consumed.
- */
-
-import { RefreshCw, Sparkles, Users } from 'lucide-react';
+import { useState } from 'react';
+import { ListChecks, Plus, RefreshCw, Search, Sparkles } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { BrandMark } from './Navigation';
 
@@ -24,96 +13,38 @@ interface HeaderProps {
   lastUpdatedMs?: number | null;
 }
 
-export function Header({
-  displayName,
-  email,
-  onOpenSettings,
-  onCreateBotTeam,
-  onRefresh,
-  refreshing = false,
-  lastUpdatedMs,
-}: HeaderProps) {
+export function Header({ displayName, email, onOpenSettings, onCreateBotTeam, onRefresh, refreshing = false, lastUpdatedMs }: HeaderProps) {
+  const [search, setSearch] = useState('');
   const initials = (displayName ?? email ?? '?').trim().charAt(0).toUpperCase();
+  const submitSearch = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    window.dispatchEvent(new CustomEvent('sirgoat-directory-search', { detail: search.trim() }));
+    if (window.location.hash !== '#/rooms') window.location.hash = '/rooms';
+  };
 
   return (
-    <header className="premium-header sticky top-0 z-30 border-b border-line">
-      <div className="mx-auto flex h-[68px] w-full max-w-7xl items-center gap-3 px-3 sm:px-6">
-        {/* Mobile-only brand; the sidebar carries it on desktop. */}
-        <div className="md:hidden">
+    <header className="premium-header yt-header sticky top-0 z-30 border-b border-line">
+      <div className="yt-header-inner flex h-[68px] w-full items-center gap-4 px-4 sm:px-6">
+        <div className="flex shrink-0 items-center gap-3">
           <BrandMark compact />
+          <span className="hidden text-[15px] font-extrabold tracking-tight text-fg sm:inline">SIR<span className="text-accent-text">GOAT</span></span>
         </div>
 
-        {/* Feed state */}
-        {lastUpdatedMs ? (
-          <span className="hidden text-[11px] text-fg-subtle sm:inline">
-            {new Date(lastUpdatedMs).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-            })}
-          </span>
-        ) : null}
+        <form onSubmit={submitSearch} className="yt-search mx-auto flex w-full max-w-[620px] items-center">
+          <Search size={18} className="ml-4 shrink-0 text-fg-subtle" aria-hidden="true" />
+          <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search trading rooms, bots, markets..." aria-label="Search trading rooms, bots and markets" className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-fg outline-none placeholder:text-fg-subtle" />
+          {search && <button type="button" onClick={() => { setSearch(''); window.dispatchEvent(new CustomEvent('sirgoat-directory-search', { detail: '' })); }} aria-label="Clear search" className="px-2 text-fg-subtle hover:text-fg">×</button>}
+          <button type="submit" aria-label="Search" className="yt-search-button flex h-10 w-14 shrink-0 items-center justify-center"><Search size={18} /></button>
+        </form>
 
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onRefresh}
-            className="btn btn-ghost h-9 w-9 !px-0"
-            aria-label="Refresh market data"
-            title="Refresh"
-          >
-            <RefreshCw
-              size={15}
-              aria-hidden="true"
-              className={refreshing ? 'animate-spin' : ''}
-            />
-          </button>
-
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {lastUpdatedMs ? <span className="hidden text-[10px] text-fg-subtle xl:inline">{new Date(lastUpdatedMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span> : null}
+          <button type="button" onClick={onRefresh} className="btn btn-ghost h-9 w-9 !px-0" aria-label="Refresh market data" title="Refresh market data"><RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} /></button>
+          <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('sirgoat-chatbot-open'))} className="yt-icon-button hidden sm:flex" aria-label="Open AI assistant" title="AI assistant"><Sparkles size={18} /></button>
+          <button type="button" onClick={() => { window.location.hash = '/trades'; }} className="yt-icon-button flex" aria-label="View trades" title="Trades"><ListChecks size={18} /></button>
           <ThemeToggle />
-
-          <button
-            type="button"
-            onClick={onCreateBotTeam}
-            className="btn btn-primary h-9 !px-3"
-            aria-label="Create Bot Team"
-            title="Create Bot Team"
-          >
-            <Users size={15} aria-hidden="true" />
-            <span className="hidden sm:inline">Create Bot Team</span>
-            <span className="sm:hidden">Create</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => window.dispatchEvent(new CustomEvent('sirgoat-chatbot-open'))}
-            className="group relative flex items-center gap-2 rounded-xl border border-line bg-raised/70 px-3 py-2 text-[12px] font-semibold text-fg shadow-sm transition-all hover:border-line-strong hover:bg-raised md:px-4"
-            aria-label="Open AI assistant"
-            title="AI assistant"
-          >
-            <Sparkles
-              size={15}
-              aria-hidden="true"
-              className="text-accent-text transition-transform group-hover:scale-110"
-            />
-            <span className="hidden sm:inline">AI assistant</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="flex items-center gap-2 rounded-xl border border-line bg-raised/60 py-1 pl-1 pr-2.5 text-left shadow-sm transition-all hover:border-line-strong hover:bg-raised"
-            aria-label="Account and settings"
-          >
-            <span
-              aria-hidden="true"
-              className="premium-avatar flex h-8 w-8 items-center justify-center rounded-lg text-[11px] font-bold text-fg"
-            >
-              {initials}
-            </span>
-            <span className="hidden max-w-[120px] truncate text-[12px] font-medium text-fg sm:inline">
-              {displayName ?? email ?? 'Account'}
-            </span>
-          </button>
+          <button type="button" onClick={onCreateBotTeam} className="yt-create-button flex h-10 items-center gap-2 rounded-full px-4 text-sm font-semibold" aria-label="Create trading room"><Plus size={18} /><span className="hidden lg:inline">Create</span></button>
+          <button type="button" onClick={onOpenSettings} className="yt-avatar flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold" aria-label="Account and settings">{initials}</button>
         </div>
       </div>
     </header>
