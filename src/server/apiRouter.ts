@@ -3845,7 +3845,7 @@ async function biQuoteRoomMarket(symbol: string, timeframe: string, count: numbe
     high24h: Number.isFinite(rawQuote.high) ? Number(rawQuote.high) : 0,
     low24h: Number.isFinite(rawQuote.low) ? Number(rawQuote.low) : 0,
     timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
-    stale: rawQuote.stale === true || (quoteAgeSeconds !== undefined && quoteAgeSeconds > 300),
+    stale: rawQuote.stale === true || rawQuote.marketState === "closed" || (quoteAgeSeconds !== undefined && quoteAgeSeconds > 300),
     marketState: rawQuote.marketState || "unknown",
     quoteAgeSeconds,
     bidProvided: Number.isFinite(rawQuote.bid),
