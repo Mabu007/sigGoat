@@ -99,8 +99,14 @@ export class GoatTeamStore {
   }
 
   async getPublicBySlug(slug: string): Promise<GoatTeam | null> {
-    const teams = await this.listPublic();
-    return teams.find(team => team.publicSlug === slug) ?? null;
+    // Slugs are unguessable share capabilities for PRIVATE teams and public
+    // identifiers for PUBLIC teams. The caller must never enumerate private slugs.
+    if (this.firestore) {
+      const snapshot = await this.collection().where("publicSlug", "==", slug).limit(1).get();
+      if (snapshot.empty) return null;
+      return snapshot.docs[0].data() as GoatTeam;
+    }
+    return Object.values(this.db.teams).find(team => team.publicSlug === slug) ?? null;
   }
 
   async save(team: GoatTeam): Promise<GoatTeam> {
