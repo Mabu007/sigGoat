@@ -835,6 +835,7 @@ async function setGoatStatusFor(
   userId: string,
   goatId: string,
   paused: boolean,
+  publishOnDeploy = true,
 ): Promise<
   FundGoat & { runtimeState: GoatRuntimeState; schedule: GoatSchedule }
 > {
@@ -856,7 +857,7 @@ async function setGoatStatusFor(
   // First deployment publishes this existing GOAT under a shareable white-label URL.
   const publicBase = goat.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "trading-robot";
   const publicSuffix = goat.id.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase();
-  const publishOnFirstDeploy = deployingDraft && !goat.publicSlug;
+  const publishOnFirstDeploy = publishOnDeploy && deployingDraft && !goat.publicSlug;
   const updated: FundGoat = {
     ...goat,
     model: resolvedModel,
@@ -5584,7 +5585,7 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   if (shouldDeploy) {
     const results: Array<{ goatId: string; ok: boolean; error?: string }> = [];
     for (const goatId of memberGoatIds) {
-      try { await setGoatStatusFor(user.uid, goatId, false); results.push({ goatId, ok: true }); }
+      try { await setGoatStatusFor(user.uid, goatId, false, false); results.push({ goatId, ok: true }); }
       catch (error) { results.push({ goatId, ok: false, error: error instanceof Error ? error.message : "Deployment failed" }); }
     }
     const failed = results.some(result => !result.ok);
