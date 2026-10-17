@@ -93,77 +93,34 @@ interface NavigationProps {
 
 export function Navigation({ activeTab, onSelect }: NavigationProps) {
   return (
-    <>
-      {/* Desktop sidebar */}
-      <nav
-        aria-label="Main"
-        className="premium-sidebar sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line md:flex"
-      >
-        <div className="flex h-[68px] items-center border-b border-line px-5">
-          <BrandMark />
-        </div>
-
-        <ul className="flex-1 space-y-0.5 overflow-y-auto p-3">
-          {NAVIGATION_ITEMS.map((item) => {
-            const Icon = item.icon;
-            const active = item.id === activeTab;
-            return (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  onClick={() => onSelect(item.id)}
-                  aria-current={active ? 'page' : undefined}
-                  className={`premium-nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium transition-colors ${
-                    active
-                      ? 'bg-accent-soft text-accent-text'
-                      : 'text-fg-muted hover:bg-raised hover:text-fg'
-                  }`}
-                >
-                  <Icon size={16} strokeWidth={active ? 2.2 : 1.8} aria-hidden="true" />
-                  {item.label}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-
-      </nav>
-
-      {/* Mobile bottom bar.
-          `env(safe-area-inset-bottom)` keeps the last row clear of the home
-          indicator on devices that have one — a hardcoded padding did not. */}
-      <nav
-        aria-label="Main"
-        className="premium-header fixed inset-x-0 bottom-0 z-40 border-t border-line md:hidden"
-        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
-      >
-        <ul className="mx-auto grid max-w-lg grid-cols-3">
-          {NAVIGATION_ITEMS.map((item) => {
-            const Icon = item.icon;
-            const active = item.id === activeTab;
-            return (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  onClick={() => onSelect(item.id)}
-                  aria-current={active ? 'page' : undefined}
-                  className={`flex w-full flex-col items-center gap-0.5 px-1 py-2 text-[10px] font-medium transition-colors ${
-                    active ? 'text-accent-text' : 'text-fg-subtle'
-                  }`}
-                >
-                  <span
-                    aria-hidden="true"
-                    className="flex h-7 w-12 items-center justify-center rounded-md bg-transparent"
-                  >
-                    <Icon size={16} strokeWidth={active ? 2.2 : 1.8} />
-                  </span>
-                  {item.shortLabel ?? item.label}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
-    </>
+    <nav
+      aria-label="Main"
+      className="premium-header fixed inset-x-0 bottom-0 z-40 border-t border-line md:hidden"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+    >
+      <ul className="mx-auto grid max-w-lg grid-cols-3">
+        {NAVIGATION_ITEMS.map((item) => {
+          const Icon = item.icon;
+          const active = item.id === activeTab;
+          return (
+            <li key={item.id}>
+              <button
+                type="button"
+                onClick={() => onSelect(item.id)}
+                aria-current={active ? 'page' : undefined}
+                className={`flex w-full flex-col items-center gap-0.5 px-1 py-2 text-[10px] font-medium transition-colors ${
+                  active ? 'text-accent-text' : 'text-fg-subtle'
+                }`}
+              >
+                <span aria-hidden="true" className="flex h-7 w-12 items-center justify-center rounded-md bg-transparent">
+                  <Icon size={16} strokeWidth={active ? 2.2 : 1.8} />
+                </span>
+                {item.shortLabel ?? item.label}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
