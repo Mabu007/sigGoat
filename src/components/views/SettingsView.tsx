@@ -700,7 +700,7 @@ export const SettingsView: React.FC = () => {
                 {marketData?.dataMode === 'PAPER'
                   ? 'Deterministic simulated feed — prices are generated locally and are NOT live market prices.'
                   : marketData?.dataMode === 'LIVE'
-                    ? 'Live market data feed for Forex, Commodities, and Indices.'
+                    ? preferences.tradingProvider === 'ctrader' ? 'Live broker feed when your cTrader account is connected.' : 'Live market data feed from Hyperliquid and its supported markets.'
                     : 'Integrated market data service for Forex, Commodities, and Indices.'}
               </p>
             </div>
@@ -710,6 +710,8 @@ export const SettingsView: React.FC = () => {
               <span className="w-1.5 h-1.5 rounded-full bg-accent" />
               PAPER · simulated
             </span>
+          ) : preferences.tradingProvider === 'ctrader' ? (
+            <span className="text-[10px] font-mono px-2 py-0.5 bg-sunken text-fg-muted border border-line rounded">cTrader selected</span>
           ) : (
             <span className="text-[10px] font-mono px-2 py-0.5 bg-positive-soft text-positive border border-positive/30 rounded flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-positive animate-pulse" />
@@ -722,7 +724,7 @@ export const SettingsView: React.FC = () => {
           <div className="flex items-center justify-between">
             <span className="text-fg-muted">Data Mode:</span>
             <span className={`font-semibold ${marketData?.dataMode === 'PAPER' ? 'text-accent-text' : 'text-positive'}`}>
-              {marketData?.dataMode ?? 'PAPER'}
+              {preferences.tradingProvider === 'ctrader' ? 'LIVE · cTrader account required' : (marketData?.dataMode ?? 'PAPER')}
               {marketData?.dataMode === 'PAPER' && ' (not live prices)'}
             </span>
           </div>
