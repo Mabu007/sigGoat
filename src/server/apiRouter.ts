@@ -3752,7 +3752,7 @@ apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
     const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     return {
       id: team.id, slug: team.publicSlug, name: team.name, description: `${members.length} AI traders · ${team.coordinationMode.toLowerCase().replace("_", " ")} coordination`,
-      creatorName: "AI Trading Team", status: team.status, mode: "PAPER" as const,
+      creatorName: "AI Trading Team", status: team.status, mode: "TEAM" as const,
       memberCount: members.length, markets: [...new Set(members.flatMap(member => member?.markets ?? []))],
       latestThesis: latest ? { market: latest.market, bias: latest.directionalHypothesis, summary: latest.summary ?? latest.assetState ?? "Market review recorded.", updatedAt: latest.updatedAt } : null,
       updatedAt: team.updatedAt,
