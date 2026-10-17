@@ -199,6 +199,8 @@ type PublishedRobotMembership = {
   id: string; robotSlug: string; goatId: string; userId: string;
   joinedAt: string; activatedAt?: string; mode: "PAPER";
   lastChatAt?: string; chatWindowStartedAt?: string; chatCountInWindow?: number;
+  /** Private per-member chat history; never included in public room responses. */
+  chatHistory?: Array<{ role: "user" | "robot"; text: string; at: string }>;
 };
 const localPublishedRobotMemberships = new Map<string, PublishedRobotMembership>();
 function publishedRobotMembershipId(slug: string, userId: string): string {
@@ -3771,7 +3773,7 @@ apiRouter.get("/robots/:slug/me", handle(async (req, res) => {
   if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
   const membership = await getPublishedRobotMembership(slug, user.uid);
   const propDao = await credentialVault.getCredentialStatus(user.uid, "propdao");
-  res.json({ joined: Boolean(membership), membership: membership ? { joinedAt: membership.joinedAt, activatedAt: membership.activatedAt ?? null, mode: membership.mode } : null, propDaoKeyConfigured: propDao.configured });
+  res.json({ joined: Boolean(membership), membership: membership ? { joinedAt: membership.joinedAt, activatedAt: membership.activatedAt ?? null, mode: membership.mode } : null, propDaoKeyConfigured: propDao.configured, chatHistory: (membership?.chatHistory ?? []).map(({ role, text, at }) => ({ role, text, at })) });
 }));
 
 apiRouter.post("/robots/:slug/join", handle(async (req, res) => {
@@ -3823,7 +3825,17 @@ apiRouter.post("/robots/:slug/chat", handle(async (req, res) => {
   const goatMarketProvider = await marketDataProviderForGoat(goat);
   const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider: goatMarketProvider }, goat.id, goat.userId);
   const answer = await reasoningGateway.answerGoatQuestion(question, context, model || goat.model, goat.aiProvider);
-  res.json({ answer, provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
+  // Keep the conversation private to this authenticated room member. The
+  // public activity feed contains workflow records only, never chat prompts.
+  const latestMembership = await getPublishedRobotMembership(slug, user.uid);
+  const now = new Date().toISOString();
+  const chatHistory = [
+    ...(latestMembership?.chatHistory ?? []),
+    { role: "user" as const, text: question, at: now },
+    { role: "robot" as const, text: answer, at: new Date().toISOString() },
+  ].slice(-40);
+  if (latestMembership) await savePublishedRobotMembership({ ...latestMembership, chatHistory });
+  res.json({ answer, chatHistory: chatHistory.map(({ role, text, at }) => ({ role, text, at })), provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
 }));
 
 // ---- cTrader OAuth / account selection --------------------------------
