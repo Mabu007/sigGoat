@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createChart,
   createSeriesMarkers,
@@ -84,6 +84,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   const lastTimeframeRef = useRef(timeframe);
   const shouldFitRef = useRef(true);
   const userInteractedRef = useRef(false);
+  const [crosshairBar, setCrosshairBar] = useState<{ open: number; high: number; low: number; close: number } | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -91,7 +92,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     const chart = createChart(container, {
       autoSize: true,
       layout: {
-        background: { type: ColorType.Solid, color: palette.background },
+        background: { type: ColorType.Solid, color: 'rgba(11, 16, 22, 0)' },
         textColor: palette.text,
         fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
         fontSize: 11,
@@ -157,6 +158,16 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
       userInteractedRef.current = range.to < bars.length - 1.5;
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRangeChange);
+    const onCrosshairMove = (param: any) => {
+      const bar = param.seriesData?.get(candleSeries) as { open?: number; high?: number; low?: number; close?: number } | undefined;
+      if (bar && Number.isFinite(bar.open) && Number.isFinite(bar.high) && Number.isFinite(bar.low) && Number.isFinite(bar.close)) {
+        setCrosshairBar({ open: bar.open!, high: bar.high!, low: bar.low!, close: bar.close! });
+      } else {
+        const latest = lastBarsRef.current.at(-1);
+        setCrosshairBar(latest ? { open: latest.open, high: latest.high, low: latest.low, close: latest.close } : null);
+      }
+    };
+    chart.subscribeCrosshairMove(onCrosshairMove);
 
     const observer = new ResizeObserver(() => {
       if (!container.isConnected) return;
@@ -168,6 +179,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     return () => {
       observer.disconnect();
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRangeChange);
+      chart.unsubscribeCrosshairMove(onCrosshairMove);
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
@@ -282,6 +294,12 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   return (
     <div className="sg-pulse-chart" data-theme={theme}>
       <div className="sg-pulse-watermark" aria-hidden="true">{roomName || 'SIRGOAT'}</div>
+      {crosshairBar && <div className="sg-pulse-ohlc" aria-label="Selected candle OHLC">
+        <span>O <b>{crosshairBar.open.toLocaleString(undefined, { maximumFractionDigits: digits })}</b></span>
+        <span>H <b>{crosshairBar.high.toLocaleString(undefined, { maximumFractionDigits: digits })}</b></span>
+        <span>L <b>{crosshairBar.low.toLocaleString(undefined, { maximumFractionDigits: digits })}</b></span>
+        <span>C <b>{crosshairBar.close.toLocaleString(undefined, { maximumFractionDigits: digits })}</b></span>
+      </div>}
       <div ref={containerRef} className="sg-pulse-canvas" aria-label={symbol + ' ' + timeframe + ' candlestick chart'} />
       {activeQuote && isFreshQuote(activeQuote) && dataMode.toUpperCase() !== 'PAPER' && <div className="sg-pulse-live-pip" aria-hidden="true" />}
     </div>
