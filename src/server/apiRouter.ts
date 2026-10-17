@@ -3777,6 +3777,38 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
   res.json({ team: { id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status, coordinationMode: team.coordinationMode, memberCount: details.length, markets: [...new Set(details.flatMap(member => member.markets))] }, members: details });
 }));
 
+/**
+ * Public team-room chart data. A visitor may read only a market configured on a
+ * member of the team addressed by this share link. Provider resolution stays
+ * bound to that member's own venue, not the visitor's default trading provider.
+ */
+apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const team = await goatTeamStore.getPublicBySlug(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const memberId = typeof req.query.memberId === "string" ? req.query.memberId : "";
+  if (!memberId || !team.memberGoatIds.includes(memberId)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "That bot is not part of this team.");
+  const goat = await persistence.goats.getForUser(memberId, team.ownerUserId);
+  if (!goat) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "That team bot is no longer available.");
+  const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
+  const symbol = requestedSymbol && goat.markets.includes(requestedSymbol) ? requestedSymbol : goat.markets[0];
+  if (!symbol) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This team bot has no configured market.");
+  try {
+    const provider = await marketDataProviderForGoat(goat);
+    const [quotes, candles] = await Promise.all([
+      provider.getQuotes([symbol]),
+      provider.getCandles(symbol, typeof req.query.timeframe === "string" ? req.query.timeframe : "1h",
+        Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120))),
+    ]);
+    res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
+    res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, fetchedAt: new Date().toISOString() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The team's configured market provider is unavailable.";
+    return fail(res, 503, "ROOM_MARKET_UNAVAILABLE", message);
+  }
+}));
+
 apiRouter.use(authMiddleware);
 
 /** Publish the existing GOAT under a stable, shareable URL. */
