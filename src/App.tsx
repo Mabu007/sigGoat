@@ -85,7 +85,7 @@ const MainApp: React.FC = () => {
           lastUpdatedMs={lastUpdatedMs}
         />
 
-        <main className="mx-auto w-full max-w-7xl flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
+        <main className="w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
           <React.Suspense fallback={<ViewLoadingFallback />}>
             {activeTab === 'rooms' && <TradeRoomsView createTeamRequested={createTeamRequested} onCreateTeamRequestHandled={() => setCreateTeamRequested(false)} />}
 
