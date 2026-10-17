@@ -241,3 +241,56 @@
 @media (min-width: 1500px) {
   .yt-room-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+
+/* Room-directory category chips and final seamless navigation polish. */
+.premium-nav-item {
+  border-radius: 12px !important;
+  background: transparent !important;
+  overflow: hidden;
+}
+.premium-nav-item[aria-current="page"] {
+  border-radius: 12px !important;
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent) !important;
+}
+.premium-nav-item[aria-current="page"]::before {
+  display: none !important;
+}
+.premium-nav-item > svg {
+  background: transparent !important;
+}
+.yt-room-filters {
+  align-items: center;
+  gap: 8px;
+}
+.yt-room-filter {
+  min-height: 36px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  color: var(--color-fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background .16s ease, color .16s ease, border-color .16s ease;
+}
+.yt-room-filter:hover {
+  background: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  color: var(--color-fg);
+}
+.yt-room-filter.is-active {
+  border-color: transparent;
+  background: var(--color-fg);
+  color: var(--color-canvas);
+}
+@media (max-width: 767px) {
+  .yt-room-filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 5px;
+    scrollbar-width: none;
+  }
+  .yt-room-filters::-webkit-scrollbar { display: none; }
+  .yt-room-filter { flex: 0 0 auto; }
+}
