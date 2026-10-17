@@ -270,7 +270,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
         } as SeriesMarker<Time>;
       });
     markerPluginRef.current?.setMarkers(markers);
-  }, [candles, timeframe, agentEvents, palette]);
+  }, [candles, timeframe, agentEvents, palette, symbol]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -289,7 +289,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
       axisLabelVisible: true,
       title: dataMode.toUpperCase() === 'PAPER' ? 'PAPER' : fresh ? 'NOW' : 'LAST',
     });
-  }, [activeQuote, timeframe, dataMode]);
+  }, [activeQuote, timeframe, dataMode, symbol, palette]);
 
   return (
     <div className="sg-pulse-chart" data-theme={theme}>
