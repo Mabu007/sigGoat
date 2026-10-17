@@ -21,9 +21,6 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   const [marketQuote, setMarketQuote] = useState<MarketQuote | null>(null);
   const [marketError, setMarketError] = useState('');
   const [marketSymbol, setMarketSymbol] = useState('');
-  const [marketProvider, setMarketProvider] = useState('');
-  const [marketDataMode, setMarketDataMode] = useState('');
-  const [marketUpdatedAt, setMarketUpdatedAt] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -45,7 +42,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
 
   useEffect(() => {
     if (!selectedMember || !activeMarket) {
-      setCandles([]); setMarketQuote(null); setMarketUpdatedAt(null); setMarketSymbol(activeMarket);
+      setCandles([]); setMarketQuote(null); setMarketSymbol(activeMarket);
       setMarketError(selectedMember ? 'No market configured for this bot.' : '');
       return;
     }
@@ -57,8 +54,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
         if (cancelled) return;
         const quote = result.quotes?.find(item => item.symbol === activeMarket) ?? result.quotes?.[0] ?? null;
         setMarketSymbol(activeMarket); setMarketQuote(quote); setCandles(Array.isArray(result.candles) ? result.candles : []);
-        setMarketProvider(result.provider || ''); setMarketDataMode(result.dataMode || '');
-        setMarketUpdatedAt(quote?.timestamp ?? null);
+        
         setMarketError(quote || result.candles?.length ? '' : 'Market data unavailable from this provider.');
       } catch (err) {
         if (!cancelled) { setCandles([]); setMarketQuote(null); setMarketError(err instanceof Error ? err.message : 'Market data unavailable.'); }
