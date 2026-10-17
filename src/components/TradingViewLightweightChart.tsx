@@ -151,7 +151,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     const resizeObserver = new ResizeObserver((entries) => {
       if (!entries || entries.length === 0 || !chartRef.current || !containerRef.current) return;
       const { width, height } = containerRef.current.getBoundingClientRect();
-      chartRef.current.applyOptions({ width, height: Math.max(height, 280) });
+      chartRef.current.applyOptions({ width, height: Math.max(height, 240) });
     });
 
     resizeObserver.observe(containerRef.current);
@@ -232,7 +232,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
 
   return (
     <div className="w-full h-full relative">
-      <div ref={containerRef} className="w-full h-[360px] sm:h-[420px] rounded-xl overflow-hidden" />
+      <div ref={containerRef} className="w-full h-full min-h-[240px] rounded-lg overflow-hidden" />
     </div>
   );
 };
