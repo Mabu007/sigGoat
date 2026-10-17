@@ -1117,53 +1117,7 @@ export function Chatbot() {
 
 
 
-  if (!isOpen) {
-
-    return (
-
-      <button
-
-        data-chatbot-trigger
-
-        type="button"
-
-        onClick={() => {
-
-          if (!currentUser) {
-
-            setError('Sign in to use the assistant.');
-
-            return;
-
-          }
-
-          setIsOpen(true);
-
-        }}
-
-        className="group flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-raised md:px-4"
-
-        aria-label="Open AI assistant"
-
-      >
-
-        <Sparkles
-
-          size={15}
-
-          aria-hidden="true"
-
-          className="text-accent-text transition-transform group-hover:scale-110"
-
-        />
-
-        <span>SIRGOAT</span>
-
-      </button>
-
-    );
-
-  }
+  if (!isOpen) return null;
 
 
 
