@@ -18,9 +18,10 @@ type TradeRoom = {
   latestThesis: null | { market: string; bias: string; summary: string; updatedAt: string };
   roomType?: 'bot' | 'team';
   memberCount?: number;
+  visibility?: TeamVisibility;
 };
 type TeamVisibility = 'PUBLIC' | 'PRIVATE';
-type DirectoryMode = 'all' | 'active' | 'mine';
+type DirectoryMode = 'public' | 'private' | 'gold' | 'euro' | 'crypto' | 'forex' | 'mine';
 type TradingProvider = 'ctrader' | 'hyperliquid';
 type BuildStep = 'team' | 'members' | 'deploy';
 
@@ -102,7 +103,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     window.addEventListener('sirgoat-directory-search', onDirectorySearch);
     return () => window.removeEventListener('sirgoat-directory-search', onDirectorySearch);
   }, []);
-  const [directoryMode, setDirectoryMode] = useState<DirectoryMode>('all');
+  const [directoryMode, setDirectoryMode] = useState<DirectoryMode>('public');
   const [myRooms, setMyRooms] = useState<TradeRoom[]>([]);
   const [myRoomsLoading, setMyRoomsLoading] = useState(false);
 
@@ -173,6 +174,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
         markets: team.deployment?.asset ? [team.deployment.asset] : Array.isArray(team.members) ? team.members.flatMap((member: any) => member.markets || []).filter(Boolean) : [],
         status: team.status || 'SAVED', creatorName: 'You', publishedAt: team.createdAt, updatedAt: team.updatedAt,
         mode: team.status === 'DEPLOYED' ? 'TEAM' : 'PAPER', latestThesis: null, roomType: 'team',
+        visibility: team.visibility === 'PUBLIC' ? 'PUBLIC' : 'PRIVATE',
         memberCount: Array.isArray(team.memberGoatIds) ? team.memberGoatIds.length : Array.isArray(team.members) ? team.members.length : 0,
       }));
       setMyRooms(teams);
@@ -346,13 +348,24 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     } finally { setPoolLoading(false); }
   }, [currentUser, authMode, getApiAuthHeaders]);
 
-  const visibleRooms = directoryMode === 'mine' ? myRooms : rooms;
+  const visibleRooms = directoryMode === 'mine' || directoryMode === 'private' ? myRooms : rooms;
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return visibleRooms.filter(room => {
-      const matchesText = !needle || [room.name, room.description, room.creatorName, ...(room.markets || [])].join(' ').toLowerCase().includes(needle);
-      const matchesFilter = directoryMode !== 'active' || /active|deployed|running/i.test(room.status);
-      return matchesText && matchesFilter;
+      const searchable = [room.name, room.description, room.creatorName, ...(room.markets || [])].join(' ').toLowerCase();
+      const matchesText = !needle || searchable.includes(needle);
+      const matchesCategory = directoryMode === 'private'
+        ? room.visibility === 'PRIVATE'
+        : directoryMode === 'gold'
+          ? /gold|xau|gld/i.test(searchable)
+          : directoryMode === 'euro'
+            ? /euro|eur|eurchf|eurusd/i.test(searchable)
+            : directoryMode === 'crypto'
+              ? /btc|bitcoin|eth|ethereum|sol|crypto|hyperliquid|xrp|doge/i.test(searchable)
+              : directoryMode === 'forex'
+                ? /forex|fx|eurusd|gbpusd|usd[jc]|audusd|nzdusd/i.test(searchable)
+                : true;
+      return matchesText && matchesCategory;
     });
   }, [visibleRooms, query, directoryMode]);
 
@@ -444,28 +457,41 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     <div className="space-y-6">
       <section className="space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap gap-2" role="group" aria-label="Room directory">
-            {([{ id: 'all', label: 'All Rooms' }, { id: 'active', label: 'Active Rooms' }, { id: 'mine', label: 'My Rooms' }] as const).map(item => (
+          <div className="yt-room-filters flex flex-wrap gap-2" role="group" aria-label="Room categories">
+            {([
+              { id: 'public', label: 'Public Rooms' },
+              { id: 'private', label: 'Private Rooms' },
+              { id: 'gold', label: 'Gold Rooms' },
+              { id: 'euro', label: 'Euro Rooms' },
+              { id: 'crypto', label: 'Crypto Rooms' },
+              { id: 'forex', label: 'Forex Rooms' },
+              { id: 'mine', label: 'My Rooms' },
+            ] as const).map(item => (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => { setDirectoryMode(item.id); setQuery(''); if (item.id === 'mine') void loadMyRooms(); else setError(''); }}
+                onClick={() => {
+                  setDirectoryMode(item.id);
+                  setQuery('');
+                  if (item.id === 'mine' || item.id === 'private') void loadMyRooms();
+                  else setError('');
+                }}
                 aria-pressed={directoryMode === item.id}
-                className={directoryMode === item.id ? 'rounded-lg border border-accent bg-accent-soft px-3 py-2 text-xs font-medium text-accent-text' : 'rounded-lg border border-line px-3 py-2 text-xs font-medium text-fg-muted hover:bg-raised'}
+                className={directoryMode === item.id ? 'yt-room-filter is-active' : 'yt-room-filter'}
               >
                 {item.label}
               </button>
             ))}
           </div>
           <p className="text-xs text-fg-muted">
-            {directoryMode === 'mine' ? (myRoomsLoading ? 'Loading your rooms…' : filtered.length + ' of ' + myRooms.length + ' rooms') : (loading ? 'Loading public rooms…' : rooms.length + ' public ' + (rooms.length === 1 ? 'room' : 'rooms'))}
+            {directoryMode === 'mine' || directoryMode === 'private' ? (myRoomsLoading ? 'Loading your rooms…' : filtered.length + ' rooms') : (loading ? 'Loading public rooms…' : filtered.length + ' rooms')}
           </p>
         </div>
       </section>
 
       {error && <div role="alert" className="panel border-warning/40 p-4 text-sm text-fg-muted">{error}</div>}
 
-      {(directoryMode === 'mine' ? myRoomsLoading : loading) ? (
+      {((directoryMode === 'mine' || directoryMode === 'private') ? myRoomsLoading : loading) ? (
         <div className="panel p-8 text-center text-sm text-fg-muted">Loading rooms…</div>
       ) : filtered.length ? (
         <div className="yt-room-grid">
@@ -504,9 +530,9 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
       ) : (
         <div className="panel px-5 py-12 text-center">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-line bg-raised text-accent-text"><Bot size={22} /></div>
-          <h3 className="mt-4 font-semibold text-fg">{visibleRooms.length ? 'No rooms match that search' : directoryMode === 'mine' ? 'No teams yet' : 'No public rooms yet'}</h3>
+          <h3 className="mt-4 font-semibold text-fg">{visibleRooms.length ? 'No rooms match this category' : directoryMode === 'mine' || directoryMode === 'private' ? 'No private rooms yet' : 'No public rooms yet'}</h3>
           <p className="mx-auto mt-2 max-w-md text-sm text-fg-muted">
-            {visibleRooms.length ? 'Try another name, market, or filter.' : directoryMode === 'mine' ? 'Your teams will appear here. A team can have a single member or many, and each member can be reused across teams.' : 'No public teams or bots are listed yet. Create a team, add the members you need, then deploy it.'}
+            {visibleRooms.length ? 'Try another name or choose a different room category.' : directoryMode === 'mine' || directoryMode === 'private' ? 'Your private and saved teams will appear here. Create a team to get started.' : 'No public rooms match this category yet. Create a team, add the members you need, then publish it.'}
           </p>
           <button type="button" onClick={openCreateTeam} className="btn btn-primary mt-5"><CirclePlus size={15} /> Create Bot Team</button>
         </div>
