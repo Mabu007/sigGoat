@@ -21,6 +21,7 @@ interface HeaderProps {
   email?: string | null;
   dataMode?: 'LIVE' | 'PAPER';
   onOpenSettings: () => void;
+  onCreateBotTeam: () => void;
   onRefresh: () => void;
   refreshing?: boolean;
   lastUpdatedMs?: number | null;
@@ -31,6 +32,7 @@ export function Header({
   email,
   dataMode = 'LIVE',
   onOpenSettings,
+  onCreateBotTeam,
   onRefresh,
   refreshing = false,
   lastUpdatedMs,
@@ -100,7 +102,7 @@ export function Header({
 
           <button
             type="button"
-            onClick={() => window.dispatchEvent(new CustomEvent('sirgoat-create-team'))}
+            onClick={onCreateBotTeam}
             className="btn btn-primary h-9 !px-3"
             aria-label="Create Bot Team"
             title="Create Bot Team"
