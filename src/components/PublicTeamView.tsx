@@ -12,7 +12,7 @@ type FeedItem = { id: string; memberName: string; kind: string; title: string; b
 async function read<T>(response: Response): Promise<T> { const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body?.error?.message || body?.message || `Request failed (${response.status})`); return body as T; }
 const formatPrice = (value?: number) => value == null ? 'Not recorded' : value.toLocaleString(undefined, { maximumFractionDigits: 8 });
 
-export function PublicTeamView({ slug }: { slug: string }) {
+export function PublicTeamView({ slug, onBack }: { slug: string; onBack: () => void }) {
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
   const [data, setData] = useState<Payload | null>(null);
   const [isOwner, setIsOwner] = useState(false);
@@ -112,12 +112,12 @@ export function PublicTeamView({ slug }: { slug: string }) {
   const quoteFresh = marketQuote ? Date.now() - marketQuote.timestamp <= 30000 : false;
 
   if (loading) return <div className="mx-auto max-w-5xl p-8 text-center text-sm text-fg-muted">Loading team room…</div>;
-  if (!data) return <main className="mx-auto max-w-3xl p-6"><a href="/#/" className="text-sm text-accent-text">← Trade Rooms</a><div role="alert" className="panel mt-4 p-5 text-sm">{error || 'This team link is unavailable.'}</div></main>;
+  if (!data) return <main className="mx-auto max-w-3xl p-6"><button type="button" onClick={onBack} className="text-sm text-accent-text">← Trade Rooms</button><div role="alert" className="panel mt-4 p-5 text-sm">{error || 'This team link is unavailable.'}</div></main>;
   const { team, members } = data;
 
   return <main className="min-h-screen bg-sunken text-fg">
     <div className="mx-auto w-full max-w-[1600px] px-3 py-4 sm:px-5 lg:px-7">
-      <a href="/#/" className="inline-flex items-center gap-2 text-xs text-fg-muted hover:text-fg"><ArrowLeft size={14}/> Trade Rooms</a>
+      <button type="button" onClick={onBack} className="inline-flex items-center gap-2 text-xs text-fg-muted hover:text-fg"><ArrowLeft size={14}/> Trade Rooms</button>
       <header className="mt-3 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-line bg-surface p-4 sm:p-5">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-accent/30 bg-accent-soft text-accent-text"><Users size={21}/></div>
