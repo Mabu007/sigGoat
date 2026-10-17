@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, Bot, CirclePlus, Search, Sparkles, Users } from 'lucide-react';
+import { ArrowUpRight, Bot, CirclePlus, Search, Sparkles, Users, X, Layers, Plus } from 'lucide-react';
 
 type TradeRoom = {
   slug: string;
@@ -19,6 +19,7 @@ export function TradeRoomsView({ onCreateRoom, onOpenMyRooms }: { onCreateRoom: 
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'paper'>('all');
+  const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,7 +56,7 @@ export function TradeRoomsView({ onCreateRoom, onOpenMyRooms }: { onCreateRoom: 
             <p className="mt-3 text-xs text-fg-subtle">Public rooms use paper mode by default. A room’s history is not a promise of future results.</p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            <button type="button" onClick={onCreateRoom} className="btn btn-primary"><CirclePlus size={15} /> Create a Trading Team</button>
+            <button type="button" onClick={() => setCreateOpen(true)} className="btn btn-primary"><CirclePlus size={15} /> Create a Trading Team</button>
             <button type="button" onClick={onOpenMyRooms} className="btn btn-secondary">My teams</button>
           </div>
         </div>
@@ -85,7 +86,36 @@ export function TradeRoomsView({ onCreateRoom, onOpenMyRooms }: { onCreateRoom: 
           ))}
         </div>
       ) : (
-        <div className="panel px-5 py-12 text-center"><div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-line bg-raised text-accent-text"><Bot size={22} /></div><h3 className="mt-4 font-semibold text-fg">{rooms.length ? 'No rooms match that search' : 'Be the first to open a Trade Room'}</h3><p className="mx-auto mt-2 max-w-md text-sm text-fg-muted">{rooms.length ? 'Try another name, market, or filter.' : 'Create a team from your existing AI traders, then publish it when you’re ready. Published rooms appear here for everyone to discover.'}</p><button type="button" onClick={onCreateRoom} className="btn btn-primary mt-5"><CirclePlus size={15} /> Create a Trading Team</button></div>
+        <div className="panel px-5 py-12 text-center"><div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-line bg-raised text-accent-text"><Bot size={22} /></div><h3 className="mt-4 font-semibold text-fg">{rooms.length ? 'No rooms match that search' : 'Be the first to open a Trade Room'}</h3><p className="mx-auto mt-2 max-w-md text-sm text-fg-muted">{rooms.length ? 'Try another name, market, or filter.' : 'Create a team from your existing AI traders, then publish it when you’re ready. Published rooms appear here for everyone to discover.'}</p><button type="button" onClick={() => setCreateOpen(true)} className="btn btn-primary mt-5"><CirclePlus size={15} /> Create a Trading Team</button></div>
+      )}
+      {createOpen && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setCreateOpen(false); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="create-room-title" className="w-full max-w-xl rounded-t-2xl border border-line bg-panel p-5 shadow-2xl sm:rounded-2xl sm:p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-line bg-raised text-accent-text"><Layers size={19} /></div>
+                <h2 id="create-room-title" className="text-xl font-semibold text-fg">Create your Trading Team</h2>
+                <p className="mt-1 max-w-md text-sm leading-5 text-fg-muted">A room is a team of AI traders. Start with one AI trader, or bring existing traders together into a coordinated team.</p>
+              </div>
+              <button type="button" aria-label="Close create team dialog" onClick={() => setCreateOpen(false)} className="rounded-lg p-2 text-fg-muted hover:bg-raised hover:text-fg"><X size={18} /></button>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <button type="button" onClick={() => { setCreateOpen(false); onCreateRoom(); }} className="group rounded-xl border border-line bg-raised p-4 text-left transition-colors hover:border-accent/60 hover:bg-accent-soft">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-panel text-accent-text"><Plus size={17} /></span>
+                <span className="mt-3 block font-semibold text-fg">Create an AI Trader</span>
+                <span className="mt-1 block text-xs leading-5 text-fg-muted">Set up its strategy, skills, model and market. You can add more traders to a team later.</span>
+                <span className="mt-3 block text-xs font-semibold text-accent-text">Set up AI trader →</span>
+              </button>
+              <button type="button" onClick={() => { setCreateOpen(false); onOpenMyRooms(); }} className="group rounded-xl border border-line bg-raised p-4 text-left transition-colors hover:border-accent/60 hover:bg-accent-soft">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-panel text-accent-text"><Users size={17} /></span>
+                <span className="mt-3 block font-semibold text-fg">Build a Team</span>
+                <span className="mt-1 block text-xs leading-5 text-fg-muted">Select your existing AI traders and choose how they coordinate their analysis.</span>
+                <span className="mt-3 block text-xs font-semibold text-accent-text">Choose team members →</span>
+              </button>
+            </div>
+            <p className="mt-4 rounded-lg border border-line bg-raised/60 px-3 py-2 text-xs leading-5 text-fg-subtle">New rooms start in paper mode. Connecting an account and enabling live execution are separate steps in Settings.</p>
+          </section>
+        </div>
       )}
     </div>
   );
