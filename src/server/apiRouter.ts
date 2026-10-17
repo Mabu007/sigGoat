@@ -3778,9 +3778,90 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
 }));
 
 /**
- * Public team-room chart data. A visitor may read only a market configured on a
- * member of the team addressed by this share link. Provider resolution stays
- * bound to that member's own venue, not the visitor's default trading provider.
+ * BiQuote is the default chart-data source for rooms. It supplies tick quotes
+ * and OHLC history independently of the venue used for order execution.
+ * Hyperliquid-deployed teams deliberately stay on Hyperliquid's native market
+ * catalogue and data source.
+ */
+function biQuoteSymbol(symbol: string): string {
+  const normalized = symbol.trim().toUpperCase();
+  const aliases: Record<string, string> = {
+    GOLD: "XAUUSD", XAU: "XAUUSD", SILVER: "XAGUSD", XAG: "XAGUSD",
+    BTC: "BTCUSD", ETH: "ETHUSD", SOL: "SOLUSD", XRP: "XRPUSD",
+    DOGE: "DOGEUSD", ADA: "ADAUSD", BNB: "BNBUSD", LTC: "LTCUSD",
+  };
+  if (aliases[normalized]) return aliases[normalized];
+  if (/^[A-Z0-9]+(?:USD|USDT|EUR|GBP|JPY|CHF|AUD|CAD|NZD)$/.test(normalized)) {
+    return normalized.endsWith("USDT") ? normalized.slice(0, -1) : normalized;
+  }
+  return normalized;
+}
+
+async function biQuoteRoomMarket(symbol: string, timeframe: string, count: number) {
+  const biSymbol = biQuoteSymbol(symbol);
+  const interval = timeframe === "1D" ? "1d" : timeframe;
+  const encoded = encodeURIComponent(biSymbol);
+  const [quoteResponse, candlesResponse] = await Promise.all([
+    fetch(`https://biquote.io/api/${encoded}?allowStale=true`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
+    fetch(`https://biquote.io/api/${encoded}/ohlc?interval=${encodeURIComponent(interval)}&limit=${Math.min(1000, Math.max(1, count))}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
+  ]);
+  if (!quoteResponse.ok) {
+    const body = await quoteResponse.json().catch(() => ({})) as { message?: string };
+    throw new Error(body.message || `BiQuote quote request failed (${quoteResponse.status}).`);
+  }
+  if (!candlesResponse.ok) {
+    const body = await candlesResponse.json().catch(() => ({})) as { message?: string };
+    throw new Error(body.message || `BiQuote candle request failed (${candlesResponse.status}).`);
+  }
+  const rawQuote = await quoteResponse.json() as {
+    symbol?: string; bid?: number; ask?: number; mid?: number; spread?: number;
+    dayDiffPercent?: number; high?: number; low?: number; timestamp?: string;
+    stale?: boolean; marketState?: string; quoteAgeSeconds?: number;
+  };
+  const rawCandles = await candlesResponse.json() as {
+    bars?: Array<{ openTime?: string; open?: number; high?: number; low?: number; close?: number; volume?: number; tickVolume?: number }>;
+  };
+  const mid = Number(rawQuote.mid);
+  if (!Number.isFinite(mid) || mid <= 0) throw new Error(`BiQuote returned no usable quote for ${biSymbol}.`);
+  const timestamp = rawQuote.timestamp ? Date.parse(rawQuote.timestamp) : Date.now();
+  const quoteAgeSeconds = Number.isFinite(rawQuote.quoteAgeSeconds)
+    ? Number(rawQuote.quoteAgeSeconds)
+    : Number.isFinite(timestamp) ? Math.max(0, (Date.now() - timestamp) / 1000) : undefined;
+  const changePct = Number.isFinite(rawQuote.dayDiffPercent) ? Number(rawQuote.dayDiffPercent) : 0;
+  const quote = {
+    symbol,
+    bid: Number.isFinite(rawQuote.bid) ? Number(rawQuote.bid) : 0,
+    ask: Number.isFinite(rawQuote.ask) ? Number(rawQuote.ask) : 0,
+    mid,
+    spread: Number.isFinite(rawQuote.spread) ? Number(rawQuote.spread) : Math.max(0, Number(rawQuote.ask || 0) - Number(rawQuote.bid || 0)),
+    change24h: mid * changePct / 100,
+    change24hPct: changePct,
+    high24h: Number.isFinite(rawQuote.high) ? Number(rawQuote.high) : 0,
+    low24h: Number.isFinite(rawQuote.low) ? Number(rawQuote.low) : 0,
+    timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+    stale: rawQuote.stale === true || (quoteAgeSeconds !== undefined && quoteAgeSeconds > 300),
+    marketState: rawQuote.marketState || "unknown",
+    quoteAgeSeconds,
+    bidProvided: Number.isFinite(rawQuote.bid),
+    askProvided: Number.isFinite(rawQuote.ask),
+    change24hProvided: Number.isFinite(rawQuote.dayDiffPercent),
+    high24hProvided: Number.isFinite(rawQuote.high),
+    low24hProvided: Number.isFinite(rawQuote.low),
+  };
+  const candles = (rawCandles.bars || []).map((bar) => ({
+    time: bar.openTime ? Date.parse(bar.openTime) : NaN,
+    open: Number(bar.open), high: Number(bar.high), low: Number(bar.low), close: Number(bar.close),
+    volume: Number(bar.tickVolume ?? bar.volume ?? 0),
+  })).filter((bar) => Number.isFinite(bar.time) && [bar.open, bar.high, bar.low, bar.close].every((value) => Number.isFinite(value) && value > 0))
+    .sort((a, b) => a.time - b.time);
+  if (!candles.length) throw new Error(`BiQuote returned no usable ${timeframe} candle history for ${biSymbol}.`);
+  return { quotes: [quote], candles, provider: "BiQuote", dataMode: "LIVE" };
+}
+
+/**
+ * Public team-room chart data. The deployed team's provider decides the source:
+ * Hyperliquid teams use native Hyperliquid candles; all other rooms use BiQuote
+ * for chart data, independently of the member's execution venue.
  */
 apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   const slug = String(req.params.slug || "");
