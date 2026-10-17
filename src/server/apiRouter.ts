@@ -3832,7 +3832,7 @@ apiRouter.post("/robots/:slug/chat", handle(async (req, res) => {
   const chatHistory = [
     ...(latestMembership?.chatHistory ?? []),
     { role: "user" as const, text: question, at: now },
-    { role: "robot" as const, text: answer, at: new Date().toISOString() },
+    { role: "robot" as const, text: answer.slice(0, 6000), at: new Date().toISOString() },
   ].slice(-40);
   if (latestMembership) await savePublishedRobotMembership({ ...latestMembership, chatHistory });
   res.json({ answer, chatHistory: chatHistory.map(({ role, text, at }) => ({ role, text, at })), provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
