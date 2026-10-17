@@ -108,8 +108,8 @@ export function isProductionRuntime(): boolean {
 }
 
 export function resolveAuthMode(): AuthMode {
-  if (getFirebaseVerifier()) return 'firebase';
   if (devAuthAllowed()) return 'dev';
+  if (getFirebaseVerifier()) return 'firebase';
   return 'none';
 }
 
