@@ -5548,7 +5548,10 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   const coordinationMode: GoatTeamCoordinationMode =
     rawMode === "CONSENSUS" || rawMode === "LEAD_REVIEW" ? rawMode : "INDEPENDENT";
   const leadGoatId = typeof req.body?.leadGoatId === "string" ? req.body.leadGoatId : undefined;
+  const visibility: "PUBLIC" | "PRIVATE" = req.body?.visibility === "PUBLIC" ? "PUBLIC" : "PRIVATE";
+  const shouldDeploy = req.body?.deploy === true;
   if (!name || name.length > 80) return fail(res, 400, "INVALID_TEAM_NAME", "Team name must be between 1 and 80 characters.");
+  if (req.body?.visibility !== undefined && !["PUBLIC", "PRIVATE"].includes(req.body.visibility)) return fail(res, 400, "INVALID_TEAM_VISIBILITY", "visibility must be PUBLIC or PRIVATE.");
   if (memberGoatIds.length < 2 || memberGoatIds.length > 10) return fail(res, 400, "INVALID_TEAM_MEMBERS", "A team must contain between 2 and 10 distinct GOATs.");
   if (req.body?.coordinationMode !== undefined && !["INDEPENDENT", "CONSENSUS", "LEAD_REVIEW"].includes(req.body.coordinationMode)) {
     return fail(res, 400, "INVALID_COORDINATION_MODE", "coordinationMode must be INDEPENDENT, CONSENSUS, or LEAD_REVIEW.");
@@ -5559,19 +5562,35 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   const members = await Promise.all(memberGoatIds.map(id => persistence.goats.getForUser(id, user.uid)));
   if (members.some(member => !member)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "Every team member must be an existing GOAT owned by the signed-in user.");
   const now = new Date().toISOString();
-  const team: GoatTeam = {
+  const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "trading-team";
+  // A private link is a capability URL: keep a long random suffix and do not
+  // expose the team in public discovery. It is not a substitute for execution auth.
+  const shareSlug = `${slugBase}-${Array.from({ length: 18 }, () => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]).join("")}`;
+  let team: GoatTeam = {
     id: `team_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     ownerUserId: user.uid,
     name,
     memberGoatIds,
     coordinationMode,
+    visibility,
+    publicSlug: shareSlug,
     ...(leadGoatId ? { leadGoatId } : {}),
     status: "DRAFT",
     createdAt: now,
     updatedAt: now,
   };
-  const saved = await goatTeamStore.create(team);
-  res.status(201).json({ team: saved, members });
+  team = await goatTeamStore.create(team);
+  if (shouldDeploy) {
+    const results: Array<{ goatId: string; ok: boolean; error?: string }> = [];
+    for (const goatId of memberGoatIds) {
+      try { await setGoatStatusFor(user.uid, goatId, false); results.push({ goatId, ok: true }); }
+      catch (error) { results.push({ goatId, ok: false, error: error instanceof Error ? error.message : "Deployment failed" }); }
+    }
+    const failed = results.some(result => !result.ok);
+    team = await goatTeamStore.save({ ...team, status: failed ? "PARTIAL" : "DEPLOYED", updatedAt: new Date().toISOString(), ...(!failed ? { deployedAt: now } : {}) });
+    if (failed) return res.status(409).json({ error: { code: "TEAM_DEPLOYMENT_PARTIAL", message: "The team was saved, but one or more bots could not be deployed." }, team, results, shareUrl: `/team/${shareSlug}` });
+  }
+  res.status(201).json({ team, members, shareUrl: `/team/${shareSlug}`, discoverable: visibility === "PUBLIC" && team.status === "DEPLOYED" });
 }));
 
 apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
