@@ -337,3 +337,11 @@
 @media (prefers-reduced-motion: reduce) {
   .sg-room-back { transition: none; }
 }
+
+.trade-room-app-main {
+  height: calc(100dvh - 144px);
+  flex: 0 0 auto;
+}
+@media (max-width: 767px) {
+  .trade-room-app-main { height: calc(100dvh - 136px); }
+}
