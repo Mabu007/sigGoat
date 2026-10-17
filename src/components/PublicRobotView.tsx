@@ -73,21 +73,18 @@ export function PublicRobotView({ slug }: { slug: string }) {
     let cancelled = false;
     const refreshMarket = async () => {
       try {
-        const headers = { Accept: 'application/json' };
-        const [quoteResponse, candleResponse] = await Promise.all([
-          fetch('/api/markets/quotes?symbols=' + encodeURIComponent(marketSymbol), { headers, cache: 'no-store' }),
-          fetch('/api/markets/candles?symbol=' + encodeURIComponent(marketSymbol) + '&timeframe=1h&count=120', { headers, cache: 'no-store' }),
-        ]);
-        const quoteBody = await responseJson<{ quotes: MarketQuote[]; provider?: string; dataMode?: string }>(quoteResponse);
-        const candleBody = await responseJson<{ candles: Candle[]; provider?: string; dataMode?: string }>(candleResponse);
+        const response = await fetch('/api/robots/' + encodeURIComponent(slug) + '/market?symbol=' + encodeURIComponent(marketSymbol) + '&timeframe=1h&count=120', {
+          headers: { Accept: 'application/json' }, cache: 'no-store',
+        });
+        const marketBody = await responseJson<{ quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string; fetchedAt?: string }>(response);
         if (cancelled) return;
-        const quote = quoteBody.quotes.find(item => item.symbol === marketSymbol) ?? quoteBody.quotes[0] ?? null;
+        const quote = marketBody.quotes.find(item => item.symbol === marketSymbol) ?? marketBody.quotes[0] ?? null;
         setMarketQuote(quote);
-        setCandles(Array.isArray(candleBody.candles) ? candleBody.candles : []);
-        setMarketProvider(quoteBody.provider || candleBody.provider || 'Provider not reported');
-        setMarketDataMode(quoteBody.dataMode || candleBody.dataMode || 'unknown');
+        setCandles(Array.isArray(marketBody.candles) ? marketBody.candles : []);
+        setMarketProvider(marketBody.provider || 'Provider not reported');
+        setMarketDataMode(marketBody.dataMode || 'unknown');
         setMarketUpdatedAt(quote?.timestamp ?? null);
-        setMarketError(quote || candleBody.candles?.length ? '' : 'The selected provider returned no quote or candle data for this market.');
+        setMarketError(quote || marketBody.candles?.length ? '' : 'The room provider returned no quote or candle data for this market.');
       } catch (err) {
         if (!cancelled) setMarketError(err instanceof Error ? err.message : 'Market data unavailable.');
       }
@@ -95,7 +92,7 @@ export function PublicRobotView({ slug }: { slug: string }) {
     void refreshMarket();
     const interval = window.setInterval(() => void refreshMarket(), 15000);
     return () => { cancelled = true; window.clearInterval(interval); };
-  }, [marketSymbol]);
+  }, [marketSymbol, slug]);
 
   useEffect(() => {
     if (!robot) return;
