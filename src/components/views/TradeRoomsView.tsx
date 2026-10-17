@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, Bot, CirclePlus, Search, Sparkles, Users, X, Check, LockKeyhole, Globe, Copy, Plus } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { ArrowUpRight, Bot, CirclePlus, Search, Sparkles, Users, X, Check, LockKeyhole, Globe, Copy } from 'lucide-react';
 import { useGoat } from '../../context/GoatContext';
 import { useAuth } from '../../context/AuthContext';
 
@@ -19,7 +19,7 @@ type TradeRoom = {
 };
 type TeamVisibility = 'PUBLIC' | 'PRIVATE';
 
-export function TradeRoomsView({ onCreateRoom, onOpenMyRooms }: { onCreateRoom: () => void; onOpenMyRooms: () => void }) {
+export function TradeRoomsView({ onCreateRoom, onOpenMyRooms, createTeamRequested, onCreateTeamRequestHandled }: { onCreateRoom: () => void; onOpenMyRooms: () => void; createTeamRequested: boolean; onCreateTeamRequestHandled: () => void }) {
   const { goats, refreshGoats } = useGoat();
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
   const [rooms, setRooms] = useState<TradeRoom[]>([]);
@@ -59,10 +59,10 @@ export function TradeRoomsView({ onCreateRoom, onOpenMyRooms }: { onCreateRoom: 
 
   useEffect(() => { void loadRooms(); }, [loadRooms]);
   useEffect(() => {
-    const open = () => { setCreateError(''); setCreatedShareUrl(''); setCreateOpen(true); };
-    window.addEventListener('sirgoat-create-team', open);
-    return () => window.removeEventListener('sirgoat-create-team', open);
-  }, []);
+    if (!createTeamRequested) return;
+    setCreateError(''); setCreatedShareUrl(''); setCreateOpen(true);
+    onCreateTeamRequestHandled();
+  }, [createTeamRequested, onCreateTeamRequestHandled]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -74,7 +74,7 @@ export function TradeRoomsView({ onCreateRoom, onOpenMyRooms }: { onCreateRoom: 
   }, [rooms, query, filter]);
 
   const toggleGoat = (id: string) => setSelectedGoatIds(previous => previous.includes(id) ? previous.filter(value => value !== id) : [...previous, id]);
-  const createTeam = async (event: React.FormEvent) => {
+  const createTeam = async (event: FormEvent) => {
     event.preventDefault();
     setCreateError('');
     if (!currentUser && authMode !== 'dev') { setCreateError('Sign in first to create and save a team.'); return; }
