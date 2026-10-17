@@ -28,6 +28,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   const [error, setError] = useState('');
   const [selectedMemberId, setSelectedMemberId] = useState('');
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [candlesTimeframe, setCandlesTimeframe] = useState('');
   const [marketQuote, setMarketQuote] = useState<MarketQuote | null>(null);
   const [marketError, setMarketError] = useState('');
   const [marketSymbol, setMarketSymbol] = useState('');
@@ -71,6 +72,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   useEffect(() => {
     if (!selectedMember || !activeMarket) {
       setCandles([]);
+      setCandlesTimeframe('');
       setMarketQuote(null);
       setMarketSymbol(activeMarket);
       setMarketError(selectedMember ? 'No market configured for this bot.' : '');
@@ -79,6 +81,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
 
     let cancelled = false;
     let timer: number | undefined;
+    setCandlesTimeframe('');
     const refreshMarket = async () => {
       try {
         const url = '/api/team-rooms/' + encodeURIComponent(slug) + '/market?memberId=' +
@@ -93,6 +96,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
         setMarketSymbol(activeMarket);
         setMarketQuote(quote);
         setCandles(nextCandles);
+        setCandlesTimeframe(timeframe);
         setMarketProvider(result.provider || data?.team.provider || '');
         setDataMode(result.dataMode || '');
         setMarketError(quoteHasPrice(quote) || nextCandles.length ? '' : quote?.unavailableReason || 'Market data unavailable from this provider.');
@@ -191,11 +195,11 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
         </div>
       </header>
       <div className="trade-room-chart">
-        {candles.length ? <TradingViewLightweightChart
+        {candles.length && candlesTimeframe === timeframe ? <TradingViewLightweightChart
           candles={candles} activeQuote={marketQuote} timeframe={timeframe}
           symbol={marketSymbol} roomName={data.team.name} digits={priceDigits}
           agentEvents={agentEvents} dataMode={dataMode}
-        /> : <div className="trade-room-chart-empty"><span>{marketError || 'Waiting for provider candle history'}</span></div>}
+        /> : <div className="trade-room-chart-empty"><span>{marketError || (candlesTimeframe !== timeframe ? 'Loading ' + timeframe + ' candles…' : 'Waiting for provider candle history')}</span></div>}
       </div>
     </section>
     <aside className="trade-room-stream" aria-label="AI collaboration stream">
