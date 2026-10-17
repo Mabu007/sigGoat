@@ -3644,6 +3644,39 @@ apiRouter.get(
 );
 
 /**
+ * Public Trade Rooms directory. Only published, deployed robots are listed;
+ * credentials, owner IDs, and private strategy configuration never leave the API.
+ */
+apiRouter.get("/robots", handle(async (_req, res) => {
+  const goats = await persistence.goats.listAll();
+  const published = goats.filter(goat => goat.isPublished && goat.publicSlug && goat.deploymentState === "DEPLOYED");
+  const rooms = await Promise.all(published.map(async goat => {
+    const creator = await persistence.profiles.get(goat.userId).catch(() => null);
+    const theses = await persistence.theses.listByGoat(goat.id, 1).catch(() => []);
+    const thesis = theses[0];
+    return {
+      slug: goat.publicSlug,
+      name: goat.name,
+      description: goat.goal,
+      markets: goat.markets,
+      status: goat.status,
+      creatorName: creator?.displayName || "Independent creator",
+      publishedAt: goat.publishedAt ?? goat.updatedAt,
+      latestThesis: thesis ? {
+        market: thesis.market,
+        bias: thesis.directionalHypothesis,
+        summary: thesis.summary ?? thesis.assetState ?? "Market review recorded.",
+        updatedAt: thesis.updatedAt,
+      } : null,
+      mode: "PAPER" as const,
+    };
+  }));
+  rooms.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+  res.setHeader("Cache-Control", "public, max-age=15, stale-while-revalidate=30");
+  res.json({ rooms });
+}));
+
+/**
  * Public robot profile. This route is deliberately before authMiddleware:
  * share links must render for signed-out visitors. Only curated public fields
  * leave the server; credentials and owner IDs never do.
