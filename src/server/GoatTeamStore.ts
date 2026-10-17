@@ -91,6 +91,18 @@ export class GoatTeamStore {
     return Object.values(this.db.teams).filter(team => team.ownerUserId === userId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  async listPublic(): Promise<GoatTeam[]> {
+    const teams = this.firestore
+      ? (await this.collection().where("visibility", "==", "PUBLIC").get()).docs.map(doc => doc.data() as GoatTeam)
+      : Object.values(this.db.teams).filter(team => team.visibility === "PUBLIC");
+    return teams.filter(team => Boolean(team.publicSlug)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async getPublicBySlug(slug: string): Promise<GoatTeam | null> {
+    const teams = await this.listPublic();
+    return teams.find(team => team.publicSlug === slug) ?? null;
+  }
+
   async save(team: GoatTeam): Promise<GoatTeam> {
     const id = safeId(team.id);
     const record = { ...team, id };
