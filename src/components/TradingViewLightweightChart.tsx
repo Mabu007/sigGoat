@@ -66,6 +66,10 @@ function normalizeCandles(input: Candle[]) {
 function isFreshQuote(quote: MarketQuote | null) {
   if (!quote || quote.stale || !Number.isFinite(quote.mid) || quote.mid <= 0) return false;
   if (typeof quote.quoteAgeSeconds === 'number' && quote.quoteAgeSeconds > 60) return false;
+  if (Number.isFinite(quote.timestamp) && quote.timestamp > 1_000_000_000) {
+    const timestampMs = quote.timestamp > 1_000_000_000_000 ? quote.timestamp : quote.timestamp * 1000;
+    if (Date.now() - timestampMs > 60_000) return false;
+  }
   return true;
 }
 
