@@ -18,7 +18,7 @@ async function responseJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export function PublicRobotView({ slug, onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; onBack?: () => void }) {
+export function PublicRobotView({ slug, backLabel = 'Rooms', onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; backLabel?: string; onBack?: () => void }) {
   const { currentUser, authMode, getApiAuthHeaders, loginWithGoogle, signupWithEmail, loginWithEmail } = useAuth();
   const [robot, setRobot] = useState<Robot | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -177,7 +177,7 @@ export function PublicRobotView({ slug, onBack = () => { window.location.href = 
 
   const signedIn = Boolean(currentUser) || authMode === 'dev';
   const latestExecution = robot?.activities?.find(item => item.type.startsWith('EXECUTION_'));
-  if (loading) return <div className="min-h-40 bg-[#080a0f] p-6 text-white"><button type="button" onClick={onBack} className="mb-5 text-xs text-white/60 hover:text-white">← Trade Rooms</button><div className="flex items-center justify-center"><LoaderCircle className="h-5 w-5 animate-spin" /><span className="ml-3 text-sm text-white/60">Loading robot…</span></div></div>;
+  if (loading) return <div className="min-h-40 bg-[#080a0f] p-6 text-white"><button type="button" onClick={onBack} className="mb-5 text-xs text-white/60 hover:text-white">← Back to {backLabel}</button><div className="flex items-center justify-center"><LoaderCircle className="h-5 w-5 animate-spin" /><span className="ml-3 text-sm text-white/60">Loading robot…</span></div></div>;
   if (!robot) return <div className="min-h-40 bg-[#080a0f] px-6 py-5 text-white"><button type="button" onClick={onBack} className="mb-5 text-xs text-white/60 hover:text-white">← Trade Rooms</button><div className="mx-auto max-w-md py-8 text-center"><Bot className="mx-auto h-10 w-10 text-violet-300" /><h1 className="mt-4 text-xl font-bold">Robot unavailable</h1><p className="mt-2 text-sm text-white/60">{error || 'This link may have been unpublished or removed.'}</p></div></div>;
 
   return <main className="min-h-screen bg-[#080a0f] text-white"><div className="mx-auto max-w-4xl px-5 py-8 sm:px-8 sm:py-12"><button type="button" onClick={onBack} className="mb-4 text-xs text-white/60 hover:text-white">← Trade Rooms</button>
