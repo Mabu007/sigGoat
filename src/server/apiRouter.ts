@@ -3684,10 +3684,11 @@ apiRouter.get("/robots", handle(async (_req, res) => {
 apiRouter.get("/robots/:slug", handle(async (req, res) => {
   const goat = await findPublishedRobot(String(req.params.slug || ""));
   if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
-  const [creator, theses, signals] = await Promise.all([
+  const [creator, theses, signals, recordedActivities] = await Promise.all([
     persistence.profiles.get(goat.userId),
     persistence.theses.listByGoat(goat.id, 1),
     persistence.signals.listByGoat(goat.id, 5),
+    goatWorkflowStore.listActivities(goat.id, 30).catch(() => []),
   ]);
   const thesis = theses[0];
   res.setHeader("Cache-Control", "public, max-age=15, stale-while-revalidate=30");
@@ -3702,6 +3703,13 @@ apiRouter.get("/robots/:slug", handle(async (req, res) => {
       status: signal.status, entry: signal.entry, entryZone: signal.entryZone,
       stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis,
       rationale: signal.rationale, createdAt: signal.createdAt })),
+    // Only publish the durable workflow ledger's safe, curated fields. Never expose owner IDs or raw workflow payloads.
+    activities: recordedActivities.map((activity) => ({
+      id: activity.id, type: activity.type, stage: activity.stage, at: activity.at,
+      details: Object.fromEntries(Object.entries(activity.details ?? {}).filter(([key, value]) =>
+        ["provider", "decision", "signalId", "orderId"].includes(key) &&
+        (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null))),
+    })),
   }});
 }));
 
