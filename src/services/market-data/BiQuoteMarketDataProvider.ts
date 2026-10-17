@@ -97,7 +97,7 @@ export class BiQuoteMarketDataProvider implements MarketDataProvider {
   async getQuote(symbol: string): Promise<MarketQuote> {
     const key = symbol.trim().toUpperCase();
     if (!key) throw new MarketDataUnavailableError("A market symbol is required.");
-    const raw = await this.request<BiQuoteTick>(`/api/${encodeURIComponent(key)}?allowStale=false`);
+    const raw = await this.request<BiQuoteTick>(`/api/${encodeURIComponent(key)}`);
     const quote = toQuote(raw, key);
     if (!quote.mid || !Number.isFinite(quote.mid)) throw new MarketDataUnavailableError(`BiQuote has no usable price for ${key}.`, key, "MISSING_PRICE");
     this.quoteCache.set(key, quote);
