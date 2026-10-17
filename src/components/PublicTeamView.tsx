@@ -12,7 +12,7 @@ type FeedItem = { id: string; memberName: string; kind: string; title: string; b
 async function read<T>(response: Response): Promise<T> { const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body?.error?.message || body?.message || `Request failed (${response.status})`); return body as T; }
 const formatPrice = (value?: number) => value == null ? 'Not recorded' : value.toLocaleString(undefined, { maximumFractionDigits: 8 });
 
-export function PublicTeamView({ slug, onBack }: { slug: string; onBack: () => void }) {
+export function PublicTeamView({ slug, onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; onBack?: () => void }) {
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
   const [data, setData] = useState<Payload | null>(null);
   const [isOwner, setIsOwner] = useState(false);
