@@ -3741,6 +3741,48 @@ apiRouter.get("/robots/:slug/market", handle(async (req, res) => {
   }
 }));
 
+/** Public discovery feed for deployed PUBLIC teams only. */
+apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
+  const teams = (await goatTeamStore.listPublic()).filter(team => team.status === "DEPLOYED");
+  const rooms = await Promise.all(teams.map(async team => {
+    const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+    const theses = await Promise.all(team.memberGoatIds.map(id => persistence.theses.listByGoat(id, 1)));
+    const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    return {
+      id: team.id, slug: team.publicSlug, name: team.name, description: `${members.length} AI traders · ${team.coordinationMode.toLowerCase().replace("_", " ")} coordination`,
+      creatorName: "AI Trading Team", status: team.status, mode: "PAPER" as const,
+      memberCount: members.length, markets: [...new Set(members.flatMap(member => member?.markets ?? []))],
+      latestThesis: latest ? { market: latest.market, bias: latest.directionalHypothesis, summary: latest.summary ?? latest.assetState ?? "Market review recorded.", updatedAt: latest.updatedAt } : null,
+      updatedAt: team.updatedAt,
+    };
+  }));
+  res.setHeader("Cache-Control", "public, max-age=10, stale-while-revalidate=20");
+  res.json({ rooms });
+}));
+
+/** Share-link room details. Public rooms are discoverable; private rooms require their unguessable slug. */
+apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const team = await goatTeamStore.getPublicBySlug(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+  const details = await Promise.all(members.map(async member => {
+    const [theses, signals] = await Promise.all([
+      persistence.theses.listByGoat(member!.id, 1),
+      persistence.signals.listByGoat(member!.id, 5),
+    ]);
+    return {
+      id: member!.id, name: member!.name, goal: member!.goal, markets: member!.markets,
+      status: member!.status, provider: member!.tradingProvider ?? "configured provider",
+      latestThesis: theses[0] ? { market: theses[0].market, bias: theses[0].directionalHypothesis, summary: theses[0].summary ?? theses[0].assetState ?? "Market review recorded.", updatedAt: theses[0].updatedAt } : null,
+      signals: signals.map(signal => ({ id: signal.id, market: signal.market, direction: signal.direction, status: signal.status, entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis, rationale: signal.rationale, createdAt: signal.createdAt })),
+    };
+  }));
+  res.setHeader("Cache-Control", "public, max-age=5, stale-while-revalidate=10");
+  res.json({ team: { id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status, coordinationMode: team.coordinationMode, memberCount: details.length, markets: [...new Set(details.flatMap(member => member.markets))] }, members: details });
+}));
+
 apiRouter.use(authMiddleware);
 
 /** Publish the existing GOAT under a stable, shareable URL. */
