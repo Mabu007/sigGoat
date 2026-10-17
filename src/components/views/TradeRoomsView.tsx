@@ -461,10 +461,6 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
             {directoryMode === 'mine' ? (myRoomsLoading ? 'Loading your rooms…' : filtered.length + ' of ' + myRooms.length + ' rooms') : (loading ? 'Loading public rooms…' : rooms.length + ' public ' + (rooms.length === 1 ? 'room' : 'rooms'))}
           </p>
         </div>
-        <label className="relative block">
-          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-subtle" />
-          <input value={query} onChange={event => setQuery(event.target.value)} className="input !pl-9" placeholder={directoryMode === 'mine' ? 'Search your rooms…' : 'Search teams, markets, or strategies…'} aria-label="Search Trade Rooms" />
-        </label>
       </section>
 
       {error && <div role="alert" className="panel border-warning/40 p-4 text-sm text-fg-muted">{error}</div>}
