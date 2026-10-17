@@ -49,6 +49,7 @@ function tabFromHash(): TabId {
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
   const [createTeamRequested, setCreateTeamRequested] = useState(false);
+  const [selectedRoom, setSelectedRoom] = useState<{ type: 'team' | 'bot'; slug: string } | null>(null);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
@@ -59,6 +60,7 @@ const MainApp: React.FC = () => {
   }, []);
 
   const navigate = useCallback((tab: TabId) => {
+    setSelectedRoom(null);
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
       window.location.hash = `/${tab}`;
@@ -84,17 +86,19 @@ const MainApp: React.FC = () => {
         />
 
         <main className="w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
+          <TradeRoomsView
+            createTeamRequested={createTeamRequested}
+            onCreateTeamRequestHandled={() => setCreateTeamRequested(false)}
+            showDirectoryContent={activeTab === 'rooms' && !selectedRoom}
+            onOpenRoom={(type, slug) => { setSelectedRoom({ type, slug }); setActiveTab('rooms'); }}
+          />
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {activeTab === 'rooms' && <TradeRoomsView createTeamRequested={createTeamRequested} onCreateTeamRequestHandled={() => setCreateTeamRequested(false)} />}
-
-            {activeTab === 'trades' && <ProposalsView />}
-
-            {/* Reachable from a team member, not a top-level destination. */}
-            {activeTab === 'skills' && <SkillsView />}
-
-            {activeTab === 'backtest' && <BacktestView />}
-
-            {activeTab === 'settings' && <SettingsView />}
+            {selectedRoom?.type === 'team' && <PublicTeamView slug={selectedRoom.slug} onBack={() => setSelectedRoom(null)} />}
+            {selectedRoom?.type === 'bot' && <PublicRobotView slug={selectedRoom.slug} onBack={() => setSelectedRoom(null)} />}
+            {!selectedRoom && activeTab === 'trades' && <ProposalsView />}
+            {!selectedRoom && activeTab === 'skills' && <SkillsView />}
+            {!selectedRoom && activeTab === 'backtest' && <BacktestView />}
+            {!selectedRoom && activeTab === 'settings' && <SettingsView />}
           </React.Suspense>
         </main>
       </div>
