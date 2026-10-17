@@ -10,7 +10,6 @@ import { AuthGate } from './components/AuthGate';
 
 const QuotesView = React.lazy(() => import('./components/views/QuotesView').then(module => ({ default: module.QuotesView })));
 const TradeRoomsView = React.lazy(() => import('./components/views/TradeRoomsView').then(module => ({ default: module.TradeRoomsView })));
-const GoatsView = React.lazy(() => import('./components/views/GoatsView').then(module => ({ default: module.GoatsView })));
 const ProposalsView = React.lazy(() => import('./components/views/ProposalsView').then(module => ({ default: module.ProposalsView })));
 const SkillsView = React.lazy(() => import('./components/views/SkillsView').then(module => ({ default: module.SkillsView })));
 const BacktestView = React.lazy(() => import('./components/views/BacktestView').then(module => ({ default: module.BacktestView })));
@@ -36,19 +35,19 @@ const ViewLoadingFallback: React.FC = () => (
 function tabFromHash(): TabId {
   if (typeof window === 'undefined') return 'rooms';
   const raw = window.location.hash.replace(/^#\/?/, '');
-  const allowed: TabId[] = ['rooms', 'trades', 'settings', 'markets', 'goats', 'proposals', 'skills', 'backtest'];
+  const allowed: TabId[] = ['rooms', 'trades', 'settings', 'markets', 'proposals', 'skills', 'backtest'];
   /**
-   * `overview` was removed as a destination; old links and persisted hashes
-   * redirect to Markets rather than rendering a blank page.
+   * `goats` is no longer a destination: trading agents are created as teams.
+   * Old bookmarks and persisted hashes land on Trade Rooms, which is where the
+   * team builder lives, rather than rendering a blank page.
    */
-  if (raw === 'overview' || raw === 'markets') return 'rooms';
+  if (raw === 'overview' || raw === 'markets' || raw === 'goats') return 'rooms';
   if (raw === 'proposals') return 'trades';
   return allowed.includes(raw as TabId) ? (raw as TabId) : 'rooms';
 }
 
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
-  const [isOpenCreateGoatModal, setIsOpenCreateGoatModal] = useState(false);
   const [createTeamRequested, setCreateTeamRequested] = useState(false);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
@@ -88,21 +87,11 @@ const MainApp: React.FC = () => {
 
         <main className="mx-auto w-full max-w-7xl flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {activeTab === 'rooms' && <TradeRoomsView createTeamRequested={createTeamRequested} onCreateTeamRequestHandled={() => setCreateTeamRequested(false)} onCreateRoom={() => { setIsOpenCreateGoatModal(true); navigate('goats'); }} />}
+            {activeTab === 'rooms' && <TradeRoomsView createTeamRequested={createTeamRequested} onCreateTeamRequestHandled={() => setCreateTeamRequested(false)} />}
 
             {activeTab === 'trades' && <ProposalsView />}
 
-            {activeTab === 'goats' && (
-              <GoatsView
-                isOpenCreateModal={isOpenCreateGoatModal}
-                onCloseCreateModal={() => setIsOpenCreateGoatModal(false)}
-                onOpenCreateModal={() => setIsOpenCreateGoatModal(true)}
-              />
-            )}
-
-            {activeTab === 'proposals' && <ProposalsView />}
-
-            {/* Reachable from a GOAT, not a top-level destination. */}
+            {/* Reachable from a team member, not a top-level destination. */}
             {activeTab === 'skills' && <SkillsView />}
 
             {activeTab === 'backtest' && <BacktestView />}

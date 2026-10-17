@@ -48,7 +48,7 @@ import {
   NotFoundError,
 } from "./repositories";
 import { createGoatWorkflowStore } from "./GoatWorkflowStore";
-import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode } from "./GoatTeamStore";
+import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode, type TeamDeploymentSettings, type TeamRiskParameters } from "./GoatTeamStore";
 import { assessGoatTeamMarket } from "./GoatTeamCoordination";
 import {
   UserScopedReasoningGateway,
@@ -5523,7 +5523,293 @@ async function runtimeFor(
   return runtime;
 }
 
-// ---- GOAT teams: persisted groups of existing, owner-scoped GOATs ----
+// ---- Team members ----------------------------------------------------
+//
+// A member is the only unit a user authors directly, and they author it only
+// inside the team builder. `FundGoat` remains the storage/runtime record so
+// the scheduler, reasoning graph and market adapters keep working unchanged;
+// these routes present it with the team-first fields (role, skills) and are
+// the single creation path for trading agents in the product.
+
+interface TeamMemberInput {
+  name: string;
+  jobTitle: string;
+  jobDescription: string;
+  skills: string[];
+  asset: string;
+  tradingProvider?: TradingProvider;
+}
+
+const MAX_MEMBERS_PER_TEAM = 10;
+const MAX_MEMBER_SKILLS = 12;
+
+function normaliseStringList(raw: unknown, maxItems: number, maxLength: number): string[] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return null;
+  const items = Array.from(new Set<string>(
+    raw
+      .filter((item): item is string => typeof item === "string")
+      .map(item => item.trim())
+      .filter(item => item.length > 0 && item.length <= maxLength),
+  ));
+  return items.length > maxItems ? null : items;
+}
+
+/** Accepts a finite number inside [min, max]; anything else is dropped. */
+function normalisePercent(raw: unknown, min: number, max: number): number | undefined {
+  const value = typeof raw === "string" ? Number(raw) : raw;
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  if (value < min || value > max) return undefined;
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Validates the deployment modal's payload.
+ *
+ * A provider and an asset are mandatory: deploying without them would leave
+ * members on the legacy default venue with no market to quote, which fails
+ * later and less legibly. Risk limits are all optional and bounded, so a
+ * partially filled risk form still produces a usable team.
+ */
+function normaliseTeamDeployment(raw: unknown): TeamDeploymentSettings | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const body = raw as Record<string, unknown>;
+  if (!isTradingProvider(body.provider)) return null;
+  const asset = typeof body.asset === "string" ? body.asset.trim().toUpperCase() : "";
+  if (!asset || asset.length > 32) return null;
+  const risk: TeamRiskParameters = {};
+  const position = normalisePercent((body.risk as Record<string, unknown> | undefined)?.maxPositionSizePercent, 0.01, 100);
+  const dailyLoss = normalisePercent((body.risk as Record<string, unknown> | undefined)?.maxDailyLossPercent, 0.1, 100);
+  const stopLoss = normalisePercent((body.risk as Record<string, unknown> | undefined)?.stopLossPercent, 0.1, 100);
+  const takeProfit = normalisePercent((body.risk as Record<string, unknown> | undefined)?.takeProfitPercent, 0.1, 1000);
+  const openPositions = normalisePercent((body.risk as Record<string, unknown> | undefined)?.maxOpenPositions, 1, 50);
+  if (position !== undefined) risk.maxPositionSizePercent = position;
+  if (dailyLoss !== undefined) risk.maxDailyLossPercent = dailyLoss;
+  if (stopLoss !== undefined) risk.stopLossPercent = stopLoss;
+  if (takeProfit !== undefined) risk.takeProfitPercent = takeProfit;
+  if (openPositions !== undefined) risk.maxOpenPositions = Math.round(openPositions);
+  return { provider: body.provider, asset, risk };
+}
+
+/**
+ * Validates one authored member. Members are intentionally light: the user
+ * supplies a name, a role, what the member does, and the skills it has. The
+ * asset and venue are team-level deployment settings, so a member may inherit
+ * them, but an author can override the asset per member.
+ */
+function normaliseTeamMemberInput(raw: unknown): TeamMemberInput | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const body = raw as Record<string, unknown>;
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const jobTitle = typeof body.jobTitle === "string" ? body.jobTitle.trim() : "";
+  const jobDescription = typeof body.jobDescription === "string" ? body.jobDescription.trim() : "";
+  const asset = typeof body.asset === "string" ? body.asset.trim() : "";
+  const skills = normaliseStringList(body.skills, MAX_MEMBER_SKILLS, 60);
+  if (!name || name.length > 80) return null;
+  if (!jobTitle || jobTitle.length > 80) return null;
+  if (!jobDescription || jobDescription.length > 1000) return null;
+  if (skills === null) return null;
+  if (asset && asset.length > 32) return null;
+  const provider = isTradingProvider(body.tradingProvider) ? body.tradingProvider : undefined;
+  return { name, jobTitle, jobDescription, skills, asset, ...(provider ? { tradingProvider: provider } : {}) };
+}
+
+/**
+ * Maps the member's authored skills onto executable skill records.
+ *
+ * The user types free text ("Liquidity sweeps", "News filtering"), but the
+ * runtime only executes saved skills. Matching by name keeps the typed text
+ * authoritative for display while giving the reasoning graph something it can
+ * actually run; unmatched entries are still preserved on `skills`.
+ */
+function resolveSkillIdsForMember(
+  authoredSkills: string[],
+  available: Array<{ id: string; name: string }>,
+): string[] {
+  const normalise = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  /** Words too generic to carry meaning on their own. */
+  const stopWords = new Set(["and", "the", "a", "of", "in", "for", "to", "analysis", "strategy", "trading", "skill", "skills", "with"]);
+  /** Distinctive words in a phrase: "Liquidity sweeps" -> ["liquidity", "sweeps"]. */
+  const meaningfulWords = (phrase: string) =>
+    phrase
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .split(/[^A-Za-z]+/)
+      .map(word => word.toLowerCase())
+      .filter(word => word.length >= 4 && !stopWords.has(word));
+  const matched = new Set<string>();
+  for (const authored of authoredSkills) {
+    const needle = normalise(authored);
+    if (!needle) continue;
+    for (const skill of available) {
+      const candidate = normalise(skill.name);
+      if (!candidate) continue;
+      if (candidate.includes(needle) || needle.includes(candidate)) { matched.add(skill.id); break; }
+      /**
+       * "Liquidity sweeps" does not contain "Liquidity Sweep Analysis", so a
+       * plain substring match misses it. Fall back to shared meaningful words:
+       * one distinctive word in common is enough to bind the typed skill.
+       */
+      const shared = meaningfulWords(authored).some(word => candidate.includes(word));
+      if (shared) { matched.add(skill.id); break; }
+    }
+  }
+  if (matched.size > 0) return Array.from(matched);
+  // Never leave a member skillless: the runtime requires at least one skill.
+  const fallback = available[0];
+  return fallback ? [fallback.id] : [];
+}
+
+/**
+ * Creates a member record in DRAFT state. A draft member is never scheduled or
+ * analysed until its team is deployed, which is what makes team deployment the
+ * single activation path in the product.
+ */
+async function createTeamMemberRecord(
+  userId: string,
+  input: TeamMemberInput,
+): Promise<FundGoat> {
+  const profile = await persistence.profiles.get(userId).catch(() => null);
+  const tradingProvider = input.tradingProvider ?? resolveUserTradingProvider(profile);
+
+  /**
+   * Authoring a member must not require a connected venue.
+   *
+   * The asset a member trades is really a team-level deployment choice, and
+   * deployment overwrites `markets` for every member anyway. Resolving markets
+   * here would mean a user could not describe their team until they had
+   * connected a broker — so an explicit asset is validated only when the venue
+   * can actually answer, and is otherwise left for deployment to set.
+   */
+  let markets: string[] = [];
+  if (input.asset) {
+    const readiness = await tradingProviderReadinessForUser(userId, tradingProvider);
+    if (readiness.ready) {
+      const provider = await marketDataProviderForUser(userId, tradingProvider);
+      const resolved = await resolveMarketsForGoat([input.asset], provider);
+      if ("error" in resolved) throw Object.assign(new Error(resolved.error), { code: "UNKNOWN_MARKET" });
+      markets = resolved.resolved;
+    }
+  }
+
+  const skillIds = resolveSkillIdsForMember(input.skills, await allSkillsFor(userId));
+  const now = new Date().toISOString();
+  const member: FundGoat = {
+    id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    userId,
+    tradingProvider,
+    name: input.name,
+    jobTitle: input.jobTitle,
+    goal: input.jobDescription,
+    skills: input.skills,
+    markets,
+    skillIds,
+    model: LEGACY_DEFAULT_MODEL,
+    status: "PAUSED",
+    deploymentState: "DRAFT",
+    schedule: normaliseSchedule(undefined),
+    timeframe: normaliseTrackingTimeframe(undefined),
+    createdAt: now,
+    updatedAt: now,
+  };
+  await persistence.goats.save(member);
+  return member;
+}
+
+/**
+ * Pushes the team's operating instructions onto each member record.
+ *
+ * Called whenever a team's instructions change so the value the reasoning
+ * engines read never drifts from the team's own copy.
+ */
+async function stampTeamInstructions(
+  userId: string,
+  memberIds: string[],
+  instructions: string,
+): Promise<void> {
+  const value = instructions.trim();
+  for (const memberId of memberIds) {
+    const member = await persistence.goats.getForUser(memberId, userId);
+    if (!member || (member.teamInstructions ?? '') === value) continue;
+    await persistence.goats.save({ ...member, teamInstructions: value, updatedAt: new Date().toISOString() });
+  }
+}
+
+/** Shapes a stored member record for the team builder. */
+function presentTeamMember(goat: FundGoat) {
+  return {
+    id: goat.id,
+    name: goat.name,
+    jobTitle: goat.jobTitle || "Team member",
+    jobDescription: goat.goal,
+    skills: goat.skills || [],
+    status: goat.status,
+    asset: goat.markets[0],
+    tradingProvider: resolveGoatTradingProvider(goat),
+    createdAt: goat.createdAt,
+  };
+}
+
+apiRouter.get("/team-members", handle(async (req, res) => {
+  const user = requireUser(req);
+  const members = await persistence.goats.listByUser(user.uid);
+  res.json({ members: members.map(presentTeamMember) });
+}));
+
+apiRouter.post("/team-members", handle(async (req, res) => {
+  const user = requireUser(req);
+  const input = normaliseTeamMemberInput(req.body);
+  if (!input) {
+    return fail(res, 400, "INVALID_MEMBER_INPUT", "A member needs a name, a job title, and a job description.");
+  }
+  const member = await createTeamMemberRecord(user.uid, input);
+  res.status(201).json({ member: presentTeamMember(member) });
+}));
+
+apiRouter.patch("/team-members/:id", handle(async (req, res) => {
+  const user = requireUser(req);
+  const existing = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!existing) return notFound(res);
+  const input = normaliseTeamMemberInput({
+    name: req.body?.name ?? existing.name,
+    jobTitle: req.body?.jobTitle ?? existing.jobTitle,
+    jobDescription: req.body?.jobDescription ?? existing.goal,
+    skills: req.body?.skills ?? existing.skills,
+    asset: req.body?.asset ?? existing.markets[0],
+  });
+  if (!input) return fail(res, 400, "INVALID_MEMBER_INPUT", "A member needs a name, a job title, and a job description.");
+
+  const provider = await marketDataProviderForUser(user.uid, existing.tradingProvider ? resolveGoatTradingProvider(existing) : resolveUserTradingProvider(await persistence.profiles.get(user.uid).catch(() => null)));
+  const markets = await resolveMarketsForGoat(input.asset ? [input.asset] : [], provider);
+  if ("error" in markets) return fail(res, 400, "UNKNOWN_MARKET", markets.error);
+
+  const updated: FundGoat = {
+    ...existing,
+    name: input.name,
+    jobTitle: input.jobTitle,
+    goal: input.jobDescription,
+    skills: input.skills,
+    markets: markets.resolved,
+    skillIds: resolveSkillIdsForMember(input.skills, await allSkillsFor(user.uid)),
+    updatedAt: new Date().toISOString(),
+  };
+  await persistence.goats.save(updated);
+  res.json({ member: presentTeamMember(updated) });
+}));
+
+apiRouter.delete("/team-members/:id", handle(async (req, res) => {
+  const user = requireUser(req);
+  const existing = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!existing) return notFound(res);
+  const teams = await goatTeamStore.listForUser(user.uid);
+  if (teams.some(team => team.memberGoatIds.includes(existing.id))) {
+    return fail(res, 409, "MEMBER_IN_USE", "Remove this member from its teams before deleting it.");
+  }
+  await stopAndResetGoatFor(user.uid, existing.id).catch(() => {});
+  await persistence.goats.delete(existing.id);
+  res.status(204).end();
+}));
+
+// ---- GOAT teams: the single creation unit for trading agents ----
 
 apiRouter.get("/goat-teams", handle(async (req, res) => {
   const user = requireUser(req);
@@ -5538,8 +5824,9 @@ apiRouter.get("/goat-teams", handle(async (req, res) => {
 apiRouter.post("/goat-teams", handle(async (req, res) => {
   const user = requireUser(req);
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-  const requestedGoatIds: unknown = req.body?.goatIds;
-  const memberGoatIds: string[] = Array.isArray(requestedGoatIds)
+  const instructions = typeof req.body?.instructions === "string" ? req.body.instructions.trim() : "";
+  const requestedGoatIds: unknown = req.body?.memberGoatIds;
+  const existingMemberIds: string[] = Array.isArray(requestedGoatIds)
     ? Array.from(new Set<string>(
         (requestedGoatIds as unknown[])
           .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
@@ -5553,16 +5840,49 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   const visibility: "PUBLIC" | "PRIVATE" = req.body?.visibility === "PUBLIC" ? "PUBLIC" : "PRIVATE";
   const shouldDeploy = req.body?.deploy === true;
   if (!name || name.length > 80) return fail(res, 400, "INVALID_TEAM_NAME", "Team name must be between 1 and 80 characters.");
+  if (instructions.length > 4000) return fail(res, 400, "INVALID_TEAM_INSTRUCTIONS", "Team instructions must be 4000 characters or fewer.");
   if (req.body?.visibility !== undefined && !["PUBLIC", "PRIVATE"].includes(req.body.visibility)) return fail(res, 400, "INVALID_TEAM_VISIBILITY", "visibility must be PUBLIC or PRIVATE.");
-  if (memberGoatIds.length < 2 || memberGoatIds.length > 10) return fail(res, 400, "INVALID_TEAM_MEMBERS", "A team must contain between 2 and 10 distinct GOATs.");
+  /**
+   * Members are authored INLINE here. The team builder is the only place a
+   * trading agent comes into existence, so creation accepts both already-saved
+   * members (reused across teams) and freshly authored ones.
+   *
+   * One member is a valid team: creating a single specialist is the degenerate
+   * case of creating a team, which is why this floor is 1 and not 2.
+   */
+  const newMemberInputs: unknown[] = Array.isArray(req.body?.newMembers) ? req.body.newMembers : [];
+  const totalMembers = existingMemberIds.length + newMemberInputs.length;
+  if (totalMembers < 1) return fail(res, 400, "INVALID_TEAM_MEMBERS", "Add at least one team member.");
+  if (totalMembers > MAX_MEMBERS_PER_TEAM) return fail(res, 400, "INVALID_TEAM_MEMBERS", `A team can hold at most ${MAX_MEMBERS_PER_TEAM} members.`);
   if (req.body?.coordinationMode !== undefined && !["INDEPENDENT", "CONSENSUS", "LEAD_REVIEW"].includes(req.body.coordinationMode)) {
     return fail(res, 400, "INVALID_COORDINATION_MODE", "coordinationMode must be INDEPENDENT, CONSENSUS, or LEAD_REVIEW.");
   }
+
+  const deployment = normaliseTeamDeployment(req.body?.deployment);
+  if (req.body?.deployment !== undefined && req.body?.deployment !== null && !deployment) {
+    return fail(res, 400, "INVALID_DEPLOYMENT_SETTINGS", "Deployment settings are incomplete. Choose a trading provider and an asset.");
+  }
+
+  const ownedMembers = await Promise.all(existingMemberIds.map(id => persistence.goats.getForUser(id, user.uid)));
+  if (ownedMembers.some(member => !member)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "Every team member must be an existing member owned by the signed-in user.");
+
+  const createdMembers: FundGoat[] = [];
+  for (const raw of newMemberInputs) {
+    const memberInput = normaliseTeamMemberInput(raw);
+    if (!memberInput) return fail(res, 400, "INVALID_MEMBER_INPUT", "Each member needs a name, a job title, and a job description.");
+    try {
+      createdMembers.push(await createTeamMemberRecord(user.uid, memberInput));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "A member could not be created.";
+      return fail(res, error instanceof Error && (error as { code?: string }).code === "UNKNOWN_MARKET" ? 400 : 500, "MEMBER_CREATE_FAILED", message);
+    }
+  }
+
+  const memberGoatIds = [...existingMemberIds, ...createdMembers.map(member => member.id)];
   if (coordinationMode === "LEAD_REVIEW" && (!leadGoatId || !memberGoatIds.includes(leadGoatId))) {
     return fail(res, 400, "INVALID_TEAM_LEAD", "LEAD_REVIEW teams require leadGoatId to identify one of the team members.");
   }
-  const members = await Promise.all(memberGoatIds.map(id => persistence.goats.getForUser(id, user.uid)));
-  if (members.some(member => !member)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "Every team member must be an existing GOAT owned by the signed-in user.");
+
   const now = new Date().toISOString();
   const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "trading-team";
   // A private link is a capability URL: keep a long random suffix and do not
@@ -5573,26 +5893,47 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     ownerUserId: user.uid,
     name,
     memberGoatIds,
+    ...(instructions ? { instructions } : {}),
     coordinationMode,
     visibility,
     publicSlug: shareSlug,
     ...(leadGoatId ? { leadGoatId } : {}),
+    ...(deployment ? { deployment } : {}),
     status: "DRAFT",
     createdAt: now,
     updatedAt: now,
   };
   team = await goatTeamStore.create(team);
+  await stampTeamInstructions(user.uid, team.memberGoatIds, team.instructions || "");
   if (shouldDeploy) {
+    if (!deployment) return fail(res, 400, "MISSING_DEPLOYMENT_SETTINGS", "Choose your trading provider, asset, and risk limits before deploying.");
     const results: Array<{ goatId: string; ok: boolean; error?: string }> = [];
-    for (const goatId of memberGoatIds) {
-      try { await setGoatStatusFor(user.uid, goatId, false, false); results.push({ goatId, ok: true }); }
-      catch (error) { results.push({ goatId, ok: false, error: error instanceof Error ? error.message : "Deployment failed" }); }
+    for (const goatId of team.memberGoatIds) {
+      try {
+        /**
+         * Deployment settings are team-level, so they are applied to every
+         * member before activation. The member keeps its role and skills; only
+         * the venue, asset and schedule the team trades under are overwritten.
+         */
+        const member = await persistence.goats.getForUser(goatId, user.uid);
+        if (!member) throw new Error("Member not found.");
+        await persistence.goats.save({
+          ...member,
+          tradingProvider: deployment.provider,
+          markets: [deployment.asset],
+          schedule: member.schedule ?? normaliseSchedule(undefined),
+          timeframe: member.timeframe ?? normaliseTrackingTimeframe(undefined),
+          updatedAt: new Date().toISOString(),
+        });
+        await setGoatStatusFor(user.uid, goatId, false, false);
+        results.push({ goatId, ok: true });
+      } catch (error) { results.push({ goatId, ok: false, error: error instanceof Error ? error.message : "Deployment failed" }); }
     }
     const failed = results.some(result => !result.ok);
     team = await goatTeamStore.save({ ...team, status: failed ? "PARTIAL" : "DEPLOYED", updatedAt: new Date().toISOString(), ...(!failed ? { deployedAt: now } : {}) });
-    if (failed) return res.status(409).json({ error: { code: "TEAM_DEPLOYMENT_PARTIAL", message: "The team was saved, but one or more bots could not be deployed." }, team, results, shareUrl: `/team/${shareSlug}` });
+    if (failed) return res.status(409).json({ error: { code: "TEAM_DEPLOYMENT_PARTIAL", message: "The team was saved, but one or more members could not be deployed." }, team, results, shareUrl: `/team/${shareSlug}` });
   }
-  res.status(201).json({ team, members, shareUrl: `/team/${shareSlug}`, discoverable: visibility === "PUBLIC" && team.status === "DEPLOYED" });
+  res.status(201).json({ team, members: [...ownedMembers.filter(Boolean), ...createdMembers], shareUrl: `/team/${shareSlug}`, discoverable: visibility === "PUBLIC" && team.status === "DEPLOYED" });
 }));
 
 apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
@@ -5605,6 +5946,41 @@ apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
     return { ...goat, runtimeState: goatRuntimeRegistry.get(id)?.getState() ?? null };
   }));
   res.json({ team, members: members.filter(Boolean) });
+}));
+
+/**
+ * Edits a team's own record. Team instructions are global state for every
+ * member, so saving them here re-stamps each member rather than leaving the
+ * reasoning engines reading a stale playbook.
+ */
+apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : team.name;
+  if (!name || name.length > 80) return fail(res, 400, "INVALID_TEAM_NAME", "Team name must be between 1 and 80 characters.");
+  const instructions = typeof req.body?.instructions === "string" ? req.body.instructions.trim() : (team.instructions || "");
+  if (instructions.length > 4000) return fail(res, 400, "INVALID_TEAM_INSTRUCTIONS", "Team instructions must be 4000 characters or fewer.");
+  const visibility = req.body?.visibility === undefined
+    ? team.visibility
+    : req.body.visibility === "PUBLIC" ? "PUBLIC" as const : "PRIVATE" as const;
+
+  /**
+   * `save` writes the whole record, so an omitted field is genuinely cleared.
+   * Rebuild without the previous value instead of spreading it, otherwise
+   * emptying the instructions would silently keep the old text.
+   */
+  const { instructions: _previousInstructions, ...teamWithoutInstructions } = team;
+  const updated = await goatTeamStore.save({
+    ...teamWithoutInstructions,
+    name,
+    ...(instructions ? { instructions } : {}),
+    visibility,
+    updatedAt: new Date().toISOString(),
+  });
+  await stampTeamInstructions(user.uid, updated.memberGoatIds, instructions);
+  res.json({ team: updated });
 }));
 
 apiRouter.get("/goat-teams/:id/assessment", handle(async (req, res) => {
@@ -5694,6 +6070,8 @@ apiRouter.get(
      */
     const withState = await Promise.all(
       goats.map(async (goat) => {
+        // Drafts are never scheduled, so there is no runtime to hydrate.
+        if (goat.deploymentState === 'DRAFT') return { ...goat, runtimeState: null };
         try {
           const runtime = await runtimeFor(goat);
           return { ...goat, runtimeState: runtime.getState() };
@@ -5714,13 +6092,34 @@ apiRouter.get(
     const user = requireUser(req);
     const goat = await persistence.goats.getForUser(req.params.id, user.uid);
     if (!goat) return notFound(res);
-    const runtime = await runtimeFor(goat);
-    const goatMarketProvider = await marketDataProviderForGoat(goat);
+    /**
+     * A draft member is a description, not a running agent: it has no schedule
+     * and no market until its team is deployed. Building a runtime for one both
+     * wastes work and throws outright when the member's venue is not connected
+     * yet, which authoring deliberately allows. Report it as not running.
+     *
+     * A member whose venue is not ready can also be left DEPLOYED by a partial
+     * team deploy, so hydration is tolerated here exactly as it already is in
+     * the list route: the record is still returned, without a runtime state.
+     */
+    const isDraft = goat.deploymentState === 'DRAFT';
+    let runtimeState: GoatRuntimeState | null = null;
+    let dataMode: GoatRuntimeState['dataSource'] | null = null;
+    let runtimeUnavailableReason: string | null = null;
+    if (!isDraft) {
+      try {
+        runtimeState = (await runtimeFor(goat)).getState();
+        dataMode = (await marketDataProviderForGoat(goat)).dataMode;
+      } catch (error) {
+        runtimeUnavailableReason = error instanceof Error ? error.message : "Runtime unavailable.";
+      }
+    }
     res.json({
       goat,
-      runtimeState: runtime?.getState() ?? null,
+      runtimeState,
       tradingProvider: resolveGoatTradingProvider(goat),
-      dataMode: goatMarketProvider.dataMode,
+      dataMode,
+      ...(runtimeUnavailableReason ? { runtimeUnavailableReason } : {}),
     });
   }),
 );
@@ -7419,8 +7818,6 @@ apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
   res.json({
     tools: [
       { id: "market_research", label: "Research a market", endpoint: "POST /api/chat/actions/market-research", confirmationRequired: false, available: providerReady.ready, blockedReason: providerReady.ready ? null : providerReady.reason },
-      { id: "create_goat", label: "Create a GOAT", endpoint: "POST /api/goats", confirmationRequired: true, available: true },
-      { id: "deploy_goat", label: "Deploy a GOAT", endpoint: "POST /api/chat/actions/goats/:id/deploy", confirmationRequired: true, available: true },
       { id: "create_trade_proposal", label: "Generate a trade proposal", endpoint: "POST /api/chat/actions/goats/:id/research", confirmationRequired: false, available: true },
       { id: "execute_trade", label: "Submit a risk-checked order", endpoint: "POST /api/chat/actions/execute-trade", confirmationRequired: true, available: Boolean(providerReady.ready && execution.enabled && execution.authorised && (selectedProvider !== "ctrader" || profile?.ctraderAccountId)), blockedReason: !providerReady.ready ? providerReady.reason : selectedProvider === "ctrader" && !profile?.ctraderAccountId ? "Select a cTrader account in Settings." : execution.enabled && execution.authorised ? null : execution.summary },
       { id: "backtest", label: "Run a historical GOAT backtest", endpoint: "POST /api/backtest/run", confirmationRequired: false, available: true },
@@ -7430,31 +7827,6 @@ apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
     execution,
   });
 });
-
-/**
- * Deploy a caller-owned GOAT only after the client has explicitly confirmed
- * the structured deployment card. Ownership and scheduler availability are
- * revalidated here; a client-side card is never the authorization boundary.
- */
-apiRouter.post("/chat/actions/goats/:id/deploy", authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  if (req.body?.confirmed !== true) {
-    return res.status(200).json({
-      action: { type: "deploy_goat", status: "confirmation_required", goatId: req.params.id,
-        title: "Deploy this GOAT?", message: "Deployment starts its schedule and initial market review.",
-        confirmationRequired: true },
-    });
-  }
-  try {
-    const deployed = await setGoatStatusFor(user.uid, req.params.id, false);
-    const goatMarketProvider = await marketDataProviderForGoat(deployed);
-    res.json({ action: { type: "deploy_goat", status: "completed", title: "GOAT deployed",
-      goat: deployed, tradingProvider: resolveGoatTradingProvider(deployed), dataMode: goatMarketProvider.dataMode } });
-  } catch (error) {
-    if (error instanceof NotFoundError) return notFound(res);
-    return fail(res, 409, "GOAT_DEPLOY_FAILED", error instanceof Error ? error.message : "Could not deploy this GOAT.");
-  }
-}));
 
 /** Ask a caller-owned GOAT for a fresh review and return the persisted proposals. */
 apiRouter.post("/chat/actions/goats/:id/research", authMiddleware, handle(async (req, res) => {
@@ -7801,17 +8173,19 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     // Natural-language requests open the corresponding structured action card.
     // This is routing only: the model cannot bypass the authenticated tool APIs.
     const actionText = message.trim().toLowerCase();
-    let requestedActionMode: "create-goat" | "deploy-goat" | "proposal" | "trade" | "backtest" | "account" | null = null;
+    /**
+     * Standalone create/deploy intents were removed with the GOAT screen:
+     * members are authored and activated inside the team builder, which chat
+     * cannot drive. Those phrasings now fall through to the normal answer
+     * instead of opening a card for an action that no longer exists.
+     */
+    let requestedActionMode: "proposal" | "trade" | "backtest" | "account" | null = null;
     if (/\b(auto[- ]?trading|auto[- ]?trade)\b/.test(actionText)) {
       requestedActionMode = "proposal";
     } else if (/\b(backtest|back test|historical replay|test my strategy)\b/.test(actionText)) {
       requestedActionMode = "backtest";
     } else if (/\b(propdao|account balance|challenge rules|open positions|open orders|closed trades|funded account status)\b/.test(actionText)) {
       requestedActionMode = "account";
-    } else if (/\b(create|make|build|set up|design)\b[\s\S]{0,80}\b(goat|agent)\b/.test(actionText)) {
-      requestedActionMode = "create-goat";
-    } else if (/\b(deploy|activate|start|play)\b[\s\S]{0,80}\b(goat|agent)\b/.test(actionText)) {
-      requestedActionMode = "deploy-goat";
     } else if (/\b(execute|place|submit|enter)\b[\s\S]{0,80}\b(trade|order)\b/.test(actionText)) {
       requestedActionMode = "trade";
     } else if (/\b(create|generate|research|review|find|prepare|accept|reject|show|list|manage|auto[- ]?trade|automatic trading)\b[\s\S]{0,80}\b(proposal|signal|trade setup|trade idea|trading|order)\b/.test(actionText) ||

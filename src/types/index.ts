@@ -380,6 +380,33 @@ export interface TradingSkill {
   updatedAt: string;
 }
 
+/**
+ * A TEAM MEMBER.
+ *
+ * Members are the only unit a user authors directly, and they are authored
+ * only inside the team builder — there is no standalone "create a bot" screen.
+ * A team of one member is the single-member case, which is why this record is
+ * the same shape whether it sits alone or inside a group.
+ *
+ * The runtime, scheduler and reasoning pipeline still operate on this record;
+ * `jobTitle`, `skills` and `roleContext` are the team-first presentation
+ * fields layered on top of that existing machinery.
+ */
+export interface TeamMember {
+  id: string;
+  name: string;
+  /** Short role label shown in the team roster, e.g. "Risk Manager". */
+  jobTitle: string;
+  /** What this member is responsible for. Maps to the runtime `goal`. */
+  jobDescription: string;
+  /** Free-text capabilities the user typed for this member. */
+  skills: string[];
+  status: string;
+  asset?: string;
+  tradingProvider?: TradingProvider;
+  createdAt?: string;
+}
+
 export interface FundGoat {
   id: string;
   userId: string;
@@ -388,6 +415,24 @@ export interface FundGoat {
   markets: string[];
   skillIds: string[];
   model: string;
+  /** Team-first presentation: the member's role on the team. */
+  jobTitle?: string;
+  /**
+   * Team-first presentation: the capabilities the user typed for this member.
+   * Kept alongside `skillIds` because the runtime resolves executable skills
+   * from saved skill records, while this is what the user actually authored.
+   */
+  skills?: string[];
+  /**
+   * The owning team's operating instructions, denormalised onto the member.
+   *
+   * The runtime, chat and backtest engines each build their own reasoning
+   * context from this record, so resolving team instructions per wake would
+   * need plumbing through every one of them. Stamping the value keeps a team's
+   * instructions genuinely global for its members while the team remains the
+   * single source of truth.
+   */
+  teamInstructions?: string;
   /** Optional per-GOAT AI provider override; absent inherits Settings. */
   aiProvider?: 'openrouter' | 'spacebunny';
   /**
