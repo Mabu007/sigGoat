@@ -27,7 +27,7 @@ const quoteIsFresh = (quote: MarketQuote | null) => {
   return true;
 };
 
-export function PublicTeamView({ slug, onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; onBack?: () => void }) {
+export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; backLabel?: string; onBack?: () => void }) {
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -177,6 +177,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   if (!data) return <main className="trade-room-minimal"><div className="trade-room-error" role="alert">{error || 'This room is unavailable.'}<button type="button" onClick={onBack} aria-label="Back to rooms">←</button></div></main>;
 
   return <main className="trade-room-minimal">
+    <button type="button" className="sg-room-back" onClick={onBack}>← Back to {backLabel}</button>
     <section className="trade-room-stage" aria-label="Market chart">
       <header className="sg-room-header">
         <div className="sg-room-instrument">
