@@ -1,0 +1,34 @@
+/* SIRGOAT Trading Hub — YouTube-inspired navigation and discovery layout */
+.yt-header { background: color-mix(in srgb, var(--color-surface) 94%, transparent); backdrop-filter: blur(18px); }
+.yt-header-inner { max-width: none !important; }
+.yt-search { height: 42px; border: 1px solid var(--color-line-strong); border-radius: 999px; overflow: hidden; background: var(--color-raised); transition: border-color .18s, box-shadow .18s; }
+.yt-search:focus-within { border-color: var(--color-info); box-shadow: 0 0 0 1px var(--color-info); }
+.yt-search-button { border-left: 1px solid var(--color-line); background: color-mix(in srgb, var(--color-sunken) 65%, var(--color-surface)); color: var(--color-fg-muted); transition: background .18s, color .18s; }
+.yt-search-button:hover { background: var(--color-accent-soft); color: var(--color-fg); }
+.yt-icon-button { width: 38px; height: 38px; align-items: center; justify-content: center; border-radius: 999px; color: var(--color-fg-muted); transition: background .18s, color .18s; }
+.yt-icon-button:hover { background: var(--color-raised); color: var(--color-fg); }
+.yt-create-button { background: var(--color-accent-soft); color: var(--color-fg); transition: filter .18s, transform .18s; }
+.yt-create-button:hover { filter: brightness(.97); transform: translateY(-1px); }
+.yt-avatar { background: var(--color-accent); color: white; border: 2px solid var(--color-surface); }
+.premium-sidebar { width: 232px !important; border-right-color: var(--color-line); background: var(--color-surface); }
+.premium-sidebar > div:first-child { padding-left: 22px; }
+.premium-nav-item { border-radius: 10px !important; min-height: 42px; }
+.premium-nav-item[aria-current="page"] { background: var(--color-accent-soft) !important; color: var(--color-fg) !important; font-weight: 700; }
+.premium-shell { background: var(--color-canvas); }
+.premium-shell main { max-width: none !important; padding-left: clamp(16px, 2.2vw, 36px); padding-right: clamp(16px, 2.2vw, 36px); }
+.premium-shell main h1 { letter-spacing: -.035em; }
+.premium-shell main [class*="rounded-2xl"], .premium-shell main [class*="rounded-xl"] { transition: border-color .18s ease, box-shadow .18s ease; }
+.premium-shell main [class*="grid-cols-"] > * { min-width: 0; }
+.premium-shell main button { transition-duration: .16s; }
+@media (min-width: 768px) {
+  .premium-shell { flex-direction: row !important; }
+}
+@media (max-width: 767px) {
+  .yt-header-inner { gap: 8px; padding-left: 10px; padding-right: 10px; }
+  .yt-header-inner > form { max-width: none; }
+  .yt-search { height: 38px; }
+  .yt-search > svg:first-child { display: none; }
+  .yt-search input { padding-left: 12px; font-size: 12px; }
+  .yt-search-button { width: 38px; }
+  .yt-create-button { padding-left: 10px; padding-right: 10px; }
+}
