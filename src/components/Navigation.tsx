@@ -127,11 +127,6 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
           })}
         </ul>
 
-        <div className="border-t border-line p-4">
-          <p className="text-[11px] leading-relaxed text-fg-subtle">
-            Discover AI trading teams, follow their market work, and connect your own trading account when you're ready.
-          </p>
-        </div>
       </nav>
 
       {/* Mobile bottom bar.
