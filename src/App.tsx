@@ -54,7 +54,7 @@ const MainApp: React.FC = () => {
   const { refreshQuotes, quotes } = useMarket();
 
   useEffect(() => {
-    const onHashChange = () => setActiveTab(tabFromHash());
+    const onHashChange = () => { setSelectedRoom(null); setActiveTab(tabFromHash()); };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
