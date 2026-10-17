@@ -65,7 +65,7 @@ export function PublicTeamView({ slug }: { slug: string }) {
       try {
         // The public robot market endpoint accepts the member's robot id/slug and
         // returns only provider-backed quotes and candles; no chart data is fabricated.
-        const response = await fetch('/api/robots/' + encodeURIComponent(selectedMember.id) + '/market?symbol=' + encodeURIComponent(marketSymbol) + '&timeframe=1h&count=120', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+        const response = await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/market?memberId=' + encodeURIComponent(selectedMember.id) + '&symbol=' + encodeURIComponent(marketSymbol) + '&timeframe=1h&count=120', { headers: { Accept: 'application/json' }, cache: 'no-store' });
         const result = await read<{ quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string }>(response);
         if (cancelled) return;
         const quote = result.quotes?.find(item => item.symbol === marketSymbol) ?? result.quotes?.[0] ?? null;
@@ -82,7 +82,7 @@ export function PublicTeamView({ slug }: { slug: string }) {
     void refreshMarket();
     const interval = window.setInterval(() => void refreshMarket(), 15000);
     return () => { cancelled = true; window.clearInterval(interval); };
-  }, [selectedMember?.id, marketSymbol]);
+  }, [slug, selectedMember?.id, marketSymbol]);
 
   const decide = async (member: Member, signal: Signal, decision: 'ACCEPTED' | 'REJECTED') => {
     setBusy(signal.id); setError(''); setNotice('');
