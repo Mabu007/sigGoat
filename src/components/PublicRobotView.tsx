@@ -18,7 +18,7 @@ async function responseJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export function PublicRobotView({ slug, onBack }: { slug: string; onBack: () => void }) {
+export function PublicRobotView({ slug, onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; onBack?: () => void }) {
   const { currentUser, authMode, getApiAuthHeaders, loginWithGoogle, signupWithEmail, loginWithEmail } = useAuth();
   const [robot, setRobot] = useState<Robot | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
