@@ -48,6 +48,7 @@ import {
   NotFoundError,
 } from "./repositories";
 import { createGoatWorkflowStore } from "./GoatWorkflowStore";
+import { DEMO_TEAMS, demoTeamCard, findDemoTeam } from "./demoTeams";
 import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode, type TeamDeploymentSettings, type TeamRiskParameters } from "./GoatTeamStore";
 import { assessGoatTeamMarket } from "./GoatTeamCoordination";
 import {
@@ -3752,6 +3753,39 @@ apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
   }));
   res.setHeader("Cache-Control", "public, max-age=10, stale-while-revalidate=20");
   res.json({ rooms });
+}));
+
+/**
+ * SIMULATED DEMO TEAMS
+ *
+ * Entirely invented teams, so the room experience can be explored with no
+ * account, no broker and no AI key. Read-only: nothing here touches
+ * persistence, is scheduled, or reaches a model. Every payload is flagged
+ * `isDemo`, and the room view hides the accept/reject actions for them so a
+ * simulated proposal cannot be recorded as a decision.
+ */
+apiRouter.get("/demo-teams", handle(async (_req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
+  res.json({ rooms: DEMO_TEAMS.map(demoTeamCard), simulated: true });
+}));
+
+apiRouter.get("/demo-team-rooms/:slug", handle(async (req, res) => {
+  const team = findDemoTeam(String(req.params.slug || ""));
+  if (!team) return fail(res, 404, "DEMO_TEAM_NOT_FOUND", "This simulated team is not available.");
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=120");
+  res.json({
+    isDemo: true,
+    team: {
+      id: team.id, slug: team.slug, name: team.name, visibility: "PUBLIC", status: "DEPLOYED",
+      coordinationMode: team.coordinationMode, memberCount: team.memberCount,
+      markets: [team.asset], tagline: team.tagline, instructions: team.instructions,
+    },
+    members: team.members.map(member => ({
+      id: member.id, name: member.name, jobTitle: member.jobTitle, goal: member.goal,
+      skills: member.skills, markets: member.markets, status: member.status,
+      provider: member.provider, latestThesis: member.latestThesis, signals: member.signals,
+    })),
+  });
 }));
 
 /** Share-link room details. Public rooms are discoverable; private rooms require their unguessable slug. */

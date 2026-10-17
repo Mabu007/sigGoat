@@ -18,9 +18,20 @@ type TradeRoom = {
   latestThesis: null | { market: string; bias: string; summary: string; updatedAt: string };
   roomType?: 'bot' | 'team';
   memberCount?: number;
+  /** Simulated room from the demo catalogue. Never a real team. */
+  isDemo?: boolean;
+  tagline?: string;
 };
 type TeamVisibility = 'PUBLIC' | 'PRIVATE';
-type DirectoryMode = 'all' | 'active' | 'mine';
+/**
+ * The directory is split by AUDIENCE, not by status.
+ *
+ * "Active" was the wrong axis: it hid good teams whose status was not yet
+ * DEPLOYED and duplicated the deployment state a team card already shows. A
+ * visitor has exactly two questions -- what is out there, and what is mine --
+ * and visibility is what separates them.
+ */
+type DirectoryMode = 'public' | 'private';
 type TradingProvider = 'ctrader' | 'hyperliquid';
 type BuildStep = 'team' | 'members' | 'deploy';
 
@@ -92,7 +103,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [directoryMode, setDirectoryMode] = useState<DirectoryMode>('all');
+  const [directoryMode, setDirectoryMode] = useState<DirectoryMode>('public');
   const [myRooms, setMyRooms] = useState<TradeRoom[]>([]);
   const [myRoomsLoading, setMyRoomsLoading] = useState(false);
 
@@ -130,17 +141,25 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     setLoading(true);
     setError('');
     try {
-      const [botsResponse, teamsResponse] = await Promise.all([
+      /**
+       * The demo catalogue is fetched alongside the real feeds and tolerated
+       * failing on its own: it is illustrative, so a demo outage must never
+       * blank the real directory.
+       */
+      const [botsResponse, teamsResponse, demoResponse] = await Promise.all([
         fetch('/api/robots', { headers: { Accept: 'application/json' }, cache: 'no-store' }),
         fetch('/api/goat-teams/public', { headers: { Accept: 'application/json' }, cache: 'no-store' }),
+        fetch('/api/demo-teams', { headers: { Accept: 'application/json' }, cache: 'no-store' }).catch(() => ({ ok: false, json: async () => ({}) })),
       ]);
       const botsBody = await botsResponse.json().catch(() => ({}));
       const teamsBody = await teamsResponse.json().catch(() => ({}));
       if (!botsResponse.ok) throw new Error(botsBody?.error?.message || 'Could not load public AI traders.');
       if (!teamsResponse.ok) throw new Error(teamsBody?.error?.message || 'Could not load public teams.');
+      const demoBody = demoResponse.ok ? await demoResponse.json().catch(() => ({})) : {};
       const bots: TradeRoom[] = (Array.isArray(botsBody.rooms) ? botsBody.rooms : []).map((room: TradeRoom) => ({ ...room, roomType: 'bot' as const }));
       const teams: TradeRoom[] = (Array.isArray(teamsBody.rooms) ? teamsBody.rooms : []).map((room: TradeRoom) => ({ ...room, roomType: 'team' as const }));
-      setRooms([...teams, ...bots].sort((a, b) => (b.updatedAt || b.publishedAt || '').localeCompare(a.updatedAt || a.publishedAt || '')));
+      const demos: TradeRoom[] = (Array.isArray(demoBody.rooms) ? demoBody.rooms : []).map((room: TradeRoom) => ({ ...room, roomType: 'team' as const }));
+      setRooms([...demos, ...teams, ...bots].sort((a, b) => (b.updatedAt || b.publishedAt || '').localeCompare(a.updatedAt || a.publishedAt || '')));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load Trade Rooms.');
     } finally { setLoading(false); }
@@ -177,6 +196,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
    * successful create the stale share panel came back instead of the form.
    */
   const openCreateTeam = useCallback(() => {
+    setDirectoryMode('public');
     setStep('team');
     setTeamName(''); setInstructions(''); setVisibility('PRIVATE');
     setPoolMembers([]); setReuseMemberId(''); setDrafts([emptyDraft()]);
@@ -336,15 +356,14 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     } finally { setPoolLoading(false); }
   }, [currentUser, authMode, getApiAuthHeaders]);
 
-  const visibleRooms = directoryMode === 'mine' ? myRooms : rooms;
+  const visibleRooms = directoryMode === 'private' ? myRooms : rooms;
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return visibleRooms.filter(room => {
-      const matchesText = !needle || [room.name, room.description, room.creatorName, ...(room.markets || [])].join(' ').toLowerCase().includes(needle);
-      const matchesFilter = directoryMode !== 'active' || /active|deployed|running/i.test(room.status);
-      return matchesText && matchesFilter;
-    });
-  }, [visibleRooms, query, directoryMode]);
+    if (!needle) return visibleRooms;
+    return visibleRooms.filter(room =>
+      [room.name, room.description, room.creatorName, ...(room.markets || [])].join(' ').toLowerCase().includes(needle),
+    );
+  }, [visibleRooms, query]);
 
   /* A team of one is valid: one specialist is just the smallest team. */
   const reusedMember = reuseMemberId ? poolMembers.find(member => member.id === reuseMemberId) ?? null : null;
@@ -416,7 +435,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
       await loadMyRooms().catch(() => {});
       await loadRooms();
 
-      if (body.team?.status === 'PARTIAL') setCreateNotice('Team saved, but some members did not deploy. Open My Rooms to review the results.');
+      if (body.team?.status === 'PARTIAL') setCreateNotice('Team saved, but some members did not deploy. Open My Private Rooms to review the results.');
       else if (deploy) setCreateNotice(visibility === 'PUBLIC' ? 'Team deployed and published to the homepage.' : 'Team saved and deployed. Share its link any time.');
       else setCreateNotice('Team saved. Deploy it later to start trading, or share its link now.');
     } catch (err) { setCreateError(err instanceof Error ? err.message : 'Could not create the team.'); }
@@ -436,11 +455,11 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
         <h1 className="text-2xl font-semibold tracking-tight text-fg">Discover teams and bots</h1>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap gap-2" role="group" aria-label="Room directory">
-            {([{ id: 'all', label: 'All Rooms' }, { id: 'active', label: 'Active Rooms' }, { id: 'mine', label: 'My Rooms' }] as const).map(item => (
+            {([{ id: 'public', label: 'Public Rooms' }, { id: 'private', label: 'My Private Rooms' }] as const).map(item => (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => { setDirectoryMode(item.id); setQuery(''); if (item.id === 'mine') void loadMyRooms(); else setError(''); }}
+                onClick={() => { setDirectoryMode(item.id); setQuery(''); if (item.id === 'private') void loadMyRooms(); else setError(''); }}
                 aria-pressed={directoryMode === item.id}
                 className={directoryMode === item.id ? 'rounded-lg border border-accent bg-accent-soft px-3 py-2 text-xs font-medium text-accent-text' : 'rounded-lg border border-line px-3 py-2 text-xs font-medium text-fg-muted hover:bg-raised'}
               >
@@ -449,39 +468,46 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
             ))}
           </div>
           <p className="text-xs text-fg-muted">
-            {directoryMode === 'mine' ? (myRoomsLoading ? 'Loading your rooms…' : filtered.length + ' of ' + myRooms.length + ' rooms') : (loading ? 'Loading public rooms…' : rooms.length + ' public ' + (rooms.length === 1 ? 'room' : 'rooms'))}
+            {directoryMode === 'private'
+              ? (myRoomsLoading ? 'Loading your rooms…' : filtered.length + ' of ' + myRooms.length + ' rooms')
+              : (loading ? 'Loading public rooms…' : rooms.length + ' public ' + (rooms.length === 1 ? 'room' : 'rooms'))}
           </p>
         </div>
         <label className="relative block">
           <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-subtle" />
-          <input value={query} onChange={event => setQuery(event.target.value)} className="input !pl-9" placeholder={directoryMode === 'mine' ? 'Search your rooms…' : 'Search teams, markets, or strategies…'} aria-label="Search Trade Rooms" />
+          <input value={query} onChange={event => setQuery(event.target.value)} className="input !pl-9" placeholder={directoryMode === 'private' ? 'Search your rooms…' : 'Search teams, markets, or strategies…'} aria-label="Search Trade Rooms" />
         </label>
       </section>
 
       {error && <div role="alert" className="panel border-warning/40 p-4 text-sm text-fg-muted">{error}</div>}
 
-      {(directoryMode === 'mine' ? myRoomsLoading : loading) ? (
+      {(directoryMode === 'private' ? myRoomsLoading : loading) ? (
         <div className="panel p-8 text-center text-sm text-fg-muted">Loading rooms…</div>
       ) : filtered.length ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {filtered.map(room => {
-            const href = room.roomType === 'team' ? `/team/${encodeURIComponent(room.slug)}` : `/robot/${encodeURIComponent(room.slug)}`;
+            const href = room.isDemo
+              ? `/demo-team/${encodeURIComponent(room.slug)}`
+              : room.roomType === 'team' ? `/team/${encodeURIComponent(room.slug)}` : `/robot/${encodeURIComponent(room.slug)}`;
             return (
               <article key={(room.roomType || 'bot') + room.slug} className="panel group flex min-h-56 flex-col p-4 transition-colors hover:border-accent/60 hover:bg-raised">
                 <a href={href} className="flex flex-1 flex-col">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-line bg-raised text-accent-text">{room.roomType === 'team' ? <Users size={20} /> : <Bot size={20} />}</div>
-                    <span className="rounded-full border border-line px-2 py-1 text-[10px] text-fg-muted">{room.mode === 'PAPER' ? 'Paper mode' : room.roomType === 'team' ? 'Team room' : room.status}</span>
+                    <span className="flex flex-wrap justify-end gap-1">
+                      {room.isDemo && <span className="rounded-full border border-warning/50 bg-warning-soft px-2 py-1 text-[10px] font-medium text-warning">Simulated demo</span>}
+                      <span className="rounded-full border border-line px-2 py-1 text-[10px] text-fg-muted">{room.mode === 'PAPER' ? 'Paper mode' : room.roomType === 'team' ? 'Team room' : room.status}</span>
+                    </span>
                   </div>
                   <h3 className="mt-4 flex items-center gap-2 font-semibold text-fg">{room.name}<ArrowUpRight size={14} className="text-fg-subtle transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" /></h3>
-                  <p className="mt-1 line-clamp-3 text-sm leading-5 text-fg-muted">{room.description || 'An AI trading room sharing recorded market research.'}</p>
+                  <p className="mt-1 line-clamp-3 text-sm leading-5 text-fg-muted">{room.tagline || room.description || 'An AI trading room sharing recorded market research.'}</p>
                   {room.latestThesis && <div className="mt-3 rounded-lg border border-line bg-raised/70 p-3"><p className="text-[10px] uppercase tracking-wide text-fg-subtle">Latest recorded view · {room.latestThesis.market}</p><p className="mt-1 line-clamp-2 text-xs text-fg">{room.latestThesis.summary}</p></div>}
                   <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-4">
                     <span className="flex items-center gap-1.5 text-[11px] text-fg-subtle"><Users size={12} /> {room.roomType === 'team' ? `${room.memberCount || 0} bots` : room.creatorName}</span>
                     <span className="text-[10px] text-fg-subtle">{(room.markets || []).slice(0, 3).join(' · ') || 'Markets not listed'}</span>
                   </div>
                 </a>
-                {room.roomType === 'team' && <a href={href} className="mt-3 inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white hover:opacity-90">Open room <ArrowUpRight size={13} /></a>}
+                {room.roomType === 'team' && <a href={href} className="mt-3 inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white hover:opacity-90">{room.isDemo ? 'Explore demo room' : 'Open room'} <ArrowUpRight size={13} /></a>}
               </article>
             );
           })}
@@ -489,9 +515,13 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
       ) : (
         <div className="panel px-5 py-12 text-center">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-line bg-raised text-accent-text"><Bot size={22} /></div>
-          <h3 className="mt-4 font-semibold text-fg">{visibleRooms.length ? 'No rooms match that search' : directoryMode === 'mine' ? 'No teams yet' : 'No public rooms yet'}</h3>
+          <h3 className="mt-4 font-semibold text-fg">{visibleRooms.length ? 'No rooms match that search' : directoryMode === 'private' ? 'No private rooms yet' : 'No public rooms yet'}</h3>
           <p className="mx-auto mt-2 max-w-md text-sm text-fg-muted">
-            {visibleRooms.length ? 'Try another name, market, or filter.' : directoryMode === 'mine' ? 'Your teams will appear here. A team can have a single member or many, and each member can be reused across teams.' : 'No public teams or bots are listed yet. Create a team, add the members you need, then deploy it.'}
+            {visibleRooms.length
+              ? 'Try another name or market.'
+              : directoryMode === 'private'
+                ? 'Your teams will appear here, whether they are private or published. A team can have a single member or many, and each member can be reused across teams.'
+                : 'No public teams or bots are listed yet. Create a team, add the members you need, then deploy it.'}
           </p>
           <button type="button" onClick={openCreateTeam} className="btn btn-primary mt-5"><CirclePlus size={15} /> Create Bot Team</button>
         </div>

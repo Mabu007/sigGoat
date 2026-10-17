@@ -147,6 +147,8 @@ export default function App() {
         <AuthGate>
             {typeof window !== 'undefined' && /^\/robot\/[^/]+\/?$/.test(window.location.pathname)
               ? <React.Suspense fallback={<ViewLoadingFallback />}><PublicRobotView slug={decodeURIComponent(window.location.pathname.split('/')[2] || '')} /></React.Suspense>
+              : typeof window !== 'undefined' && /^\/demo-team\/[^/]+\/?$/.test(window.location.pathname)
+                ? <React.Suspense fallback={<ViewLoadingFallback />}><PublicTeamView slug={decodeURIComponent(window.location.pathname.split('/')[2] || '')} simulated /></React.Suspense>
               : typeof window !== 'undefined' && /^\/team\/[^/]+\/?$/.test(window.location.pathname)
                 ? <React.Suspense fallback={<ViewLoadingFallback />}><PublicTeamView slug={decodeURIComponent(window.location.pathname.split('/')[2] || '')} /></React.Suspense>
               : <>
