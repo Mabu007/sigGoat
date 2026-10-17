@@ -246,7 +246,7 @@
 }
 @media (min-width: 768px) {
   .yt-room-grid {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 420px));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
     column-gap: 24px;
     row-gap: 24px;
     justify-content: start;
@@ -254,10 +254,6 @@
 }
 @media (max-width: 380px) {
   .yt-room-grid { column-gap: 10px; row-gap: 18px; }
-  .yt-room-meta { gap: 8px; }
-  .yt-room-avatar { width: 32px; height: 32px; flex-basis: 32px; }
-  .yt-room-title { font-size: 12px; }
-  .yt-room-creator, .yt-room-description { font-size: 11px; }
 }
 
 
