@@ -46,6 +46,7 @@ interface ChartProps {
   timeframe: string;
   symbol: string;
   digits?: number;
+  roomName?: string;
 }
 
 export const TradingViewLightweightChart: React.FC<ChartProps> = ({
@@ -54,6 +55,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   timeframe,
   symbol,
   digits = 5,
+  roomName,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
@@ -62,6 +64,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
+  const hasFittedContentRef = useRef(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -96,6 +99,9 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
         borderColor: palette.border,
         timeVisible: true,
         secondsVisible: false,
+        barSpacing: 6,
+        minBarSpacing: 2,
+        rightOffset: 5,
       },
       rightPriceScale: {
         borderColor: palette.border,
@@ -119,6 +125,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
       upColor: palette.positive,
       downColor: palette.negative,
       borderVisible: false,
+      wickVisible: true,
       wickUpColor: palette.positive,
       wickDownColor: palette.negative,
       priceFormat: {
@@ -159,6 +166,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     return () => {
       resizeObserver.disconnect();
       chart.remove();
+      hasFittedContentRef.current = false;
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
@@ -201,7 +209,10 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     try {
       candleSeriesRef.current.setData(formattedCandles);
       volumeSeriesRef.current.setData(formattedVolumes);
-      chartRef.current?.timeScale().fitContent();
+      if (!hasFittedContentRef.current) {
+        chartRef.current?.timeScale().fitContent();
+        hasFittedContentRef.current = true;
+      }
     } catch (err) {
       console.warn('Lightweight chart setData error:', err);
     }
@@ -231,8 +242,9 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   }, [activeQuote, candles]);
 
   return (
-    <div className="w-full h-full relative">
-      <div ref={containerRef} className="w-full h-full min-h-0 rounded-lg overflow-hidden" />
+    <div className="relative h-full min-h-0 w-full overflow-hidden rounded-lg">
+      {roomName && <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center overflow-hidden"><span className="max-w-[90%] select-none truncate text-center text-4xl font-black uppercase tracking-[0.16em] text-white/[0.055] sm:text-6xl" style={{ textShadow: '0 1px 2px rgba(0,0,0,.12)' }}>{roomName}</span></div>}
+      <div ref={containerRef} className="relative z-0 h-full min-h-0 w-full overflow-hidden" />
     </div>
   );
 };
