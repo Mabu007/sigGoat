@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { ArrowUpRight, Bot, Check, CirclePlus, Copy, Globe, LockKeyhole, Plus, Rocket, Search, Trash2, Users, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { ArrowUpRight, Bot, Check, CirclePlus, Copy, FilePlus2, Globe, Info, LockKeyhole, Plus, Rocket, Search, Trash2, Users, X } from 'lucide-react';
+import { SearchablePicker } from '../../components/SearchablePicker';
+import { SkillParser } from '../../services/agent/SkillParser';
 import { useGoat } from '../../context/GoatContext';
 import { useAuth } from '../../context/AuthContext';
 
@@ -37,16 +39,47 @@ type MemberDraft = {
   name: string;
   jobTitle: string;
   jobDescription: string;
-  skills: string;
+  /**
+   * Ids from the global skill catalogue, chosen in the picker.
+   *
+   * Ids, not typed text: the catalogue is real and owned, so the server binds
+   * exactly what was chosen instead of re-guessing the words. Free text used to
+   * be fuzzy-matched and silently fell back to an unrelated skill.
+   */
+  skillIds: string[];
 };
+
+type SkillOption = { id: string; name: string; description: string; isDefault?: boolean };
+type AssetOption = { symbol: string; name: string; category: string };
 
 const MAX_MEMBERS = 10;
 const draftKey = () => `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-const emptyDraft = (): MemberDraft => ({ key: draftKey(), name: '', jobTitle: '', jobDescription: '', skills: '' });
+const emptyDraft = (): MemberDraft => ({ key: draftKey(), name: '', jobTitle: '', jobDescription: '', skillIds: [] });
+
+/** Copy for the markdown editor, matching the standalone skill screen. */
+const SKILL_STARTER = `---
+name: My Trading Skill
+timeframes: 15m, 1h
+---
+
+# My Trading Skill
+
+Describe what this skill looks for and when it applies.
+
+## Thesis Formation
+- What evidence must line up before acting?
+
+## Constraints
+REQUIRE_EVIDENCE_BEFORE_ACTIONABLE
+REQUIRE_INVALIDATION_BEFORE_TRADE
+
+## Invalidation Rules
+What breaks the setup.
+`;
 
 const PROVIDER_OPTIONS: Array<{ id: TradingProvider; label: string; blurb: string }> = [
-  { id: 'ctrader', label: 'cTrader', blurb: 'Broker-connected execution. Requires a linked cTrader account.' },
-  { id: 'hyperliquid', label: 'Hyperliquid', blurb: 'On-chain perpetuals through your connected wallet.' },
+  { id: 'ctrader', label: 'cTrader', blurb: 'Standard cTrader assets. Paper prices until you connect a broker; a broker is only needed for live trading.' },
+  { id: 'hyperliquid', label: 'Hyperliquid', blurb: 'On-chain perpetuals. Connect a wallet in Settings to trade live.' },
 ];
 
 /** Sensible starting risk so the deployment step is never an empty form. */
@@ -76,6 +109,18 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
   const [provider, setProvider] = useState<TradingProvider>('ctrader');
   const [asset, setAsset] = useState('');
   const [risk, setRisk] = useState(DEFAULT_RISK);
+  const [liveTrading, setLiveTrading] = useState(false);
+  const [assets, setAssets] = useState<AssetOption[]>([]);
+  const [assetsLoading, setAssetsLoading] = useState(false);
+  const [assetsNote, setAssetsNote] = useState('');
+  const [assetsLive, setAssetsLive] = useState<{ available: boolean; reason: string | null; dataMode: string }>({ available: false, reason: null, dataMode: 'PAPER' });
+  const [skills, setSkills] = useState<SkillOption[]>([]);
+  const [skillAuthor, setSkillAuthor] = useState<{ draftKey: string } | null>(null);
+  const [skillMarkdown, setSkillMarkdown] = useState(SKILL_STARTER);
+  const [skillSaving, setSkillSaving] = useState(false);
+  const [skillError, setSkillError] = useState('');
+  /** Which venue the currently loaded asset list belongs to. */
+  const assetsProviderRef = useRef<TradingProvider | null>(null);
   const [saving, setSaving] = useState(false);
   const [createError, setCreateError] = useState('');
   const [createNotice, setCreateNotice] = useState('');
@@ -135,10 +180,122 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     setStep('team');
     setTeamName(''); setInstructions(''); setVisibility('PRIVATE');
     setPoolMembers([]); setReuseMemberId(''); setDrafts([emptyDraft()]);
-    setProvider('ctrader'); setAsset(''); setRisk(DEFAULT_RISK);
+    setProvider('ctrader'); setAsset(''); setRisk(DEFAULT_RISK); setLiveTrading(false);
+    setAssets([]); setAssetsNote(''); setAssetsLive({ available: false, reason: null, dataMode: 'PAPER' });
+    assetsProviderRef.current = null;
+    setSkillAuthor(null); setSkillMarkdown(SKILL_STARTER); setSkillError('');
     setCreateError(''); setCreateNotice(''); setCreatedShareUrl('');
     setCreateOpen(true);
   }, []);
+
+  /**
+   * The global skill catalogue. Populated when the Members step opens rather
+   * than at mount, because it is only needed there.
+   */
+  const loadSkills = useCallback(async () => {
+    if (!currentUser && authMode !== 'dev') return;
+    try {
+      const headers = new Headers({ Accept: 'application/json' });
+      for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+      const response = await fetch('/api/skills', { headers, cache: 'no-store' });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok && Array.isArray(body.skills)) {
+        setSkills(body.skills as SkillOption[]);
+      }
+    } catch {
+      // The catalogue is a convenience; members can still be described without it.
+    }
+  }, [currentUser, authMode, getApiAuthHeaders]);
+
+  /**
+   * Assets for the chosen venue.
+   *
+   * Re-fetched on every provider change so the list can never describe the
+   * wrong venue. The response states whether the feed is live and what a broker
+   * connection would add, which is what lets the UI say so plainly instead of
+   * implying an asset will fill when it cannot.
+   */
+  const loadAssets = useCallback(async (forProvider: TradingProvider) => {
+    if (!currentUser && authMode !== 'dev') return;
+    setAssetsLoading(true);
+    try {
+      const headers = new Headers({ Accept: 'application/json' });
+      for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+      const response = await fetch(`/api/markets/assets?provider=${forProvider}`, { headers, cache: 'no-store' });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok && Array.isArray(body.assets)) {
+        setAssets(body.assets as AssetOption[]);
+        setAssetsNote(typeof body.note === 'string' ? body.note : '');
+        setAssetsLive({ available: body.liveAvailable === true, reason: body.liveBlockedReason ?? null, dataMode: String(body.dataMode ?? 'PAPER') });
+      }
+    } catch {
+      setAssets([]);
+    } finally { setAssetsLoading(false); }
+  }, [currentUser, authMode, getApiAuthHeaders]);
+
+  const chooseProvider = (next: TradingProvider) => {
+    setProvider(next);
+    // The chosen asset belongs to the old venue; carrying it over would deploy
+    // a symbol the new venue may not list.
+    setAsset('');
+    void loadAssets(next);
+  };
+
+  useEffect(() => { if (step === 'members') void loadSkills(); }, [step, loadSkills]);
+
+  /**
+   * Assets load on first arrival at the Deploy step and are then kept in sync
+   * with the venue. Reloading on every step change would refetch the same list
+   * each time the user passes back and forth.
+   */
+  useEffect(() => {
+    if (step !== 'deploy' || assetsProviderRef.current === provider) return;
+    assetsProviderRef.current = provider;
+    void loadAssets(provider);
+  }, [step, provider, loadAssets]);
+
+  /**
+   * Authors a skill from markdown and adds it to the member being edited.
+   *
+   * The skill is persisted to the user's global catalogue, so it is available
+   * to every future member, not just this one. Parsing happens client-side
+   * with the same parser the standalone skill screen uses, then the normalised
+   * fields are posted.
+   */
+  const saveAuthoredSkill = async () => {
+    if (!skillAuthor) return;
+    if (!skillMarkdown.trim()) { setSkillError('Write the skill content first.'); return; }
+    setSkillSaving(true); setSkillError('');
+    try {
+      const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'application/json' });
+      for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+      const parsed = SkillParser.parse(skillMarkdown.trim());
+      const response = await fetch('/api/skills', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          name: parsed.name,
+          description: parsed.description,
+          methodology: parsed.methodology,
+          constraints: parsed.constraints,
+          preferredTimeframes: parsed.preferredTimeframes,
+          requiredEvidence: parsed.requiredEvidence,
+          invalidationRules: parsed.invalidationRules,
+          rawMarkdown: parsed.rawMarkdown,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      const created = body?.skill;
+      if (!response.ok || !created?.id) throw new Error(body?.error?.message || 'Could not save the skill.');
+      setSkills(previous => [...previous, created as SkillOption]);
+      setDrafts(previous => previous.map(draft => draft.key === skillAuthor.draftKey
+        ? { ...draft, skillIds: [...draft.skillIds, created.id] }
+        : draft));
+      setSkillAuthor(null); setSkillMarkdown(SKILL_STARTER);
+    } catch (err) {
+      setSkillError(err instanceof Error ? err.message : 'Could not save the skill.');
+    } finally { setSkillSaving(false); }
+  };
 
   useEffect(() => {
     if (!createTeamRequested) return;
@@ -151,10 +308,14 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     if (!createOpen) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape' && !saving) setCreateOpen(false); };
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Innermost layer first: the skill editor closes before the team sheet.
+      if (event.key === 'Escape' && skillAuthor) { setSkillAuthor(null); return; }
+      if (event.key === 'Escape' && !saving) setCreateOpen(false);
+    };
     window.addEventListener('keydown', onKeyDown);
     return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('keydown', onKeyDown); };
-  }, [createOpen, saving]);
+  }, [createOpen, saving, skillAuthor]);
 
   /**
    * Members already saved by earlier teams. They are offered as a dropdown so
@@ -216,7 +377,10 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
         name: draft.name.trim(),
         jobTitle: draft.jobTitle.trim(),
         jobDescription: draft.jobDescription.trim(),
-        skills: draft.skills.split(',').map(skill => skill.trim()).filter(Boolean),
+        skillIds: draft.skillIds,
+        skills: draft.skillIds
+          .map(id => skills.find(skill => skill.id === id)?.name)
+          .filter((name): name is string => Boolean(name)),
       }));
       const response = await fetch('/api/goat-teams', {
         method: 'POST',
@@ -232,6 +396,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
             deployment: {
               provider,
               asset: asset.trim().toUpperCase(),
+              liveTrading,
               risk: {
                 maxPositionSizePercent: Number(risk.maxPositionSizePercent),
                 maxDailyLossPercent: Number(risk.maxDailyLossPercent),
@@ -268,13 +433,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
   return (
     <div className="space-y-6">
       <section className="space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-fg">Discover teams and bots</h1>
-            <p className="mt-1 text-sm text-fg-muted">Explore trading teams, open a room, and see how its bots work.</p>
-          </div>
-          <button type="button" onClick={openCreateTeam} className="btn btn-primary shrink-0"><CirclePlus size={15} /> Create Bot Team</button>
-        </div>
+        <h1 className="text-2xl font-semibold tracking-tight text-fg">Discover teams and bots</h1>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap gap-2" role="group" aria-label="Room directory">
             {([{ id: 'all', label: 'All Rooms' }, { id: 'active', label: 'Active Rooms' }, { id: 'mine', label: 'My Rooms' }] as const).map(item => (
@@ -487,11 +646,31 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                                 <span className="mb-1 block text-[11px] font-medium text-fg-muted">Job description</span>
                                 <textarea rows={2} maxLength={1000} value={draft.jobDescription} onChange={event => updateDraft(draft.key, { jobDescription: event.target.value })} className="input" placeholder="What is this member responsible for?" />
                               </label>
-                              <label className="mt-2 block">
+                              <div className="mt-2">
                                 <span className="mb-1 block text-[11px] font-medium text-fg-muted">Skills</span>
-                                <input value={draft.skills} onChange={event => updateDraft(draft.key, { skills: event.target.value })} className="input" placeholder="Liquidity sweeps, trend following" />
-                                <span className="mt-1 block text-[10px] text-fg-subtle">Separate with commas.</span>
-                              </label>
+                                <div className="flex gap-2">
+                                  <SearchablePicker
+                                    multiple
+                                    options={skills.map(skill => ({ value: skill.id, label: skill.name, hint: skill.description, group: skill.isDefault ? 'Built-in' : 'Yours' }))}
+                                    value={draft.skillIds}
+                                    onChange={ids => updateDraft(draft.key, { skillIds: ids })}
+                                    placeholder={skills.length ? 'Choose skills…' : 'Loading skills…'}
+                                    searchPlaceholder="Search skills…"
+                                    aria-label={`Skills for member ${index + 1}`}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => { setSkillAuthor({ draftKey: draft.key }); setSkillMarkdown(SKILL_STARTER); setSkillError(''); }}
+                                    className="btn btn-secondary shrink-0"
+                                    title="Write a new skill"
+                                  >
+                                    <FilePlus2 size={15} /> Write
+                                  </button>
+                                </div>
+                                <span className="mt-1 block text-[10px] text-fg-subtle">
+                                  Skills are shared across every member you create.
+                                </span>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -510,7 +689,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                             <button
                               key={option.id}
                               type="button"
-                              onClick={() => setProvider(option.id)}
+                              onClick={() => chooseProvider(option.id)}
                               aria-pressed={provider === option.id}
                               className={`rounded-xl border p-3 text-left ${provider === option.id ? 'border-accent bg-accent-soft' : 'border-line bg-raised'}`}
                             >
@@ -520,10 +699,47 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                           ))}
                         </div>
                       </div>
-                      <label className="block">
+                      <div>
                         <span className="mb-1.5 block text-xs font-medium text-fg-muted">Asset</span>
-                        <input value={asset} onChange={event => setAsset(event.target.value.toUpperCase())} className="input uppercase" placeholder="e.g. BTC, XAUUSD" />
-                        <span className="mt-1.5 block text-[11px] text-fg-subtle">The whole team trades this one instrument.</span>
+                        <SearchablePicker
+                          options={assets.map(entry => ({ value: entry.symbol, label: entry.symbol, hint: entry.name, group: entry.category }))}
+                          value={asset ? [asset] : []}
+                          onChange={next => setAsset(next[0] ?? '')}
+                          placeholder={assetsLoading ? 'Loading assets…' : assets.length ? `Choose a ${provider === 'ctrader' ? 'cTrader' : 'Hyperliquid'} asset…` : 'No assets available'}
+                          searchPlaceholder={`Search ${provider === 'ctrader' ? 'cTrader' : 'Hyperliquid'} assets…`}
+                          aria-label="Asset this team trades"
+                        />
+                        <div className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-4 text-fg-subtle">
+                          <Info size={12} className="mt-0.5 shrink-0" />
+                          <span>
+                            {assetsNote}
+                            {assetsLive.available
+                              ? ' Live trading is available on this venue.'
+                              : assetsLive.reason ? ` Live trading needs a broker: ${assetsLive.reason}` : ''}
+                          </span>
+                        </div>
+                        {!assetsLive.available && (
+                          <p className="mt-1.5 rounded-lg border border-line bg-raised px-2.5 py-1.5 text-[10px] leading-4 text-fg-muted">
+                            You can deploy and paper-trade now. A broker connection is only required for live trading.
+                          </p>
+                        )}
+                      </div>
+
+                      {/*
+                        Live trading is opt-in and the ONLY thing that needs a
+                        venue credential. Deploying, researching and paper
+                        trading deliberately do not.
+                      */}
+                      <label className="flex items-start gap-3 rounded-xl border border-line bg-raised/70 p-3">
+                        <input type="checkbox" checked={liveTrading} onChange={event => setLiveTrading(event.target.checked)} className="mt-0.5" />
+                        <span>
+                          <span className="block text-sm font-semibold text-fg">Allow live trading</span>
+                          <span className="mt-1 block text-xs leading-5 text-fg-muted">
+                            {liveTrading
+                              ? 'This team may place real orders. A broker connection is required and checked before it deploys.'
+                              : 'Off: the team researches and paper-trades only. Turn this on when you want real orders, which needs a connected broker.'}
+                          </span>
+                        </span>
                       </label>
                       <div>
                         <span className="mb-2 block text-xs font-medium text-fg-muted">Risk parameters</span>
@@ -582,6 +798,69 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
               </form>
             )}
           </section>
+
+          {/*
+            Skill editor, layered above the team sheet. Authoring a skill here
+            saves it to the user's global catalogue, so it is immediately
+            reusable by every future member rather than being scoped to this
+            team.
+          */}
+          {skillAuthor && (
+            <div
+              className="fixed inset-0 z-[110] flex items-end justify-center bg-black/70 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+              role="presentation"
+              onMouseDown={event => { if (event.target === event.currentTarget && !skillSaving) setSkillAuthor(null); }}
+            >
+              <section role="dialog" aria-modal="true" aria-labelledby="skill-author-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl border border-line bg-surface text-fg shadow-2xl sm:rounded-2xl">
+                <header className="flex items-start justify-between gap-4 border-b border-line p-5">
+                  <div className="min-w-0">
+                    <h3 id="skill-author-title" className="text-lg font-semibold text-fg">Write a skill</h3>
+                    <p className="mt-1 text-xs leading-5 text-fg-muted">
+                      Markdown with optional frontmatter. Saved to your skills and attached to this member.
+                    </p>
+                  </div>
+                  <button type="button" aria-label="Close skill editor" disabled={skillSaving} onClick={() => setSkillAuthor(null)} className="rounded-lg p-2 text-fg-muted hover:bg-raised"><X size={17} /></button>
+                </header>
+
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-fg-muted">
+                    <span>Supports frontmatter, # Titles, ## Constraints and free-form methodology.</span>
+                    <button type="button" onClick={() => setSkillMarkdown(SKILL_STARTER)} className="shrink-0 text-accent-text hover:underline">Reset to template</button>
+                  </div>
+                  <textarea
+                    value={skillMarkdown}
+                    onChange={event => setSkillMarkdown(event.target.value)}
+                    rows={14}
+                    spellCheck={false}
+                    aria-label="Skill markdown"
+                    className="input !h-80 !font-mono !text-[12px] !leading-relaxed"
+                  />
+                  {(() => {
+                    try {
+                      const parsed = SkillParser.parse(skillMarkdown.trim());
+                      return (
+                        <div className="rounded-xl border border-line bg-raised p-3 text-[11px] leading-5 text-fg-muted">
+                          <p className="font-semibold text-fg">Parsed as: {parsed.name}</p>
+                          <p className="mt-1">{parsed.description}</p>
+                          <p className="mt-1">Timeframes: {(parsed.preferredTimeframes || []).join(', ') || 'none detected'}</p>
+                        </div>
+                      );
+                    } catch {
+                      return null;
+                    }
+                  })()}
+                  {skillError && <p role="alert" className="rounded-lg border border-negative/40 bg-negative-soft p-2.5 text-[11px] text-fg">{skillError}</p>}
+                </div>
+
+                <footer className="flex gap-2 border-t border-line p-5">
+                  <button type="button" disabled={skillSaving} onClick={() => setSkillAuthor(null)} className="btn btn-secondary flex-1">Cancel</button>
+                  <button type="button" disabled={skillSaving || !skillMarkdown.trim()} onClick={() => void saveAuthoredSkill()} className="btn btn-primary flex-1">
+                    {skillSaving ? 'Saving…' : <><Check size={15} /> Save &amp; attach</>}
+                  </button>
+                </footer>
+              </section>
+            </div>
+          )}
         </div>
       )}
     </div>

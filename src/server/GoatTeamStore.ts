@@ -30,6 +30,14 @@ export interface TeamDeploymentSettings {
   provider: TradingProvider;
   asset: string;
   risk: TeamRiskParameters;
+  /**
+   * Whether the team may submit real orders.
+   *
+   * Off by default: deploying starts research against PAPER data and needs no
+   * broker. This is the single switch that makes a venue credential necessary,
+   * and the API refuses to deploy live without one.
+   */
+  liveTrading?: boolean;
 }
 
 export interface GoatTeam {

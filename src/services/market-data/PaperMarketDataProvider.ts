@@ -112,10 +112,10 @@ function barNoise(symbol: string, barIndex: number): number {
  * Multi-cycle sine composition: cheap, smooth, and stable for any bar index
  * without cumulative state (so restarts and random access are safe).
  */
-export function paperPriceAt(symbol: string, tfMs: number, barIndex: number): number {
-  const meta = SYMBOL_INDEX.get(symbol);
-  const base = BASE_PRICES[symbol] ?? 100;
-  const category = meta?.category ?? 'forex';
+export function paperPriceAt(symbol: string, tfMs: number, barIndex: number, meta?: MarketSymbol, baseOverride?: number): number {
+  const resolved = meta ?? SYMBOL_INDEX.get(symbol);
+  const base = baseOverride ?? BASE_PRICES[symbol] ?? 100;
+  const category = resolved?.category ?? 'forex';
   const vol = BASE_VOLATILITY[category] * tfVolatilityMultiplier(tfMs);
 
   const seed = hashString(`signalgoat-paper:${symbol}`);
@@ -130,7 +130,7 @@ export function paperPriceAt(symbol: string, tfMs: number, barIndex: number): nu
   const micro = vol * 0.6 * barNoise(symbol, barIndex);
 
   const price = base * (1 + trend + cycle1 + cycle2 + micro);
-  const digits = meta?.digits ?? 5;
+  const digits = resolved?.digits ?? 5;
   return Number(price.toFixed(digits));
 }
 
@@ -142,13 +142,13 @@ function paperBarOpenTime(barIndex: number, tfMs: number): number {
   return BAR_EPOCH_MS + barIndex * tfMs;
 }
 
-function buildCandle(symbol: string, tfMs: number, barIndex: number): Candle {
-  const meta = SYMBOL_INDEX.get(symbol);
-  const digits = meta?.digits ?? 5;
-  const vol = BASE_VOLATILITY[meta?.category ?? 'forex'] * tfVolatilityMultiplier(tfMs);
+function buildCandle(symbol: string, tfMs: number, barIndex: number, meta?: MarketSymbol, base?: number): Candle {
+  const resolved = meta ?? SYMBOL_INDEX.get(symbol);
+  const digits = resolved?.digits ?? 5;
+  const vol = BASE_VOLATILITY[resolved?.category ?? 'forex'] * tfVolatilityMultiplier(tfMs);
 
-  const open = paperPriceAt(symbol, tfMs, barIndex);
-  const close = paperPriceAt(symbol, tfMs, barIndex + 1);
+  const open = paperPriceAt(symbol, tfMs, barIndex, resolved, base);
+  const close = paperPriceAt(symbol, tfMs, barIndex + 1, resolved, base);
 
   const wickSeed = hashString(`${symbol}|wick|${barIndex}`);
   const wickRng = seededRandom(wickSeed);
@@ -170,23 +170,46 @@ function buildCandle(symbol: string, tfMs: number, barIndex: number): Candle {
 }
 
 export class PaperMarketDataProvider implements MarketDataProvider {
-  readonly name = 'Paper (simulated)';
+  readonly name: string;
   readonly dataMode: DataMode = PAPER_DATA_MODE;
 
   private subscribers: Map<string, Set<(quote: MarketQuote) => void>> = new Map();
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private readonly enableTicks: boolean;
+  /**
+   * A provider may serve a venue-specific catalogue instead of PAPER_SYMBOLS.
+   *
+   * cTrader needs this: its authoritative symbol list is scoped to a granted
+   * CTID, so a user with no broker must still be able to pick a real cTrader
+   * instrument and run it against the simulated feed. Prices remain
+   * deterministic and clearly labelled PAPER.
+   */
+  private readonly catalogue: MarketSymbol[];
+  private readonly index: Map<string, MarketSymbol>;
+  private readonly basePrices: Record<string, number>;
 
-  constructor(options?: { enableTicks?: boolean }) {
+  constructor(options?: { enableTicks?: boolean; name?: string; symbols?: MarketSymbol[]; basePrices?: Record<string, number> }) {
     this.enableTicks = options?.enableTicks ?? process.env.NODE_ENV !== 'test';
+    this.name = options?.name ?? 'Paper (simulated)';
+    this.catalogue = options?.symbols?.length ? options.symbols : PAPER_SYMBOLS;
+    this.index = new Map(this.catalogue.map((s) => [s.symbol, s]));
+    this.basePrices = options?.basePrices ?? BASE_PRICES;
   }
 
   async getSymbols(): Promise<MarketSymbol[]> {
-    return PAPER_SYMBOLS;
+    return this.catalogue;
   }
 
   getMarketMetadata(symbol: string): MarketSymbol | undefined {
-    return SYMBOL_INDEX.get(symbol);
+    return this.index.get(symbol);
+  }
+
+  private metaFor(symbol: string): MarketSymbol | undefined {
+    return this.index.get(symbol) ?? SYMBOL_INDEX.get(symbol);
+  }
+
+  private baseFor(symbol: string): number | undefined {
+    return this.basePrices[symbol];
   }
 
   async getQuote(symbol: string): Promise<MarketQuote> {
@@ -198,7 +221,7 @@ export class PaperMarketDataProvider implements MarketDataProvider {
   }
 
   async getCandles(symbol: string, timeframe: string = '1h', count: number = 80): Promise<Candle[]> {
-    const meta = SYMBOL_INDEX.get(symbol);
+    const meta = this.metaFor(symbol);
     if (!meta) {
       return [];
     }
@@ -209,7 +232,7 @@ export class PaperMarketDataProvider implements MarketDataProvider {
 
     const candles: Candle[] = [];
     for (let i = boundedCount - 1; i >= 0; i--) {
-      candles.push(buildCandle(symbol, tfMs, currentBar - i));
+      candles.push(buildCandle(symbol, tfMs, currentBar - i, meta, this.baseFor(symbol)));
     }
     return candles;
   }
@@ -269,14 +292,15 @@ export class PaperMarketDataProvider implements MarketDataProvider {
 
   /** Deterministic quote at a given time (pure function of symbol + time). */
   private computeQuote(symbol: string, now: number): MarketQuote {
-    const meta = SYMBOL_INDEX.get(symbol) ?? PAPER_SYMBOLS[0];
+    const meta = this.metaFor(symbol) ?? this.catalogue[0];
+    const base = this.baseFor(symbol);
     const tfMs = 60 * 60_000; // quotes ride on the 1h price path
     const barIndex = paperBarIndexAt(now, tfMs);
     const barOpenTime = paperBarOpenTime(barIndex, tfMs);
     const fraction = Math.min(1, Math.max(0, (now - barOpenTime) / tfMs));
 
-    const open = paperPriceAt(symbol, tfMs, barIndex);
-    const next = paperPriceAt(symbol, tfMs, barIndex + 1);
+    const open = paperPriceAt(symbol, tfMs, barIndex, meta, base);
+    const next = paperPriceAt(symbol, tfMs, barIndex + 1, meta, base);
     const tickNoise = barNoise(`${symbol}|tick`, Math.floor(now / 2_000)) * meta.pipSize * 0.5;
     const mid = Number((open + (next - open) * fraction + tickNoise).toFixed(meta.digits));
 
@@ -290,7 +314,7 @@ export class PaperMarketDataProvider implements MarketDataProvider {
     let high24h = mid;
     let low24h = mid;
     for (let i = 0; i < barsPerDay; i++) {
-      const p = paperPriceAt(symbol, tfMs, barIndex - i);
+      const p = paperPriceAt(symbol, tfMs, barIndex - i, meta, base);
       if (p > high24h) high24h = p;
       if (p < low24h) low24h = p;
     }
