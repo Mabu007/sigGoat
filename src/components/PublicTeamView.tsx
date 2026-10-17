@@ -38,7 +38,9 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   }, [load]);
 
   const selectedMember = data?.members.find(member => member.id === selectedMemberId) ?? data?.members[0] ?? null;
-  const activeMarket = selectedMember?.latestThesis?.market || selectedMember?.markets?.[0] || selectedMember?.signals?.[0]?.market || '';
+  // Keep the shared chart useful before a bot has generated its first thesis or configured markets.
+  // These are provider-native symbols: cTrader uses EURUSD; Hyperliquid uses BTC.
+  const activeMarket = selectedMember?.latestThesis?.market || selectedMember?.markets?.[0] || selectedMember?.signals?.[0]?.market || (selectedMember?.provider === 'ctrader' ? 'EURUSD' : selectedMember?.provider === 'hyperliquid' ? 'BTC' : '');
 
   useEffect(() => {
     if (!selectedMember || !activeMarket) {
