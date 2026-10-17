@@ -3713,6 +3713,32 @@ apiRouter.get("/robots/:slug", handle(async (req, res) => {
   }});
 }));
 
+/**
+ * Public room market stage. Resolve the same provider adapter attached to the
+ * published GOAT runtime, rather than silently displaying the visitor's
+ * default venue. Only instruments configured on this published GOAT are read.
+ */
+apiRouter.get("/robots/:slug/market", handle(async (req, res) => {
+  const goat = await findPublishedRobot(String(req.params.slug || ""));
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading room is not published or no longer exists.");
+  const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
+  const symbol = requestedSymbol && goat.markets.includes(requestedSymbol) ? requestedSymbol : goat.markets[0];
+  if (!symbol) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This room has no configured market.");
+  try {
+    const provider = await marketDataProviderForGoat(goat);
+    const [quotes, candles] = await Promise.all([
+      provider.getQuotes([symbol]),
+      provider.getCandles(symbol, typeof req.query.timeframe === "string" ? req.query.timeframe : "1h",
+        Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120))),
+    ]);
+    res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
+    res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, fetchedAt: new Date().toISOString() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The room's configured market provider is unavailable.";
+    return fail(res, 503, "ROOM_MARKET_UNAVAILABLE", message);
+  }
+}));
+
 apiRouter.use(authMiddleware);
 
 /** Publish the existing GOAT under a stable, shareable URL. */
