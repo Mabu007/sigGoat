@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Bell, Plus, RefreshCw, Search, Sparkles } from 'lucide-react';
+import { ListChecks, Plus, RefreshCw, Search, Sparkles } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { BrandMark } from './Navigation';
 
@@ -41,7 +41,7 @@ export function Header({ displayName, email, onOpenSettings, onCreateBotTeam, on
           {lastUpdatedMs ? <span className="hidden text-[10px] text-fg-subtle xl:inline">{new Date(lastUpdatedMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span> : null}
           <button type="button" onClick={onRefresh} className="btn btn-ghost h-9 w-9 !px-0" aria-label="Refresh market data" title="Refresh market data"><RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} /></button>
           <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('sirgoat-chatbot-open'))} className="yt-icon-button hidden sm:flex" aria-label="Open AI assistant" title="AI assistant"><Sparkles size={18} /></button>
-          <button type="button" onClick={onOpenSettings} className="yt-icon-button hidden sm:flex" aria-label="Notifications and account" title="Account"><Bell size={18} /></button>
+          <button type="button" onClick={() => { window.location.hash = '/trades'; }} className="yt-icon-button flex" aria-label="View trades" title="Trades"><ListChecks size={18} /></button>
           <ThemeToggle />
           <button type="button" onClick={onCreateBotTeam} className="yt-create-button flex h-10 items-center gap-2 rounded-full px-4 text-sm font-semibold" aria-label="Create trading room"><Plus size={18} /><span className="hidden lg:inline">Create</span></button>
           <button type="button" onClick={onOpenSettings} className="yt-avatar flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold" aria-label="Account and settings">{initials}</button>
