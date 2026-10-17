@@ -11,7 +11,7 @@
  *   real state indicator rather than a decorative pill.
  */
 
-import { RefreshCw, Sparkles, TrendingUp } from 'lucide-react';
+import { RefreshCw, Sparkles, TrendingUp, Users } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { BrandMark } from './Navigation';
 import { useMarket } from '../context/MarketContext';
@@ -97,6 +97,18 @@ export function Header({
           </button>
 
           <ThemeToggle />
+
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('sirgoat-create-team'))}
+            className="btn btn-primary h-9 !px-3"
+            aria-label="Create Bot Team"
+            title="Create Bot Team"
+          >
+            <Users size={15} aria-hidden="true" />
+            <span className="hidden sm:inline">Create Bot Team</span>
+            <span className="sm:hidden">Create</span>
+          </button>
 
           <button
             type="button"
