@@ -11,6 +11,7 @@
  */
 
 import express, { Request, Response, NextFunction } from "express";
+import { randomBytes } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import {
   FundGoat,
@@ -3776,7 +3777,7 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
       id: member!.id, name: member!.name, goal: member!.goal, markets: member!.markets,
       status: member!.status, provider: member!.tradingProvider ?? "configured provider",
       latestThesis: theses[0] ? { market: theses[0].market, bias: theses[0].directionalHypothesis, summary: theses[0].summary ?? theses[0].assetState ?? "Market review recorded.", updatedAt: theses[0].updatedAt } : null,
-      signals: signals.map(signal => ({ id: signal.id, market: signal.market, direction: signal.direction, status: signal.status, entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis, rationale: signal.rationale, createdAt: signal.createdAt })),
+      signals: signals.map(signal => ({ id: signal.id, market: signal.market, direction: signal.direction, status: signal.status, decision: signal.decision, decidedAt: signal.decidedAt, entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis, rationale: signal.rationale, createdAt: signal.createdAt })),
     };
   }));
   res.setHeader("Cache-Control", "public, max-age=5, stale-while-revalidate=10");
@@ -5565,7 +5566,7 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "trading-team";
   // A private link is a capability URL: keep a long random suffix and do not
   // expose the team in public discovery. It is not a substitute for execution auth.
-  const shareSlug = `${slugBase}-${Array.from({ length: 18 }, () => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]).join("")}`;
+  const shareSlug = `${slugBase}-${randomBytes(18).toString("hex")}`;
   let team: GoatTeam = {
     id: `team_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     ownerUserId: user.uid,
