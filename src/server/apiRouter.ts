@@ -3776,7 +3776,7 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
     ]);
     return {
       id: member!.id, name: member!.name, goal: member!.goal, markets: member!.markets,
-      status: member!.status, provider: member!.tradingProvider ?? "configured provider",
+      status: member!.status, provider: resolveGoatTradingProvider(member!),
       latestThesis: theses[0] ? { market: theses[0].market, bias: theses[0].directionalHypothesis, summary: theses[0].summary ?? theses[0].assetState ?? "Market review recorded.", updatedAt: theses[0].updatedAt } : null,
       signals: signals.map(signal => ({ id: signal.id, market: signal.market, direction: signal.direction, status: signal.status, decision: signal.decision, decidedAt: signal.decidedAt, entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis, rationale: signal.rationale, createdAt: signal.createdAt })),
     };
