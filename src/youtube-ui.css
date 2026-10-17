@@ -294,3 +294,17 @@
   .yt-room-filters::-webkit-scrollbar { display: none; }
   .yt-room-filter { flex: 0 0 auto; }
 }
+
+
+/* Header-led SPA shell: no desktop sidebar, mobile keeps bottom tabs. */
+@media (min-width: 768px) {
+  .premium-shell {
+    flex-direction: column !important;
+  }
+  .premium-shell > div {
+    min-height: 0;
+  }
+}
+.premium-sidebar {
+  display: none !important;
+}
