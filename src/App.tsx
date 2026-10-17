@@ -74,16 +74,16 @@ const MainApp: React.FC = () => {
   );
 
   return (
-    <div className="premium-shell flex min-h-screen flex-col text-fg">
-      <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-20">
-        <Header
+    <div className={(selectedRoom ? "trade-room-app-shell " : "") + "premium-shell flex min-h-screen flex-col text-fg"}>
+      <div className={(selectedRoom ? "trade-room-app-frame " : "") + "flex min-h-screen min-w-0 flex-1 flex-col pb-20"}>
+        {!selectedRoom && <Header
           displayName={profile?.displayName ?? null}
           email={currentUser?.email ?? null}
           onOpenSettings={() => navigate('settings')}
           onCreateBotTeam={() => { navigate('rooms'); setCreateTeamRequested(true); }}
           onRefresh={() => void refreshQuotes()}
           lastUpdatedMs={lastUpdatedMs}
-        />
+        />}
 
         <main className={selectedRoom ? 'trade-room-app-main w-full flex-1' : 'w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8'}>
           <TradeRoomsView
@@ -103,7 +103,7 @@ const MainApp: React.FC = () => {
           </React.Suspense>
         </main>
       </div>
-      <Navigation activeTab={activeTab} onSelect={navigate} />
+      {!selectedRoom && <Navigation activeTab={activeTab} onSelect={navigate} />}
     </div>
   );
 };
