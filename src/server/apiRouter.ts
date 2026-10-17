@@ -3768,13 +3768,13 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
     ]);
     return {
       id: member!.id, name: member!.name, goal: member!.goal, markets: member!.markets,
-      status: member!.status, provider: resolveGoatTradingProvider(member!),
+      status: member!.status, provider: resolveGoatTradingProvider(member!), timeframe: member!.timeframe || theses[0]?.relevantTimeframe || "15m",
       latestThesis: theses[0] ? { market: theses[0].market, bias: theses[0].directionalHypothesis, summary: theses[0].summary ?? theses[0].assetState ?? "Market review recorded.", updatedAt: theses[0].updatedAt } : null,
       signals: signals.map(signal => ({ id: signal.id, market: signal.market, direction: signal.direction, status: signal.status, decision: signal.decision, decidedAt: signal.decidedAt, entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis, rationale: signal.rationale, createdAt: signal.createdAt })),
     };
   }));
   res.setHeader("Cache-Control", "public, max-age=5, stale-while-revalidate=10");
-  res.json({ team: { id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status, coordinationMode: team.coordinationMode, memberCount: details.length, markets: [...new Set(details.flatMap(member => member.markets))] }, members: details });
+  res.json({ team: { id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status, coordinationMode: team.coordinationMode, memberCount: details.length, markets: [...new Set(details.flatMap(member => member.markets))], asset: team.deployment?.asset, provider: team.deployment?.provider }, members: details });
 }));
 
 /**
@@ -3796,9 +3796,14 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   // Use a native default for that GOAT's provider, without changing the GOAT's saved markets.
   const providerKind = resolveGoatTradingProvider(goat);
   const fallbackSymbol = providerKind === "ctrader" ? "EURUSD" : "BTC";
-  const symbol = requestedSymbol && goat.markets.includes(requestedSymbol)
+  const deployedRoomAsset = team.deployment?.asset;
+  // A deployed team's asset is fixed at deployment; never silently switch a shared room chart to another member market.
+  if (deployedRoomAsset && !goat.markets.includes(deployedRoomAsset)) {
+    return fail(res, 409, "ROOM_ASSET_MISMATCH", "This agent is not configured for the room's deployed asset.");
+  }
+  const symbol = deployedRoomAsset || (requestedSymbol && goat.markets.includes(requestedSymbol)
     ? requestedSymbol
-    : goat.markets[0] || fallbackSymbol;
+    : goat.markets[0] || fallbackSymbol);
   try {
     const provider = await marketDataProviderForGoat(goat);
     const [quotes, candles] = await Promise.all([
