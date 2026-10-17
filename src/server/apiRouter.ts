@@ -5652,7 +5652,7 @@ apiRouter.post("/goat-teams/:id/environment", handle(async (req, res) => {
       ...team, environment: "DEMO", marketDataProvider: "biquote",
       liveTradingProvider: undefined, updatedAt: new Date().toISOString(),
     });
-    return res.json({ team: updatedTeam, executionEnabled: false, message: "Demo mode uses BiQuote reference prices and simulated execution." });
+    return res.json({ team: updatedTeam, executionEnabled: false, message: "Demo mode uses BiQuote reference prices. The environment switch does not enable team-level live order execution." });
   }
   if (environment !== "LIVE") return fail(res, 400, "INVALID_TEAM_ENVIRONMENT", "environment must be DEMO or LIVE.");
   const selected = req.body?.provider;
