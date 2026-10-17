@@ -71,7 +71,7 @@ export function TradeRoomsView({ onCreateRoom, createTeamRequested, onCreateTeam
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body?.error?.message || 'Could not load your rooms.');
       const teams: TradeRoom[] = (Array.isArray(body.teams) ? body.teams : []).map((team: any) => ({
-        slug: team.shareSlug || team.slug || team.id, name: team.name,
+        slug: team.publicSlug || team.id, name: team.name,
         description: team.description || 'Your AI trading team.',
         markets: Array.isArray(team.members) ? team.members.flatMap((member: any) => member.markets || []).filter(Boolean) : [],
         status: team.status || 'SAVED', creatorName: 'You', publishedAt: team.createdAt, updatedAt: team.updatedAt,
