@@ -68,6 +68,7 @@ import {
 } from "../services/propdao/PropRiskValidator";
 import { goatRuntimeRegistry } from "../services/goat-runtime/GoatRuntimeRegistry";
 import { hyperliquidProvider } from "../services/market-data/hyperliquid/HyperliquidMarketDataProvider";
+import { biQuoteMarketDataProvider } from "../services/market-data/BiQuoteMarketDataProvider";
 import {
   DEFAULT_MARKET_UNIVERSE,
   HYPERLIQUID_DEXES,
@@ -3752,6 +3753,7 @@ apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
     const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     return {
       id: team.id, slug: team.publicSlug, name: team.name, description: `${members.length} AI traders · ${team.coordinationMode.toLowerCase().replace("_", " ")} coordination`,
+      environment: team.environment ?? "DEMO", marketDataProvider: team.environment === "LIVE" ? team.marketDataProvider ?? team.liveTradingProvider ?? null : "biquote",
       creatorName: "AI Trading Team", status: team.status, mode: "TEAM" as const,
       memberCount: members.length, markets: [...new Set(members.flatMap(member => member?.markets ?? []))],
       latestThesis: latest ? { market: latest.market, bias: latest.directionalHypothesis, summary: latest.summary ?? latest.assetState ?? "Market review recorded.", updatedAt: latest.updatedAt } : null,
@@ -3782,7 +3784,49 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
     };
   }));
   res.setHeader("Cache-Control", "public, max-age=5, stale-while-revalidate=10");
-  res.json({ team: { id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status, coordinationMode: team.coordinationMode, memberCount: details.length, markets: [...new Set(details.flatMap(member => member.markets))] }, members: details });
+  res.json({ team: { id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status, coordinationMode: team.coordinationMode, environment: team.environment ?? "DEMO", marketDataProvider: team.environment === "LIVE" ? team.marketDataProvider ?? team.liveTradingProvider ?? null : "biquote", liveTradingProvider: team.liveTradingProvider ?? null, memberCount: details.length, markets: [...new Set(details.flatMap(member => member.markets))] }, members: details });
+}));
+
+/** Public team chart data. Demo uses BiQuote reference prices; live resolves the team's chosen venue. */
+apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await goatTeamStore.getPublicBySlug(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+  const requested = typeof req.query.symbol === "string" ? req.query.symbol.trim().toUpperCase() : "";
+  const configured = [...new Set(members.flatMap(member => member?.markets ?? []))];
+  const rawSymbol = requested && configured.includes(requested) ? requested : configured[0];
+  if (!rawSymbol) return fail(res, 404, "TEAM_MARKET_UNAVAILABLE", "This team has no configured markets.");
+  const environment = team.environment ?? "DEMO";
+  try {
+    let provider: MarketDataProvider;
+    let symbol = rawSymbol;
+    if (environment === "DEMO") {
+      provider = biQuoteMarketDataProvider;
+      const catalogue = await provider.getSymbols();
+      const exact = catalogue.find(item => item.symbol.toUpperCase() === rawSymbol);
+      const compact = rawSymbol.replace(/[\\/_-]/g, "");
+      const aliases: Record<string, string> = { BTC: "BTCUSD", XBT: "BTCUSD", ETH: "ETHUSD", GOLD: "XAUUSD", SILVER: "XAGUSD" };
+      const mapped = aliases[compact] ?? compact;
+      const match = exact ?? catalogue.find(item => item.symbol.toUpperCase() === mapped);
+      if (!match) return fail(res, 404, "TEAM_MARKET_UNAVAILABLE", `BiQuote does not currently list ${rawSymbol}. Choose a market available in the demo feed.`);
+      symbol = match.symbol;
+    } else {
+      const selected = team.liveTradingProvider;
+      if (!selected || (selected !== "ctrader" && selected !== "hyperliquid")) {
+        return fail(res, 409, "LIVE_PROVIDER_NOT_SELECTED", "Select and connect a live trading provider before viewing live team data.");
+      }
+      provider = await marketDataProviderForUser(team.ownerUserId, selected);
+    }
+    const timeframe = typeof req.query.timeframe === "string" ? req.query.timeframe : "1h";
+    const count = Math.max(1, Math.min(1000, Number(req.query.limit) || 200));
+    const [quote, candles] = await Promise.all([provider.getQuote(symbol), provider.getCandles(symbol, timeframe, count)]);
+    res.setHeader("Cache-Control", "public, max-age=3, stale-while-revalidate=5");
+    res.json({ teamId: team.id, environment, symbol, quote, candles, provider: provider.name, dataMode: provider.dataMode, executionAllowed: false, fetchedAt: new Date().toISOString() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The selected team market-data provider is unavailable.";
+    return fail(res, 503, "TEAM_MARKET_UNAVAILABLE", message);
+  }
 }));
 
 apiRouter.use(authMiddleware);
@@ -5574,6 +5618,8 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     name,
     memberGoatIds,
     coordinationMode,
+    environment: "DEMO",
+    marketDataProvider: "biquote",
     visibility,
     publicSlug: shareSlug,
     ...(leadGoatId ? { leadGoatId } : {}),
@@ -5593,6 +5639,39 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     if (failed) return res.status(409).json({ error: { code: "TEAM_DEPLOYMENT_PARTIAL", message: "The team was saved, but one or more bots could not be deployed." }, team, results, shareUrl: `/team/${shareSlug}` });
   }
   res.status(201).json({ team, members, shareUrl: `/team/${shareSlug}`, discoverable: visibility === "PUBLIC" && team.status === "DEPLOYED" });
+}));
+
+/** Change a team's market environment. Switching to LIVE never grants new order-execution permission. */
+apiRouter.post("/goat-teams/:id/environment", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+  const environment = req.body?.environment;
+  if (environment === "DEMO") {
+    const updatedTeam = await goatTeamStore.save({
+      ...team, environment: "DEMO", marketDataProvider: "biquote",
+      liveTradingProvider: undefined, updatedAt: new Date().toISOString(),
+    });
+    return res.json({ team: updatedTeam, executionEnabled: false, message: "Demo mode uses BiQuote reference prices and simulated execution." });
+  }
+  if (environment !== "LIVE") return fail(res, 400, "INVALID_TEAM_ENVIRONMENT", "environment must be DEMO or LIVE.");
+  const selected = req.body?.provider;
+  if (selected !== "ctrader" && selected !== "hyperliquid") {
+    return fail(res, 400, "LIVE_PROVIDER_REQUIRED", "Choose cTrader or Hyperliquid as the team's live provider.");
+  }
+  const readiness = await tradingProviderReadinessForUser(user.uid, selected);
+  if (!readiness.ready) return fail(res, 409, "LIVE_PROVIDER_NOT_READY", readiness.reason ?? "Connect the selected provider first.");
+  const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, user.uid)))).filter(Boolean);
+  if (members.length !== team.memberGoatIds.length) return fail(res, 409, "TEAM_MEMBER_MISSING", "A team member is missing; repair the team before switching environments.");
+  const mismatched = members.filter(member => resolveGoatTradingProvider(member!) !== selected);
+  if (mismatched.length) {
+    return fail(res, 409, "TEAM_PROVIDER_MISMATCH", `All team traders must be configured for ${selected} before this team can use that live provider.`);
+  }
+  const updatedTeam = await goatTeamStore.save({
+    ...team, environment: "LIVE", marketDataProvider: selected, liveTradingProvider: selected,
+    updatedAt: new Date().toISOString(),
+  });
+  res.json({ team: updatedTeam, executionEnabled: false, message: "Live market data is selected. Existing GOAT execution permissions and risk checks remain unchanged; switching environments does not enable automatic trading." });
 }));
 
 apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
