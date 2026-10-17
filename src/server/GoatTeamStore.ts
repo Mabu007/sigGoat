@@ -13,6 +13,10 @@ export interface GoatTeam {
   memberGoatIds: string[];
   coordinationMode: GoatTeamCoordinationMode;
   leadGoatId?: string;
+  /** Public teams appear in the discovery feed; private teams are owner-only. */
+  visibility?: "PUBLIC" | "PRIVATE";
+  /** Stable share slug for a public or unlisted private team link. */
+  publicSlug?: string;
   status: GoatTeamStatus;
   createdAt: string;
   updatedAt: string;
@@ -85,6 +89,24 @@ export class GoatTeamStore {
       return snapshot.docs.map(doc => doc.data() as GoatTeam).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     }
     return Object.values(this.db.teams).filter(team => team.ownerUserId === userId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async listPublic(): Promise<GoatTeam[]> {
+    const teams = this.firestore
+      ? (await this.collection().where("visibility", "==", "PUBLIC").get()).docs.map(doc => doc.data() as GoatTeam)
+      : Object.values(this.db.teams).filter(team => team.visibility === "PUBLIC");
+    return teams.filter(team => Boolean(team.publicSlug)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async getPublicBySlug(slug: string): Promise<GoatTeam | null> {
+    // Slugs are unguessable share capabilities for PRIVATE teams and public
+    // identifiers for PUBLIC teams. The caller must never enumerate private slugs.
+    if (this.firestore) {
+      const snapshot = await this.collection().where("publicSlug", "==", slug).limit(1).get();
+      if (snapshot.empty) return null;
+      return snapshot.docs[0].data() as GoatTeam;
+    }
+    return Object.values(this.db.teams).find(team => team.publicSlug === slug) ?? null;
   }
 
   async save(team: GoatTeam): Promise<GoatTeam> {

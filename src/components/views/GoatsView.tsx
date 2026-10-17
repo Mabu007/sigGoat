@@ -649,7 +649,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
     },
   ]);
 
-  // Create GOAT
+  // Create AI Trader
   const [name, setName] = useState('');
   const [goal, setGoal] = useState('');
   const [selectedMarkets, setSelectedMarkets] =
@@ -694,7 +694,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
   const [workflowActivityLoading, setWorkflowActivityLoading] = useState(false);
   const [workflowActivityError, setWorkflowActivityError] = useState('');
 
-  // Owner-scoped GOAT teams.
+  // Owner-scoped Trading teams.
   const [goatTeams, setGoatTeams] = useState<GoatTeamSummary[]>([]);
   const [teamName, setTeamName] = useState('');
   const [teamMode, setTeamMode] = useState<GoatTeamMode>('CONSENSUS');
@@ -1336,7 +1336,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
                   <div>
                     <div className="flex items-center gap-2">
                       <h1 className="text-xl font-bold text-fg">
-                        Your GOATs
+                        Your AI Traders
                       </h1>
 
                       <span className="rounded-full border border-positive/40 bg-positive-soft px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-positive">
@@ -1376,12 +1376,12 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             </div>
           </div>
 
-          {/* GOAT TEAMS */}
+          {/* TRADING TEAMS */}
           <section className="space-y-4 rounded-3xl border border-line bg-surface p-4 sm:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="flex items-center gap-2 text-sm font-bold text-fg"><Layers className="h-4 w-4 text-accent-text" /> GOAT teams</h2>
-                <p className="mt-1 max-w-2xl text-xs leading-relaxed text-fg-muted">Group your own GOATs and compare their current signals. Team assessment is read-only: it never submits a trade or bypasses each GOAT’s safeguards.</p>
+                <p className="mt-1 max-w-2xl text-xs leading-relaxed text-fg-muted">Bring your AI traders together in a Trading Room and compare their current signals. Team assessment is read-only: it never submits a trade or bypasses each GOAT’s safeguards.</p>
               </div>
               <button type="button" onClick={() => void loadGoatTeams()} disabled={teamLoading} className="rounded-lg border border-line px-3 py-2 text-[10px] font-semibold text-fg-muted disabled:opacity-50">{teamLoading ? 'Refreshing…' : 'Refresh teams'}</button>
             </div>
@@ -1401,8 +1401,8 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
               </div>
 
               <div>
-                <p className="mb-2 text-[10px] font-semibold text-fg-muted">Choose 2–10 of your existing GOATs</p>
-                {goats.length < 2 ? <p className="rounded-lg border border-dashed border-line p-3 text-xs text-fg-subtle">Create at least two GOATs before building a team.</p> : <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <p className="mb-2 text-[10px] font-semibold text-fg-muted">Choose 2–10 of your existing AI traders</p>
+                {goats.length < 2 ? <p className="rounded-lg border border-dashed border-line p-3 text-xs text-fg-subtle">Create at least two AI traders before building a team.</p> : <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                   {goats.map(goat => {
                     const checked = selectedTeamGoatIds.includes(goat.id);
                     const locked = !checked && selectedTeamGoatIds.length >= 10;
@@ -1432,7 +1432,7 @@ export const GoatsView: React.FC<GoatsViewProps> = ({
             {teamError && <p role="alert" className="rounded-lg border border-negative/30 bg-negative-soft px-3 py-2 text-xs text-negative">{teamError}</p>}
             {teamNotice && <p role="status" className="rounded-lg border border-positive/30 bg-positive-soft px-3 py-2 text-xs text-positive">{teamNotice}</p>}
 
-            {teamLoading && goatTeams.length === 0 ? <p className="text-xs text-fg-subtle">Loading your teams…</p> : goatTeams.length === 0 ? <p className="rounded-xl border border-dashed border-line p-4 text-xs text-fg-subtle">No teams yet. Select your GOATs above to create your first team.</p> : <div className="space-y-3">
+            {teamLoading && goatTeams.length === 0 ? <p className="text-xs text-fg-subtle">Loading your teams…</p> : goatTeams.length === 0 ? <p className="rounded-xl border border-dashed border-line p-4 text-xs text-fg-subtle">No trading teams yet. Select your AI traders above to create your first team.</p> : <div className="space-y-3">
               {goatTeams.map(team => (
                 <div key={team.id} className="rounded-2xl border border-line p-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">

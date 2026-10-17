@@ -68,7 +68,8 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
 
   if (!currentUser) {
     const robotLink = typeof window !== 'undefined' && /^\/robot\/[^/]+\/?$/.test(window.location.pathname);
-    return robotLink ? <>{children}</> : <LandingAuth authError={authError} authMode={authMode} />;
+    const teamShareLink = typeof window !== 'undefined' && window.location.pathname.startsWith('/team/') && window.location.pathname.split('/').filter(Boolean).length === 2;
+    return robotLink || teamShareLink ? <>{children}</> : <LandingAuth authError={authError} authMode={authMode} />;
   }
 
   return <>{children}</>;

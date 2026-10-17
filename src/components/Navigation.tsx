@@ -32,6 +32,8 @@ import {
 } from 'lucide-react';
 
 export type TabId =
+  | 'rooms'
+  | 'trades'
   | 'markets'
   | 'goats'
   | 'proposals'
@@ -48,10 +50,8 @@ export interface NavigationItem {
 }
 
 export const NAVIGATION_ITEMS: NavigationItem[] = [
-  { id: 'markets', label: 'Markets', icon: CandlestickChart },
-  { id: 'goats', label: 'Goats', icon: Bot },
-  { id: 'proposals', label: 'Proposals', icon: ListChecks },
-  { id: 'backtest', label: 'Backtest', shortLabel: 'Backtest', icon: BarChart3 },
+  { id: 'rooms', label: 'Trade Rooms', shortLabel: 'Rooms', icon: Bot },
+  { id: 'trades', label: 'Trades', icon: ListChecks },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -132,9 +132,7 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
 
         <div className="border-t border-line p-4">
           <p className="text-[11px] leading-relaxed text-fg-subtle">
-            SIRGOAT runs research, analysis and backtests for prop-firm funded
-            accounts. Trades are submitted for approval — execution is driven by
-            your PropDAO API key and prop-firm rules.
+            Discover AI trading teams, follow their market work, and connect your own trading account when you're ready.
           </p>
         </div>
       </nav>
@@ -147,7 +145,7 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
         className="premium-header fixed inset-x-0 bottom-0 z-40 border-t border-line md:hidden"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
       >
-        <ul className="mx-auto grid max-w-lg grid-cols-5">
+        <ul className="mx-auto grid max-w-lg grid-cols-3">
           {NAVIGATION_ITEMS.map((item) => {
             const Icon = item.icon;
             const active = item.id === activeTab;

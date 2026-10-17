@@ -11,6 +11,7 @@
  */
 
 import express, { Request, Response, NextFunction } from "express";
+import { randomBytes } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import {
   FundGoat,
@@ -199,6 +200,8 @@ type PublishedRobotMembership = {
   id: string; robotSlug: string; goatId: string; userId: string;
   joinedAt: string; activatedAt?: string; mode: "PAPER";
   lastChatAt?: string; chatWindowStartedAt?: string; chatCountInWindow?: number;
+  /** Private per-member chat history; never included in public room responses. */
+  chatHistory?: Array<{ role: "user" | "robot"; text: string; at: string }>;
 };
 const localPublishedRobotMemberships = new Map<string, PublishedRobotMembership>();
 function publishedRobotMembershipId(slug: string, userId: string): string {
@@ -832,6 +835,7 @@ async function setGoatStatusFor(
   userId: string,
   goatId: string,
   paused: boolean,
+  publishOnDeploy = true,
 ): Promise<
   FundGoat & { runtimeState: GoatRuntimeState; schedule: GoatSchedule }
 > {
@@ -853,7 +857,7 @@ async function setGoatStatusFor(
   // First deployment publishes this existing GOAT under a shareable white-label URL.
   const publicBase = goat.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "trading-robot";
   const publicSuffix = goat.id.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase();
-  const publishOnFirstDeploy = deployingDraft && !goat.publicSlug;
+  const publishOnFirstDeploy = publishOnDeploy && deployingDraft && !goat.publicSlug;
   const updated: FundGoat = {
     ...goat,
     model: resolvedModel,
@@ -3644,6 +3648,39 @@ apiRouter.get(
 );
 
 /**
+ * Public Trade Rooms directory. Only published, deployed robots are listed;
+ * credentials, owner IDs, and private strategy configuration never leave the API.
+ */
+apiRouter.get("/robots", handle(async (_req, res) => {
+  const goats = await persistence.goats.listAll();
+  const published = goats.filter(goat => goat.isPublished && goat.publicSlug && goat.deploymentState === "DEPLOYED");
+  const rooms = await Promise.all(published.map(async goat => {
+    const creator = await persistence.profiles.get(goat.userId).catch(() => null);
+    const theses = await persistence.theses.listByGoat(goat.id, 1).catch(() => []);
+    const thesis = theses[0];
+    return {
+      slug: String(goat.publicSlug),
+      name: goat.name,
+      description: goat.goal,
+      markets: goat.markets,
+      status: goat.status,
+      creatorName: creator?.displayName || "Independent creator",
+      publishedAt: goat.publishedAt ?? goat.updatedAt,
+      latestThesis: thesis ? {
+        market: thesis.market,
+        bias: thesis.directionalHypothesis,
+        summary: thesis.summary ?? thesis.assetState ?? "Market review recorded.",
+        updatedAt: thesis.updatedAt,
+      } : null,
+      mode: "PAPER" as const,
+    };
+  }));
+  rooms.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+  res.setHeader("Cache-Control", "public, max-age=15, stale-while-revalidate=30");
+  res.json({ rooms });
+}));
+
+/**
  * Public robot profile. This route is deliberately before authMiddleware:
  * share links must render for signed-out visitors. Only curated public fields
  * leave the server; credentials and owner IDs never do.
@@ -3651,10 +3688,11 @@ apiRouter.get(
 apiRouter.get("/robots/:slug", handle(async (req, res) => {
   const goat = await findPublishedRobot(String(req.params.slug || ""));
   if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
-  const [creator, theses, signals] = await Promise.all([
+  const [creator, theses, signals, recordedActivities] = await Promise.all([
     persistence.profiles.get(goat.userId),
     persistence.theses.listByGoat(goat.id, 1),
     persistence.signals.listByGoat(goat.id, 5),
+    goatWorkflowStore.listActivities(goat.id, 30).catch(() => []),
   ]);
   const thesis = theses[0];
   res.setHeader("Cache-Control", "public, max-age=15, stale-while-revalidate=30");
@@ -3669,7 +3707,82 @@ apiRouter.get("/robots/:slug", handle(async (req, res) => {
       status: signal.status, entry: signal.entry, entryZone: signal.entryZone,
       stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis,
       rationale: signal.rationale, createdAt: signal.createdAt })),
+    // Only publish the durable workflow ledger's safe, curated fields. Never expose owner IDs or raw workflow payloads.
+    activities: recordedActivities.map((activity) => ({
+      id: activity.id, type: activity.type, stage: activity.stage, at: activity.at,
+      details: Object.fromEntries(Object.entries(activity.details ?? {}).filter(([key, value]) =>
+        ["provider", "decision", "signalId", "orderId"].includes(key) &&
+        (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null))),
+    })),
   }});
+}));
+
+/**
+ * Public room market stage. Resolve the same provider adapter attached to the
+ * published GOAT runtime, rather than silently displaying the visitor's
+ * default venue. Only instruments configured on this published GOAT are read.
+ */
+apiRouter.get("/robots/:slug/market", handle(async (req, res) => {
+  const goat = await findPublishedRobot(String(req.params.slug || ""));
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading room is not published or no longer exists.");
+  const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
+  const symbol = requestedSymbol && goat.markets.includes(requestedSymbol) ? requestedSymbol : goat.markets[0];
+  if (!symbol) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This room has no configured market.");
+  try {
+    const provider = await marketDataProviderForGoat(goat);
+    const [quotes, candles] = await Promise.all([
+      provider.getQuotes([symbol]),
+      provider.getCandles(symbol, typeof req.query.timeframe === "string" ? req.query.timeframe : "1h",
+        Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120))),
+    ]);
+    res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
+    res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, fetchedAt: new Date().toISOString() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The room's configured market provider is unavailable.";
+    return fail(res, 503, "ROOM_MARKET_UNAVAILABLE", message);
+  }
+}));
+
+/** Public discovery feed for deployed PUBLIC teams only. */
+apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
+  const teams = (await goatTeamStore.listPublic()).filter(team => team.status === "DEPLOYED");
+  const rooms = await Promise.all(teams.map(async team => {
+    const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+    const theses = await Promise.all(team.memberGoatIds.map(id => persistence.theses.listByGoat(id, 1)));
+    const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    return {
+      id: team.id, slug: team.publicSlug, name: team.name, description: `${members.length} AI traders · ${team.coordinationMode.toLowerCase().replace("_", " ")} coordination`,
+      creatorName: "AI Trading Team", status: team.status, mode: "TEAM" as const,
+      memberCount: members.length, markets: [...new Set(members.flatMap(member => member?.markets ?? []))],
+      latestThesis: latest ? { market: latest.market, bias: latest.directionalHypothesis, summary: latest.summary ?? latest.assetState ?? "Market review recorded.", updatedAt: latest.updatedAt } : null,
+      updatedAt: team.updatedAt,
+    };
+  }));
+  res.setHeader("Cache-Control", "public, max-age=10, stale-while-revalidate=20");
+  res.json({ rooms });
+}));
+
+/** Share-link room details. Public rooms are discoverable; private rooms require their unguessable slug. */
+apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const team = await goatTeamStore.getPublicBySlug(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+  const details = await Promise.all(members.map(async member => {
+    const [theses, signals] = await Promise.all([
+      persistence.theses.listByGoat(member!.id, 1),
+      persistence.signals.listByGoat(member!.id, 5),
+    ]);
+    return {
+      id: member!.id, name: member!.name, goal: member!.goal, markets: member!.markets,
+      status: member!.status, provider: resolveGoatTradingProvider(member!),
+      latestThesis: theses[0] ? { market: theses[0].market, bias: theses[0].directionalHypothesis, summary: theses[0].summary ?? theses[0].assetState ?? "Market review recorded.", updatedAt: theses[0].updatedAt } : null,
+      signals: signals.map(signal => ({ id: signal.id, market: signal.market, direction: signal.direction, status: signal.status, decision: signal.decision, decidedAt: signal.decidedAt, entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis, rationale: signal.rationale, createdAt: signal.createdAt })),
+    };
+  }));
+  res.setHeader("Cache-Control", "public, max-age=5, stale-while-revalidate=10");
+  res.json({ team: { id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status, coordinationMode: team.coordinationMode, memberCount: details.length, markets: [...new Set(details.flatMap(member => member.markets))] }, members: details });
 }));
 
 apiRouter.use(authMiddleware);
@@ -3704,7 +3817,7 @@ apiRouter.get("/robots/:slug/me", handle(async (req, res) => {
   if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
   const membership = await getPublishedRobotMembership(slug, user.uid);
   const propDao = await credentialVault.getCredentialStatus(user.uid, "propdao");
-  res.json({ joined: Boolean(membership), membership: membership ? { joinedAt: membership.joinedAt, activatedAt: membership.activatedAt ?? null, mode: membership.mode } : null, propDaoKeyConfigured: propDao.configured });
+  res.json({ joined: Boolean(membership), membership: membership ? { joinedAt: membership.joinedAt, activatedAt: membership.activatedAt ?? null, mode: membership.mode } : null, propDaoKeyConfigured: propDao.configured, chatHistory: (membership?.chatHistory ?? []).map(({ role, text, at }) => ({ role, text, at })) });
 }));
 
 apiRouter.post("/robots/:slug/join", handle(async (req, res) => {
@@ -3756,7 +3869,17 @@ apiRouter.post("/robots/:slug/chat", handle(async (req, res) => {
   const goatMarketProvider = await marketDataProviderForGoat(goat);
   const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider: goatMarketProvider }, goat.id, goat.userId);
   const answer = await reasoningGateway.answerGoatQuestion(question, context, model || goat.model, goat.aiProvider);
-  res.json({ answer, provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
+  // Keep the conversation private to this authenticated room member. The
+  // public activity feed contains workflow records only, never chat prompts.
+  const latestMembership = await getPublishedRobotMembership(slug, user.uid);
+  const now = new Date().toISOString();
+  const chatHistory = [
+    ...(latestMembership?.chatHistory ?? []),
+    { role: "user" as const, text: question, at: now },
+    { role: "robot" as const, text: answer.slice(0, 6000), at: new Date().toISOString() },
+  ].slice(-40);
+  if (latestMembership) await savePublishedRobotMembership({ ...latestMembership, chatHistory });
+  res.json({ answer, chatHistory: chatHistory.map(({ role, text, at }) => ({ role, text, at })), provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
 }));
 
 // ---- cTrader OAuth / account selection --------------------------------
@@ -5427,7 +5550,10 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   const coordinationMode: GoatTeamCoordinationMode =
     rawMode === "CONSENSUS" || rawMode === "LEAD_REVIEW" ? rawMode : "INDEPENDENT";
   const leadGoatId = typeof req.body?.leadGoatId === "string" ? req.body.leadGoatId : undefined;
+  const visibility: "PUBLIC" | "PRIVATE" = req.body?.visibility === "PUBLIC" ? "PUBLIC" : "PRIVATE";
+  const shouldDeploy = req.body?.deploy === true;
   if (!name || name.length > 80) return fail(res, 400, "INVALID_TEAM_NAME", "Team name must be between 1 and 80 characters.");
+  if (req.body?.visibility !== undefined && !["PUBLIC", "PRIVATE"].includes(req.body.visibility)) return fail(res, 400, "INVALID_TEAM_VISIBILITY", "visibility must be PUBLIC or PRIVATE.");
   if (memberGoatIds.length < 2 || memberGoatIds.length > 10) return fail(res, 400, "INVALID_TEAM_MEMBERS", "A team must contain between 2 and 10 distinct GOATs.");
   if (req.body?.coordinationMode !== undefined && !["INDEPENDENT", "CONSENSUS", "LEAD_REVIEW"].includes(req.body.coordinationMode)) {
     return fail(res, 400, "INVALID_COORDINATION_MODE", "coordinationMode must be INDEPENDENT, CONSENSUS, or LEAD_REVIEW.");
@@ -5438,19 +5564,35 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   const members = await Promise.all(memberGoatIds.map(id => persistence.goats.getForUser(id, user.uid)));
   if (members.some(member => !member)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "Every team member must be an existing GOAT owned by the signed-in user.");
   const now = new Date().toISOString();
-  const team: GoatTeam = {
+  const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "trading-team";
+  // A private link is a capability URL: keep a long random suffix and do not
+  // expose the team in public discovery. It is not a substitute for execution auth.
+  const shareSlug = `${slugBase}-${randomBytes(18).toString("hex")}`;
+  let team: GoatTeam = {
     id: `team_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     ownerUserId: user.uid,
     name,
     memberGoatIds,
     coordinationMode,
+    visibility,
+    publicSlug: shareSlug,
     ...(leadGoatId ? { leadGoatId } : {}),
     status: "DRAFT",
     createdAt: now,
     updatedAt: now,
   };
-  const saved = await goatTeamStore.create(team);
-  res.status(201).json({ team: saved, members });
+  team = await goatTeamStore.create(team);
+  if (shouldDeploy) {
+    const results: Array<{ goatId: string; ok: boolean; error?: string }> = [];
+    for (const goatId of memberGoatIds) {
+      try { await setGoatStatusFor(user.uid, goatId, false, false); results.push({ goatId, ok: true }); }
+      catch (error) { results.push({ goatId, ok: false, error: error instanceof Error ? error.message : "Deployment failed" }); }
+    }
+    const failed = results.some(result => !result.ok);
+    team = await goatTeamStore.save({ ...team, status: failed ? "PARTIAL" : "DEPLOYED", updatedAt: new Date().toISOString(), ...(!failed ? { deployedAt: now } : {}) });
+    if (failed) return res.status(409).json({ error: { code: "TEAM_DEPLOYMENT_PARTIAL", message: "The team was saved, but one or more bots could not be deployed." }, team, results, shareUrl: `/team/${shareSlug}` });
+  }
+  res.status(201).json({ team, members, shareUrl: `/team/${shareSlug}`, discoverable: visibility === "PUBLIC" && team.status === "DEPLOYED" });
 }));
 
 apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
