@@ -49,7 +49,7 @@ function tabFromHash(): TabId {
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
   const [createTeamRequested, setCreateTeamRequested] = useState(false);
-  const [selectedRoom, setSelectedRoom] = useState<{ type: 'team' | 'bot'; slug: string } | null>(null);
+  const [selectedRoom, setSelectedRoom] = useState<{ type: 'team' | 'bot'; slug: string; backLabel: string } | null>(null);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
@@ -85,17 +85,17 @@ const MainApp: React.FC = () => {
           lastUpdatedMs={lastUpdatedMs}
         />
 
-        <main className="w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
+        <main className={selectedRoom ? 'trade-room-app-main w-full flex-1' : 'w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8'}>
           <TradeRoomsView
             createTeamRequested={createTeamRequested}
             onCreateTeamRequestHandled={() => setCreateTeamRequested(false)}
             showDirectoryContent={activeTab === 'rooms' && !selectedRoom}
-            onOpenRoom={(type, slug) => { setSelectedRoom({ type, slug }); setActiveTab('rooms'); }}
+            onOpenRoom={(type, slug, backLabel) => { setSelectedRoom({ type, slug, backLabel }); setActiveTab('rooms'); window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }}
             onShowDirectory={() => navigate('rooms')}
           />
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {selectedRoom?.type === 'team' && <PublicTeamView slug={selectedRoom.slug} onBack={() => setSelectedRoom(null)} />}
-            {selectedRoom?.type === 'bot' && <PublicRobotView slug={selectedRoom.slug} onBack={() => setSelectedRoom(null)} />}
+            {selectedRoom?.type === 'team' && <PublicTeamView slug={selectedRoom.slug} backLabel={selectedRoom.backLabel} onBack={() => setSelectedRoom(null)} />}
+            {selectedRoom?.type === 'bot' && <PublicRobotView slug={selectedRoom.slug} backLabel={selectedRoom.backLabel} onBack={() => setSelectedRoom(null)} />}
             {!selectedRoom && activeTab === 'trades' && <ProposalsView />}
             {!selectedRoom && activeTab === 'skills' && <SkillsView />}
             {!selectedRoom && activeTab === 'backtest' && <BacktestView />}
