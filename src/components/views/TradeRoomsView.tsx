@@ -92,6 +92,16 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
+
+  // Sync the global YouTube-style header search with the room directory search.
+  useEffect(() => {
+    const onDirectorySearch = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      setQuery(typeof detail === 'string' ? detail : '');
+    };
+    window.addEventListener('sirgoat-directory-search', onDirectorySearch);
+    return () => window.removeEventListener('sirgoat-directory-search', onDirectorySearch);
+  }, []);
   const [directoryMode, setDirectoryMode] = useState<DirectoryMode>('all');
   const [myRooms, setMyRooms] = useState<TradeRoom[]>([]);
   const [myRoomsLoading, setMyRoomsLoading] = useState(false);
