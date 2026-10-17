@@ -418,3 +418,12 @@
     column-gap: 24px;
   }
 }
+
+
+/* Trade Room watch-page layout: chart stage + compact activity stream. */
+.trade-room-watch-layout { width: 100%; max-width: 1700px; margin-inline: auto; }
+.trade-room-watch-layout .trade-room-chart { aspect-ratio: 16 / 9; width: 100%; min-height: 260px; max-height: calc(100vh - 190px); overflow: hidden; border-radius: 8px; }
+.trade-room-watch-layout .trade-room-chat { max-height: min(58vh, 720px); min-height: 260px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.trade-room-watch-layout .trade-room-chat article { padding: 10px 12px; border-radius: 8px; }
+@media (max-width: 1279px) { .trade-room-watch-layout .trade-room-chart { max-height: none; } .trade-room-watch-layout .trade-room-chat { max-height: 560px; } }
+@media (max-width: 767px) { .trade-room-watch-layout .trade-room-chart { min-height: 240px; } .trade-room-watch-layout .trade-room-chat { max-height: 460px; } }
