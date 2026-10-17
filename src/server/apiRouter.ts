@@ -3796,9 +3796,14 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   // Use a native default for that GOAT's provider, without changing the GOAT's saved markets.
   const providerKind = resolveGoatTradingProvider(goat);
   const fallbackSymbol = providerKind === "ctrader" ? "EURUSD" : "BTC";
-  const symbol = requestedSymbol && goat.markets.includes(requestedSymbol)
+  const deployedRoomAsset = team.deployment?.asset;
+  // A deployed team's asset is fixed at deployment; never silently switch a shared room chart to another member market.
+  if (deployedRoomAsset && !goat.markets.includes(deployedRoomAsset)) {
+    return fail(res, 409, "ROOM_ASSET_MISMATCH", "This agent is not configured for the room's deployed asset.");
+  }
+  const symbol = deployedRoomAsset || (requestedSymbol && goat.markets.includes(requestedSymbol)
     ? requestedSymbol
-    : goat.markets[0] || fallbackSymbol;
+    : goat.markets[0] || fallbackSymbol);
   try {
     const provider = await marketDataProviderForGoat(goat);
     const [quotes, candles] = await Promise.all([
