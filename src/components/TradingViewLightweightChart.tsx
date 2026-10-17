@@ -12,7 +12,6 @@ import {
 } from 'lightweight-charts';
 import type { Candle, MarketQuote } from '../types';
 import { useTheme } from '../context/ThemeContext';
-import './trade-room-chart.css';
 
 type AgentChartEvent = {
   id: string;
