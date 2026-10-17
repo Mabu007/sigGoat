@@ -113,7 +113,6 @@ export function TradeRoomsView({ onCreateRoom, onOpenMyRooms, createTeamRequeste
             <p className="mt-3 text-xs text-fg-subtle">Public teams appear in this feed after deployment. Deployment uses each bot’s saved settings; review provider and execution permissions before deploying.</p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            <button type="button" onClick={() => { setCreateError(''); setCreatedShareUrl(''); setCreateOpen(true); }} className="btn btn-primary"><CirclePlus size={15} /> Create Bot Team</button>
             <button type="button" onClick={onOpenMyRooms} className="btn btn-secondary">My teams</button>
           </div>
         </div>
