@@ -497,7 +497,6 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
       ) : filtered.length ? (
         <div className="yt-room-grid">
           {filtered.map(room => {
-            const href = room.roomType === 'team' ? '/team/' + encodeURIComponent(room.slug) : '/robot/' + encodeURIComponent(room.slug);
             const marketLabel = (room.markets || []).slice(0, 2).join(' · ') || room.latestThesis?.market || 'AI TRADING';
             return (
               <article key={(room.roomType || 'bot') + room.slug} className="yt-room-card group">
