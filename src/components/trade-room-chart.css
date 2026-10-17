@@ -208,3 +208,19 @@
   .sg-pulse-live-pip, .trade-room-loading { animation: none; }
   .sg-room-timeframe { transition: none; }
 }
+
+.sg-pulse-ohlc {
+  position: absolute;
+  z-index: 3;
+  top: 10px;
+  left: 27px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  max-width: calc(100% - 38px);
+  color: #788d99;
+  font: 500 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  pointer-events: none;
+}
+.sg-pulse-ohlc span { white-space: nowrap; }
+.sg-pulse-ohlc b { color: #c5d4d8; font-weight: 600; }
