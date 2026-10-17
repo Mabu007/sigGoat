@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { ArrowUpRight, Bot, Check, CirclePlus, Copy, FilePlus2, Globe, Info, LockKeyhole, Plus, Rocket, Trash2, Users, X } from 'lucide-react';
+import { ArrowUpRight, Bot, Check, CirclePlus, Copy, FilePlus2, Globe, Info, LockKeyhole, Plus, Rocket, Search, Trash2, Users, X } from 'lucide-react';
 import { SearchablePicker } from '../../components/SearchablePicker';
 import { SkillParser } from '../../services/agent/SkillParser';
 import { useGoat } from '../../context/GoatContext';
