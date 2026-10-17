@@ -153,9 +153,7 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
                 >
                   <span
                     aria-hidden="true"
-                    className={`flex h-7 w-12 items-center justify-center rounded-md ${
-                      active ? 'bg-accent-soft' : ''
-                    }`}
+                    className="flex h-7 w-12 items-center justify-center rounded-md bg-transparent"
                   >
                     <Icon size={16} strokeWidth={active ? 2.2 : 1.8} />
                   </span>
