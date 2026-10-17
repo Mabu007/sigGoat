@@ -75,6 +75,7 @@ export async function buildGoatContext(
     goatId: goat.id,
     goatName: goat.name,
     goatGoal: goat.goal,
+    teamInstructions: goat.teamInstructions,
     market,
     quote,
     candles,

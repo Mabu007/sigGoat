@@ -899,6 +899,7 @@ export class GoatRuntime {
         goatId: this.goatConfig.id,
         goatName: this.goatConfig.name,
         goatGoal: this.goatConfig.goal,
+        teamInstructions: this.goatConfig.teamInstructions,
         market,
         markets: this.goatConfig.markets,
         quote,

@@ -48,7 +48,7 @@ import {
   NotFoundError,
 } from "./repositories";
 import { createGoatWorkflowStore } from "./GoatWorkflowStore";
-import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode } from "./GoatTeamStore";
+import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode, type TeamDeploymentSettings, type TeamRiskParameters } from "./GoatTeamStore";
 import { assessGoatTeamMarket } from "./GoatTeamCoordination";
 import {
   UserScopedReasoningGateway,
@@ -74,7 +74,8 @@ import {
   MARKET_CATEGORIES,
   tradableMarkets,
 } from "../services/market-data/hyperliquid/MarketCatalog";
-import { paperProvider } from "../services/market-data/PaperMarketDataProvider";
+import { paperProvider, PaperMarketDataProvider, PAPER_DATA_MODE } from "../services/market-data/PaperMarketDataProvider";
+import { CTRADER_CATALOG, CTRADER_REFERENCE_PRICES, CTRADER_SYMBOLS } from "../services/market-data/ctrader/CTraderSymbolCatalog";
 import {
   MarketDataProvider,
   MarketDataUnavailableError,
@@ -86,7 +87,6 @@ import {
 import { FileMarketStatePersistence } from "../services/market-data/FileMarketStatePersistence";
 import { AgentBacktestEngine } from "../services/backtest/AgentBacktestEngine";
 import { DEFAULT_SKILLS } from "../data/defaultSkills";
-import { SYSTEM_GOATS } from "../data/systemGoats";
 import { SYSTEM_SKILLS, isSystemOwnedSkillId } from "../data/systemSkills";
 import { telegramService } from "../services/telegram/TelegramService";
 import type {
@@ -152,12 +152,16 @@ async function marketProviderForRequest(req: Request): Promise<MarketDataProvide
   const profile = await persistence.profiles.get(req.user.uid).catch(() => null);
   const provider = resolveUserTradingProvider(profile);
   if (provider === "hyperliquid") return marketProvider;
-  const readiness = await tradingProviderReadinessForUser(req.user.uid, provider);
-  if (!readiness.ready) throw new MarketDataUnavailableError(
-    readiness.reason ?? "Connect cTrader and select an account in Settings.",
-    undefined,
-    "TRADING_PROVIDER_NOT_READY",
-  );
+  /**
+   * No broker-ready check here.
+   *
+   * cTrader's market data is unreachable without a granted account, so gating
+   * these routes on broker readiness meant every default-provider user -- and
+   * `DEFAULT_TRADING_PROVIDER` is cTrader -- got 400s from the Markets screen
+   * before they had connected anything. `marketDataProviderForUser` now falls
+   * back to the simulated cTrader feed, and live execution is gated separately
+   * by `liveExecutionReadinessForUser`.
+   */
   return marketDataProviderForUser(req.user.uid, provider);
 }
 
@@ -269,6 +273,33 @@ function defaultProfileForUser(userId: string): UserProfile {
 }
 
 /**
+ * LIVE EXECUTION readiness: can this user actually place an order here?
+ *
+ * This is the ONLY check that requires a broker. Reading market data and
+ * running a team are deliberately NOT gated on it -- cTrader's API cannot be
+ * queried without a granted CTID even for demo, so gating analysis on a
+ * broker connection meant a user could not describe, configure or paper-trade
+ * a team until they connected one. Broker is required for LIVE trading only.
+ */
+async function liveExecutionReadinessForUser(
+  userId: string,
+  provider: TradingProvider,
+): Promise<{ ready: boolean; reason?: string }> {
+  if (provider === "hyperliquid") {
+    const policy = propDaoFor(userId).policyStatus();
+    return policy.enabled
+      ? { ready: true }
+      : { ready: false, reason: policy.summary ?? "Hyperliquid execution is not authorised for this account." };
+  }
+  return tradingProviderReadinessForUser(userId, provider);
+}
+
+/** Static cTrader catalogue rows, for when no account-scoped list is available. */
+function cTraderCatalogueRows(): Array<{ symbol: string; name: string; category: string }> {
+  return CTRADER_CATALOG.map(entry => ({ symbol: entry.symbol, name: entry.name, category: entry.category }));
+}
+
+/**
  * Select demo automatically only when the user has not selected any account.
  * Live accounts are never selected implicitly. A stale selection is cleared
  * rather than silently switching the GOAT to a different account/environment.
@@ -327,11 +358,38 @@ async function tradingProviderReadinessForUser(
 const cTraderProviderCache = new Map<string, CTraderMarketDataProvider>();
 const cTraderMarketStateStores = new Map<string, MarketStateStore>();
 
+/**
+ * cTrader simulation feed.
+ *
+ * Used when the user has not connected a broker. It serves the static cTrader
+ * catalogue through the deterministic paper engine, so a team can be
+ * configured and paper-traded with real cTrader instrument names before any
+ * account exists. `dataMode` stays PAPER, so the UI can never present these
+ * prices as live.
+ */
+let cTraderPaperProvider: PaperMarketDataProvider | null = null;
+function cTraderSimulatedProvider(): PaperMarketDataProvider {
+  if (!cTraderPaperProvider) {
+    cTraderPaperProvider = new PaperMarketDataProvider({
+      name: 'cTrader (simulated)',
+      symbols: CTRADER_SYMBOLS,
+      basePrices: CTRADER_REFERENCE_PRICES,
+    });
+  }
+  return cTraderPaperProvider;
+}
+
 async function marketDataProviderForUser(userId: string, provider: TradingProvider): Promise<MarketDataProvider> {
   if (provider === "hyperliquid") return marketProvider;
   const profile = await persistence.profiles.get(userId).catch(() => null);
   if (!profile?.ctraderAccountId) {
-    throw new Error("This cTrader GOAT has no selected cTrader account. Connect cTrader and choose an account in Settings.");
+    /**
+     * No broker connected: fall back to the simulated cTrader feed instead of
+     * failing. Requiring a CTID to READ data is what made the whole product
+     * unusable before a broker was linked; a live account is needed to place
+     * orders, which is enforced separately by liveExecutionReadinessForUser.
+     */
+    return cTraderSimulatedProvider();
   }
   const key = `${userId}:${profile.ctraderAccountId}:${profile.ctraderAccountIsLive === true ? "live" : "demo"}`;
   let adapter = cTraderProviderCache.get(key);
@@ -370,7 +428,28 @@ function executionPolicyForGoat(goat: FundGoat) {
 async function marketStateStoreForGoat(goat: FundGoat, provider: MarketDataProvider): Promise<MarketStateStore> {
   if (resolveGoatTradingProvider(goat) === "hyperliquid") return marketStateStore;
   const profile = await persistence.profiles.get(goat.userId).catch(() => null);
-  if (!profile?.ctraderAccountId) throw new Error("Select a cTrader account before running this GOAT.");
+  if (!profile?.ctraderAccountId) {
+    /**
+     * No broker: give the member its own simulated-feed snapshot store.
+     *
+     * This used to throw, which meant an unbrokered cTrader team could not be
+     * activated at all -- the last thing standing between "describe a team" and
+     * "paper-trade a team". Keyed by user rather than account so two members of
+     * one user still share a cache, but never shared across users.
+     */
+    const key = `${goat.userId}:simulated`;
+    let store = cTraderMarketStateStores.get(key);
+    if (!store) {
+      store = new MarketStateStore(provider, {
+        ttlMs: 30_000,
+        pollIntervalMs: 5_000,
+        timeframe: "15m",
+        candleCount: 120,
+      });
+      cTraderMarketStateStores.set(key, store);
+    }
+    return store;
+  }
   const key = `${goat.userId}:${profile.ctraderAccountId}:${profile.ctraderAccountIsLive === true ? "live" : "demo"}`;
   let store = cTraderMarketStateStores.get(key);
   if (!store) {
@@ -1912,64 +1991,6 @@ function isValidModel(model: unknown): boolean {
   );
 }
 
-interface ValidatedGoatInput {
-  name: string;
-  goal: string;
-  markets: string[];
-  skillIds: string[];
-  model: string;
-  schedule: GoatSchedule;
-  timeframe: ReturnType<typeof normaliseTrackingTimeframe>;
-  /**
-   * True when the client actually sent a model.
-   *
-   * The distinction matters: an absent model means "resolve one for me", which
-   * needs the live catalogue, while an explicit one is a deliberate choice
-   * that must be honoured verbatim. Conflating the two made every GOAT
-   * creation perform a network round trip.
-   */
-  modelProvided: boolean;
-  deploymentState: 'DRAFT' | 'DEPLOYED';
-}
-
-function validateGoatInput(body: unknown): ValidatedGoatInput | null {
-  if (typeof body !== "object" || body === null) return null;
-  const b = body as Record<string, unknown>;
-  if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 100)
-    return null;
-  if (typeof b.goal !== "string" || !b.goal.trim() || b.goal.length > 1000)
-    return null;
-  if (!Array.isArray(b.markets) || b.markets.length !== 1) return null;
-  if (
-    !b.markets.every(
-      (m) => typeof m === "string" && m.trim().length > 0 && m.length <= 32,
-    )
-  ) return null;
-  if (!Array.isArray(b.skillIds) || b.skillIds.length === 0 || b.skillIds.length > 20) return null;
-  if (!b.skillIds.every((s) => typeof s === "string" && s.length <= 128))
-    return null;
-  const modelProvided =
-    typeof b.model === "string" && b.model.trim().length > 0;
-  const model = modelProvided ? (b.model as string) : LEGACY_DEFAULT_MODEL;
-  if (!isValidModel(model)) return null;
-  return {
-    name: b.name.trim(),
-    goal: b.goal.trim(),
-    markets: b.markets as string[],
-    skillIds: b.skillIds as string[],
-    model,
-    modelProvided,
-    deploymentState: b.deploymentState === 'DRAFT' ? 'DRAFT' : 'DEPLOYED',
-    schedule: normaliseSchedule(b.schedule as GoatSchedule | undefined),
-    /**
-     * Tracking timeframe is validated server-side. An unrecognised value falls
-     * back to the default rather than being rejected outright, so a client
-     * sending a stale enum still gets a working GOAT.
-     */
-    timeframe: normaliseTrackingTimeframe(b.timeframe),
-  };
-}
-
 /* ------------------------------------------------------------------ */
 /* Durable scheduling                                                  */
 /* ------------------------------------------------------------------ */
@@ -3080,11 +3101,6 @@ async function createProcessFromTelegram(
    */
   const profile = await persistence.profiles.get(owner.userId).catch(() => null);
   const tradingProvider = resolveUserTradingProvider(profile);
-  const readiness = await tradingProviderReadinessForUser(owner.userId, tradingProvider);
-  if (!readiness.ready) {
-    const registration = getTradingProviderRegistration(tradingProvider);
-    return { ok: false, message: `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}` };
-  }
   const provider = await marketDataProviderForUser(owner.userId, tradingProvider);
   const known = await provider.getSymbols();
   const match = known.find((s) => s.symbol.toUpperCase() === instrument);
@@ -3614,30 +3630,6 @@ function timingSafeStringEqual(a: string, b: string): boolean {
  * NEW record owned by the caller; there is no route that edits a template, so
  * hiding an edit button in the UI is not what enforces that.
  */
-apiRouter.get(
-  "/templates/goats",
-  handle(async (_req, res) => {
-    res.json({
-      templates: SYSTEM_GOATS.map((goat) => ({
-        id: goat.id,
-        name: goat.name,
-        goal: goat.goal,
-        markets: goat.markets,
-        skillIds: goat.skillIds,
-        model: goat.model,
-        timeframe: goat.timeframe,
-        schedule: goat.schedule,
-        /**
-         * Explicit, so the UI never has to infer "these are examples" from the
-         * absence of a status field. These are unverified starting points, not
-         * performance claims.
-         */
-        isTemplate: true,
-        performsTrades: false,
-      })),
-    });
-  }),
-);
 
 /** EXPLORE: system-owned skills. Public for the same reason as above. */
 apiRouter.get(
@@ -4323,7 +4315,7 @@ async function readUserPreferences(userId: string): Promise<{
   const autonomyMode = normaliseAutonomyMode(profile?.autonomyMode);
   const tradingProvider = resolveUserTradingProvider(profile);
   const execution = executionPolicyForProvider(userId, tradingProvider);
-  const tradingProviderReadiness = await tradingProviderReadinessForUser(userId, tradingProvider);
+  const tradingProviderReadiness = await liveExecutionReadinessForUser(userId, tradingProvider);
   const tradingProviderRegistration = getTradingProviderRegistration(tradingProvider);
 
   return {
@@ -4457,7 +4449,7 @@ apiRouter.post(
       const needsPropDao = preferredProvider === "hyperliquid" || activeGoats.some((goat) => resolveGoatTradingProvider(goat) === "hyperliquid");
 
       if (needsCTrader) {
-        const readiness = await tradingProviderReadinessForUser(user.uid, "ctrader");
+        const readiness = await liveExecutionReadinessForUser(user.uid, "ctrader");
         if (!readiness.ready) return fail(res, 409, "CTRADER_EXECUTION_NOT_READY", readiness.reason ?? "cTrader is not ready for automatic execution.");
         if (process.env.CTRADER_EXECUTION_ENABLED !== "true") {
           return fail(res, 409, "EXECUTION_NOT_AUTHORISED", "cTrader automatic execution is disabled by the server. No order will be sent.");
@@ -5285,65 +5277,6 @@ apiRouter.delete(
 /* System catalogues (Explore)                                        */
 /* ------------------------------------------------------------------ */
 
-/**
- * Copies a GOAT template into the caller's workspace.
- *
- * The template is READ and a NEW record is written with a fresh id and the
- * caller's uid. The template itself is never written to, so concurrent copies
- * cannot interfere and one user's copy cannot affect another's.
- */
-apiRouter.post(
-  "/templates/goats/:id/copy",
-  handle(async (req, res) => {
-    const user = requireUser(req);
-    const template = SYSTEM_GOATS.find((g) => g.id === req.params.id);
-
-    if (!template) return notFound(res);
-
-    const profile = await persistence.profiles.get(user.uid).catch(() => null);
-    const tradingProvider = resolveUserTradingProvider(profile);
-    const readiness = await tradingProviderReadinessForUser(user.uid, tradingProvider);
-    if (!readiness.ready) {
-      const registration = getTradingProviderRegistration(tradingProvider);
-      return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}`);
-    }
-
-    const selectedMarketProvider = await marketDataProviderForUser(user.uid, tradingProvider);
-    const templateMarkets = await resolveMarketsForGoat(template.markets.slice(0, 1), selectedMarketProvider);
-    if ("error" in templateMarkets) {
-      return fail(res, 409, "TEMPLATE_MARKET_UNAVAILABLE", `This template's market is not listed by ${selectedMarketProvider.name}. ${templateMarkets.error} Choose another template or switch providers; no symbol mapping was inferred.`);
-    }
-
-    const now = new Date().toISOString();
-    const copy: FundGoat = {
-      ...template,
-      // New identity and a real owner. Spreading the template would otherwise
-      // copy `id: 'system'` and make the copy collide with the template itself.
-      id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      userId: user.uid,
-      tradingProvider,
-      name: `${template.name}`,
-      markets: templateMarkets.resolved,
-      status: "WATCHING",
-      createdAt: now,
-      updatedAt: now,
-    };
-    const canonicalCopy = tradingProvider === "hyperliquid" ? (migrateGoatMarkets(copy) ?? copy) : copy;
-
-    /**
-     * User-owned skills are copied into the caller's library and the GOAT must
-     * reference those new IDs, not the source user's skill records.
-     */
-    const resolvedSkillIds = await copyReferencedSkills(user.uid, canonicalCopy.skillIds);
-    const ownedCopy = { ...canonicalCopy, skillIds: resolvedSkillIds };
-    await persistence.goats.save(ownedCopy);
-
-    await syncSchedule(ownedCopy);
-    if (resolveGoatTradingProvider(ownedCopy) === "hyperliquid") subscribeToMarkets(ownedCopy);
-
-    res.status(201).json({ goat: ownedCopy, copiedFrom: template.id });
-  }),
-);
 
 /**
  * Ensures every skill id a GOAT references is usable by its owner.
@@ -5523,7 +5456,392 @@ async function runtimeFor(
   return runtime;
 }
 
-// ---- GOAT teams: persisted groups of existing, owner-scoped GOATs ----
+// ---- Team members ----------------------------------------------------
+//
+// A member is the only unit a user authors directly, and they author it only
+// inside the team builder. `FundGoat` remains the storage/runtime record so
+// the scheduler, reasoning graph and market adapters keep working unchanged;
+// these routes present it with the team-first fields (role, skills) and are
+// the single creation path for trading agents in the product.
+
+interface TeamMemberInput {
+  name: string;
+  jobTitle: string;
+  jobDescription: string;
+  skills: string[];
+  /**
+   * Skill ids chosen explicitly in the picker.
+   *
+   * Preferred over fuzzy-matching `skills` text: the builder now offers a real
+   * catalogue, so an explicit choice must be honoured rather than re-guessed.
+   * Ownership is validated; unknown ids fall back to name matching.
+   */
+  skillIds?: string[];
+  asset: string;
+  tradingProvider?: TradingProvider;
+}
+
+const MAX_MEMBERS_PER_TEAM = 10;
+const MAX_MEMBER_SKILLS = 12;
+
+function normaliseStringList(raw: unknown, maxItems: number, maxLength: number): string[] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return null;
+  const items = Array.from(new Set<string>(
+    raw
+      .filter((item): item is string => typeof item === "string")
+      .map(item => item.trim())
+      .filter(item => item.length > 0 && item.length <= maxLength),
+  ));
+  return items.length > maxItems ? null : items;
+}
+
+/** Accepts a finite number inside [min, max]; anything else is dropped. */
+function normalisePercent(raw: unknown, min: number, max: number): number | undefined {
+  const value = typeof raw === "string" ? Number(raw) : raw;
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  if (value < min || value > max) return undefined;
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Validates the deployment modal's payload.
+ *
+ * A provider and an asset are mandatory: deploying without them would leave
+ * members on the legacy default venue with no market to quote, which fails
+ * later and less legibly. Risk limits are all optional and bounded, so a
+ * partially filled risk form still produces a usable team.
+ */
+function normaliseTeamDeployment(raw: unknown): TeamDeploymentSettings | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const body = raw as Record<string, unknown>;
+  if (!isTradingProvider(body.provider)) return null;
+  const asset = typeof body.asset === "string" ? body.asset.trim().toUpperCase() : "";
+  if (!asset || asset.length > 32) return null;
+  const risk: TeamRiskParameters = {};
+  const position = normalisePercent((body.risk as Record<string, unknown> | undefined)?.maxPositionSizePercent, 0.01, 100);
+  const dailyLoss = normalisePercent((body.risk as Record<string, unknown> | undefined)?.maxDailyLossPercent, 0.1, 100);
+  const stopLoss = normalisePercent((body.risk as Record<string, unknown> | undefined)?.stopLossPercent, 0.1, 100);
+  const takeProfit = normalisePercent((body.risk as Record<string, unknown> | undefined)?.takeProfitPercent, 0.1, 1000);
+  const openPositions = normalisePercent((body.risk as Record<string, unknown> | undefined)?.maxOpenPositions, 1, 50);
+  if (position !== undefined) risk.maxPositionSizePercent = position;
+  if (dailyLoss !== undefined) risk.maxDailyLossPercent = dailyLoss;
+  if (stopLoss !== undefined) risk.stopLossPercent = stopLoss;
+  if (takeProfit !== undefined) risk.takeProfitPercent = takeProfit;
+  if (openPositions !== undefined) risk.maxOpenPositions = Math.round(openPositions);
+  /**
+   * Whether the team may submit real orders.
+   *
+   * Off by default and deliberately opt-in: a team deploys and starts
+   * researching against PAPER data without a broker. Turning this on is the
+   * point at which a venue credential becomes necessary, and only then.
+   */
+  const liveTrading = body.liveTrading === true;
+  return { provider: body.provider, asset, risk, liveTrading };
+}
+
+/**
+ * Validates one authored member. Members are intentionally light: the user
+ * supplies a name, a role, what the member does, and the skills it has. The
+ * asset and venue are team-level deployment settings, so a member may inherit
+ * them, but an author can override the asset per member.
+ */
+function normaliseTeamMemberInput(raw: unknown): TeamMemberInput | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const body = raw as Record<string, unknown>;
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const jobTitle = typeof body.jobTitle === "string" ? body.jobTitle.trim() : "";
+  const jobDescription = typeof body.jobDescription === "string" ? body.jobDescription.trim() : "";
+  const asset = typeof body.asset === "string" ? body.asset.trim() : "";
+  const skills = normaliseStringList(body.skills, MAX_MEMBER_SKILLS, 60);
+  const skillIds = normaliseStringList(body.skillIds, MAX_MEMBER_SKILLS, 128);
+  if (!name || name.length > 80) return null;
+  if (!jobTitle || jobTitle.length > 80) return null;
+  if (!jobDescription || jobDescription.length > 1000) return null;
+  if (skills === null || skillIds === null) return null;
+  if (asset && asset.length > 32) return null;
+  const provider = isTradingProvider(body.tradingProvider) ? body.tradingProvider : undefined;
+  return { name, jobTitle, jobDescription, skills, ...(skillIds.length ? { skillIds } : {}), asset, ...(provider ? { tradingProvider: provider } : {}) };
+}
+
+/**
+ * Maps the member's authored skills onto executable skill records.
+ *
+ * The user types free text ("Liquidity sweeps", "News filtering"), but the
+ * runtime only executes saved skills. Matching by name keeps the typed text
+ * authoritative for display while giving the reasoning graph something it can
+ * actually run; unmatched entries are still preserved on `skills`.
+ */
+function resolveSkillIdsForMember(
+  authoredSkills: string[],
+  available: Array<{ id: string; name: string }>,
+): string[] {
+  const normalise = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  /** Words too generic to carry meaning on their own. */
+  const stopWords = new Set(["and", "the", "a", "of", "in", "for", "to", "analysis", "strategy", "trading", "skill", "skills", "with"]);
+  /** Distinctive words in a phrase: "Liquidity sweeps" -> ["liquidity", "sweeps"]. */
+  const meaningfulWords = (phrase: string) =>
+    phrase
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .split(/[^A-Za-z]+/)
+      .map(word => word.toLowerCase())
+      .filter(word => word.length >= 4 && !stopWords.has(word));
+  const matched = new Set<string>();
+  for (const authored of authoredSkills) {
+    const needle = normalise(authored);
+    if (!needle) continue;
+    for (const skill of available) {
+      const candidate = normalise(skill.name);
+      if (!candidate) continue;
+      if (candidate.includes(needle) || needle.includes(candidate)) { matched.add(skill.id); break; }
+      /**
+       * "Liquidity sweeps" does not contain "Liquidity Sweep Analysis", so a
+       * plain substring match misses it. Fall back to shared meaningful words:
+       * one distinctive word in common is enough to bind the typed skill.
+       */
+      const shared = meaningfulWords(authored).some(word => candidate.includes(word));
+      if (shared) { matched.add(skill.id); break; }
+    }
+  }
+  if (matched.size > 0) return Array.from(matched);
+  // Never leave a member skillless: the runtime requires at least one skill.
+  const fallback = available[0];
+  return fallback ? [fallback.id] : [];
+}
+
+/**
+ * Creates a member record in DRAFT state. A draft member is never scheduled or
+ * analysed until its team is deployed, which is what makes team deployment the
+ * single activation path in the product.
+ */
+async function createTeamMemberRecord(
+  userId: string,
+  input: TeamMemberInput,
+): Promise<FundGoat> {
+  const profile = await persistence.profiles.get(userId).catch(() => null);
+  const tradingProvider = input.tradingProvider ?? resolveUserTradingProvider(profile);
+
+  /**
+   * Authoring a member must not require a connected venue.
+   *
+   * The asset a member trades is really a team-level deployment choice, and
+   * deployment overwrites `markets` for every member anyway. Resolving markets
+   * here would mean a user could not describe their team until they had
+   * connected a broker — so an explicit asset is validated only when the venue
+   * can actually answer, and is otherwise left for deployment to set.
+   */
+  let markets: string[] = [];
+  if (input.asset) {
+    const provider = await marketDataProviderForUser(userId, tradingProvider);
+    const resolved = await resolveMarketsForGoat([input.asset], provider);
+    if ("error" in resolved) throw Object.assign(new Error(resolved.error), { code: "UNKNOWN_MARKET" });
+    markets = resolved.resolved;
+  }
+
+  const available = await allSkillsFor(userId);
+  const known = new Set(available.map(skill => skill.id));
+  const chosen = (input.skillIds ?? []).filter(id => known.has(id));
+  const skillIds = chosen.length > 0
+    ? chosen
+    : resolveSkillIdsForMember(input.skills, available);
+  const now = new Date().toISOString();
+  const member: FundGoat = {
+    id: `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    userId,
+    tradingProvider,
+    name: input.name,
+    jobTitle: input.jobTitle,
+    goal: input.jobDescription,
+    skills: input.skills,
+    markets,
+    skillIds,
+    model: LEGACY_DEFAULT_MODEL,
+    status: "PAUSED",
+    deploymentState: "DRAFT",
+    schedule: normaliseSchedule(undefined),
+    timeframe: normaliseTrackingTimeframe(undefined),
+    createdAt: now,
+    updatedAt: now,
+  };
+  await persistence.goats.save(member);
+  return member;
+}
+
+/**
+ * Pushes the team's operating instructions onto each member record.
+ *
+ * Called whenever a team's instructions change so the value the reasoning
+ * engines read never drifts from the team's own copy.
+ */
+async function stampTeamInstructions(
+  userId: string,
+  memberIds: string[],
+  instructions: string,
+): Promise<void> {
+  const value = instructions.trim();
+  for (const memberId of memberIds) {
+    const member = await persistence.goats.getForUser(memberId, userId);
+    if (!member || (member.teamInstructions ?? '') === value) continue;
+    await persistence.goats.save({ ...member, teamInstructions: value, updatedAt: new Date().toISOString() });
+  }
+}
+
+/** Shapes a stored member record for the team builder. */
+function presentTeamMember(goat: FundGoat) {
+  return {
+    id: goat.id,
+    name: goat.name,
+    jobTitle: goat.jobTitle || "Team member",
+    jobDescription: goat.goal,
+    skills: goat.skills || [],
+    status: goat.status,
+    asset: goat.markets[0],
+    tradingProvider: resolveGoatTradingProvider(goat),
+    createdAt: goat.createdAt,
+  };
+}
+
+// Registered below the auth middleware: this route needs a caller to resolve
+// their venue and their live-execution status.
+/**
+ * Assets available for a given trading provider, for the deployment picker.
+ *
+ * Answers "what can this team trade?" without ever requiring a broker:
+ *   - cTrader returns the static broker-independent catalogue. When a broker
+ *     IS connected its account-scoped list is preferred, because brokers
+ *     differ in what they list.
+ *   - Hyperliquid returns its live instrument list.
+ *
+ * The response states plainly whether the feed is live or simulated and what
+ * connecting a broker would add, so the UI can say so instead of leaving the
+ * user to guess why an asset will not fill.
+ */
+apiRouter.get("/markets/assets", handle(async (req, res) => {
+  const user = requireUser(req);
+  const requested = typeof req.query?.provider === "string" ? req.query.provider : "";
+  const provider: TradingProvider = requested === "hyperliquid" ? "hyperliquid" : "ctrader";
+  const query = typeof req.query?.q === "string" ? req.query.q.trim().toLowerCase() : "";
+
+  let assets: Array<{ symbol: string; name: string; category: string }>;
+  let dataMode: GoatRuntimeState["dataSource"];
+  let liveAvailable: boolean;
+  let liveBlockedReason: string | null = null;
+  let note: string;
+
+  if (provider === "hyperliquid") {
+    const adapter = await marketDataProviderForUser(user.uid, "hyperliquid");
+    dataMode = adapter.dataMode;
+    const live = await liveExecutionReadinessForUser(user.uid, "hyperliquid");
+    liveAvailable = live.ready;
+    liveBlockedReason = live.reason ?? null;
+    note = "Hyperliquid lists on-chain perpetuals. Connect a wallet in Settings to trade live.";
+    assets = (await adapter.getSymbols())
+      .map(symbol => ({ symbol: symbol.symbol, name: symbol.name, category: symbol.category }))
+      .filter(asset => asset.symbol);
+  } else {
+    const live = await liveExecutionReadinessForUser(user.uid, "ctrader");
+    liveAvailable = live.ready;
+    liveBlockedReason = live.reason ?? null;
+    if (live.ready) {
+      try {
+        const adapter = await marketDataProviderForUser(user.uid, "ctrader");
+        dataMode = adapter.dataMode;
+        assets = (await adapter.getSymbols())
+          .map(symbol => ({ symbol: symbol.symbol, name: symbol.name, category: symbol.category }))
+          .filter(asset => asset.symbol);
+        note = "Showing the symbols your connected cTrader account can trade.";
+      } catch {
+        assets = cTraderCatalogueRows();
+        dataMode = PAPER_DATA_MODE;
+        note = "Your cTrader account could not be reached, so the standard cTrader catalogue is shown.";
+      }
+    } else {
+      assets = cTraderCatalogueRows();
+      dataMode = PAPER_DATA_MODE;
+      note = "These are standard cTrader assets. Paper prices apply until you connect a broker in Settings; a broker connection is required only for live trading.";
+    }
+  }
+
+  const filtered = query
+    ? assets.filter(asset => asset.symbol.toLowerCase().includes(query) || asset.name.toLowerCase().includes(query))
+    : assets;
+
+  res.json({
+    provider,
+    dataMode,
+    liveAvailable,
+    liveBlockedReason,
+    note,
+    total: assets.length,
+    assets: filtered.slice(0, 500),
+  });
+}));
+
+apiRouter.get("/team-members", handle(async (req, res) => {
+  const user = requireUser(req);
+  const members = await persistence.goats.listByUser(user.uid);
+  res.json({ members: members.map(presentTeamMember) });
+}));
+
+apiRouter.post("/team-members", handle(async (req, res) => {
+  const user = requireUser(req);
+  const input = normaliseTeamMemberInput(req.body);
+  if (!input) {
+    return fail(res, 400, "INVALID_MEMBER_INPUT", "A member needs a name, a job title, and a job description.");
+  }
+  const member = await createTeamMemberRecord(user.uid, input);
+  res.status(201).json({ member: presentTeamMember(member) });
+}));
+
+apiRouter.patch("/team-members/:id", handle(async (req, res) => {
+  const user = requireUser(req);
+  const existing = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!existing) return notFound(res);
+  const input = normaliseTeamMemberInput({
+    name: req.body?.name ?? existing.name,
+    jobTitle: req.body?.jobTitle ?? existing.jobTitle,
+    jobDescription: req.body?.jobDescription ?? existing.goal,
+    skills: req.body?.skills ?? existing.skills,
+    asset: req.body?.asset ?? existing.markets[0],
+  });
+  if (!input) return fail(res, 400, "INVALID_MEMBER_INPUT", "A member needs a name, a job title, and a job description.");
+
+  const provider = await marketDataProviderForUser(user.uid, existing.tradingProvider ? resolveGoatTradingProvider(existing) : resolveUserTradingProvider(await persistence.profiles.get(user.uid).catch(() => null)));
+  const markets = await resolveMarketsForGoat(input.asset ? [input.asset] : [], provider);
+  if ("error" in markets) return fail(res, 400, "UNKNOWN_MARKET", markets.error);
+
+  const availableSkills = await allSkillsFor(user.uid);
+  const knownSkillIds = new Set(availableSkills.map(skill => skill.id));
+  const updated: FundGoat = {
+    ...existing,
+    name: input.name,
+    jobTitle: input.jobTitle,
+    goal: input.jobDescription,
+    skills: input.skills,
+    markets: markets.resolved,
+    skillIds: (input.skillIds ?? []).filter(id => knownSkillIds.has(id)).length > 0
+      ? (input.skillIds ?? []).filter(id => knownSkillIds.has(id))
+      : resolveSkillIdsForMember(input.skills, availableSkills),
+    updatedAt: new Date().toISOString(),
+  };
+  await persistence.goats.save(updated);
+  res.json({ member: presentTeamMember(updated) });
+}));
+
+apiRouter.delete("/team-members/:id", handle(async (req, res) => {
+  const user = requireUser(req);
+  const existing = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!existing) return notFound(res);
+  const teams = await goatTeamStore.listForUser(user.uid);
+  if (teams.some(team => team.memberGoatIds.includes(existing.id))) {
+    return fail(res, 409, "MEMBER_IN_USE", "Remove this member from its teams before deleting it.");
+  }
+  await stopAndResetGoatFor(user.uid, existing.id).catch(() => {});
+  await persistence.goats.delete(existing.id);
+  res.status(204).end();
+}));
+
+// ---- GOAT teams: the single creation unit for trading agents ----
 
 apiRouter.get("/goat-teams", handle(async (req, res) => {
   const user = requireUser(req);
@@ -5538,8 +5856,9 @@ apiRouter.get("/goat-teams", handle(async (req, res) => {
 apiRouter.post("/goat-teams", handle(async (req, res) => {
   const user = requireUser(req);
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-  const requestedGoatIds: unknown = req.body?.goatIds;
-  const memberGoatIds: string[] = Array.isArray(requestedGoatIds)
+  const instructions = typeof req.body?.instructions === "string" ? req.body.instructions.trim() : "";
+  const requestedGoatIds: unknown = req.body?.memberGoatIds;
+  const existingMemberIds: string[] = Array.isArray(requestedGoatIds)
     ? Array.from(new Set<string>(
         (requestedGoatIds as unknown[])
           .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
@@ -5553,16 +5872,49 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   const visibility: "PUBLIC" | "PRIVATE" = req.body?.visibility === "PUBLIC" ? "PUBLIC" : "PRIVATE";
   const shouldDeploy = req.body?.deploy === true;
   if (!name || name.length > 80) return fail(res, 400, "INVALID_TEAM_NAME", "Team name must be between 1 and 80 characters.");
+  if (instructions.length > 4000) return fail(res, 400, "INVALID_TEAM_INSTRUCTIONS", "Team instructions must be 4000 characters or fewer.");
   if (req.body?.visibility !== undefined && !["PUBLIC", "PRIVATE"].includes(req.body.visibility)) return fail(res, 400, "INVALID_TEAM_VISIBILITY", "visibility must be PUBLIC or PRIVATE.");
-  if (memberGoatIds.length < 2 || memberGoatIds.length > 10) return fail(res, 400, "INVALID_TEAM_MEMBERS", "A team must contain between 2 and 10 distinct GOATs.");
+  /**
+   * Members are authored INLINE here. The team builder is the only place a
+   * trading agent comes into existence, so creation accepts both already-saved
+   * members (reused across teams) and freshly authored ones.
+   *
+   * One member is a valid team: creating a single specialist is the degenerate
+   * case of creating a team, which is why this floor is 1 and not 2.
+   */
+  const newMemberInputs: unknown[] = Array.isArray(req.body?.newMembers) ? req.body.newMembers : [];
+  const totalMembers = existingMemberIds.length + newMemberInputs.length;
+  if (totalMembers < 1) return fail(res, 400, "INVALID_TEAM_MEMBERS", "Add at least one team member.");
+  if (totalMembers > MAX_MEMBERS_PER_TEAM) return fail(res, 400, "INVALID_TEAM_MEMBERS", `A team can hold at most ${MAX_MEMBERS_PER_TEAM} members.`);
   if (req.body?.coordinationMode !== undefined && !["INDEPENDENT", "CONSENSUS", "LEAD_REVIEW"].includes(req.body.coordinationMode)) {
     return fail(res, 400, "INVALID_COORDINATION_MODE", "coordinationMode must be INDEPENDENT, CONSENSUS, or LEAD_REVIEW.");
   }
+
+  const deployment = normaliseTeamDeployment(req.body?.deployment);
+  if (req.body?.deployment !== undefined && req.body?.deployment !== null && !deployment) {
+    return fail(res, 400, "INVALID_DEPLOYMENT_SETTINGS", "Deployment settings are incomplete. Choose a trading provider and an asset.");
+  }
+
+  const ownedMembers = await Promise.all(existingMemberIds.map(id => persistence.goats.getForUser(id, user.uid)));
+  if (ownedMembers.some(member => !member)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "Every team member must be an existing member owned by the signed-in user.");
+
+  const createdMembers: FundGoat[] = [];
+  for (const raw of newMemberInputs) {
+    const memberInput = normaliseTeamMemberInput(raw);
+    if (!memberInput) return fail(res, 400, "INVALID_MEMBER_INPUT", "Each member needs a name, a job title, and a job description.");
+    try {
+      createdMembers.push(await createTeamMemberRecord(user.uid, memberInput));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "A member could not be created.";
+      return fail(res, error instanceof Error && (error as { code?: string }).code === "UNKNOWN_MARKET" ? 400 : 500, "MEMBER_CREATE_FAILED", message);
+    }
+  }
+
+  const memberGoatIds = [...existingMemberIds, ...createdMembers.map(member => member.id)];
   if (coordinationMode === "LEAD_REVIEW" && (!leadGoatId || !memberGoatIds.includes(leadGoatId))) {
     return fail(res, 400, "INVALID_TEAM_LEAD", "LEAD_REVIEW teams require leadGoatId to identify one of the team members.");
   }
-  const members = await Promise.all(memberGoatIds.map(id => persistence.goats.getForUser(id, user.uid)));
-  if (members.some(member => !member)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "Every team member must be an existing GOAT owned by the signed-in user.");
+
   const now = new Date().toISOString();
   const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "trading-team";
   // A private link is a capability URL: keep a long random suffix and do not
@@ -5573,26 +5925,58 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     ownerUserId: user.uid,
     name,
     memberGoatIds,
+    ...(instructions ? { instructions } : {}),
     coordinationMode,
     visibility,
     publicSlug: shareSlug,
     ...(leadGoatId ? { leadGoatId } : {}),
+    ...(deployment ? { deployment } : {}),
     status: "DRAFT",
     createdAt: now,
     updatedAt: now,
   };
   team = await goatTeamStore.create(team);
+  await stampTeamInstructions(user.uid, team.memberGoatIds, team.instructions || "");
   if (shouldDeploy) {
+    if (!deployment) return fail(res, 400, "MISSING_DEPLOYMENT_SETTINGS", "Choose your trading provider, asset, and risk limits before deploying.");
+    /**
+     * Live trading is the only thing that needs a venue credential. Refusing
+     * here -- before any member is touched -- keeps the failure legible instead
+     * of surfacing later as a partial deploy.
+     */
+    if (deployment.liveTrading) {
+      const live = await liveExecutionReadinessForUser(user.uid, deployment.provider);
+      if (!live.ready) {
+        return fail(res, 409, "LIVE_TRADING_REQUIRES_BROKER", live.reason ?? "Connect a broker in Settings before enabling live trading.");
+      }
+    }
     const results: Array<{ goatId: string; ok: boolean; error?: string }> = [];
-    for (const goatId of memberGoatIds) {
-      try { await setGoatStatusFor(user.uid, goatId, false, false); results.push({ goatId, ok: true }); }
-      catch (error) { results.push({ goatId, ok: false, error: error instanceof Error ? error.message : "Deployment failed" }); }
+    for (const goatId of team.memberGoatIds) {
+      try {
+        /**
+         * Deployment settings are team-level, so they are applied to every
+         * member before activation. The member keeps its role and skills; only
+         * the venue, asset and schedule the team trades under are overwritten.
+         */
+        const member = await persistence.goats.getForUser(goatId, user.uid);
+        if (!member) throw new Error("Member not found.");
+        await persistence.goats.save({
+          ...member,
+          tradingProvider: deployment.provider,
+          markets: [deployment.asset],
+          schedule: member.schedule ?? normaliseSchedule(undefined),
+          timeframe: member.timeframe ?? normaliseTrackingTimeframe(undefined),
+          updatedAt: new Date().toISOString(),
+        });
+        await setGoatStatusFor(user.uid, goatId, false, false);
+        results.push({ goatId, ok: true });
+      } catch (error) { results.push({ goatId, ok: false, error: error instanceof Error ? error.message : "Deployment failed" }); }
     }
     const failed = results.some(result => !result.ok);
     team = await goatTeamStore.save({ ...team, status: failed ? "PARTIAL" : "DEPLOYED", updatedAt: new Date().toISOString(), ...(!failed ? { deployedAt: now } : {}) });
-    if (failed) return res.status(409).json({ error: { code: "TEAM_DEPLOYMENT_PARTIAL", message: "The team was saved, but one or more bots could not be deployed." }, team, results, shareUrl: `/team/${shareSlug}` });
+    if (failed) return res.status(409).json({ error: { code: "TEAM_DEPLOYMENT_PARTIAL", message: "The team was saved, but one or more members could not be deployed." }, team, results, shareUrl: `/team/${shareSlug}` });
   }
-  res.status(201).json({ team, members, shareUrl: `/team/${shareSlug}`, discoverable: visibility === "PUBLIC" && team.status === "DEPLOYED" });
+  res.status(201).json({ team, members: [...ownedMembers.filter(Boolean), ...createdMembers], shareUrl: `/team/${shareSlug}`, discoverable: visibility === "PUBLIC" && team.status === "DEPLOYED" });
 }));
 
 apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
@@ -5605,6 +5989,41 @@ apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
     return { ...goat, runtimeState: goatRuntimeRegistry.get(id)?.getState() ?? null };
   }));
   res.json({ team, members: members.filter(Boolean) });
+}));
+
+/**
+ * Edits a team's own record. Team instructions are global state for every
+ * member, so saving them here re-stamps each member rather than leaving the
+ * reasoning engines reading a stale playbook.
+ */
+apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : team.name;
+  if (!name || name.length > 80) return fail(res, 400, "INVALID_TEAM_NAME", "Team name must be between 1 and 80 characters.");
+  const instructions = typeof req.body?.instructions === "string" ? req.body.instructions.trim() : (team.instructions || "");
+  if (instructions.length > 4000) return fail(res, 400, "INVALID_TEAM_INSTRUCTIONS", "Team instructions must be 4000 characters or fewer.");
+  const visibility = req.body?.visibility === undefined
+    ? team.visibility
+    : req.body.visibility === "PUBLIC" ? "PUBLIC" as const : "PRIVATE" as const;
+
+  /**
+   * `save` writes the whole record, so an omitted field is genuinely cleared.
+   * Rebuild without the previous value instead of spreading it, otherwise
+   * emptying the instructions would silently keep the old text.
+   */
+  const { instructions: _previousInstructions, ...teamWithoutInstructions } = team;
+  const updated = await goatTeamStore.save({
+    ...teamWithoutInstructions,
+    name,
+    ...(instructions ? { instructions } : {}),
+    visibility,
+    updatedAt: new Date().toISOString(),
+  });
+  await stampTeamInstructions(user.uid, updated.memberGoatIds, instructions);
+  res.json({ team: updated });
 }));
 
 apiRouter.get("/goat-teams/:id/assessment", handle(async (req, res) => {
@@ -5694,6 +6113,8 @@ apiRouter.get(
      */
     const withState = await Promise.all(
       goats.map(async (goat) => {
+        // Drafts are never scheduled, so there is no runtime to hydrate.
+        if (goat.deploymentState === 'DRAFT') return { ...goat, runtimeState: null };
         try {
           const runtime = await runtimeFor(goat);
           return { ...goat, runtimeState: runtime.getState() };
@@ -5714,147 +6135,34 @@ apiRouter.get(
     const user = requireUser(req);
     const goat = await persistence.goats.getForUser(req.params.id, user.uid);
     if (!goat) return notFound(res);
-    const runtime = await runtimeFor(goat);
-    const goatMarketProvider = await marketDataProviderForGoat(goat);
+    /**
+     * A draft member is a description, not a running agent: it has no schedule
+     * and no market until its team is deployed. Building a runtime for one both
+     * wastes work and throws outright when the member's venue is not connected
+     * yet, which authoring deliberately allows. Report it as not running.
+     *
+     * A member whose venue is not ready can also be left DEPLOYED by a partial
+     * team deploy, so hydration is tolerated here exactly as it already is in
+     * the list route: the record is still returned, without a runtime state.
+     */
+    const isDraft = goat.deploymentState === 'DRAFT';
+    let runtimeState: GoatRuntimeState | null = null;
+    let dataMode: GoatRuntimeState['dataSource'] | null = null;
+    let runtimeUnavailableReason: string | null = null;
+    if (!isDraft) {
+      try {
+        runtimeState = (await runtimeFor(goat)).getState();
+        dataMode = (await marketDataProviderForGoat(goat)).dataMode;
+      } catch (error) {
+        runtimeUnavailableReason = error instanceof Error ? error.message : "Runtime unavailable.";
+      }
+    }
     res.json({
       goat,
-      runtimeState: runtime?.getState() ?? null,
+      runtimeState,
       tradingProvider: resolveGoatTradingProvider(goat),
-      dataMode: goatMarketProvider.dataMode,
-    });
-  }),
-);
-
-apiRouter.post(
-  "/goats",
-  handle(async (req, res) => {
-    const user = requireUser(req);
-    const input = validateGoatInput(req.body);
-    if (!input) {
-      return fail(
-        res,
-        400,
-        "INVALID_INPUT",
-        "Name, goal, exactly one asset, at least one skill, and a supported model are required.",
-      );
-    }
-
-    const profile = await persistence.profiles.get(user.uid).catch(() => null);
-    const tradingProvider = resolveUserTradingProvider(profile);
-    const readiness = await tradingProviderReadinessForUser(user.uid, tradingProvider);
-    if (!readiness.ready) {
-      const registration = getTradingProviderRegistration(tradingProvider);
-      return fail(res, 503, "TRADING_PROVIDER_NOT_READY", `${registration.label} is not ready for this user: ${readiness.reason ?? "provider unavailable"}`);
-    }
-
-    // Ownership validation: skillIds must reference defaults or the user's own skills.
-    const skills = await allSkillsFor(user.uid);
-    const knownIds = new Set(skills.map((s) => s.id));
-    const unknownSkills = input.skillIds.filter((id) => !knownIds.has(id));
-    if (unknownSkills.length > 0) {
-      return fail(
-        res,
-        400,
-        "UNKNOWN_SKILL",
-        `Unknown skill ids: ${unknownSkills.join(", ")}`,
-      );
-    }
-
-    /**
-     * VALIDATE MARKETS AT CREATION, NOT AT FIRST USE.
-     *
-     * A GOAT is only as good as its market list, and the cost of accepting a
-     * dead one is paid forever: every scheduler tick, every tracker check and
-     * every market event re-requests it, fails, and logs. This route was the
-     * only place that could have prevented that, and it accepted any string.
-     *
-     * Known retired symbols (`EUR/USD` and friends) are MIGRATED rather than
-     * rejected, because refusing outright would break every client that still
-     * holds one from an older build — the user gets a working GOAT instead of
-     * an error they cannot act on. Anything with no equivalent is rejected with
-     * the live list named, so the correction is obvious.
-     */
-    const selectedMarketProvider = await marketDataProviderForUser(user.uid, tradingProvider);
-    const markets = await resolveMarketsForGoat(input.markets, selectedMarketProvider);
-    if ("error" in markets) {
-      return fail(res, 400, "UNKNOWN_MARKET", markets.error);
-    }
-    if (markets.substituted.length > 0) {
-      console.warn(
-        `[api] GOAT create: substituted retired markets ` +
-          `${markets.substituted.map((s) => `${s.from} -> ${s.to}`).join(", ")}`,
-      );
-    }
-
-    const goatId = `goat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const now = new Date().toISOString();
-    const newGoat: FundGoat = {
-      id: goatId,
-      userId: user.uid,
-      tradingProvider,
-      name: input.name,
-      goal: input.goal,
-      markets: markets.resolved,
-      skillIds: input.skillIds,
-      model: input.deploymentState === 'DRAFT' && !input.modelProvided
-        ? LEGACY_DEFAULT_MODEL
-        : await resolveModelForNewGoat(
-            user.uid,
-            input.model,
-            input.modelProvided,
-          ),
-      status: input.deploymentState === 'DRAFT' ? "PAUSED" : "WATCHING",
-      deploymentState: input.deploymentState,
-      ...(input.deploymentState !== 'DRAFT' ? {
-        publicSlug: ((input.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42)) || "trading-robot") + "-" + goatId.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase(),
-        isPublished: true,
-        publishedAt: now,
-      } : {}),
-      schedule: input.schedule,
-      timeframe: input.timeframe,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    await persistence.goats.save(newGoat);
-
-    // Drafts are stored in Firebase but must not create a runtime schedule.
-    if (newGoat.deploymentState !== 'DRAFT') await syncSchedule(newGoat);
-
-    const runtime = newGoat.deploymentState === 'DRAFT'
-      ? null
-      : await ensureGoatRuntime(newGoat);
-
-        /**
-     * Start the first market review without holding the creation request open.
-     * The UI receives a pending state immediately; the runtime persists its
-     * thesis, proposal and wake event as the review completes. Firestore already
-     * holds the schedule, so later cron dispatches do not depend on this request.
-     */
-    if (runtime) keepBackgroundTaskAlive(
-      runtime
-        .wake(
-          "Initial analysis on deployment",
-          "MANUAL_REEVALUATE",
-          markets.resolved[0],
-        )
-        .then((state) => notifyGoatMarketReview(newGoat, state, "Initial deployment review"))
-        .catch((err) => {
-          // The runtime records its own failure; log detached work and keep the request safe.
-          console.error("[api] Initial GOAT analysis or Telegram recap failed:", err);
-        }),
-    );
-
-    res.json({
-      goat: newGoat,
-      runtimeState: runtime?.getState() ?? null,
-      tradingProvider: resolveGoatTradingProvider(newGoat),
-      dataMode: selectedMarketProvider.dataMode,
-      /**
-       * Explicit, so the UI can show "first analysis running" rather than an
-       * empty state that looks like the GOAT did nothing.
-       */
-      firstAnalysisPending: Boolean(runtime),
+      dataMode,
+      ...(runtimeUnavailableReason ? { runtimeUnavailableReason } : {}),
     });
   }),
 );
@@ -6840,8 +7148,6 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   let researchProvider: MarketDataProvider | null = null;
   let providerFailure: string | null = null;
   try {
-    const readiness = await tradingProviderReadinessForUser(userId, tradingProvider);
-    if (!readiness.ready) throw new Error(readiness.reason ?? "Selected trading provider is not ready.");
     researchProvider = await marketDataProviderForUser(userId, tradingProvider);
   } catch (error) {
     providerFailure = error instanceof Error ? error.message : "Selected market provider is unavailable.";
@@ -7257,8 +7563,7 @@ async function runChatResearchLoop(
   const tradingProvider = resolveUserTradingProvider(profile);
   let researchProvider: MarketDataProvider | null = null;
   try {
-    const readiness = await tradingProviderReadinessForUser(userId, tradingProvider);
-    if (readiness.ready) researchProvider = await marketDataProviderForUser(userId, tradingProvider);
+    researchProvider = await marketDataProviderForUser(userId, tradingProvider);
   } catch { /* provider unavailable: this pass must not fall back to another venue */ }
   const plannerPrompt = [
     "You are the research planner inside SIRGOAT. Inspect the user question and the evidence already fetched.",
@@ -7374,8 +7679,7 @@ apiRouter.post("/chat/actions/market-research", authMiddleware, async (req, res)
     const selectedProvider = resolveUserTradingProvider(await persistence.profiles.get(user.uid).catch(() => null));
     let dataMode: string = "UNAVAILABLE";
     try {
-      const readiness = await tradingProviderReadinessForUser(user.uid, selectedProvider);
-      if (readiness.ready) dataMode = (await marketDataProviderForUser(user.uid, selectedProvider)).dataMode;
+      dataMode = (await marketDataProviderForUser(user.uid, selectedProvider)).dataMode;
     } catch { /* status remains unavailable; never substitute another venue */ }
     const failed = /PROVIDER FAILURE|provider is unavailable|no matching listed instrument/i.test(evidence);
     res.json({
@@ -7415,12 +7719,16 @@ apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
       }
     : propDaoFor(user.uid).policyStatus();
   const profile = await persistence.profiles.get(user.uid).catch(() => null);
-  const providerReady = await tradingProviderReadinessForUser(user.uid, selectedProvider);
+  /**
+   * Research is a data operation, so it is always available.
+   *
+   * `execute_trade` still consults the live-execution policy below -- placing an
+   * order is the only thing that needs a broker.
+   */
+  const providerReady: { ready: boolean; reason?: string } = { ready: true };
   res.json({
     tools: [
       { id: "market_research", label: "Research a market", endpoint: "POST /api/chat/actions/market-research", confirmationRequired: false, available: providerReady.ready, blockedReason: providerReady.ready ? null : providerReady.reason },
-      { id: "create_goat", label: "Create a GOAT", endpoint: "POST /api/goats", confirmationRequired: true, available: true },
-      { id: "deploy_goat", label: "Deploy a GOAT", endpoint: "POST /api/chat/actions/goats/:id/deploy", confirmationRequired: true, available: true },
       { id: "create_trade_proposal", label: "Generate a trade proposal", endpoint: "POST /api/chat/actions/goats/:id/research", confirmationRequired: false, available: true },
       { id: "execute_trade", label: "Submit a risk-checked order", endpoint: "POST /api/chat/actions/execute-trade", confirmationRequired: true, available: Boolean(providerReady.ready && execution.enabled && execution.authorised && (selectedProvider !== "ctrader" || profile?.ctraderAccountId)), blockedReason: !providerReady.ready ? providerReady.reason : selectedProvider === "ctrader" && !profile?.ctraderAccountId ? "Select a cTrader account in Settings." : execution.enabled && execution.authorised ? null : execution.summary },
       { id: "backtest", label: "Run a historical GOAT backtest", endpoint: "POST /api/backtest/run", confirmationRequired: false, available: true },
@@ -7430,31 +7738,6 @@ apiRouter.get("/chat/actions/tools", authMiddleware, async (req, res) => {
     execution,
   });
 });
-
-/**
- * Deploy a caller-owned GOAT only after the client has explicitly confirmed
- * the structured deployment card. Ownership and scheduler availability are
- * revalidated here; a client-side card is never the authorization boundary.
- */
-apiRouter.post("/chat/actions/goats/:id/deploy", authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  if (req.body?.confirmed !== true) {
-    return res.status(200).json({
-      action: { type: "deploy_goat", status: "confirmation_required", goatId: req.params.id,
-        title: "Deploy this GOAT?", message: "Deployment starts its schedule and initial market review.",
-        confirmationRequired: true },
-    });
-  }
-  try {
-    const deployed = await setGoatStatusFor(user.uid, req.params.id, false);
-    const goatMarketProvider = await marketDataProviderForGoat(deployed);
-    res.json({ action: { type: "deploy_goat", status: "completed", title: "GOAT deployed",
-      goat: deployed, tradingProvider: resolveGoatTradingProvider(deployed), dataMode: goatMarketProvider.dataMode } });
-  } catch (error) {
-    if (error instanceof NotFoundError) return notFound(res);
-    return fail(res, 409, "GOAT_DEPLOY_FAILED", error instanceof Error ? error.message : "Could not deploy this GOAT.");
-  }
-}));
 
 /** Ask a caller-owned GOAT for a fresh review and return the persisted proposals. */
 apiRouter.post("/chat/actions/goats/:id/research", authMiddleware, handle(async (req, res) => {
@@ -7801,17 +8084,19 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     // Natural-language requests open the corresponding structured action card.
     // This is routing only: the model cannot bypass the authenticated tool APIs.
     const actionText = message.trim().toLowerCase();
-    let requestedActionMode: "create-goat" | "deploy-goat" | "proposal" | "trade" | "backtest" | "account" | null = null;
+    /**
+     * Standalone create/deploy intents were removed with the GOAT screen:
+     * members are authored and activated inside the team builder, which chat
+     * cannot drive. Those phrasings now fall through to the normal answer
+     * instead of opening a card for an action that no longer exists.
+     */
+    let requestedActionMode: "proposal" | "trade" | "backtest" | "account" | null = null;
     if (/\b(auto[- ]?trading|auto[- ]?trade)\b/.test(actionText)) {
       requestedActionMode = "proposal";
     } else if (/\b(backtest|back test|historical replay|test my strategy)\b/.test(actionText)) {
       requestedActionMode = "backtest";
     } else if (/\b(propdao|account balance|challenge rules|open positions|open orders|closed trades|funded account status)\b/.test(actionText)) {
       requestedActionMode = "account";
-    } else if (/\b(create|make|build|set up|design)\b[\s\S]{0,80}\b(goat|agent)\b/.test(actionText)) {
-      requestedActionMode = "create-goat";
-    } else if (/\b(deploy|activate|start|play)\b[\s\S]{0,80}\b(goat|agent)\b/.test(actionText)) {
-      requestedActionMode = "deploy-goat";
     } else if (/\b(execute|place|submit|enter)\b[\s\S]{0,80}\b(trade|order)\b/.test(actionText)) {
       requestedActionMode = "trade";
     } else if (/\b(create|generate|research|review|find|prepare|accept|reject|show|list|manage|auto[- ]?trade|automatic trading)\b[\s\S]{0,80}\b(proposal|signal|trade setup|trade idea|trading|order)\b/.test(actionText) ||

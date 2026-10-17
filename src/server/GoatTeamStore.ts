@@ -2,15 +2,61 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Firestore } from "firebase-admin/firestore";
 import { getFirebaseAdmin } from "./firebaseAdmin";
+import type { TradingProvider } from "../types";
 
 export type GoatTeamCoordinationMode = "INDEPENDENT" | "CONSENSUS" | "LEAD_REVIEW";
 export type GoatTeamStatus = "DRAFT" | "DEPLOYED" | "PAUSED" | "PARTIAL";
+
+/**
+ * Risk limits chosen in the deployment step. These are a deployment-time
+ * contract for the team, not per-member preferences: the whole team trades
+ * one asset on one venue under one risk budget.
+ */
+export interface TeamRiskParameters {
+  /** Percent of account equity risked on a single position. */
+  maxPositionSizePercent?: number;
+  /** Percent daily loss that halts the team for the session. */
+  maxDailyLossPercent?: number;
+  /** Cap on simultaneously open positions across the team. */
+  maxOpenPositions?: number;
+  /** Percent stop distance applied to every entry. */
+  stopLossPercent?: number;
+  /** Percent target distance applied to every entry. */
+  takeProfitPercent?: number;
+}
+
+/** Everything the deployment modal collects before a team goes live. */
+export interface TeamDeploymentSettings {
+  provider: TradingProvider;
+  asset: string;
+  risk: TeamRiskParameters;
+  /**
+   * Whether the team may submit real orders.
+   *
+   * Off by default: deploying starts research against PAPER data and needs no
+   * broker. This is the single switch that makes a venue credential necessary,
+   * and the API refuses to deploy live without one.
+   */
+  liveTrading?: boolean;
+}
 
 export interface GoatTeam {
   id: string;
   ownerUserId: string;
   name: string;
+  /**
+   * Member GOAT ids. A team of exactly one member is valid and is how a user
+   * creates a single specialist: the team IS the creation unit.
+   */
   memberGoatIds: string[];
+  /**
+   * Free-text operating instructions for the whole team. This is global state:
+   * it is persisted with the team and injected into every member's reasoning
+   * context, so members follow the team's playbook rather than only their own
+   * job description.
+   */
+  instructions?: string;
+  /** How members reconcile their views. Derived from instructions by default. */
   coordinationMode: GoatTeamCoordinationMode;
   leadGoatId?: string;
   /** Public teams appear in the discovery feed; private teams are owner-only. */
@@ -18,6 +64,8 @@ export interface GoatTeam {
   /** Stable share slug for a public or unlisted private team link. */
   publicSlug?: string;
   status: GoatTeamStatus;
+  /** Deployment settings captured by the deployment modal. */
+  deployment?: TeamDeploymentSettings;
   createdAt: string;
   updatedAt: string;
   deployedAt?: string;

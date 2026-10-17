@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Activity, BarChart3, Bot, CheckCircle2, CircleAlert, Loader2, Play, RefreshCw, ShieldCheck, Wallet, X } from "lucide-react";
 
-export type ActionMode = "research" | "create-goat" | "deploy-goat" | "proposal" | "trade" | "backtest" | "account";
+/**
+ * Trading agents are no longer created or deployed from chat. Members are
+ * authored inside the team builder and activated by deploying that team, so
+ * this panel starts reviews and places risk-checked orders on existing
+ * members only.
+ */
+export type ActionMode = "research" | "proposal" | "trade" | "backtest" | "account";
 
 interface ChatActionsPanelProps {
   getAuthHeaders: () => Promise<Record<string, string>>;
@@ -40,10 +46,6 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
   const [result, setResult] = useState<any>(null);
 
   const [query, setQuery] = useState("");
-  const [goatName, setGoatName] = useState("");
-  const [goal, setGoal] = useState("");
-  const [market, setMarket] = useState("");
-  const [skillIds, setSkillIds] = useState<string[]>([]);
   const [goatId, setGoatId] = useState("");
   const [accountId, setAccountId] = useState("");
   const [symbol, setSymbol] = useState("");
@@ -97,15 +99,13 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
       setGoats(nextGoats);
       setAccounts(nextAccounts);
       setPropMarkets(nextPropMarkets);
-      if (!market && nextMarkets.length) setMarket(nextMarkets[0].id);
       if (!goatId && nextGoats.length) setGoatId(nextGoats[0].id);
       if (!accountId && nextAccounts.length) setAccountId(nextAccounts[0].id);
       if (!symbol && nextPropMarkets.length) setSymbol(nextPropMarkets[0].id);
-      if (!skillIds.length && nextSkills.length) setSkillIds([nextSkills[0].id]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load action context.");
     }
-  }, [request, market, goatId, accountId, symbol, skillIds.length]);
+  }, [request, goatId, accountId, symbol]);
 
   useEffect(() => { setMode(initialMode); }, [initialMode]);
 
@@ -133,17 +133,6 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
     if (!query.trim()) throw new Error("Enter a market or asset to research.");
     return post("/api/chat/actions/market-research", { query: query.trim() });
   }, "Market research returned");
-
-  const createGoat = () => run(async () => {
-    if (!goatName.trim() || !goal.trim() || !market || !skillIds.length) throw new Error("Name, goal, market, and at least one skill are required.");
-    const payload = await post("/api/goats", { name: goatName.trim(), goal: goal.trim(), markets: [market], skillIds, deploymentState: "DRAFT" });
-    await refreshContext();
-    return { action: { type: "create_goat", status: "completed", title: "GOAT draft created", goat: payload.goat ?? payload, message: "The draft is saved. Deploy it separately after reviewing the configuration." } };
-  }, "GOAT draft created");
-
-  const deployGoat = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/deploy", { confirmed: false }), "Review the deployment confirmation card");
-
-  const confirmDeployGoat = () => run(async () => { const payload = await post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/deploy", { confirmed: true }); await refreshContext(); return payload; }, "Deployment request submitted");
 
   const createProposal = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/research", { reason: "Market review requested from SIRGOAT chat" }), "GOAT review completed");
 
@@ -236,8 +225,8 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
   };
 
   const tabs: Array<{ id: ActionMode; label: string }> = [
-    { id: "research", label: "Research" }, { id: "create-goat", label: "Create GOAT" },
-    { id: "deploy-goat", label: "Deploy" }, { id: "proposal", label: "Proposals" }, { id: "trade", label: "Trade order" },
+    { id: "research", label: "Research" },
+    { id: "proposal", label: "Proposals" }, { id: "trade", label: "Trade order" },
     { id: "backtest", label: "Backtest" }, { id: "account", label: "PropDAO" },
   ];
 
@@ -255,9 +244,7 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
       </nav>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         {mode === "research" && <div className={cardClass}><label className="mb-1.5 block text-[11px] font-semibold">What market should I research?</label><input className={fieldClass} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="e.g. gold, BTC, xyz:EUR" /><p className="mt-2 text-[10px] text-fg-subtle">Uses the backend's market-data pipeline; results distinguish LIVE from PAPER data.</p><button className={`${buttonClass} mt-3`} disabled={loading} onClick={() => void research()}><Activity size={13} /> Research market</button></div>}
-        {mode === "create-goat" && <div className={cardClass}><label className="mb-1 block text-[11px] font-semibold">GOAT name</label><input className={fieldClass} value={goatName} onChange={(e) => setGoatName(e.target.value)} placeholder="e.g. Gold Breakout GOAT" /><label className="mb-1 mt-3 block text-[11px] font-semibold">Goal and strategy intent</label><textarea className={fieldClass} rows={3} value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="What should the GOAT investigate and monitor?" /><label className="mb-1 mt-3 block text-[11px] font-semibold">Market</label><select className={fieldClass} value={market} onChange={(e) => setMarket(e.target.value)}>{markets.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><label className="mb-1 mt-3 block text-[11px] font-semibold">Skills</label><div className="space-y-1.5">{skills.map((item) => <label key={item.id} className="flex items-center gap-2 text-[11px]"><input type="checkbox" checked={skillIds.includes(item.id)} onChange={(e) => setSkillIds((prev) => e.target.checked ? [...prev, item.id] : prev.filter((id) => id !== item.id))} />{item.label}</label>)}</div><button className={`${buttonClass} mt-3`} disabled={loading} onClick={() => void createGoat()}><Bot size={13} /> Create draft GOAT</button><p className="mt-2 text-[10px] text-fg-subtle">Creation saves a DRAFT only. It does not deploy or place trades.</p></div>}
-        {mode === "deploy-goat" && <div className={cardClass}><label className="mb-1.5 block text-[11px] font-semibold">Choose your GOAT</label><select className={fieldClass} value={goatId} onChange={(e) => setGoatId(e.target.value)}>{goats.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><p className="mt-2 text-[10px] text-fg-subtle">Deployment starts scheduling and an initial market review. This action is explicitly confirmed by the Deploy button.</p><button className={`${buttonClass} mt-3`} disabled={loading || !goatId} onClick={() => void deployGoat()}><Play size={13} /> Review deployment</button></div>}
-        {mode === "proposal" && <div className={cardClass}><label className="mb-1.5 block text-[11px] font-semibold">Choose your GOAT</label><select className={fieldClass} value={goatId} onChange={(e) => setGoatId(e.target.value)}>{goats.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><p className="mt-2 text-[10px] text-fg-subtle">Runs a fresh GOAT review and returns persisted proposals. Acceptance is a decision record; order placement is a separate risk-checked action.</p><div className="mt-3 flex flex-wrap gap-2"><button className={buttonClass} disabled={loading || autonomyMode === "PROPOSAL"} onClick={() => void setAutonomy("PROPOSAL")}>Manual approval</button><button className={autonomyMode === "AUTONOMOUS" ? buttonClass : secondaryClass} disabled={loading || autonomyMode === "AUTONOMOUS"} onClick={() => void setAutonomy("AUTONOMOUS")}>Auto-accept proposals</button></div><button className={buttonClass + " mt-3"} disabled={loading || !goatId} onClick={() => void createProposal()}><RefreshCw size={13} /> Research and propose</button><p className="mt-2 text-[10px] text-fg-subtle">Auto-accept records a decision; it does not itself place PropDAO orders.</p><div className="mt-3 rounded-lg border border-line p-2.5"><p className="text-[10px] font-semibold">Automatic PropDAO order submission</p><label className="mb-1 mt-2 block text-[10px]">Account owned by your PropDAO key</label><select className={fieldClass} value={autoTradeAccountId} onChange={(e) => setAutoTradeAccountId(e.target.value)}><option value="">Select account</option>{accounts.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><label className="mb-1 mt-2 block text-[10px]">Fixed order quantity (asset units)</label><input className={fieldClass} type="number" min="0.000001" step="any" value={autoTradeQty} onChange={(e) => setAutoTradeQty(e.target.value)} /><button className={(autoTradeEnabled ? secondaryClass : buttonClass) + " mt-3"} disabled={loading} onClick={() => void setAutoTrade(!autoTradeEnabled)}>{autoTradeEnabled ? "Disable auto-trading" : "Enable auto-trading"}</button><p className="mt-2 text-[10px] font-semibold">Server execution policy: {executionPolicy?.enabled && executionPolicy?.authorised ? "enabled" : "blocked"}</p><p className="mt-1 text-[10px] text-fg-subtle">{executionPolicy?.summary ?? "Execution policy status unavailable."}</p><p className="mt-2 text-[10px] text-fg-subtle">Enabling requires server-side PropDAO authorization, a verified key, an owned account, and a fixed quantity. Every order is blocked if risk, instrument, stop/target, or current-data checks fail. A connected API key alone does not override the provider-authorization guard.</p></div></div>}
+                        {mode === "proposal" && <div className={cardClass}><label className="mb-1.5 block text-[11px] font-semibold">Choose your GOAT</label><select className={fieldClass} value={goatId} onChange={(e) => setGoatId(e.target.value)}>{goats.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><p className="mt-2 text-[10px] text-fg-subtle">Runs a fresh GOAT review and returns persisted proposals. Acceptance is a decision record; order placement is a separate risk-checked action.</p><div className="mt-3 flex flex-wrap gap-2"><button className={buttonClass} disabled={loading || autonomyMode === "PROPOSAL"} onClick={() => void setAutonomy("PROPOSAL")}>Manual approval</button><button className={autonomyMode === "AUTONOMOUS" ? buttonClass : secondaryClass} disabled={loading || autonomyMode === "AUTONOMOUS"} onClick={() => void setAutonomy("AUTONOMOUS")}>Auto-accept proposals</button></div><button className={buttonClass + " mt-3"} disabled={loading || !goatId} onClick={() => void createProposal()}><RefreshCw size={13} /> Research and propose</button><p className="mt-2 text-[10px] text-fg-subtle">Auto-accept records a decision; it does not itself place PropDAO orders.</p><div className="mt-3 rounded-lg border border-line p-2.5"><p className="text-[10px] font-semibold">Automatic PropDAO order submission</p><label className="mb-1 mt-2 block text-[10px]">Account owned by your PropDAO key</label><select className={fieldClass} value={autoTradeAccountId} onChange={(e) => setAutoTradeAccountId(e.target.value)}><option value="">Select account</option>{accounts.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><label className="mb-1 mt-2 block text-[10px]">Fixed order quantity (asset units)</label><input className={fieldClass} type="number" min="0.000001" step="any" value={autoTradeQty} onChange={(e) => setAutoTradeQty(e.target.value)} /><button className={(autoTradeEnabled ? secondaryClass : buttonClass) + " mt-3"} disabled={loading} onClick={() => void setAutoTrade(!autoTradeEnabled)}>{autoTradeEnabled ? "Disable auto-trading" : "Enable auto-trading"}</button><p className="mt-2 text-[10px] font-semibold">Server execution policy: {executionPolicy?.enabled && executionPolicy?.authorised ? "enabled" : "blocked"}</p><p className="mt-1 text-[10px] text-fg-subtle">{executionPolicy?.summary ?? "Execution policy status unavailable."}</p><p className="mt-2 text-[10px] text-fg-subtle">Enabling requires server-side PropDAO authorization, a verified key, an owned account, and a fixed quantity. Every order is blocked if risk, instrument, stop/target, or current-data checks fail. A connected API key alone does not override the provider-authorization guard.</p></div></div>}
         {mode === "backtest" && <div className={cardClass}>
           <div className="mb-2 flex items-center gap-2"><BarChart3 size={15} /><p className="text-[11px] font-semibold">Run a real GOAT backtest</p></div>
           <label className="mb-1 block text-[10px]">GOAT</label>
@@ -303,7 +290,6 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
           {result.order && <pre className="mb-2 overflow-auto whitespace-pre-wrap rounded-lg bg-sunken p-2 text-[10px]">{JSON.stringify(result.order, null, 2)}</pre>}
           {result.execution && <div className="mt-2 rounded-lg border border-line p-2 text-[10px]"><p className="font-semibold">Execution policy: {result.execution.enabled && result.execution.authorised ? "enabled" : "blocked"}</p><p className="mt-1 text-fg-muted">{result.execution.summary}</p></div>}
           {result.type === "execute_trade" && result.status === "confirmation_required" && <div className="mt-3 flex flex-wrap gap-2"><button className={buttonClass} disabled={loading || !(result.execution?.enabled && result.execution?.authorised)} onClick={() => void confirmTrade()}><ShieldCheck size={13} /> Explicitly confirm order</button><button className={secondaryClass} onClick={() => setResult(null)}>Cancel</button></div>}
-          {result.type === "deploy_goat" && result.status === "confirmation_required" && <div className="mt-3 flex gap-2"><button className={buttonClass} disabled={loading} onClick={() => void confirmDeployGoat()}>Confirm deployment</button><button className={secondaryClass} onClick={() => setResult(null)}>Cancel</button></div>}
           {Array.isArray(result.signals) && <div className="mt-2 space-y-2">{result.signals.length === 0 && <p className="rounded-lg bg-sunken p-2 text-[10px] text-fg-muted">No fresh actionable proposals were returned. Do not force a trade.</p>}{result.signals.map((signal: any) => <div key={signal.id} className="rounded-lg border border-line p-2 text-[10px]"><p className="font-semibold">{signal.market} · {signal.direction} · {signal.status}</p><p className="mt-1">Entry: {signal.entry ?? signal.entryZone ?? "—"} · SL: {signal.stopLoss ?? "—"} · TP: {signal.takeProfit ?? "—"}</p><p className="mt-1 text-fg-muted">{signal.rationale ?? signal.thesis ?? ""}</p><div className="mt-2 flex flex-wrap gap-1.5"><button type="button" className={secondaryClass} onClick={() => void decideSignal(signal, "ACCEPTED")} disabled={loading || Boolean(signal.decision) || signal.status !== "ACTIONABLE"}>Accept proposal</button><button type="button" className={secondaryClass} onClick={() => void decideSignal(signal, "REJECTED")} disabled={loading || Boolean(signal.decision)}>Reject</button><button type="button" className={secondaryClass} onClick={() => prepareSignalOrder(signal)} disabled={!propMarkets.some((item) => item.id === signal.market) || typeof signal.entry !== "number" || typeof signal.stopLoss !== "number" || typeof signal.takeProfit !== "number" || !["LONG", "SHORT"].includes(signal.direction)}>Prepare risk-checked order</button></div></div>)}</div>}
           {result.goat && <p className="mt-2 text-[10px] text-fg-muted">GOAT: {String(result.goat.name ?? result.goat.id ?? "created")}{result.goat.id ? " · " + String(result.goat.id) : ""}</p>}
           {result.result && typeof result.result.winRate === "number" && <div className="mt-2 space-y-2">

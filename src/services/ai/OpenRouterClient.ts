@@ -24,6 +24,11 @@ export interface GoatReasoningContext {
   goatId: string;
   goatName: string;
   goatGoal: string;
+  /**
+   * The owning team's operating instructions. Global state for the team: every
+   * member reasons under the same playbook, not only its own job description.
+   */
+  teamInstructions?: string;
   market: string;
 
   /** Every market this GOAT watches, so the model can reason across them. */
@@ -1354,10 +1359,17 @@ Name: ${truncate(
 
 Job description:
 ${truncate(
-  context.goatGoal,
-  1_000,
+    context.goatGoal,
+    1_000,
 )}
-
+${
+  context.teamInstructions?.trim()
+    ? `
+Team instructions (these govern how the whole team works and take precedence over your personal habits):
+${truncate(context.teamInstructions.trim(), 4_000)}
+`
+    : ''
+}
 Market:
 ${context.market}
 

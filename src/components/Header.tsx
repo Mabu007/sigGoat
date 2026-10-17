@@ -4,22 +4,19 @@
  * Sticky top bar: identity on the left, market-data source and account
  * actions on the right.
  *
- * THE DATA SOURCE BADGE IS NOT DECORATIVE
- *   It shows the provider and, critically, whether the feed is LIVE or
- *   SIMULATED. That distinction is the single most important thing on the
- *   screen when prices are driving a trading decision, so it is rendered as a
- *   real state indicator rather than a decorative pill.
+ * Feed health is no longer surfaced here. It was a three-state badge, but the
+ * only value it ever carried was "Feed offline", which said nothing actionable
+ * and duplicated state the market views already own. Where it matters, PAPER
+ * versus LIVE is now labelled per view, at the point the data is consumed.
  */
 
 import { RefreshCw, Sparkles, Users } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { BrandMark } from './Navigation';
-import { useMarket } from '../context/MarketContext';
 
 interface HeaderProps {
   displayName?: string | null;
   email?: string | null;
-  dataMode?: 'LIVE' | 'PAPER';
   onOpenSettings: () => void;
   onCreateBotTeam: () => void;
   onRefresh: () => void;
@@ -30,23 +27,12 @@ interface HeaderProps {
 export function Header({
   displayName,
   email,
-  dataMode = 'LIVE',
   onOpenSettings,
   onCreateBotTeam,
   onRefresh,
   refreshing = false,
   lastUpdatedMs,
 }: HeaderProps) {
-  const { quotesError, quotes } = useMarket();
-
-  // Three distinct states, because they mean different things to a trader:
-  // disconnected, degraded, or healthy.
-  const sourceState = quotesError
-    ? { tone: 'negative' as const, label: 'Feed offline' }
-    : Object.keys(quotes).length === 0
-      ? { tone: 'warning' as const, label: 'Connecting' }
-      : { tone: 'positive' as const, label: 'Live' };
-
   const initials = (displayName ?? email ?? '?').trim().charAt(0).toUpperCase();
 
   return (
@@ -58,26 +44,15 @@ export function Header({
         </div>
 
         {/* Feed state */}
-        <div className="flex min-w-0 items-center gap-2">
-          <span className={`badge badge-${sourceState.tone}`}>
-            <span className="sr-only">Market data status: </span>
-            {sourceState.label}
+        {lastUpdatedMs ? (
+          <span className="hidden text-[11px] text-fg-subtle sm:inline">
+            {new Date(lastUpdatedMs).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}
           </span>
-          {dataMode === 'PAPER' && (
-            <span className="badge badge-warning" title="Simulated prices — not real market data">
-              Simulated
-            </span>
-          )}
-          {lastUpdatedMs ? (
-            <span className="hidden text-[11px] text-fg-subtle sm:inline">
-              {new Date(lastUpdatedMs).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-              })}
-            </span>
-          ) : null}
-        </div>
+        ) : null}
 
         <div className="ml-auto flex items-center gap-2">
           <button

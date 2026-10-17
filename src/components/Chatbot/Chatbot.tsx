@@ -824,7 +824,7 @@ export function Chatbot() {
               ? previous
               : [...previous, event.message].slice(-5));
           } else if (event.type === 'action_suggestion' && typeof event.mode === 'string') {
-            const allowedModes: ActionMode[] = ['create-goat', 'deploy-goat', 'proposal', 'trade', 'backtest', 'account'];
+            const allowedModes: ActionMode[] = ['proposal', 'trade', 'backtest', 'account'];
             if (allowedModes.includes(event.mode as ActionMode)) {
               setActionMode(event.mode as ActionMode);
               setShowActions(true);

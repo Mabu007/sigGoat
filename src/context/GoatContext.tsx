@@ -22,16 +22,6 @@ import { useAuth } from './AuthContext';
 /* Types                                                                      */
 /* -------------------------------------------------------------------------- */
 
-export interface CreateGoatInput {
-  name: string;
-  goal: string;
-  markets: string[];
-  skillIds: string[];
-  model: string;
-  schedule?: GoatSchedule;
-  deploymentState?: 'DRAFT' | 'DEPLOYED';
-}
-
 export interface UpdateGoatInput { name: string; goal: string; model: string; aiProvider?: 'openrouter' | 'spacebunny'; }
 
 export interface CreateSkillInput {
@@ -124,7 +114,6 @@ interface GoatContextType {
 
   setActiveGoatId: (id: string) => void;
 
-  createGoat: (data: CreateGoatInput) => Promise<FundGoat>;
   updateGoat: (goatId: string, data: UpdateGoatInput) => Promise<FundGoat>;
 
   /** Stop ("PAUSE") or resume ("PLAY") a GOAT's runtime. */
@@ -853,127 +842,6 @@ export const GoatProvider: React.FC<{
   ]);
 
   /* ------------------------------------------------------------------------ */
-  /* Create GOAT                                                               */
-  /* ------------------------------------------------------------------------ */
-
-  const createGoat = useCallback(
-    async (
-      input: CreateGoatInput
-    ): Promise<FundGoat> => {
-      const name = requireNonEmpty(
-        input.name,
-        'GOAT name'
-      );
-
-      const goal = requireNonEmpty(
-        input.goal,
-        'GOAT goal'
-      );
-
-      const requestedModel = input.model?.trim() ?? '';
-      if (!requestedModel && input.deploymentState !== 'DRAFT') {
-        throw new Error('Select a reasoning model before deploying this GOAT. Drafts can be saved without one.');
-      }
-      const model = requestedModel || undefined;
-
-      const markets =
-        cleanStringArray(input.markets);
-
-      const skillIds =
-        cleanStringArray(input.skillIds);
-
-      if (markets.length !== 1) {
-        throw new Error(
-          'A GOAT must be assigned exactly one asset.'
-        );
-      }
-
-      const sessionId = sessionRef.current;
-
-      try {
-        const data =
-          await apiRequest<GoatResponse>(
-            '/api/goats',
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type':
-                  'application/json',
-              },
-              body: JSON.stringify({
-                name,
-                goal,
-                markets,
-                skillIds,
-                ...(model ? { model } : {}),
-                deploymentState: input.deploymentState ?? 'DEPLOYED',
-                ...(input.schedule
-                  ? { schedule: input.schedule }
-                  : {}),
-              }),
-            }
-          );
-
-        if (!data?.goat?.id) {
-          throw new Error(
-            'The server did not return the created GOAT.'
-          );
-        }
-
-        if (!isCurrentSession(sessionId)) {
-          return data.goat;
-        }
-
-        setGoats(previous => {
-          const withoutCreatedGoat =
-            previous.filter(
-              goat =>
-                goat.id !== data.goat.id
-            );
-
-          return [
-            ...withoutCreatedGoat,
-            data.goat,
-          ];
-        });
-
-        activeGoatIdRef.current =
-          data.goat.id;
-
-        setActiveGoatIdState(
-          data.goat.id
-        );
-
-        setActiveGoatState(
-          data.runtimeState ?? null
-        );
-
-        if (
-          isDataMode(data.dataMode)
-        ) {
-          setDataMode(data.dataMode);
-        }
-
-        setError(null);
-
-        return data.goat;
-      } catch (requestError) {
-        setRequestError(
-          requestError,
-          'Failed to create SIRGOAT.'
-        );
-
-        throw requestError;
-      }
-    },
-    [
-      apiRequest,
-      isCurrentSession,
-      setRequestError,
-    ]
-  );
-
-  /* ------------------------------------------------------------------------ */
   /* Stop / Play / schedule / delete                                        */
   /* ------------------------------------------------------------------------ */
 
@@ -1547,7 +1415,6 @@ export const GoatProvider: React.FC<{
 
       setActiveGoatId,
 
-      createGoat,
       updateGoat,
       setGoatStatus,
       deleteGoat,
@@ -1578,7 +1445,6 @@ export const GoatProvider: React.FC<{
       isWaking,
       busyGoatIds,
       setActiveGoatId,
-      createGoat,
       updateGoat,
       setGoatStatus,
       deleteGoat,

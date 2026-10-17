@@ -5,37 +5,34 @@
  * can never drift apart.
  *
  * NAVIGATION MODEL
- *   Markets · GOATs · Proposals · Backtest · Settings
+ *   Trade Rooms · Trades · Settings
  *
- *   `Overview` was removed: it duplicated data available in Markets / GOATs /
- *   Proposals and rendered little of its own. The `overview` hash still
- *   redirects to Markets at the router level so old links do not 404.
+ *   `GOATs` was removed as a destination. A trading agent is no longer created
+ *   on its own screen: members are authored inside the team builder, and a team
+ *   of one member is the single-member case. The `goats` hash now redirects to
+ *   Trade Rooms so old links land somewhere useful instead of a dead route.
  *
- *   `Skills` from the previous build is likewise not a top-level destination.
- *   Skills are authored and read from inside a GOAT, which is where they are
- *   used; a separate top-level screen made them look like a peer of Markets
- *   when they are really configuration. The route is preserved as a view so
- *   existing links keep working.
+ *   `Overview` was removed earlier: it duplicated data available elsewhere and
+ *   rendered little of its own.
+ *
+ *   `Skills` is likewise not a top-level destination. Skills are authored and
+ *   read from inside a team member, which is where they are used; a separate
+ *   top-level screen made them look like a peer of the others when they are
+ *   really configuration. The route is preserved as a view so existing links
+ *   keep working.
  *
  * ACTIVE INDICATION uses `aria-current="page"`, not only colour. A
  * colour-only indicator is invisible to anyone who cannot distinguish the
  * accent from the muted foreground.
  */
 
-import {
-  BarChart3,
-  Bot,
-  CandlestickChart,
-  ListChecks,
-  Settings,
-  type LucideIcon,
-} from 'lucide-react';
+import { Bot, ListChecks, Settings, type LucideIcon } from 'lucide-react';
 
+/** `goats` is intentionally absent: trading agents are created as teams. */
 export type TabId =
   | 'rooms'
   | 'trades'
   | 'markets'
-  | 'goats'
   | 'proposals'
   | 'skills'
   | 'backtest'
