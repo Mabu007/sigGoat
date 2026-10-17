@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { ArrowUpRight, Bot, Check, CirclePlus, Copy, FilePlus2, Globe, Info, LockKeyhole, Plus, Rocket, Search, Trash2, Users, X } from 'lucide-react';
+import { ArrowUpRight, Bot, Check, CirclePlus, Copy, FilePlus2, Globe, Info, LockKeyhole, Plus, Rocket, Trash2, Users, X } from 'lucide-react';
 import { SearchablePicker } from '../../components/SearchablePicker';
 import { SkillParser } from '../../services/agent/SkillParser';
 import { useGoat } from '../../context/GoatContext';
@@ -443,7 +443,6 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
   return (
     <div className="space-y-6">
       <section className="space-y-4">
-        <h1 className="text-2xl font-semibold tracking-tight text-fg">Discover teams and bots</h1>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap gap-2" role="group" aria-label="Room directory">
             {([{ id: 'all', label: 'All Rooms' }, { id: 'active', label: 'Active Rooms' }, { id: 'mine', label: 'My Rooms' }] as const).map(item => (
@@ -473,25 +472,35 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
       {(directoryMode === 'mine' ? myRoomsLoading : loading) ? (
         <div className="panel p-8 text-center text-sm text-fg-muted">Loading rooms…</div>
       ) : filtered.length ? (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="yt-room-grid">
           {filtered.map(room => {
-            const href = room.roomType === 'team' ? `/team/${encodeURIComponent(room.slug)}` : `/robot/${encodeURIComponent(room.slug)}`;
+            const href = room.roomType === 'team' ? '/team/' + encodeURIComponent(room.slug) : '/robot/' + encodeURIComponent(room.slug);
+            const marketLabel = (room.markets || []).slice(0, 2).join(' · ') || room.latestThesis?.market || 'AI TRADING';
             return (
-              <article key={(room.roomType || 'bot') + room.slug} className="panel group flex min-h-56 flex-col p-4 transition-colors hover:border-accent/60 hover:bg-raised">
-                <a href={href} className="flex flex-1 flex-col">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-line bg-raised text-accent-text">{room.roomType === 'team' ? <Users size={20} /> : <Bot size={20} />}</div>
-                    <span className="rounded-full border border-line px-2 py-1 text-[10px] text-fg-muted">{room.mode === 'PAPER' ? 'Paper mode' : room.roomType === 'team' ? 'Team room' : room.status}</span>
+              <article key={(room.roomType || 'bot') + room.slug} className="yt-room-card group">
+                <a href={href} className="block min-w-0">
+                  <div className="yt-room-thumbnail">
+                    <div className="yt-thumb-topline">
+                      <span className="yt-thumb-market">{marketLabel}</span>
+                      <span className="yt-thumb-mode">{room.mode === 'PAPER' ? 'PAPER' : 'ACTIVE'}</span>
+                    </div>
+                    <svg viewBox="0 0 480 180" preserveAspectRatio="none" aria-hidden="true" className="yt-thumb-chart">
+                      <path d="M0 142 L35 128 L63 139 L92 94 L119 109 L145 77 L176 91 L204 58 L230 81 L256 49 L286 70 L314 42 L341 58 L369 29 L398 47 L426 24 L455 38 L480 17 L480 180 L0 180 Z" fill="var(--color-accent)" fillOpacity=".12" />
+                      <path d="M0 142 L35 128 L63 139 L92 94 L119 109 L145 77 L176 91 L204 58 L230 81 L256 49 L286 70 L314 42 L341 58 L369 29 L398 47 L426 24 L455 38 L480 17" fill="none" stroke="var(--color-accent)" strokeWidth="3" vectorEffect="non-scaling-stroke" />
+                      {[40, 90, 140].map(y => <line key={y} x1="0" x2="480" y1={y} y2={y} stroke="currentColor" strokeOpacity=".09" strokeDasharray="4 6" />)}
+                    </svg>
+                    <span className="yt-thumb-play" aria-hidden="true"><ArrowUpRight size={21} /></span>
+                    <span className="yt-thumb-duration">{room.roomType === 'team' ? String(room.memberCount || 0) + ' BOTS' : 'AI BOT'}</span>
                   </div>
-                  <h3 className="mt-4 flex items-center gap-2 font-semibold text-fg">{room.name}<ArrowUpRight size={14} className="text-fg-subtle transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" /></h3>
-                  <p className="mt-1 line-clamp-3 text-sm leading-5 text-fg-muted">{room.description || 'An AI trading room sharing recorded market research.'}</p>
-                  {room.latestThesis && <div className="mt-3 rounded-lg border border-line bg-raised/70 p-3"><p className="text-[10px] uppercase tracking-wide text-fg-subtle">Latest recorded view · {room.latestThesis.market}</p><p className="mt-1 line-clamp-2 text-xs text-fg">{room.latestThesis.summary}</p></div>}
-                  <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-4">
-                    <span className="flex items-center gap-1.5 text-[11px] text-fg-subtle"><Users size={12} /> {room.roomType === 'team' ? `${room.memberCount || 0} bots` : room.creatorName}</span>
-                    <span className="text-[10px] text-fg-subtle">{(room.markets || []).slice(0, 3).join(' · ') || 'Markets not listed'}</span>
+                  <div className="yt-room-meta">
+                    <div className="yt-room-avatar" aria-hidden="true">{room.roomType === 'team' ? <Users size={18} /> : <Bot size={18} />}</div>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="yt-room-title">{room.name}</h3>
+                      <p className="yt-room-creator">{room.creatorName || 'SIRGOAT CREATOR'}</p>
+                      <p className="yt-room-description">{room.description || 'AI trading room sharing market research.'}</p>
+                    </div>
                   </div>
                 </a>
-                {room.roomType === 'team' && <a href={href} className="mt-3 inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white hover:opacity-90">Open room <ArrowUpRight size={13} /></a>}
               </article>
             );
           })}
