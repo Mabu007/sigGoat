@@ -194,7 +194,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
         {candles.length ? <TradingViewLightweightChart
           candles={candles} activeQuote={marketQuote} timeframe={timeframe}
           symbol={marketSymbol} roomName={data.team.name} digits={priceDigits}
-          agentEvents={agentEvents}
+          agentEvents={agentEvents} dataMode={dataMode}
         /> : <div className="trade-room-chart-empty"><span>{marketError || 'Waiting for provider candle history'}</span></div>}
       </div>
     </section>
