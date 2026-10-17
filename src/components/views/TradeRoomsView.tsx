@@ -85,7 +85,7 @@ export function TradeRoomsView({ onCreateRoom, onOpenMyRooms, createTeamRequeste
       const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'application/json' });
       for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
       const response = await fetch('/api/goat-teams', { method: 'POST', headers, body: JSON.stringify({
-        name: teamName.trim(), goatIds: selectedGoatIds, visibility, coordinationMode, deploy: deployNow,
+        name: teamName.trim(), goatIds: selectedGoatIds, visibility, coordinationMode, leadGoatId: coordinationMode === 'LEAD_REVIEW' ? selectedGoatIds[0] : undefined, deploy: deployNow,
       }) });
       const body = await response.json().catch(() => ({}));
       if (!response.ok && !body.team) throw new Error(body?.error?.message || 'Could not create the team.');
