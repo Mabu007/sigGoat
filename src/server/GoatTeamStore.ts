@@ -5,6 +5,8 @@ import { getFirebaseAdmin } from "./firebaseAdmin";
 
 export type GoatTeamCoordinationMode = "INDEPENDENT" | "CONSENSUS" | "LEAD_REVIEW";
 export type GoatTeamStatus = "DRAFT" | "DEPLOYED" | "PAUSED" | "PARTIAL";
+export type GoatTeamEnvironment = "DEMO" | "LIVE";
+export type GoatTeamMarketDataProvider = "biquote" | "ctrader" | "hyperliquid";
 
 export interface GoatTeam {
   id: string;
@@ -12,6 +14,12 @@ export interface GoatTeam {
   name: string;
   memberGoatIds: string[];
   coordinationMode: GoatTeamCoordinationMode;
+  /** New teams start in DEMO. Missing values on legacy records resolve to DEMO. */
+  environment?: GoatTeamEnvironment;
+  /** DEMO always uses BiQuote reference data; LIVE resolves the selected venue. */
+  marketDataProvider?: GoatTeamMarketDataProvider;
+  /** Selected live venue. This never implies permission to execute orders. */
+  liveTradingProvider?: "ctrader" | "hyperliquid";
   leadGoatId?: string;
   /** Public teams appear in the discovery feed; private teams are owner-only. */
   visibility?: "PUBLIC" | "PRIVATE";
