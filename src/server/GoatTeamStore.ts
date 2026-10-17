@@ -13,6 +13,10 @@ export interface GoatTeam {
   memberGoatIds: string[];
   coordinationMode: GoatTeamCoordinationMode;
   leadGoatId?: string;
+  /** Public teams appear in the discovery feed; private teams are owner-only. */
+  visibility?: "PUBLIC" | "PRIVATE";
+  /** Stable share slug for a public or unlisted private team link. */
+  publicSlug?: string;
   status: GoatTeamStatus;
   createdAt: string;
   updatedAt: string;
