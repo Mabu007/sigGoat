@@ -86,7 +86,7 @@ const PROVIDER_OPTIONS: Array<{ id: TradingProvider; label: string; blurb: strin
 /** Sensible starting risk so the deployment step is never an empty form. */
 const DEFAULT_RISK = { maxPositionSizePercent: '1', maxDailyLossPercent: '3', maxOpenPositions: '3', stopLossPercent: '1.5', takeProfitPercent: '3' };
 
-export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled, showDirectoryContent = true, onOpenRoom, onShowDirectory }: { createTeamRequested: boolean; onCreateTeamRequestHandled: () => void; showDirectoryContent?: boolean; onOpenRoom: (type: 'team' | 'bot', slug: string) => void; onShowDirectory: () => void }) {
+export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled, showDirectoryContent = true, onOpenRoom, onShowDirectory }: { createTeamRequested: boolean; onCreateTeamRequestHandled: () => void; showDirectoryContent?: boolean; onOpenRoom: (type: 'team' | 'bot', slug: string, backLabel: string) => void; onShowDirectory: () => void }) {
   const { refreshGoats } = useGoat();
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
   const [rooms, setRooms] = useState<TradeRoom[]>([]);
@@ -453,9 +453,11 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
   ];
   const stepIndex = STEPS.findIndex(item => item.id === step);
 
+  const directoryLabels: Record<DirectoryMode, string> = { public: 'Public Rooms', private: 'Private Rooms', gold: 'Gold Rooms', euro: 'Euro Rooms', crypto: 'Crypto Rooms', forex: 'Forex Rooms', mine: 'My Rooms' };
+
   return (
     <div className="space-y-6">
-      <section className="space-y-4">
+      {showDirectoryContent && <section className="space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="yt-room-filters flex flex-wrap gap-2" role="group" aria-label="Room categories">
             {([
@@ -488,7 +490,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
             {directoryMode === 'mine' || directoryMode === 'private' ? (myRoomsLoading ? 'Loading your rooms…' : filtered.length + ' rooms') : (loading ? 'Loading public rooms…' : filtered.length + ' rooms')}
           </p>
         </div>
-      </section>
+      </section>}
 
       {showDirectoryContent && <>
       {error && <div role="alert" className="panel border-warning/40 p-4 text-sm text-fg-muted">{error}</div>}
@@ -501,7 +503,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
             const marketLabel = (room.markets || []).slice(0, 2).join(' · ') || room.latestThesis?.market || 'AI TRADING';
             return (
               <article key={(room.roomType || 'bot') + room.slug} className="yt-room-card group">
-                <button type="button" onClick={() => onOpenRoom(room.roomType === 'team' ? 'team' : 'bot', room.slug)} className="block w-full min-w-0 text-left">
+                <button type="button" onClick={() => onOpenRoom(room.roomType === 'team' ? 'team' : 'bot', room.slug, directoryLabels[directoryMode])} className="block w-full min-w-0 text-left">
                   <div className="yt-room-thumbnail">
                     <div className="yt-thumb-topline">
                       <span className="yt-thumb-market">{marketLabel}</span>
