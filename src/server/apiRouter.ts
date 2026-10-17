@@ -3655,7 +3655,7 @@ apiRouter.get("/robots", handle(async (_req, res) => {
     const theses = await persistence.theses.listByGoat(goat.id, 1).catch(() => []);
     const thesis = theses[0];
     return {
-      slug: goat.publicSlug,
+      slug: String(goat.publicSlug),
       name: goat.name,
       description: goat.goal,
       markets: goat.markets,
