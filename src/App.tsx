@@ -72,10 +72,8 @@ const MainApp: React.FC = () => {
   );
 
   return (
-    <div className="premium-shell flex min-h-screen flex-col text-fg md:flex-row">
-      <Navigation activeTab={activeTab} onSelect={navigate} />
-
-      <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-16 md:pb-0">
+    <div className="premium-shell flex min-h-screen flex-col text-fg">
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-20">
         <Header
           displayName={profile?.displayName ?? null}
           email={currentUser?.email ?? null}
@@ -100,6 +98,7 @@ const MainApp: React.FC = () => {
           </React.Suspense>
         </main>
       </div>
+      <Navigation activeTab={activeTab} onSelect={navigate} />
     </div>
   );
 };
