@@ -91,6 +91,7 @@ const MainApp: React.FC = () => {
             onCreateTeamRequestHandled={() => setCreateTeamRequested(false)}
             showDirectoryContent={activeTab === 'rooms' && !selectedRoom}
             onOpenRoom={(type, slug) => { setSelectedRoom({ type, slug }); setActiveTab('rooms'); }}
+            onShowDirectory={() => navigate('rooms')}
           />
           <React.Suspense fallback={<ViewLoadingFallback />}>
             {selectedRoom?.type === 'team' && <PublicTeamView slug={selectedRoom.slug} onBack={() => setSelectedRoom(null)} />}
