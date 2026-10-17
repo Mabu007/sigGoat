@@ -9,6 +9,7 @@ import { Navigation, type TabId } from './components/Navigation';
 import { AuthGate } from './components/AuthGate';
 
 const QuotesView = React.lazy(() => import('./components/views/QuotesView').then(module => ({ default: module.QuotesView })));
+const TradeRoomsView = React.lazy(() => import('./components/views/TradeRoomsView').then(module => ({ default: module.TradeRoomsView })));
 const GoatsView = React.lazy(() => import('./components/views/GoatsView').then(module => ({ default: module.GoatsView })));
 const ProposalsView = React.lazy(() => import('./components/views/ProposalsView').then(module => ({ default: module.ProposalsView })));
 const SkillsView = React.lazy(() => import('./components/views/SkillsView').then(module => ({ default: module.SkillsView })));
@@ -32,15 +33,16 @@ const ViewLoadingFallback: React.FC = () => (
  * router would be a dependency and a migration for no user-visible gain.
  */
 function tabFromHash(): TabId {
-  if (typeof window === 'undefined') return 'markets';
+  if (typeof window === 'undefined') return 'rooms';
   const raw = window.location.hash.replace(/^#\/?/, '');
-  const allowed: TabId[] = ['markets', 'goats', 'proposals', 'skills', 'backtest', 'settings'];
+  const allowed: TabId[] = ['rooms', 'trades', 'settings', 'markets', 'goats', 'proposals', 'skills', 'backtest'];
   /**
    * `overview` was removed as a destination; old links and persisted hashes
    * redirect to Markets rather than rendering a blank page.
    */
-  if (raw === 'overview') return 'markets';
-  return allowed.includes(raw as TabId) ? (raw as TabId) : 'markets';
+  if (raw === 'overview' || raw === 'markets') return 'rooms';
+  if (raw === 'proposals') return 'trades';
+  return allowed.includes(raw as TabId) ? (raw as TabId) : 'rooms';
 }
 
 const MainApp: React.FC = () => {
@@ -83,7 +85,9 @@ const MainApp: React.FC = () => {
 
         <main className="mx-auto w-full max-w-7xl flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {activeTab === 'markets' && <QuotesView />}
+            {activeTab === 'rooms' && <TradeRoomsView onCreateRoom={() => { setIsOpenCreateGoatModal(true); navigate('goats'); }} onOpenMyRooms={() => navigate('goats')} />}
+
+            {activeTab === 'trades' && <ProposalsView />}
 
             {activeTab === 'goats' && (
               <GoatsView
