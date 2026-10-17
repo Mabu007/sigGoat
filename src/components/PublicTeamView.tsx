@@ -17,10 +17,15 @@ async function read<T>(response: Response): Promise<T> {
 const formatPrice = (value?: number, digits = 8) => value == null || !Number.isFinite(value) || value <= 0 ? '—' : value.toLocaleString(undefined, { maximumFractionDigits: digits });
 const ROOM_CHART_TIMEFRAMES = ['5m', '15m', '1h', '4h', '1D'];
 const quoteHasPrice = (quote: MarketQuote | null) => Boolean(quote && Number.isFinite(quote.mid) && quote.mid > 0);
-const quoteIsFresh = (quote: MarketQuote | null) => Boolean(
-  quoteHasPrice(quote) && !quote?.stale &&
-  !(typeof quote?.quoteAgeSeconds === 'number' && quote.quoteAgeSeconds > 60)
-);
+const quoteIsFresh = (quote: MarketQuote | null) => {
+  if (!quoteHasPrice(quote) || quote?.stale) return false;
+  if (typeof quote?.quoteAgeSeconds === 'number' && quote.quoteAgeSeconds > 60) return false;
+  if (quote && Number.isFinite(quote.timestamp) && quote.timestamp > 1_000_000_000) {
+    const timestampMs = quote.timestamp > 1_000_000_000_000 ? quote.timestamp : quote.timestamp * 1000;
+    if (Date.now() - timestampMs > 60_000) return false;
+  }
+  return true;
+};
 
 export function PublicTeamView({ slug, onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; onBack?: () => void }) {
   const [data, setData] = useState<Payload | null>(null);
@@ -144,7 +149,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
     return data.members.flatMap(member => (member.signals || [])
       .filter(signal => signal.market.toUpperCase() === activeMarket.toUpperCase() &&
         Number.isFinite(signal.entry) && (signal.entry || 0) > 0 &&
-        Number.isFinite(Date.parse(signal.createdAt)))
+        /long|short|buy|sell/i.test(signal.direction) && Number.isFinite(Date.parse(signal.createdAt)))
       .map(signal => ({
         id: signal.id,
         time: Date.parse(signal.createdAt),
