@@ -86,7 +86,7 @@ const PROVIDER_OPTIONS: Array<{ id: TradingProvider; label: string; blurb: strin
 /** Sensible starting risk so the deployment step is never an empty form. */
 const DEFAULT_RISK = { maxPositionSizePercent: '1', maxDailyLossPercent: '3', maxOpenPositions: '3', stopLossPercent: '1.5', takeProfitPercent: '3' };
 
-export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled, showDirectoryContent = true, onOpenRoom }: { createTeamRequested: boolean; onCreateTeamRequestHandled: () => void; showDirectoryContent?: boolean; onOpenRoom: (type: 'team' | 'bot', slug: string) => void }) {
+export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled, showDirectoryContent = true, onOpenRoom, onShowDirectory }: { createTeamRequested: boolean; onCreateTeamRequestHandled: () => void; showDirectoryContent?: boolean; onOpenRoom: (type: 'team' | 'bot', slug: string) => void; onShowDirectory: () => void }) {
   const { refreshGoats } = useGoat();
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
   const [rooms, setRooms] = useState<TradeRoom[]>([]);
@@ -471,6 +471,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                 key={item.id}
                 type="button"
                 onClick={() => {
+                  onShowDirectory();
                   setDirectoryMode(item.id);
                   setQuery('');
                   if (item.id === 'mine' || item.id === 'private') void loadMyRooms();
