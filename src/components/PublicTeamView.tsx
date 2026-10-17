@@ -4,8 +4,8 @@ import { TradingViewLightweightChart } from './TradingViewLightweightChart';
 import type { Candle, MarketQuote } from '../types';
 
 type Signal = { id: string; market: string; direction: string; status: string; entry?: number; stopLoss?: number; takeProfit?: number; thesis: string; rationale: string; createdAt: string; decision?: string };
-type Member = { id: string; name: string; goal: string; markets: string[]; status: string; provider: string; latestThesis: null | { market: string; bias: string; summary: string; updatedAt: string }; signals: Signal[] };
-type Room = { id: string; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; memberCount: number; markets: string[] };
+type Member = { id: string; name: string; goal: string; markets: string[]; status: string; provider: string; timeframe?: string; latestThesis: null | { market: string; bias: string; summary: string; updatedAt: string }; signals: Signal[] };
+type Room = { id: string; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; memberCount: number; markets: string[]; asset?: string; provider?: string };
 type Payload = { team: Room; members: Member[] };
 type FeedItem = { id: string; memberName: string; kind: string; title: string; body: string; at: string; signal?: Signal; member?: Member };
 async function read<T>(response: Response): Promise<T> { const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body?.error?.message || body?.message || `Request failed (${response.status})`); return body as T; }
@@ -21,6 +21,8 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   const [marketQuote, setMarketQuote] = useState<MarketQuote | null>(null);
   const [marketError, setMarketError] = useState('');
   const [marketSymbol, setMarketSymbol] = useState('');
+  const [timeframe, setTimeframe] = useState('15m');
+  const timeframes = ['5m', '15m', '1h', '4h', '1D'];
 
   const load = useCallback(async () => {
     try {
@@ -40,7 +42,12 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   const selectedMember = data?.members.find(member => member.id === selectedMemberId) ?? data?.members[0] ?? null;
   // Keep the shared chart useful before a bot has generated its first thesis or configured markets.
   // These are provider-native symbols: cTrader uses EURUSD; Hyperliquid uses BTC.
-  const activeMarket = selectedMember?.latestThesis?.market || selectedMember?.markets?.[0] || selectedMember?.signals?.[0]?.market || (selectedMember?.provider === 'ctrader' ? 'EURUSD' : selectedMember?.provider === 'hyperliquid' ? 'BTC' : '');
+  const activeMarket = data?.team.asset || data?.team.markets?.[0] || selectedMember?.latestThesis?.market || selectedMember?.markets?.[0] || selectedMember?.signals?.[0]?.market || (data?.team.provider === 'ctrader' ? 'EURUSD' : data?.team.provider === 'hyperliquid' ? 'BTC' : '');
+
+  useEffect(() => {
+    const monitored = selectedMember?.timeframe || '15m';
+    setTimeframe(timeframes.includes(monitored) ? monitored : '15m');
+  }, [selectedMember?.id, selectedMember?.timeframe]);
 
   useEffect(() => {
     if (!selectedMember || !activeMarket) {
@@ -51,7 +58,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
     let cancelled = false;
     const refreshMarket = async () => {
       try {
-        const response = await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/market?memberId=' + encodeURIComponent(selectedMember.id) + '&symbol=' + encodeURIComponent(activeMarket) + '&timeframe=1h&count=120', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+        const response = await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/market?memberId=' + encodeURIComponent(selectedMember.id) + '&symbol=' + encodeURIComponent(activeMarket) + '&timeframe=' + encodeURIComponent(timeframe) + '&count=120', { headers: { Accept: 'application/json' }, cache: 'no-store' });
         const result = await read<{ quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string }>(response);
         if (cancelled) return;
         const quote = result.quotes?.find(item => item.symbol === activeMarket) ?? result.quotes?.[0] ?? null;
@@ -63,9 +70,9 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
       }
     };
     void refreshMarket();
-    const interval = window.setInterval(() => void refreshMarket(), 15000);
+    const interval = window.setInterval(() => void refreshMarket(), 5000);
     return () => { cancelled = true; window.clearInterval(interval); };
-  }, [slug, selectedMember?.id, activeMarket]);
+  }, [slug, selectedMember?.id, activeMarket, timeframe]);
 
   const feed = useMemo<FeedItem[]>(() => {
     if (!data) return [];
@@ -85,8 +92,18 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
 
   return <main className="trade-room-minimal">
     <section className="trade-room-stage" aria-label="Market chart">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3 sm:px-5">
+        <div className="min-w-0">
+          <div className="text-base font-bold tracking-wide text-white sm:text-lg">{activeMarket || 'No asset configured'}</div>
+          <div className="mt-0.5 text-xl font-semibold tabular-nums text-white sm:text-2xl">{marketQuote ? marketQuote.mid.toLocaleString(undefined, { maximumFractionDigits: activeMarket.toUpperCase().includes('BTC') ? 2 : 8 }) : 'Waiting for price…'}</div>
+          <div className="mt-0.5 text-[10px] uppercase tracking-wider text-white/40">{marketQuote?.stale ? 'Last known price · market closed' : marketQuote ? 'Price refreshes every 5 seconds' : marketError || 'Live quote unavailable'}</div>
+        </div>
+        <div className="flex flex-wrap gap-1 rounded-xl border border-white/10 bg-black/20 p-1" role="group" aria-label="Chart timeframe">
+          {timeframes.map(frame => <button type="button" key={frame} onClick={() => setTimeframe(frame)} aria-pressed={timeframe === frame} className={(timeframe === frame ? 'rounded-lg bg-violet-300 px-3 py-1.5 text-xs font-semibold text-black' : 'rounded-lg px-3 py-1.5 text-xs font-semibold text-white/60 hover:bg-white/10 hover:text-white')}>{frame}</button>)}
+        </div>
+      </div>
       <div className="trade-room-chart">
-        {candles.length ? <TradingViewLightweightChart candles={candles} activeQuote={marketQuote} timeframe="1h" symbol={marketSymbol} digits={marketSymbol.toUpperCase().includes('BTC') ? 1 : 5}/> : <div className="trade-room-chart-empty"><span>{marketError || 'Waiting for market data'}</span></div>}
+        {candles.length ? <TradingViewLightweightChart candles={candles} activeQuote={marketQuote} timeframe={timeframe} symbol={marketSymbol} roomName={data.team.name} digits={marketSymbol.toUpperCase().includes('BTC') ? 1 : 5}/> : <div className="trade-room-chart-empty"><span>{marketError || 'Waiting for market data'}</span></div>}
       </div>
     </section>
     <aside className="trade-room-stream" aria-label="AI collaboration stream" aria-live="polite">
