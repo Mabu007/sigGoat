@@ -3873,29 +3873,31 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   const goat = await persistence.goats.getForUser(memberId, team.ownerUserId);
   if (!goat) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "That team bot is no longer available.");
   const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
-  // A shareable chart should still render before the GOAT has a configured market.
-  // Use a native default for that GOAT's provider, without changing the GOAT's saved markets.
-  const providerKind = resolveGoatTradingProvider(goat);
-  const fallbackSymbol = providerKind === "ctrader" ? "EURUSD" : "BTC";
+  const hyperliquidRoom = team.deployment?.provider === "hyperliquid";
+  const fallbackSymbol = hyperliquidRoom ? "BTC" : "EURUSD";
   const deployedRoomAsset = team.deployment?.asset;
-  // A deployed team's asset is fixed at deployment; never silently switch a shared room chart to another member market.
-  if (deployedRoomAsset && !goat.markets.includes(deployedRoomAsset)) {
-    return fail(res, 409, "ROOM_ASSET_MISMATCH", "This agent is not configured for the room's deployed asset.");
-  }
+  // The deployment asset is authoritative. It is not required to appear in a
+  // member's legacy market list because the room deployment owns the contract.
   const symbol = deployedRoomAsset || (requestedSymbol && goat.markets.includes(requestedSymbol)
     ? requestedSymbol
     : goat.markets[0] || fallbackSymbol);
+  const timeframe = typeof req.query.timeframe === "string" ? req.query.timeframe : "1h";
+  const count = Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120));
   try {
-    const provider = await marketDataProviderForGoat(goat);
-    const [quotes, candles] = await Promise.all([
-      provider.getQuotes([symbol]),
-      provider.getCandles(symbol, typeof req.query.timeframe === "string" ? req.query.timeframe : "1h",
-        Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120))),
-    ]);
+    if (hyperliquidRoom) {
+      const provider = await marketDataProviderForUser(team.ownerUserId, "hyperliquid");
+      const [quotes, candles] = await Promise.all([
+        provider.getQuotes([symbol]),
+        provider.getCandles(symbol, timeframe, count),
+      ]);
+      res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
+      return res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, fetchedAt: new Date().toISOString() });
+    }
+    const market = await biQuoteRoomMarket(symbol, timeframe, count);
     res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
-    res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, fetchedAt: new Date().toISOString() });
+    return res.json({ symbol, ...market, fetchedAt: new Date().toISOString() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "The team's configured market provider is unavailable.";
+    const message = error instanceof Error ? error.message : "The room's market data provider is unavailable.";
     return fail(res, 503, "ROOM_MARKET_UNAVAILABLE", message);
   }
 }));
