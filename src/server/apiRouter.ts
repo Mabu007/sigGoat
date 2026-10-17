@@ -3720,17 +3720,23 @@ apiRouter.get("/robots/:slug/market", handle(async (req, res) => {
   const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
   const symbol = requestedSymbol && goat.markets.includes(requestedSymbol) ? requestedSymbol : goat.markets[0];
   if (!symbol) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This room has no configured market.");
+  const timeframe = typeof req.query.timeframe === "string" ? req.query.timeframe : "1h";
+  const count = Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120));
   try {
-    const provider = await marketDataProviderForGoat(goat);
-    const [quotes, candles] = await Promise.all([
-      provider.getQuotes([symbol]),
-      provider.getCandles(symbol, typeof req.query.timeframe === "string" ? req.query.timeframe : "1h",
-        Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120))),
-    ]);
+    if (resolveGoatTradingProvider(goat) === "hyperliquid") {
+      const provider = await marketDataProviderForGoat(goat);
+      const [quotes, candles] = await Promise.all([
+        provider.getQuotes([symbol]),
+        provider.getCandles(symbol, timeframe, count),
+      ]);
+      res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
+      return res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, fetchedAt: new Date().toISOString() });
+    }
+    const market = await biQuoteRoomMarket(symbol, timeframe, count);
     res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
-    res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, fetchedAt: new Date().toISOString() });
+    return res.json({ symbol, ...market, fetchedAt: new Date().toISOString() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "The room's configured market provider is unavailable.";
+    const message = error instanceof Error ? error.message : "The room's market data provider is unavailable.";
     return fail(res, 503, "ROOM_MARKET_UNAVAILABLE", message);
   }
 }));
