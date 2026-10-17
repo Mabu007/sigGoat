@@ -10,6 +10,7 @@ type Payload = { team: Room; members: Member[] };
 type FeedItem = { id: string; memberName: string; kind: string; title: string; body: string; at: string; signal?: Signal; member?: Member };
 async function read<T>(response: Response): Promise<T> { const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body?.error?.message || body?.message || `Request failed (${response.status})`); return body as T; }
 const formatPrice = (value?: number) => value == null ? '—' : value.toLocaleString(undefined, { maximumFractionDigits: 8 });
+const ROOM_CHART_TIMEFRAMES = ['5m', '15m', '1h', '4h', '1D'];
 
 export function PublicTeamView({ slug, onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; onBack?: () => void }) {
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
@@ -22,7 +23,6 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   const [marketError, setMarketError] = useState('');
   const [marketSymbol, setMarketSymbol] = useState('');
   const [timeframe, setTimeframe] = useState('15m');
-  const timeframes = ['5m', '15m', '1h', '4h', '1D'];
 
   const load = useCallback(async () => {
     try {
@@ -46,7 +46,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
 
   useEffect(() => {
     const monitored = selectedMember?.timeframe || '15m';
-    setTimeframe(timeframes.includes(monitored) ? monitored : '15m');
+    setTimeframe(ROOM_CHART_TIMEFRAMES.includes(monitored) ? monitored : '15m');
   }, [selectedMember?.id, selectedMember?.timeframe]);
 
   useEffect(() => {
@@ -99,7 +99,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
           <div className="mt-0.5 text-[10px] uppercase tracking-wider text-white/40">{marketQuote?.stale ? 'Last known price · market closed' : marketQuote ? 'Price refreshes every 5 seconds' : marketError || 'Live quote unavailable'}</div>
         </div>
         <div className="flex flex-wrap gap-1 rounded-xl border border-white/10 bg-black/20 p-1" role="group" aria-label="Chart timeframe">
-          {timeframes.map(frame => <button type="button" key={frame} onClick={() => setTimeframe(frame)} aria-pressed={timeframe === frame} className={(timeframe === frame ? 'rounded-lg bg-violet-300 px-3 py-1.5 text-xs font-semibold text-black' : 'rounded-lg px-3 py-1.5 text-xs font-semibold text-white/60 hover:bg-white/10 hover:text-white')}>{frame}</button>)}
+          {ROOM_CHART_TIMEFRAMES.map(frame => <button type="button" key={frame} onClick={() => setTimeframe(frame)} aria-pressed={timeframe === frame} className={(timeframe === frame ? 'rounded-lg bg-violet-300 px-3 py-1.5 text-xs font-semibold text-black' : 'rounded-lg px-3 py-1.5 text-xs font-semibold text-white/60 hover:bg-white/10 hover:text-white')}>{frame}</button>)}
         </div>
       </div>
       <div className="trade-room-chart">
