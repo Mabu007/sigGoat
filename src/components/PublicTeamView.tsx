@@ -426,7 +426,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
             <span className="sg-room-symbol">{activeMarket || 'No asset configured'}</span>
             <span className="sg-room-provider">{(marketProvider || data.team.provider || 'MARKET').toUpperCase()}</span>
             <span className={'sg-room-provider ' + ((data.team.environment ?? 'DEMO') === 'LIVE' ? 'is-live' : 'is-demo')}>{(data.team.environment ?? 'DEMO') === 'LIVE' ? 'LIVE FEED' : 'DEMO FEED'}</span>
-            {dataMode && <span className="sg-room-provider">{dataMode.toUpperCase()}</span>}
+            {dataMode && <span className="sg-room-provider">{dataMode.toUpperCase() === 'DEMO_REFERENCE' ? 'REFERENCE' : dataMode.toUpperCase()}</span>}
           </div>
           <div className="sg-room-price-row">
             <span className="sg-room-price">{quoteHasPrice(marketQuote) ? formatPrice(marketQuote!.mid, priceDigits) : '—'}</span>
