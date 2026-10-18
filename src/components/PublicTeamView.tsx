@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
 import type { Candle, MarketQuote } from '../types';
 
@@ -175,14 +176,21 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         : 'Live quote · refreshes every 5 seconds';
 
   if (loading) return <main className="trade-room-minimal"><div className="trade-room-loading" aria-label="Loading trade room" /></main>;
-  if (!data) return <main className="trade-room-minimal"><div className="trade-room-error" role="alert">{error || 'This room is unavailable.'}<button type="button" onClick={onBack} aria-label="Back to rooms">←</button></div></main>;
+  if (!data) return <main className="trade-room-minimal"><div className="trade-room-error" role="alert">
+    <span>{error || 'This room is unavailable.'}</span>
+    <button type="button" onClick={onBack}><ArrowLeft size={13} strokeWidth={2.5} aria-hidden="true" /> Back to {backLabel}</button>
+  </div></main>;
 
   return <main className={`trade-room-minimal${streamVisible ? '' : ' is-stream-hidden'}`}>
     <div className="trade-room-topbar">
       <button type="button" className="trade-room-back" onClick={onBack}>
-        <span>← Back to {backLabel}</span>
+        <ArrowLeft size={14} strokeWidth={2.5} aria-hidden="true" />
+        <span>Back<span className="trade-room-back-target"> to {backLabel}</span></span>
       </button>
-      <div className="trade-room-topbar-spacer" />
+      <div className="trade-room-identity">
+        <span className={'trade-room-identity-status is-' + quoteStatus}>{quoteStatus === 'live' ? 'Live' : quoteStatus === 'stale' ? 'Stale' : 'No feed'}</span>
+        <span className="trade-room-identity-name">{data.team.name}</span>
+      </div>
       <button
         type="button"
         className="trade-room-stream-toggle"
@@ -192,7 +200,9 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         aria-label={streamVisible ? 'Hide chat stream' : 'Show chat stream'}
       >
         <span>{streamVisible ? 'Hide chat' : 'Show chat'}</span>
-        <span aria-hidden="true">{streamVisible ? '◀' : '▶'}</span>
+        {streamVisible
+          ? <PanelRightClose size={14} strokeWidth={2.5} aria-hidden="true" />
+          : <PanelRightOpen size={14} strokeWidth={2.5} aria-hidden="true" />}
       </button>
     </div>
     <section className="trade-room-stage" aria-label="Market chart">
