@@ -4234,6 +4234,8 @@ apiRouter.get("/team-rooms/:slug/runs/:workflowId", handle(async (req, res) => {
  * drops anything older than three days, so this route stays cheap and honest
  * even though every viewer polls it.
  */
+const forcedNewsRefreshAt = new Map<string, number>();
+
 apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
   const slug = String(req.params.slug || "");
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
@@ -4247,7 +4249,10 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
   if (!market) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This room has no market configured, so there is nothing to research.");
 
   // Never throws: research failure is reported in-band so the panel can say so.
-  const forceRefresh = req.query?.refresh === "1";
+  const requestedForceRefresh = req.query?.refresh === "1";
+  const lastForcedAt = forcedNewsRefreshAt.get(market.toUpperCase()) ?? 0;
+  const forceRefresh = requestedForceRefresh && Date.now() - lastForcedAt >= 60_000;
+  if (forceRefresh) forcedNewsRefreshAt.set(market.toUpperCase(), Date.now());
   const snapshot = await newsService.getNews(market, forceRefresh);
   res.setHeader("Cache-Control", forceRefresh ? "no-store" : "public, max-age=60, stale-while-revalidate=300");
   res.json({
