@@ -219,6 +219,21 @@ const BIAS_TONE: Record<string, string> = {
   BULLISH: 'is-positive', BEARISH: 'is-negative', RANGING: 'is-muted', NEUTRAL: 'is-muted',
 };
 
+function compactChatLine(value: string, maxLength = 170): string {
+  const clean = value.replace(/\\s+/g, ' ').trim();
+  if (clean.length <= maxLength) return clean;
+  const sentenceEnd = clean.slice(0, maxLength).lastIndexOf('. ');
+  const cutoff = sentenceEnd >= Math.floor(maxLength * 0.55) ? sentenceEnd + 1 : maxLength - 1;
+  return clean.slice(0, cutoff).trimEnd() + '…';
+}
+
+function localMessageTime(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '—';
+}
+
 /* =========================================================================
    PANEL — Team Chat
    A message is a run, not a rendered thesis. Each one opens the run's real
@@ -241,6 +256,10 @@ export function ChatPanel({ runs, onOpenRun, canRun, onRun, running }: {
   if (!runs.length) {
     return (
       <>
+        <div className="tr-chat-status" aria-live="polite">
+          <span className="tr-chat-status-left"><span className={'tr-chat-live-dot' + (running ? ' is-working' : '')} /><span>{running ? 'AGENTS IN MOTION' : 'TEAM ACTIVITY'}</span></span>
+          <span className="tr-chat-status-right">{running ? 'Reviewing the market…' : 'Waiting for the next run'}</span>
+        </div>
         <PanelEmpty
           title="No work yet"
           hint={canRun
@@ -249,7 +268,7 @@ export function ChatPanel({ runs, onOpenRun, canRun, onRun, running }: {
         />
         {canRun && <button type="button" className="tr-chat-run" onClick={onRun} disabled={running}>
           <Zap size={13} strokeWidth={2.4} aria-hidden="true" />
-          {running ? 'Starting…' : 'Run the team'}
+          {running ? 'Agents working…' : 'Run the team'}
         </button>}
       </>
     );
@@ -257,10 +276,14 @@ export function ChatPanel({ runs, onOpenRun, canRun, onRun, running }: {
 
   return (
     <>
+      <div className="tr-chat-status" aria-live="polite">
+        <span className="tr-chat-status-left"><span className={'tr-chat-live-dot' + (running ? ' is-working' : '')} /><span>{running ? 'AGENTS IN MOTION' : 'TEAM ACTIVITY'}</span></span>
+        <span className="tr-chat-status-right">{running ? 'Reviewing the market…' : `${runs.length} updates recorded`}</span>
+      </div>
       {canRun && (
         <button type="button" className="tr-chat-run" onClick={onRun} disabled={running}>
           <Zap size={13} strokeWidth={2.4} aria-hidden="true" />
-          {running ? 'Starting…' : 'Run the team'}
+          {running ? 'Agents working…' : 'Run the team'}
         </button>
       )}
       <div className="tr-chat">
@@ -274,15 +297,16 @@ export function ChatPanel({ runs, onOpenRun, canRun, onRun, running }: {
               onClick={() => onOpenRun(run)}
             >
               <div className="tr-chat-msg-head">
+                <span className="tr-agent-avatar" aria-hidden="true">{run.agentName.split(/\\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()}</span>
                 <span className="tr-agent-name">{run.agentName}</span>
                 <span className={cx('tr-chat-kind', 'is-' + run.outcome)}>{OUTCOME_LABEL[run.outcome]}</span>
-                <time dateTime={run.at}>{relativeTime(run.at)}</time>
+                <time dateTime={run.at} title={new Date(run.at).toLocaleString()}><span className="tr-chat-clock">{localMessageTime(run.at)}</span><span className="tr-chat-relative">{relativeTime(run.at)}</span></time>
               </div>
               <div className="tr-chat-msg-title">
                 {tone && <span className={'tr-chip ' + tone}>{run.bias}</span>}
                 <span className="tr-chat-headline">{run.headline}</span>
               </div>
-              {run.summary && <p className="tr-chat-summary">{run.summary}</p>}
+              {run.summary && <p className="tr-chat-summary">{compactChatLine(run.summary)}</p>}
               {run.levels && (
                 <div className="trade-room-levels">
                   <span>Entry <b>{money(run.levels.entry)}</b></span>
