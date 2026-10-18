@@ -1,0 +1,1428 @@
+/* ==========================================================================
+   TRADE ROOM
+   ==========================================================================
+   Single source of truth for the room ("watch page") layout rendered by
+   PublicTeamView, plus the chart chrome rendered by
+   TradingViewLightweightChart and the shell rules for App.tsx.
+
+   This file deliberately owns EVERY `.trade-room-*` / `.sg-room-*` /
+   `.sg-pulse-*` rule in the app. `youtube-ui.css` styles the room directory
+   (`.yt-room-*`) and nothing else — it used to carry a second, contradictory
+   copy of this layout, where `aspect-ratio` fought `flex: 1` and the two files
+   disagreed about whether the chart had a minimum height. Two stylesheets
+   describing the same grid is how a chart ends up rendered at 0px tall.
+
+   LAYOUT CONTRACT
+   ---------------
+   `.trade-room-minimal` is a grid with named areas and a DEFINITE height
+   (`100dvh`). Both mount paths rely on that:
+
+     * opened from the directory, inside `.trade-room-app-main`
+     * shared directly at `/team/:slug`, with no sized ancestor at all
+
+   A percentage `height: 100%` collapses to `auto` in the second case, and
+   every percentage flex-basis below it then resolves against an indefinite
+   main size — which is exactly how the chart ended up with `height: 0`.
+   `100dvh` is definite in both, so the inner rows can stay in `fr` and
+   `minmax(0, 1fr)`, which never collapse.
+
+   Rows and columns are `minmax(0, 1fr)` rather than `1fr` so a long chat
+   transcript can shrink its own track instead of forcing the page to scroll.
+   ========================================================================== */
+
+/* -------------------------------------------------------------------------
+   1. Local tokens
+   Derived from the app palette so a room matches the surrounding app in both
+   themes. Nothing in this file hardcodes a text or surface colour.
+   ------------------------------------------------------------------------- */
+.trade-room-minimal,
+.trade-room-robot-page {
+  --tr-gap: 10px;
+  --tr-pad: 10px;
+  --tr-radius: 14px;
+  --tr-line: color-mix(in srgb, var(--color-line) 88%, transparent);
+  --tr-line-soft: color-mix(in srgb, var(--color-line) 55%, transparent);
+  --tr-mono: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  --tr-sans: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+}
+
+/* -------------------------------------------------------------------------
+   2. Root grid
+   ------------------------------------------------------------------------- */
+.trade-room-minimal {
+  display: grid;
+  grid-template-areas:
+    'bar   bar'
+    'stage stream';
+  grid-template-columns: minmax(0, 1fr) clamp(300px, 26vw, 400px);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--tr-gap);
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  padding: var(--tr-pad);
+  overflow: hidden;
+  color: var(--color-fg);
+  background: var(--color-canvas);
+}
+
+/*
+ * `youtube-ui.css` sets `.premium-shell main { padding-left/right/top }` for
+ * the ordinary app views. Specificity (0,1,1) beats `.trade-room-minimal`
+ * (0,1,0), so a room opened from the directory inherited a 20px/32px gutter
+ * while the same room at `/team/:slug` — which has no `.premium-shell` — got
+ * the 10px one, and the two mounts rendered 22px apart on each side. Opt out
+ * explicitly; the responsive values come from `--tr-pad` below.
+ */
+.premium-shell main.trade-room-minimal { padding: var(--tr-pad); }
+
+@supports not (height: 100dvh) {
+  .trade-room-minimal { height: 100vh; }
+}
+
+/* Chat collapsed: one full-width column, and the chart claims the space the
+   stream was using rather than sitting in a stretched 16:9 box. */
+.trade-room-minimal.is-stream-hidden {
+  grid-template-areas:
+    'bar'
+    'stage';
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.trade-room-minimal > * { min-width: 0; min-height: 0; }
+
+/* -------------------------------------------------------------------------
+   3. Toolbar — back control, room identity, live stats, chat toggle
+   ------------------------------------------------------------------------- */
+.trade-room-topbar {
+  grid-area: bar;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /*
+   * Seamless: no card, no border, no fill. The controls sit directly on the
+   * page canvas, so the room reads as one surface with the chart and the chat
+   * below rather than a banner stacked on top of a panel.
+   */
+  padding: 2px 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* --- shared button chrome --------------------------------------------- */
+.trade-room-back,
+.trade-room-stream-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  max-width: 15rem;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-fg-muted);
+  font: 600 12px/1.2 var(--tr-sans);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.trade-room-back:hover,
+.trade-room-stream-toggle:hover {
+  border-color: var(--tr-line);
+  background: var(--color-raised);
+  color: var(--color-fg);
+}
+
+.trade-room-back:focus-visible,
+.trade-room-stream-toggle:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+/* --- back control ------------------------------------------------------ */
+.trade-room-back {
+  border-color: var(--tr-line);
+  background: var(--color-raised);
+  color: var(--color-fg);
+}
+
+.trade-room-back span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trade-room-back svg { flex: 0 0 auto; }
+
+/* --- room identity ----------------------------------------------------- */
+.trade-room-identity {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.trade-room-identity-name {
+  overflow: hidden;
+  color: var(--color-fg);
+  font: 700 14px/1.2 var(--tr-sans);
+  letter-spacing: -.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- live stats — clock, balance, trades, account mode ------------------- */
+.trade-room-stats {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+}
+
+.trade-room-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 9px;
+  border-radius: 8px;
+}
+
+.trade-room-stat dt {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--color-fg-subtle);
+}
+
+.trade-room-stat-value {
+  display: flex;
+  align-items: baseline;
+  /* A flex gap, not a literal space: bare text nodes become anonymous flex
+     items here, and whitespace at their edges is collapsed away. */
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-fg);
+  font: 600 12px/1.2 var(--tr-mono);
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trade-room-stat-unit {
+  color: var(--color-fg-subtle);
+  font-family: var(--tr-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* Account mode is a state, not a measurement, so it reads as a pill. */
+.trade-room-stat-mode {
+  padding: 4px 10px;
+  border: 1px solid var(--tr-line);
+}
+
+.trade-room-stat-mode .trade-room-stat-value {
+  font-family: var(--tr-sans);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.trade-room-stat-mode.is-demo {
+  border-color: color-mix(in srgb, var(--color-info) 40%, transparent);
+  background: var(--color-info-soft);
+}
+
+.trade-room-stat-mode.is-demo .trade-room-stat-value { color: var(--color-info); }
+
+.trade-room-stat-mode.is-live {
+  border-color: color-mix(in srgb, var(--color-positive) 40%, transparent);
+  background: var(--color-positive-soft);
+}
+
+.trade-room-stat-mode.is-live .trade-room-stat-value { color: var(--color-positive); }
+
+/* Status chip for quote freshness. Lives in the chat panel header, where it
+   describes the feed below it. Tinted per state so freshness is readable at a
+   glance without reading the stage header. */
+.trade-room-identity-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--tr-line);
+  border-radius: 999px;
+  background: var(--color-raised);
+  color: var(--color-fg-muted);
+  font: 700 9px/1.4 var(--tr-sans);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.trade-room-identity-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.trade-room-identity-status.is-live {
+  border-color: color-mix(in srgb, var(--color-positive) 42%, transparent);
+  background: var(--color-positive-soft);
+  color: var(--color-positive);
+}
+
+.trade-room-identity-status.is-stale {
+  border-color: color-mix(in srgb, var(--color-warning) 42%, transparent);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+.trade-room-identity-status.is-unavailable {
+  border-color: color-mix(in srgb, var(--color-negative) 42%, transparent);
+  background: var(--color-negative-soft);
+  color: var(--color-negative);
+}
+
+/* --- chat toggle ------------------------------------------------------- */
+.trade-room-stream-toggle { border-color: var(--tr-line); background: var(--color-raised); color: var(--color-fg); }
+.trade-room-stream-toggle svg { flex: 0 0 auto; }
+.trade-room-stream-toggle[aria-expanded='false'] { color: var(--color-fg-muted); }
+
+/* -------------------------------------------------------------------------
+   4. Chart stage
+   ------------------------------------------------------------------------- */
+.trade-room-stage {
+  grid-area: stage;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--tr-line);
+  border-radius: var(--tr-radius);
+  background: var(--color-sunken);
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+/* --- instrument header ------------------------------------------------- */
+.sg-room-header {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--tr-line);
+  background: var(--color-surface);
+}
+
+.sg-room-instrument { min-width: 0; }
+
+.sg-room-symbol-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+.sg-room-symbol {
+  overflow: hidden;
+  color: var(--color-fg);
+  font: 700 13px/1.2 var(--tr-sans);
+  letter-spacing: .04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sg-room-provider {
+  padding: 3px 6px;
+  border: 1px solid var(--tr-line);
+  border-radius: 5px;
+  color: var(--color-fg-subtle);
+  font: 700 9px/1 var(--tr-sans);
+  letter-spacing: .09em;
+}
+
+.sg-room-price-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-top: 5px; }
+
+.sg-room-price {
+  color: var(--color-fg);
+  font: 600 clamp(21px, 2vw, 28px)/1.1 var(--tr-mono);
+  letter-spacing: -.045em;
+  font-variant-numeric: tabular-nums;
+}
+
+.sg-room-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.4 var(--tr-sans);
+}
+
+.sg-room-status::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-fg-subtle);
+}
+
+.sg-room-status.is-live { color: var(--color-positive); }
+.sg-room-status.is-live::before { background: var(--color-positive); }
+.sg-room-status.is-stale { color: var(--color-warning); }
+.sg-room-status.is-stale::before { background: var(--color-warning); }
+.sg-room-status.is-unavailable { color: var(--color-negative); }
+.sg-room-status.is-unavailable::before { background: var(--color-negative); }
+
+/* --- timeframe selector ------------------------------------------------ */
+.sg-room-timeframes {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--tr-line);
+  border-radius: 9px;
+  background: var(--color-raised);
+}
+
+.sg-room-timeframe {
+  min-width: 38px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-fg-subtle);
+  font: 650 11px/1 var(--tr-mono);
+  cursor: pointer;
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.sg-room-timeframe:hover { background: var(--color-surface); color: var(--color-fg); }
+.sg-room-timeframe:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+
+.sg-room-timeframe[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+
+/* --- plot ---------------------------------------------------------------
+   The one rule that keeps the chart alive: `flex-basis: 0` plus
+   `min-height: 0` means it takes every pixel the header leaves behind and
+   never asks for more. There is deliberately no `aspect-ratio` here — the
+   stage already knows how tall it is. */
+.trade-room-chart {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-sunken);
+}
+
+.trade-room-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 24px;
+  color: var(--color-fg-subtle);
+  font: 500 12px/1.6 var(--tr-sans);
+  text-align: center;
+  background: var(--color-sunken);
+}
+
+/* -------------------------------------------------------------------------
+   5. AI collaboration stream
+   ------------------------------------------------------------------------- */
+.trade-room-stream {
+  grid-area: stream;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--tr-line);
+  border-radius: var(--tr-radius);
+  background: var(--color-surface);
+}
+
+.trade-room-minimal.is-stream-hidden .trade-room-stream { display: none; }
+
+/* -------------------------------------------------------------------------
+   5a. Panel header — title, freshness, and the panel switcher
+   The title names what is open; the chip describes that panel's freshness;
+   the tab strip is the only navigation. Two rows rather than one so six icons
+   never crowd the title, and the strip sits on its own recessed track so the
+   selected tab reads as a lifted control rather than another label.
+   ------------------------------------------------------------------------- */
+.trade-room-stream-header {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 10px 10px;
+  border-bottom: 1px solid var(--tr-line);
+  background: var(--color-surface);
+}
+
+.tr-panel-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 3px;
+}
+
+.tr-panel-title {
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-fg);
+  font: 750 11px/1.3 var(--tr-sans);
+  letter-spacing: .11em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tr-panel-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--color-raised);
+}
+
+.tr-panel-tab {
+  position: relative;
+  display: grid;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-fg-subtle);
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease, box-shadow 150ms ease;
+}
+
+.tr-panel-tab:hover { background: color-mix(in srgb, var(--color-fg) 6%, transparent); color: var(--color-fg); }
+.tr-panel-tab:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+
+.tr-panel-tab[aria-selected='true'] {
+  background: var(--color-surface);
+  color: var(--color-accent-text);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-fg) 10%, transparent), inset 0 0 0 1px var(--tr-line);
+}
+
+/* The selection marker sits BELOW the icon — an underline reads as
+   "this tab is open" without needing a second label or a colour change. */
+.tr-panel-tab[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  left: 50%;
+  width: 13px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--color-accent);
+  transform: translateX(-50%);
+}
+
+.tr-panel-tab-badge {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font: 700 8px/14px var(--tr-sans);
+  font-weight: 700;
+  text-align: center;
+}
+
+.trade-room-stream-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.trade-room-stream-item {
+  padding: 14px 15px 15px;
+  border-bottom: 1px solid var(--tr-line-soft);
+}
+
+.trade-room-stream-item:last-child { border-bottom: 0; }
+
+.trade-room-stream-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.4 var(--tr-sans);
+}
+
+.trade-room-stream-meta time { font-variant-numeric: tabular-nums; }
+
+.trade-room-agent {
+  overflow: hidden;
+  color: var(--color-accent-text);
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trade-room-stream-kind {
+  margin-top: 9px;
+  color: var(--color-fg-subtle);
+  font: 750 9px/1.3 var(--tr-sans);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.trade-room-stream-item h2 {
+  margin: 4px 0 0;
+  color: var(--color-fg);
+  font: 650 13px/1.45 var(--tr-sans);
+}
+
+.trade-room-stream-item p {
+  margin: 6px 0 0;
+  color: var(--color-fg-muted);
+  font: 400 12px/1.6 var(--tr-sans);
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.trade-room-levels {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.trade-room-levels span { display: flex; flex-direction: column; gap: 3px; min-width: 0; color: var(--color-fg-subtle); font: 500 9px/1.2 var(--tr-sans); text-transform: uppercase; letter-spacing: .08em; }
+
+.trade-room-levels b {
+  overflow: hidden;
+  color: var(--color-fg);
+  font: 600 11px/1.3 var(--tr-mono);
+  letter-spacing: -.02em;
+  text-overflow: ellipsis;
+  text-transform: none;
+}
+
+.trade-room-stream-empty {
+  display: grid;
+  min-height: 180px;
+  height: 100%;
+  place-items: center;
+  padding: 24px;
+  color: var(--color-fg-subtle);
+  font: 500 12px/1.6 var(--tr-sans);
+  text-align: center;
+}
+
+/* -------------------------------------------------------------------------
+   6. Loading / error states
+   ------------------------------------------------------------------------- */
+.trade-room-loading {
+  grid-area: bar / 1 / 3 / -1;
+  place-self: center;
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--color-line);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: tr-room-spin .8s linear infinite;
+}
+
+@keyframes tr-room-spin { to { transform: rotate(360deg); } }
+
+.trade-room-error {
+  grid-area: bar / 1 / 3 / -1;
+  place-self: center;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  max-width: min(520px, calc(100% - 32px));
+  padding: 22px 22px 22px 24px;
+  border: 1px solid color-mix(in srgb, var(--color-negative) 30%, var(--color-line));
+  border-radius: var(--tr-radius);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+  font: 500 13px/1.6 var(--tr-sans);
+}
+
+.trade-room-error::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-negative);
+}
+
+.trade-room-error button {
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--tr-line);
+  border-radius: 9px;
+  background: var(--color-raised);
+  color: var(--color-fg);
+  font: 600 12px/1 var(--tr-sans);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.trade-room-error button:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-line));
+  background: var(--color-accent-soft);
+}
+
+/* -------------------------------------------------------------------------
+   7. Chart chrome (TradingViewLightweightChart)
+   ------------------------------------------------------------------------- */
+.sg-pulse-chart {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-sunken);
+  touch-action: pan-y;
+}
+
+.sg-pulse-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.sg-pulse-canvas a[href*='tradingview'] { display: none !important; }
+
+.sg-pulse-watermark {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 24px;
+  color: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  font: 800 clamp(24px, 4.6vw, 64px)/1.1 var(--tr-sans);
+  letter-spacing: .13em;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.sg-pulse-live-pip {
+  position: absolute;
+  z-index: 3;
+  top: 10px;
+  left: 10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-positive);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-positive) 18%, transparent);
+  pointer-events: none;
+  animation: tr-pulse-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes tr-pulse-breathe {
+  0%, 100% { opacity: .55; box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-positive) 12%, transparent); }
+  50% { opacity: 1; box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-positive) 22%, transparent); }
+}
+
+.sg-pulse-ohlc {
+  position: absolute;
+  z-index: 3;
+  top: 9px;
+  left: 26px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  max-width: calc(100% - 36px);
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.4 var(--tr-mono);
+  pointer-events: none;
+}
+
+.sg-pulse-ohlc span { white-space: nowrap; }
+.sg-pulse-ohlc b { color: var(--color-fg-muted); font-weight: 600; }
+
+/* -------------------------------------------------------------------------
+   8. Robot share page (PublicRobotView)
+   Still a scrolling document page — it has a ledger and a chat below the
+   chart, so it must not be locked to the viewport the way a room is.
+   ------------------------------------------------------------------------- */
+.trade-room-robot-page {
+  height: auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: #080a0f;
+
+  /*
+   * The robot share page paints itself dark in BOTH themes — it is a public
+   * link with no app chrome around it, not an app view. The chart chrome
+   * therefore has to stay dark here too, so it gets local dark tokens rather
+   * than inheriting the reader's theme. Scoped to this element, so nothing in
+   * the app is affected.
+   */
+  --color-sunken: #0b1016;
+  --color-canvas: #080a0f;
+  --color-fg: #f4f7fb;
+  --color-fg-muted: rgba(244, 247, 251, .68);
+  --color-fg-subtle: rgba(244, 247, 251, .5);
+}
+
+.sg-room-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .04);
+  color: rgba(255, 255, 255, .72);
+  font: 600 11px/1.2 var(--tr-sans);
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease, background-color 150ms ease;
+}
+
+.sg-room-back:hover {
+  border-color: rgba(255, 255, 255, .3);
+  background: rgba(255, 255, 255, .08);
+  color: #fff;
+}
+
+.sg-room-back:focus-visible { outline: 2px solid rgba(255, 255, 255, .6); outline-offset: 1px; }
+
+/* -------------------------------------------------------------------------
+   9. App shell while a room is open
+   The header and bottom navigation are hidden by App.tsx, so the main region
+   is the whole viewport. TradeRoomsView stays mounted at zero height so the
+   directory remembers its selected category when the room is closed again.
+   ------------------------------------------------------------------------- */
+.trade-room-app-shell,
+.trade-room-app-frame {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0 !important;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.trade-room-app-frame {
+  flex: 1 1 auto;
+  padding-bottom: 0 !important;
+}
+
+.trade-room-app-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.trade-room-app-main > .space-y-6 {
+  flex: 0 0 0;
+  height: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+}
+
+.trade-room-app-main > .trade-room-minimal,
+.trade-room-app-main > .trade-room-robot-page {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* -------------------------------------------------------------------------
+   10. Responsive
+   ------------------------------------------------------------------------- */
+@media (max-width: 860px) {
+  .trade-room-minimal,
+  .trade-room-minimal.is-stream-hidden {
+    grid-template-areas:
+      'bar'
+      'stage'
+      'stream';
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(190px, 46%) minmax(0, 1fr);
+    gap: 8px;
+    --tr-pad: 8px;
+  }
+
+  .trade-room-minimal.is-stream-hidden { grid-template-rows: auto minmax(0, 1fr); }
+  .trade-room-stream { border-radius: 12px; }
+}
+
+@media (max-width: 1180px) {
+  /* Balance and trade count are the two numbers a room is judged on, so they
+     stay. The seconds-resolution clock is the first thing to go — it is the
+     only stat whose value changes every frame. */
+  .trade-room-stat-clock { display: none; }
+}
+
+@media (max-width: 720px) {
+  .trade-room-minimal {
+    grid-template-rows: auto minmax(180px, 48%) minmax(0, 1fr);
+    --tr-pad: 6px;
+  }
+
+  .trade-room-minimal.is-stream-hidden { grid-template-rows: auto minmax(0, 1fr); }
+  .trade-room-topbar { flex-wrap: wrap; row-gap: 6px; padding: 2px; }
+  .trade-room-back, .trade-room-stream-toggle { min-height: 32px; padding: 0 9px; font-size: 11px; }
+
+  /* The room name yields to the stats, and the "trades" word yields to the
+     number: on a phone the figures matter more than their labels. */
+  .trade-room-identity { order: 3; flex: 1 0 100%; padding: 0 2px; }
+  .trade-room-identity-name { font-size: 12px; }
+  .trade-room-stats { order: 2; flex: 0 1 auto; margin-left: auto; }
+  /* The currency marks the balance as money; only the trades word goes. */
+  .trade-room-stat-unit:not(.trade-room-stat-currency) { display: none; }
+  .trade-room-stat { padding: 4px 7px; }
+
+  .sg-room-header { gap: 8px; padding: 9px 11px; }
+  .sg-room-price { font-size: 19px; }
+  .sg-room-timeframes { width: 100%; justify-content: space-between; }
+  .sg-room-timeframe { flex: 1; min-width: 0; padding: 0 4px; }
+  .sg-pulse-watermark { white-space: normal; overflow-wrap: anywhere; }
+  .sg-pulse-ohlc { top: 7px; left: 23px; gap: 6px; font-size: 9px; }
+  .trade-room-stream-item { padding: 12px; }
+}
+
+@media (max-width: 420px) {
+  .trade-room-back-target { display: none; }
+}
+
+/*
+ * Landscape phones, and desktop windows with the devtools docked.
+ * A 390px-tall viewport is not tall enough for the stacked layout: the chart
+ * was left with ~90px once the instrument header took its share. There IS
+ * plenty of width, so go back to two columns and compact the header instead.
+ */
+@media (min-width: 660px) and (max-height: 560px) {
+  .trade-room-minimal,
+  .trade-room-minimal.is-stream-hidden {
+    grid-template-areas:
+      'bar   bar'
+      'stage stream';
+    grid-template-columns: minmax(0, 1fr) clamp(220px, 34vw, 320px);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .trade-room-minimal.is-stream-hidden {
+    grid-template-areas: 'bar' 'stage';
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sg-room-header { gap: 8px; padding: 8px 12px; }
+  .sg-room-price { font-size: 19px; }
+  .sg-room-status { display: none; }
+  .sg-room-timeframes { padding: 2px; }
+  .sg-room-timeframe { min-height: 26px; padding: 0 7px; font-size: 10px; }
+}
+
+/* A small phone in portrait: the quote-freshness line is the first thing to
+   go, the price carries the same information. */
+@media (max-width: 720px) and (max-height: 700px) {
+  .sg-room-status { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sg-pulse-live-pip,
+  .trade-room-loading { animation: none; }
+  .trade-room-back,
+  .trade-room-stream-toggle,
+  .sg-room-timeframe,
+  .sg-room-back { transition: none; }
+}
+/* ==========================================================================
+   11. SIDEBAR PANELS
+   ==========================================================================
+   Shared primitives first, then one block per panel. Every panel is a
+   top-to-bottom list: the sidebar is tall and narrow, so a single vertical
+   axis with consistent left/right gutters is what makes six different kinds
+   of content feel like one surface.
+   ========================================================================== */
+
+/* --- shared primitives ------------------------------------------------- */
+.tr-panel-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 15px 7px;
+  color: var(--color-fg-subtle);
+  font: 750 9px/1.3 var(--tr-sans);
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.tr-panel-section-label:first-child { padding-top: 11px; }
+.tr-panel-section-label + * { border-top: 1px solid var(--tr-line-soft); }
+
+.tr-panel-empty {
+  display: grid;
+  gap: 6px;
+  padding: 26px 18px;
+  text-align: center;
+}
+
+.tr-panel-empty-title {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font: 650 12px/1.4 var(--tr-sans);
+}
+
+.tr-panel-empty-title.is-bad { color: var(--color-negative); }
+
+.tr-panel-empty-hint {
+  margin: 0;
+  color: var(--color-fg-subtle);
+  font: 400 11px/1.6 var(--tr-sans);
+  text-wrap: pretty;
+}
+
+.tr-panel-disclaimer {
+  margin: 0;
+  padding: 11px 15px 14px;
+  border-top: 1px solid var(--tr-line-soft);
+  color: var(--color-fg-subtle);
+  font: 400 10px/1.55 var(--tr-sans);
+}
+
+/* Status pill used across tools, memory and trades. */
+.tr-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid var(--tr-line);
+  border-radius: 999px;
+  background: var(--color-raised);
+  color: var(--color-fg-muted);
+  font: 750 8px/1.5 var(--tr-sans);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tr-chip.is-positive { border-color: color-mix(in srgb, var(--color-positive) 40%, transparent); background: var(--color-positive-soft); color: var(--color-positive); }
+.tr-chip.is-negative { border-color: color-mix(in srgb, var(--color-negative) 40%, transparent); background: var(--color-negative-soft); color: var(--color-negative); }
+.tr-chip.is-warning { border-color: color-mix(in srgb, var(--color-warning) 40%, transparent); background: var(--color-warning-soft); color: var(--color-warning); }
+.tr-chip.is-muted { color: var(--color-fg-subtle); }
+
+/* Key/value rows. Used by memory and the trade modal so numbers line up in
+   the same column across every panel. */
+.tr-kv { margin: 0; }
+
+.tr-kv-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.tr-kv-row + .tr-kv-row { border-top: 1px solid var(--tr-line-soft); }
+.tr-kv-row dt { flex: 0 0 auto; color: var(--color-fg-subtle); font: 500 11px/1.4 var(--tr-sans); }
+.tr-kv-row dd { margin: 0; color: var(--color-fg); font: 600 11px/1.4 var(--tr-mono); font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+
+.tr-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+/* --------------------------------------------------------------------------
+   BREAKING NEWS
+   Headline is the signal; source and age are the trust metadata and are
+   deliberately the quietest thing on the card.
+   -------------------------------------------------------------------------- */
+.tr-news-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 15px;
+  border-bottom: 1px solid var(--tr-line-soft);
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.4 var(--tr-sans);
+}
+
+.tr-news-market { color: var(--color-fg); font-weight: 700; letter-spacing: .04em; }
+
+.tr-news-item { padding: 12px 15px 13px; border-bottom: 1px solid var(--tr-line-soft); }
+.tr-news-item:last-child { border-bottom: 0; }
+
+.tr-news-title {
+  margin: 0;
+  color: var(--color-fg);
+  font: 600 12px/1.45 var(--tr-sans);
+  text-wrap: pretty;
+}
+
+.tr-news-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.4 var(--tr-sans);
+}
+
+.tr-news-source { overflow: hidden; flex: 1 1 auto; text-overflow: ellipsis; white-space: nowrap; }
+.tr-news-time { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+.tr-news-link {
+  display: grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--color-fg-subtle);
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.tr-news-link:hover { background: var(--color-raised); color: var(--color-accent-text); }
+
+/* --------------------------------------------------------------------------
+   TRACKERS
+   A tracker is a machine-checked condition, so it is rendered like an
+   instrument reading: what fired, what it is, how close it is, and when it
+   was last evaluated. Struck-through text is used for dead conditions so the
+   eye can skip them without reading.
+   -------------------------------------------------------------------------- */
+.tr-tracker { padding: 12px 15px 13px; border-bottom: 1px solid var(--tr-line-soft); }
+.tr-tracker:last-child { border-bottom: 0; }
+.tr-tracker.is-hit { background: color-mix(in srgb, var(--color-positive) 10%, transparent); }
+
+.tr-tracker-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tr-tracker-type { color: var(--color-fg-subtle); font: 750 8px/1.5 var(--tr-sans); letter-spacing: .12em; }
+
+.tr-tracker-status {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--color-raised);
+  color: var(--color-fg-subtle);
+  font: 750 8px/1.5 var(--tr-sans);
+  letter-spacing: .09em;
+  white-space: nowrap;
+}
+
+.tr-tracker-status.is-hit { background: var(--color-positive-soft); color: var(--color-positive); }
+.tr-tracker-status.is-pending { background: var(--color-info-soft); color: var(--color-info); }
+.tr-tracker-status.is-invalidated { background: var(--color-negative-soft); color: var(--color-negative); }
+.tr-tracker-status.is-expired { background: var(--color-raised); color: var(--color-fg-subtle); }
+.tr-tracker-status.is-unevaluable { background: var(--color-warning-soft); color: var(--color-warning); }
+
+.tr-tracker-desc {
+  margin: 7px 0 0;
+  color: var(--color-fg);
+  font: 500 12px/1.5 var(--tr-sans);
+  text-wrap: pretty;
+}
+
+.tr-tracker.is-dead .tr-tracker-desc { color: var(--color-fg-subtle); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--color-fg-subtle) 50%, transparent); }
+
+.tr-tracker-foot .is-passed { color: var(--color-positive); font-weight: 700; }
+
+.tr-tracker-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 8px;
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.4 var(--tr-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tr-tracker-reason { margin: 6px 0 0; color: var(--color-fg-subtle); font: 400 10px/1.5 var(--tr-sans); text-wrap: pretty; }
+
+/* --------------------------------------------------------------------------
+   TOOLS
+   Name + state + one line of live detail. The state dot is colour-coded but
+   every row also carries a word, so the status never depends on colour alone.
+   -------------------------------------------------------------------------- */
+.tr-tools { display: flex; flex-direction: column; }
+
+.tr-tool {
+  display: flex;
+  gap: 10px;
+  padding: 11px 15px 12px;
+  border-bottom: 1px solid var(--tr-line-soft);
+}
+
+.tr-tool:last-child { border-bottom: 0; }
+
+.tr-tool-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--color-fg-subtle);
+}
+
+.tr-tool-dot.is-live { background: var(--color-positive); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-positive) 16%, transparent); }
+.tr-tool-dot.is-ready { background: var(--color-info); }
+.tr-tool-dot.is-off { background: var(--color-fg-subtle); }
+.tr-tool-dot.is-bad { background: var(--color-negative); }
+
+.tr-tool-body { flex: 1 1 auto; min-width: 0; }
+.tr-tool-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.tr-tool-name { color: var(--color-fg); font: 600 12px/1.4 var(--tr-sans); }
+
+.tr-tool-state { flex: 0 0 auto; color: var(--color-fg-subtle); font: 750 8px/1.5 var(--tr-sans); letter-spacing: .1em; text-transform: uppercase; }
+.tr-tool-state.is-live { color: var(--color-positive); }
+.tr-tool-state.is-ready { color: var(--color-info); }
+.tr-tool-state.is-bad { color: var(--color-negative); }
+
+.tr-tool-detail { margin: 3px 0 0; color: var(--color-fg-muted); font: 500 11px/1.45 var(--tr-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tr-tool-note { margin: 4px 0 0; color: var(--color-fg-subtle); font: 400 10px/1.5 var(--tr-sans); text-wrap: pretty; }
+
+/* --------------------------------------------------------------------------
+   MEMORY
+   Room-level indicators first (shared by every agent), then each agent's own
+   thesis. Confidence is a bar rather than a number because comparing agents
+   is the actual task.
+   -------------------------------------------------------------------------- */
+.tr-memory { display: flex; flex-direction: column; }
+
+.tr-metrics-timeframe { font-weight: 700; letter-spacing: .08em; }
+
+.tr-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--tr-line-soft);
+}
+
+.tr-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 15px;
+  background: var(--color-surface);
+}
+
+.tr-metric-label { color: var(--color-fg-subtle); font: 750 8px/1.4 var(--tr-sans); letter-spacing: .12em; text-transform: uppercase; }
+.tr-metric-value { color: var(--color-fg); font: 600 14px/1.2 var(--tr-mono); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+
+.tr-structure { padding: 11px 15px 13px; border-top: 1px solid var(--tr-line-soft); }
+.tr-structure-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; color: var(--color-fg-muted); font: 650 11px/1.4 var(--tr-sans); }
+
+.tr-memory-agent { padding: 12px 15px 14px; border-top: 1px solid var(--tr-line-soft); }
+.tr-memory-agent-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tr-agent-name { overflow: hidden; color: var(--color-fg); font: 700 12px/1.4 var(--tr-sans); text-overflow: ellipsis; white-space: nowrap; }
+
+.tr-memory-summary { margin: 7px 0 0; color: var(--color-fg-muted); font: 400 11px/1.6 var(--tr-sans); text-wrap: pretty; }
+.tr-memory-summary.is-empty { color: var(--color-fg-subtle); font-style: italic; }
+
+.tr-confidence { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.tr-confidence-bar { flex: 1 1 auto; height: 4px; border-radius: 999px; background: var(--color-raised); overflow: hidden; }
+.tr-confidence-bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--color-info), var(--color-accent)); }
+.tr-confidence-value { flex: 0 0 auto; color: var(--color-fg-subtle); font: 600 10px/1.4 var(--tr-mono); font-variant-numeric: tabular-nums; }
+
+.tr-memory-block { margin-top: 10px; }
+.tr-memory-block-label { display: block; margin-bottom: 3px; color: var(--color-fg-subtle); font: 750 8px/1.4 var(--tr-sans); letter-spacing: .12em; text-transform: uppercase; }
+.tr-memory-block p { margin: 0; color: var(--color-fg-muted); font: 400 11px/1.55 var(--tr-sans); text-wrap: pretty; }
+.tr-memory-block ul { margin: 0; padding-left: 15px; color: var(--color-fg-muted); font: 400 11px/1.55 var(--tr-sans); }
+.tr-memory-block li + li { margin-top: 3px; }
+
+.tr-memory-foot { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 10px; color: var(--color-fg-subtle); font: 500 10px/1.4 var(--tr-sans); }
+
+/* --------------------------------------------------------------------------
+   TRADES
+   A grid, not a stack: side / market / entry / status / agent / age all line
+   up in columns so a log of twenty is scannable in one pass. The whole row is
+   the hit target — a 4px-tall affordance would be unusable here.
+   -------------------------------------------------------------------------- */
+.tr-trades { display: flex; flex-direction: column; }
+
+.tr-trades-head,
+.tr-trade {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+  grid-template-areas:
+    'dir market price status'
+    'agent agent time time';
+  gap: 2px 8px;
+  padding: 9px 15px 10px;
+}
+
+.tr-trades-head { padding-top: 8px; padding-bottom: 6px; color: var(--color-fg-subtle); font: 750 8px/1.4 var(--tr-sans); letter-spacing: .12em; text-transform: uppercase; }
+.tr-trades-head span:nth-child(1) { grid-area: dir; }
+.tr-trades-head span:nth-child(2) { grid-area: market; }
+.tr-trades-head span:nth-child(3) { grid-area: price; }
+.tr-trades-head span:nth-child(4) { grid-area: status; }
+
+.tr-trade {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--tr-line-soft);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.tr-trade:hover { background: var(--color-raised); }
+.tr-trade:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+
+.tr-trade-dir {
+  grid-area: dir;
+  align-self: center;
+  justify-self: start;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font: 800 8px/1.6 var(--tr-sans);
+  letter-spacing: .08em;
+  white-space: nowrap;
+}
+
+.tr-trade-dir.is-long { background: var(--color-positive-soft); color: var(--color-positive); }
+.tr-trade-dir.is-short { background: var(--color-negative-soft); color: var(--color-negative); }
+
+.tr-trade-market { grid-area: market; align-self: center; overflow: hidden; color: var(--color-fg); font: 650 11px/1.5 var(--tr-mono); text-overflow: ellipsis; white-space: nowrap; }
+.tr-trade-price { grid-area: price; align-self: center; color: var(--color-fg-muted); font: 600 11px/1.5 var(--tr-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.tr-trade .tr-chip { grid-area: status; align-self: center; justify-self: end; }
+
+.tr-trade-agent { grid-area: agent; overflow: hidden; color: var(--color-fg-subtle); font: 500 10px/1.4 var(--tr-sans); text-overflow: ellipsis; white-space: nowrap; }
+.tr-trade-time { grid-area: time; color: var(--color-fg-subtle); font: 500 10px/1.4 var(--tr-sans); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+
+/* --------------------------------------------------------------------------
+   TRADE MODAL
+   -------------------------------------------------------------------------- */
+.tr-modal-backdrop {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--color-fg) 42%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.tr-modal {
+  display: flex;
+  width: min(620px, 100%);
+  max-height: min(78vh, 720px);
+  flex-direction: column;
+  border: 1px solid var(--tr-line);
+  border-radius: 16px;
+  background: var(--color-surface);
+  box-shadow: 0 24px 70px color-mix(in srgb, #000 42%, transparent);
+  overflow: hidden;
+}
+
+.tr-modal-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--tr-line);
+  background: var(--color-raised);
+}
+
+.tr-modal-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tr-modal-market { overflow: hidden; color: var(--color-fg); font: 700 14px/1.3 var(--tr-sans); text-overflow: ellipsis; white-space: nowrap; }
+
+.tr-modal-close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--tr-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-fg-muted);
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.tr-modal-close:hover { background: var(--color-surface); color: var(--color-fg); }
+
+.tr-modal-body { flex: 1 1 auto; padding: 4px 15px 16px; overflow-y: auto; overscroll-behavior: contain; }
+.tr-modal-body .tr-kv-grid { padding: 10px 0 12px; }
+
+.tr-modal-block { padding: 12px 0 0; }
+.tr-modal-block + .tr-modal-block { border-top: 1px solid var(--tr-line-soft); margin-top: 12px; }
+.tr-modal-block-label { display: block; margin-bottom: 5px; color: var(--color-fg-subtle); font: 750 8px/1.4 var(--tr-sans); letter-spacing: .13em; text-transform: uppercase; }
+.tr-modal-block-body p { margin: 0; color: var(--color-fg); font: 400 12px/1.65 var(--tr-sans); text-wrap: pretty; }
+.tr-modal-block-body ul { margin: 0; padding-left: 17px; color: var(--color-fg-muted); font: 400 12px/1.65 var(--tr-sans); }
+.tr-modal-block-body li + li { margin-top: 4px; }
+
+.tr-modal-foot {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 11px 15px;
+  border-top: 1px solid var(--tr-line);
+  background: var(--color-raised);
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.4 var(--tr-sans);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tr-panel-tab, .tr-trade, .tr-news-link, .tr-modal-close { transition: none; }
+}

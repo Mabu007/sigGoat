@@ -81,9 +81,29 @@ const MARKET_QUERIES: Record<string, string[]> = {
 
 const GENERIC_QUERY: string[] = ['market outlook'];
 
+/**
+ * Conventional aliases.
+ *
+ * `MARKET_QUERIES` is keyed by the venue's own symbol names because that is
+ * what the runtime feeds it. Rooms are different: a deployed team's asset is
+ * whatever the deployment step recorded — `XAUUSD`, `EURUSD`, `BTCUSD` — so
+ * without these every room would fall through to the generic query and get
+ * headlines about the wrong instrument. Same terms, venue-agnostic spelling.
+ */
+const SYMBOL_ALIASES: Record<string, string> = {
+  GOLD: 'XYZ:GOLD', XAU: 'XYZ:GOLD', XAUUSD: 'XYZ:GOLD',
+  SILVER: 'XYZ:SILVER', XAG: 'XYZ:SILVER', XAGUSD: 'XYZ:SILVER',
+  EURUSD: 'XYZ:EUR', GBPUSD: 'XYZ:GBP', USDJPY: 'XYZ:JPY',
+  USOIL: 'XYZ:CL', WTI: 'XYZ:CL', BRENT: 'XYZ:BRENTOIL',
+  BTCUSD: 'BTC', ETHUSD: 'ETH', SOLUSD: 'SOL', XRPUSD: 'XRP',
+  DOGEUSD: 'DOGE', BNBUSD: 'BNB', US500: 'XYZ:SPX', NAS100: 'XYZ:NDX',
+};
+
 function queriesFor(symbol: string): string[] {
-  const normalised = symbol.trim().toUpperCase();
-  return MARKET_QUERIES[normalised] ?? [...GENERIC_QUERY, symbol.trim()];
+  const trimmed = symbol.trim();
+  const normalised = trimmed.toUpperCase();
+  const canonical = SYMBOL_ALIASES[normalised] ?? normalised;
+  return MARKET_QUERIES[canonical] ?? [...GENERIC_QUERY, trimmed];
 }
 
 function decodeEntities(value: string): string {
