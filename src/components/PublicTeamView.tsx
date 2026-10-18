@@ -40,6 +40,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [marketProvider, setMarketProvider] = useState('');
   const [dataMode, setDataMode] = useState('');
   const [timeframe, setTimeframe] = useState('15m');
+  const [streamVisible, setStreamVisible] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -176,8 +177,24 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   if (loading) return <main className="trade-room-minimal"><div className="trade-room-loading" aria-label="Loading trade room" /></main>;
   if (!data) return <main className="trade-room-minimal"><div className="trade-room-error" role="alert">{error || 'This room is unavailable.'}<button type="button" onClick={onBack} aria-label="Back to rooms">←</button></div></main>;
 
-  return <main className="trade-room-minimal">
-    <button type="button" className="sg-room-back" onClick={onBack}>← Back to {backLabel}</button>
+  return <main className={`trade-room-minimal${streamVisible ? '' : ' is-stream-hidden'}`}>
+    <div className="trade-room-topbar">
+      <button type="button" className="trade-room-back" onClick={onBack}>
+        <span>← Back to {backLabel}</span>
+      </button>
+      <div className="trade-room-topbar-spacer" />
+      <button
+        type="button"
+        className="trade-room-stream-toggle"
+        onClick={() => setStreamVisible(visible => !visible)}
+        aria-controls="trade-room-stream"
+        aria-expanded={streamVisible}
+        aria-label={streamVisible ? 'Hide chat stream' : 'Show chat stream'}
+      >
+        <span>{streamVisible ? 'Hide chat' : 'Show chat'}</span>
+        <span aria-hidden="true">{streamVisible ? '◀' : '▶'}</span>
+      </button>
+    </div>
     <section className="trade-room-stage" aria-label="Market chart">
       <header className="sg-room-header">
         <div className="sg-room-instrument">
@@ -208,7 +225,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         /> : <div className="trade-room-chart-empty"><span>{marketError || (candlesTimeframe !== timeframe ? 'Loading ' + timeframe + ' candles…' : 'Waiting for provider candle history')}</span></div>}
       </div>
     </section>
-    <aside className="trade-room-stream" aria-label="AI collaboration stream">
+    <aside id="trade-room-stream" className="trade-room-stream" aria-label="AI collaboration stream" aria-hidden={!streamVisible}>
       <div className="trade-room-stream-list">
         {feed.length ? feed.map(item => <article key={item.id} className="trade-room-stream-item">
           <div className="trade-room-stream-meta"><span className="trade-room-agent">{item.memberName}</span><time dateTime={item.at}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>

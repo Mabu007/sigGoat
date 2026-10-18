@@ -603,3 +603,80 @@
   .trade-room-stream { max-height: 440px; min-height: 180px; }
   .trade-room-stream-item { padding: 12px; }
 }
+
+
+/* Trade Room watch controls: reserve a dedicated row for navigation/toggle so
+   neither control can overlap the chart, and animate the chart's available width. */
+.trade-room-topbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-line) 75%, transparent);
+  background: var(--color-surface);
+}
+.trade-room-topbar-spacer { flex: 1 1 auto; min-width: 8px; }
+.trade-room-back,
+.trade-room-stream-toggle {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  padding: 7px 11px;
+  background: var(--color-raised);
+  color: var(--color-fg);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+  transition: background-color 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+.trade-room-back:hover,
+.trade-room-stream-toggle:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-line));
+  background: color-mix(in srgb, var(--color-accent-soft) 55%, var(--color-raised));
+}
+.trade-room-stage,
+.trade-room-stream {
+  transition: width 260ms cubic-bezier(.2,.75,.25,1), max-width 260ms cubic-bezier(.2,.75,.25,1), opacity 180ms ease, transform 260ms cubic-bezier(.2,.75,.25,1);
+}
+.trade-room-minimal .trade-room-chart {
+  transition: aspect-ratio 260ms ease, height 260ms ease;
+}
+.trade-room-minimal.is-stream-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+.trade-room-minimal.is-stream-hidden .trade-room-stream {
+  display: none;
+}
+.trade-room-minimal.is-stream-hidden .trade-room-chart {
+  aspect-ratio: 16 / 8.7;
+}
+.trade-room-minimal.is-stream-hidden .trade-room-stage {
+  width: 100%;
+}
+@media (min-width: 1024px) {
+  .trade-room-minimal:not(.is-stream-hidden) {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+    gap: 14px;
+  }
+}
+@media (max-width: 767px) {
+  .trade-room-topbar { gap: 7px; padding: 8px; }
+  .trade-room-back, .trade-room-stream-toggle { min-height: 34px; padding: 6px 8px; font-size: 11px; }
+  .trade-room-back { max-width: calc(100% - 100px); }
+  .trade-room-back span { overflow: hidden; text-overflow: ellipsis; }
+  .trade-room-stream-toggle span { display: none; }
+  .trade-room-minimal .trade-room-chart { aspect-ratio: 16 / 10; }
+  .trade-room-minimal.is-stream-hidden .trade-room-chart { aspect-ratio: 16 / 9; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trade-room-stage, .trade-room-stream, .trade-room-minimal .trade-room-chart,
+  .trade-room-back, .trade-room-stream-toggle { transition: none !important; }
+}
