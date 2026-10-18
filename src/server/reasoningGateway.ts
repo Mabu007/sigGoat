@@ -276,21 +276,42 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     // Existing GOATs may still carry a Groq or Space Bunny model after the
     // account provider changes. Repair provider-mismatched IDs before calling
     // OpenRouter; preserve valid OpenRouter slugs as configured.
-    // Validate saved OpenRouter model IDs against the live catalogue. A retired
-    // or inaccessible model must not make every scheduled wake fail forever.
-    const selectedModel = typeof model === 'string' && model.includes('/') &&
-      await this.isModelAvailable(context.userId, model, provider)
-      ? model
-      : await this.pickAnyModel(context.userId, provider);
+    // Prefer the saved model, but repair it when OpenRouter confirms it has
+    // been retired. Catalogue outages should not prevent trying a configured
+    // model; the actual completion call remains the source of truth.
+    let selectedModel = typeof model === 'string' && model.includes('/') ? model : '';
+    try {
+      if (selectedModel && !(await this.isModelAvailable(context.userId, selectedModel, provider))) selectedModel = '';
+    } catch (catalogueError) {
+      console.warn('[reasoning] OpenRouter model catalogue unavailable; trying the saved model:', catalogueError instanceof Error ? catalogueError.message : 'unknown error');
+    }
     if (!selectedModel) {
-      throw new Error('OPENROUTER_NO_USABLE_MODEL: OpenRouter is configured, but its model catalogue returned no usable model. Check the key, credits, and provider availability.');
+      try { selectedModel = (await this.pickAnyModel(context.userId, provider)) || ''; }
+      catch (catalogueError) { console.warn('[reasoning] Could not select an OpenRouter fallback model:', catalogueError instanceof Error ? catalogueError.message : 'unknown error'); }
+    }
+    if (!selectedModel) {
+      throw new Error('OPENROUTER_NO_USABLE_MODEL: OpenRouter is configured, but no model could be selected. Check the key, model access, and account credits.');
     }
     try {
       const { result } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
       return result;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error('OPENROUTER_REVIEW_FAILED: ' + detail);
+    } catch (firstError) {
+      const firstDetail = firstError instanceof Error ? firstError.message : String(firstError);
+      // If a saved model is unavailable at completion time, retry once with a
+      // currently listed model. Never loop and never turn provider errors into a trade.
+      if (selectedModel !== model && !/404|model.*not found|no endpoints found|model_not_listed/i.test(firstDetail)) {
+        throw new Error('OPENROUTER_REVIEW_FAILED: ' + firstDetail);
+      }
+      let fallback = '';
+      try { fallback = (await this.pickAnyModel(context.userId, provider)) || ''; } catch { /* report the original provider error below */ }
+      if (!fallback || fallback === selectedModel) throw new Error('OPENROUTER_REVIEW_FAILED: ' + firstDetail);
+      try {
+        const { result } = await (client as OpenRouterClient).evaluateGoat(context, fallback);
+        return result;
+      } catch (fallbackError) {
+        const detail = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        throw new Error('OPENROUTER_REVIEW_FAILED: initial model failed (' + firstDetail + '); fallback model failed (' + detail + ').');
+      }
     }
   }
 
