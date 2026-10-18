@@ -161,10 +161,15 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       // A non-empty string is not proof of a usable credential. Validate both
       // account and server fallback keys before reporting the provider connected.
       if (userKey && isPlausibleGroqKey(userKey)) return { provider, key: userKey };
-      return {
-        provider,
-        key: serverKey && isPlausibleGroqKey(serverKey) ? serverKey : undefined,
-      };
+      if (serverKey && isPlausibleGroqKey(serverKey)) return { provider, key: serverKey };
+      // A deployment-level OpenRouter key is an explicit server fallback. If
+      // the user's selected provider has no usable key, keep the room's AI
+      // review working through that configured server credential.
+      const serverOpenRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+      if (serverOpenRouterKey && isPlausibleOpenRouterKey(serverOpenRouterKey)) {
+        return { provider: 'openrouter', key: serverOpenRouterKey };
+      }
+      return { provider, key: undefined };
     }
     if (provider === 'spacebunny') return { provider, key: (await this.keys.getSpaceBunnyKey?.(userId))?.trim() || undefined };
 
