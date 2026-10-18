@@ -140,7 +140,7 @@ export function calculateStochastic(candles: readonly OhlcCandle[], period = 14,
 }
 
 /** Rolling volume-weighted average price over available candle history. */
-export function calculateVWAP(candles: readonly OhlcCandle[]): number {
+export function calculateVWAP(candles: readonly OhlcCandle[]): number | null {
   let weighted = 0, volumeTotal = 0;
   for (const candle of candles) {
     const volume = Number(candle.volume ?? 0);
@@ -148,7 +148,7 @@ export function calculateVWAP(candles: readonly OhlcCandle[]): number {
     weighted += ((candle.high + candle.low + candle.close) / 3) * volume;
     volumeTotal += volume;
   }
-  return volumeTotal > 0 ? Number((weighted / volumeTotal).toFixed(5)) : calculateSMA(candles, Math.min(20, Math.max(1, candles.length)));
+  return volumeTotal > 0 ? Number((weighted / volumeTotal).toFixed(5)) : null;
 }
 
 export function getHighestHigh(candles: readonly OhlcCandle[], lookback: number = 20): number {
