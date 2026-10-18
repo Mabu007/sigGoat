@@ -29,7 +29,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   BrainCircuit, ChevronLeft, ExternalLink, ListOrdered, MessagesSquare,
-  Newspaper, Target, Wrench, X, Zap,
+  Newspaper, Target, Wrench, X, Zap, RefreshCw,
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------
