@@ -394,7 +394,7 @@ export function RunLogView({ log, loading, onBack }: { log: RoomRunLog | null; l
    PANEL — Breaking News
    ========================================================================= */
 
-function NewsPanel({ news, loading }: { news: RoomNewsPayload | null; loading: boolean }) {
+function NewsPanel({ news, loading, onRefresh }: { news: RoomNewsPayload | null; loading: boolean; onRefresh: () => void }) {
   if (loading && !news) return <PanelEmpty title="Researching headlines…" />;
   if (!news) return <PanelEmpty title="News unavailable" tone="bad" />;
   if (!news.ok && news.headlines.length === 0) {
@@ -407,6 +407,7 @@ function NewsPanel({ news, loading }: { news: RoomNewsPayload | null; loading: b
       <div className="tr-news-meta">
         <span className="tr-news-market">{news.market}</span>
         <span>{relativeTime(news.fetchedAt)}</span>
+        <button type="button" className="tr-news-refresh" onClick={onRefresh} disabled={loading} aria-label="Refresh news" title="Refresh news"><RefreshCw size={12} className={loading ? 'is-spinning' : ''} /><span>{loading ? 'Updating…' : 'Refresh'}</span></button>
       </div>
       {news.headlines.map((headline, index) => (
         <article className="tr-news-item" key={(headline.link ?? '') + index}>
