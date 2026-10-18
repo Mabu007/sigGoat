@@ -90,6 +90,7 @@ const DEFAULT_RISK = { maxPositionSizePercent: '1', maxDailyLossPercent: '3', ma
 
 /** Demo rooms have no broker, so this is the balance they actually run on. */
 const DEFAULT_BALANCE = '10000';
+const MONITORING_INTERVAL_OPTIONS = [{ value: 5, label: '5 min' }, { value: 15, label: '15 min' }, { value: 30, label: '30 min' }, { value: 60, label: '1 hour' }, { value: 240, label: '4 hours' }];
 
 export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled, showDirectoryContent = true, onOpenRoom, onShowDirectory }: { createTeamRequested: boolean; onCreateTeamRequestHandled: () => void; showDirectoryContent?: boolean; onOpenRoom: (type: 'team' | 'bot', slug: string, backLabel: string) => void; onShowDirectory: () => void }) {
   const { refreshGoats } = useGoat();
@@ -127,6 +128,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
   const [risk, setRisk] = useState(DEFAULT_RISK);
   const [liveTrading, setLiveTrading] = useState(false);
   const [startingBalance, setStartingBalance] = useState('10000');
+  const [monitoringIntervals, setMonitoringIntervals] = useState<number[]>([15]);
   const [assets, setAssets] = useState<AssetOption[]>([]);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assetsNote, setAssetsNote] = useState('');
@@ -199,7 +201,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     setStep('team');
     setTeamName(''); setInstructions(''); setVisibility('PRIVATE');
     setPoolMembers([]); setReuseMemberId(''); setDrafts([emptyDraft()]);
-    setProvider('ctrader'); setAsset(''); setRisk(DEFAULT_RISK); setLiveTrading(false); setStartingBalance(DEFAULT_BALANCE);
+    setProvider('ctrader'); setAsset(''); setRisk(DEFAULT_RISK); setLiveTrading(false); setStartingBalance(DEFAULT_BALANCE); setMonitoringIntervals([15]);
     setAssets([]); setAssetsNote(''); setAssetsLive({ available: false, reason: null, dataMode: 'PAPER' });
     assetsProviderRef.current = null;
     setSkillAuthor(null); setSkillMarkdown(SKILL_STARTER); setSkillError('');
@@ -421,6 +423,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
           memberGoatIds: reuseMemberId ? [reuseMemberId] : [],
           newMembers,
           visibility,
+          monitoringIntervals,
           deploy,
           ...(deploy ? {
             deployment: {
@@ -734,6 +737,19 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
 
                   {step === 'deploy' && (
                     <>
+                      <div className="rounded-xl border border-line bg-raised/60 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div><p className="text-xs font-semibold text-fg">Market monitoring</p><p className="mt-1 text-[11px] leading-4 text-fg-muted">Choose the review cadences this room should keep enabled. Default is every 15 minutes.</p></div>
+                          <span className="rounded-md bg-accent-soft px-2 py-1 text-[10px] font-semibold text-accent-text">{monitoringIntervals.length} selected</span>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {MONITORING_INTERVAL_OPTIONS.map(option => <label key={option.value} className={'flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs ' + (monitoringIntervals.includes(option.value) ? 'border-accent bg-accent-soft text-fg' : 'border-line bg-surface text-fg-muted')}>
+                            <input type="checkbox" checked={monitoringIntervals.includes(option.value)} onChange={event => setMonitoringIntervals(previous => event.target.checked ? [...new Set([...previous, option.value])].sort((a,b) => a-b) : previous.filter(value => value !== option.value))} />{option.label}
+                          </label>)}
+                        </div>
+                        {!monitoringIntervals.length && <p className="mt-2 text-[11px] text-negative">Choose at least one monitoring interval.</p>}
+                      </div>
+
                       <div>
                         <span className="mb-2 block text-xs font-medium text-fg-muted">Trading provider</span>
                         <div className="grid gap-2 sm:grid-cols-2">
