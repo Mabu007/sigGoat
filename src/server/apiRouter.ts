@@ -6810,6 +6810,43 @@ apiRouter.post("/goat-teams/:id/status", handle(async (req, res) => {
   res.json({ team: updated, results });
 }));
 
+/**
+ * Destructive room reset: stop every agent, clear its derived history and
+ * remove the agents and team configuration so the owner can rebuild from zero.
+ * Requires an explicit confirmation flag from the owner-facing UI.
+ */
+apiRouter.post("/goat-teams/:id/reset", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+  if (req.body?.confirm !== true) return fail(res, 400, "RESET_CONFIRMATION_REQUIRED", "Explicit confirmation is required to reset a room.");
+
+  // Stop all members first. If a member cannot be stopped, do not begin deletion.
+  const stopFailures: string[] = [];
+  for (const goatId of team.memberGoatIds) {
+    try { await setGoatStatusFor(user.uid, goatId, true, false); }
+    catch (error) { stopFailures.push(goatId + ": " + (error instanceof Error ? error.message : "stop failed")); }
+  }
+  if (stopFailures.length) {
+    return res.status(409).json({ error: { code: "ROOM_RESET_STOP_FAILED", message: "The room was not reset because one or more agents could not be stopped." }, failures: stopFailures });
+  }
+
+  const deleteFailures: string[] = [];
+  for (const goatId of team.memberGoatIds) {
+    try {
+      await stopAndResetGoatFor(user.uid, goatId);
+      await persistence.goats.delete(goatId);
+    } catch (error) {
+      deleteFailures.push(goatId + ": " + (error instanceof Error ? error.message : "delete failed"));
+    }
+  }
+  if (deleteFailures.length) {
+    return res.status(409).json({ error: { code: "ROOM_RESET_PARTIAL", message: "Some agents were deleted, but the room could not be fully reset. Refresh and retry." }, failures: deleteFailures });
+  }
+  await goatTeamStore.deleteForUser(team.id, user.uid);
+  res.json({ success: true, resetTeamId: team.id, deletedAgents: team.memberGoatIds.length, deletedHistory: true });
+}));
+
 apiRouter.delete("/goat-teams/:id", handle(async (req, res) => {
   const user = requireUser(req);
   const team = await goatTeamStore.getForUser(req.params.id, user.uid);
