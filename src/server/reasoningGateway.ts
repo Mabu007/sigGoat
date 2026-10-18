@@ -262,12 +262,30 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       return (await (client as SpaceBunnyClient).evaluateGoat(context, SPACE_BUNNY_MODEL)).result;
     }
 
-    // Existing GOATs may still carry a Groq or Space Bunny model after the
-    // account provider changes. Repair provider-mismatched IDs before calling
-    // OpenRouter; preserve valid OpenRouter slugs as configured.
-    const selectedModel = typeof model === 'string' && model.includes('/')
+    // Existing GOATs can outlive the model slug they were created with.
+    // OpenRouter returns "No endpoints found" for retired/unavailable slugs,
+    // which used to turn every scheduled wake into WAKE_FAILED even though the
+    // account had a working key. Verify the saved slug against the cached live
+    // catalogue and repair it to a currently listed model when possible.
+    let selectedModel = typeof model === 'string' && model.includes('/')
       ? model
       : (await this.pickAnyModel(context.userId, provider)) || model;
+    if (typeof selectedModel === 'string' && selectedModel.includes('/')) {
+      try {
+        const available = await this.isModelAvailable(context.userId, selectedModel, provider);
+        if (!available) {
+          const replacement = await this.pickAnyModel(context.userId, provider);
+          if (replacement) {
+            console.warn(`[reasoning] Replacing unavailable OpenRouter model "${selectedModel}" with "${replacement}" for GOAT ${context.goatId}.`);
+            selectedModel = replacement;
+          }
+        }
+      } catch (error) {
+        // A catalogue outage must not hide the original provider error. The
+        // saved model is still attempted and the workflow will record details.
+        console.warn('[reasoning] Could not validate saved OpenRouter model; attempting it as configured.', error);
+      }
+    }
     const { result } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
     return result;
   }
@@ -296,9 +314,18 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       return (await (client as SpaceBunnyClient).answerQuestion(question, context, SPACE_BUNNY_MODEL)).answer;
     }
 
-    const selectedModel = typeof model === 'string' && model.includes('/')
+    let selectedModel = typeof model === 'string' && model.includes('/')
       ? model
       : (await this.pickAnyModel(context.userId, provider)) || model;
+    if (typeof selectedModel === 'string' && selectedModel.includes('/')) {
+      try {
+        if (!(await this.isModelAvailable(context.userId, selectedModel, provider))) {
+          selectedModel = (await this.pickAnyModel(context.userId, provider)) || selectedModel;
+        }
+      } catch {
+        // Keep the configured model if OpenRouter's catalogue is temporarily unavailable.
+      }
+    }
     const answer = await (client as OpenRouterClient).answerQuestion(context, question, selectedModel);
     return answer.answer;
   }
