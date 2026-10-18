@@ -220,7 +220,7 @@ const BIAS_TONE: Record<string, string> = {
 };
 
 function compactChatLine(value: string, maxLength = 170): string {
-  const clean = value.replace(/\\s+/g, ' ').trim();
+  const clean = value.replace(/\s+/g, ' ').trim();
   if (clean.length <= maxLength) return clean;
   const sentenceEnd = clean.slice(0, maxLength).lastIndexOf('. ');
   const cutoff = sentenceEnd >= Math.floor(maxLength * 0.55) ? sentenceEnd + 1 : maxLength - 1;
