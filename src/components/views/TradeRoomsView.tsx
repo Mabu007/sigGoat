@@ -394,6 +394,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     if (!teamName.trim()) { setCreateError('Give your team a name.'); return; }
     if (!stepMembersReady) { setCreateError(drafts.length === 0 ? 'Add at least one team member.' : 'Every member needs a name, a job title, and a job description.'); return; }
     if (deploy && !asset.trim()) { setCreateError('Choose the asset this team trades.'); return; }
+    if (!monitoringIntervals.length) { setCreateError('Choose at least one market monitoring interval.'); return; }
 
     setSaving(true);
     try {
