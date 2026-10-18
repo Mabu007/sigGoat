@@ -13,7 +13,7 @@ async function read<T>(response: Response): Promise<T> { const body = await resp
 const formatPrice = (value?: number) => value == null ? '—' : value.toLocaleString(undefined, { maximumFractionDigits: 8 });
 const ROOM_CHART_TIMEFRAMES = ['5m', '15m', '1h', '4h', '1D'];
 
-export function PublicTeamView({ slug, onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; onBack?: () => void }) {
+export function PublicTeamView({ slug, categoryName = 'Trade Rooms', onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; categoryName?: string; onBack?: () => void }) {
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -95,7 +95,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   return <main className={`trade-room-minimal${streamVisible ? '' : ' is-stream-hidden'}`}>
     <section className="trade-room-stage" aria-label="Market chart">
       <div className="trade-room-topbar">
-        <button type="button" onClick={onBack} className="trade-room-back" aria-label="Back to Trade Rooms">← <span>Back to {data.team.visibility === 'PRIVATE' ? 'Private' : 'Public'} Room</span></button>
+        <button type="button" onClick={onBack} className="trade-room-back" aria-label="Back to Trade Rooms">← <span>Back to {categoryName}</span></button>
         <div className="trade-room-topbar-spacer" />
         <button type="button" className="trade-room-stream-toggle" onClick={() => setStreamVisible(value => !value)} aria-expanded={streamVisible} aria-controls="trade-room-stream" title={streamVisible ? 'Hide chat and expand chart' : 'Show chat'}>
           {streamVisible ? <PanelRightClose size={16} aria-hidden="true" /> : <PanelRightOpen size={16} aria-hidden="true" />}
