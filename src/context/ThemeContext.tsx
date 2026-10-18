@@ -55,7 +55,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 /** Reads the theme the pre-paint script already applied. */
 function readAppliedTheme(): Theme {
   if (typeof document === 'undefined') return 'dark';
-  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 }
 
 function readStoredPreference(): Theme | null {
@@ -70,7 +70,7 @@ function readStoredPreference(): Theme | null {
       window.localStorage.getItem(LEGACY_STORAGE_KEY);
     return stored === 'light' || stored === 'dark' ? stored : null;
   } catch {
-    // Private browsing / storage disabled. The OS preference still works.
+    // Private browsing / storage disabled. The dark product default remains.
     return null;
   }
 }
