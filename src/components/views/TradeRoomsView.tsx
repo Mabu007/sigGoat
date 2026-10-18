@@ -86,7 +86,7 @@ const PROVIDER_OPTIONS: Array<{ id: TradingProvider; label: string; blurb: strin
 /** Sensible starting risk so the deployment step is never an empty form. */
 const DEFAULT_RISK = { maxPositionSizePercent: '1', maxDailyLossPercent: '3', maxOpenPositions: '3', stopLossPercent: '1.5', takeProfitPercent: '3' };
 
-export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled, showDirectoryContent = true, onOpenRoom, onShowDirectory }: { createTeamRequested: boolean; onCreateTeamRequestHandled: () => void; showDirectoryContent?: boolean; onOpenRoom: (type: 'team' | 'bot', slug: string) => void; onShowDirectory: () => void }) {
+export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled, showDirectoryContent = true, onOpenRoom, onShowDirectory }: { createTeamRequested: boolean; onCreateTeamRequestHandled: () => void; showDirectoryContent?: boolean; onOpenRoom: (type: 'team' | 'bot', slug: string, categoryName: string) => void; onShowDirectory: () => void }) {
   const { refreshGoats } = useGoat();
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
   const [rooms, setRooms] = useState<TradeRoom[]>([]);
@@ -501,7 +501,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
             const marketLabel = (room.markets || []).slice(0, 2).join(' · ') || room.latestThesis?.market || 'AI TRADING';
             return (
               <article key={(room.roomType || 'bot') + room.slug} className="yt-room-card group">
-                <button type="button" onClick={() => onOpenRoom(room.roomType === 'team' ? 'team' : 'bot', room.slug)} className="block w-full min-w-0 text-left">
+                <button type="button" onClick={() => onOpenRoom(room.roomType === 'team' ? 'team' : 'bot', room.slug, ({ public: 'Public Rooms', private: 'Private Rooms', gold: 'Gold Rooms', euro: 'Euro Rooms', crypto: 'Crypto Rooms', forex: 'Forex Rooms', mine: 'My Rooms' } as const)[directoryMode])} className="block w-full min-w-0 text-left">
                   <div className="yt-room-thumbnail">
                     <div className="yt-thumb-topline">
                       <span className="yt-thumb-market">{marketLabel}</span>

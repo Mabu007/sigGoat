@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
 import type { Candle, MarketQuote } from '../types';
@@ -12,7 +13,7 @@ async function read<T>(response: Response): Promise<T> { const body = await resp
 const formatPrice = (value?: number) => value == null ? '—' : value.toLocaleString(undefined, { maximumFractionDigits: 8 });
 const ROOM_CHART_TIMEFRAMES = ['5m', '15m', '1h', '4h', '1D'];
 
-export function PublicTeamView({ slug, onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; onBack?: () => void }) {
+export function PublicTeamView({ slug, categoryName = 'Trade Rooms', onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; categoryName?: string; onBack?: () => void }) {
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -23,6 +24,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   const [marketError, setMarketError] = useState('');
   const [marketSymbol, setMarketSymbol] = useState('');
   const [timeframe, setTimeframe] = useState('15m');
+  const [streamVisible, setStreamVisible] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -90,8 +92,16 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
   if (loading) return <main className="trade-room-minimal"><div className="trade-room-loading" aria-label="Loading trade room" /></main>;
   if (!data) return <main className="trade-room-minimal"><div className="trade-room-error" role="alert">{error || 'This room is unavailable.'}<button type="button" onClick={onBack} aria-label="Back to rooms">←</button></div></main>;
 
-  return <main className="trade-room-minimal">
+  return <main className={`trade-room-minimal${streamVisible ? '' : ' is-stream-hidden'}`}>
     <section className="trade-room-stage" aria-label="Market chart">
+      <div className="trade-room-topbar">
+        <button type="button" onClick={onBack} className="trade-room-back" aria-label="Back to Trade Rooms">← <span>Back to {categoryName}</span></button>
+        <div className="trade-room-topbar-spacer" />
+        <button type="button" className="trade-room-stream-toggle" onClick={() => setStreamVisible(value => !value)} aria-expanded={streamVisible} aria-controls="trade-room-stream" title={streamVisible ? 'Hide chat and expand chart' : 'Show chat'}>
+          {streamVisible ? <PanelRightClose size={16} aria-hidden="true" /> : <PanelRightOpen size={16} aria-hidden="true" />}
+          <span>{streamVisible ? 'Hide chat' : 'Show chat'}</span>
+        </button>
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3 sm:px-5">
         <div className="min-w-0">
           <div className="text-base font-bold tracking-wide text-white sm:text-lg">{activeMarket || 'No asset configured'}</div>
@@ -106,7 +116,7 @@ export function PublicTeamView({ slug, onBack = () => { window.location.href = '
         {candles.length ? <TradingViewLightweightChart candles={candles} activeQuote={marketQuote} timeframe={timeframe} symbol={marketSymbol} roomName={data.team.name} digits={marketSymbol.toUpperCase().includes('BTC') ? 1 : 5}/> : <div className="trade-room-chart-empty"><span>{marketError || 'Waiting for market data'}</span></div>}
       </div>
     </section>
-    <aside className="trade-room-stream" aria-label="AI collaboration stream" aria-live="polite">
+    <aside id="trade-room-stream" className="trade-room-stream" aria-label="AI collaboration stream" aria-live="polite" aria-hidden={!streamVisible}>
       <div className="trade-room-stream-list">
         {feed.length ? feed.map(item => <article key={item.id} className="trade-room-stream-item">
           <div className="trade-room-stream-meta"><span className="trade-room-agent">{item.memberName}</span><time dateTime={item.at}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
