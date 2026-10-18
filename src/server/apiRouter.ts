@@ -6720,7 +6720,7 @@ apiRouter.post("/goat-teams/:id/skills", handle(async (req, res) => {
   const team = await goatTeamStore.getForUser(req.params.id, user.uid);
   if (!team) return notFound(res);
   const requested = Array.isArray(req.body?.skillIds)
-    ? [...new Set<string>(req.body.skillIds.filter((id: unknown): id is string => typeof id === "string" && id.trim()).map((id: string) => id.trim()))]
+    ? [...new Set<string>(req.body.skillIds.filter((id: unknown): id is string => typeof id === "string" && id.trim().length > 0).map((id: string) => id.trim()))]
     : [];
   if (!requested.length) return fail(res, 400, "SKILLS_REQUIRED", "Choose at least one skill to add.");
   const catalogue = await allSkillsFor(user.uid);
