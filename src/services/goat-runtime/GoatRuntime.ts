@@ -1356,7 +1356,7 @@ export class GoatRuntime {
               workflowRunId,
               failed ? "wake_failed" : "wake_finished",
               failed ? "FAILED" : "COMPLETED",
-              failed ? { error: "wake_failed" } : undefined,
+              failed ? { error: this.runtimeState.lastError ?? "wake_failed" } : undefined,
               undefined,
               failed ? "WAKE_FAILED" : undefined,
             );
