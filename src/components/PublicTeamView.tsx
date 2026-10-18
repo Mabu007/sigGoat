@@ -60,6 +60,8 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [indicators, setIndicators] = useState<RoomIndicators | null>(null);
   const [timeframe, setTimeframe] = useState('15m');
   const [streamVisible, setStreamVisible] = useState(true);
+  const [environmentBusy, setEnvironmentBusy] = useState(false);
+  const [environmentNotice, setEnvironmentNotice] = useState('');
   const [account, setAccount] = useState<AccountPayload | null>(null);
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
 
@@ -260,8 +262,6 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
 
   const [running, setRunning] = useState(false);
   const [runRequestedAt, setRunRequestedAt] = useState<number | null>(null);
-  const [environmentBusy, setEnvironmentBusy] = useState(false);
-  const [environmentNotice, setEnvironmentNotice] = useState('');
   const runTeam = useCallback(async () => {
     if (running || runRequestedAt !== null) return;
     const requestedAt = Date.now();
