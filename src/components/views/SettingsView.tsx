@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Check, Moon, Palette as PaletteIcon, Sun } from 'lucide-react';
+import { Check, Moon, Palette as PaletteIcon, Sun, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { PropDaoSettings } from './PropDaoSettings';
@@ -503,7 +503,8 @@ export const SettingsView: React.FC = () => {
   return (
     <div className="space-y-6 pb-20 max-w-3xl mx-auto">
       {/* Title */}
-      <div>
+      <div className="flex items-start justify-between gap-4">
+        <div>
         <h1 className="text-lg font-bold text-fg flex items-center gap-2">
           <Settings className="w-5 h-5 text-accent-text" />
           <span>Settings</span>
@@ -511,6 +512,10 @@ export const SettingsView: React.FC = () => {
         <p className="text-xs text-fg-muted mt-0.5">
           Account, appearance, model provider, PropDAO connection and Telegram notifications.
         </p>
+        </div>
+        <button type="button" onClick={() => { window.location.hash = '/rooms'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs font-bold text-fg hover:bg-raised">
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to Teams
+        </button>
       </div>
 
       {/* ---- APPEARANCE ---- */}

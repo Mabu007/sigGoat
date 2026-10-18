@@ -25,10 +25,10 @@ export function Header({ displayName, email, onOpenSettings, onCreateBotTeam, on
   return (
     <header className="premium-header yt-header sticky top-0 z-30 border-b border-line">
       <div className="yt-header-inner flex h-[68px] w-full items-center gap-4 px-4 sm:px-6">
-        <div className="flex shrink-0 items-center gap-3">
+        <button type="button" onClick={() => { window.location.hash = '/rooms'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} aria-label="SIRGOAT home — Teams" title="Back to Teams" className="flex shrink-0 items-center gap-3 rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
           <BrandMark compact />
           <span className="hidden text-[15px] font-extrabold tracking-tight text-fg sm:inline">SIR<span className="text-accent-text">GOAT</span></span>
-        </div>
+        </button>
 
         <form onSubmit={submitSearch} className="yt-search mx-auto flex w-full max-w-[620px] items-center">
           <Search size={18} className="ml-4 shrink-0 text-fg-subtle" aria-hidden="true" />

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet, Settings, X, Save, Play, Pause, RotateCcw } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet, Settings, X, Save, Play, Pause, RotateCcw, Sun, Moon, ShoppingBag } from 'lucide-react';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
 import {
   ChatPanel, MemoryPanel, NewsPanel, RunLogView, ToolsPanel, TradeModal, TradeRoomSidebar,
@@ -7,6 +7,7 @@ import {
   type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId, type RoomRun, type RoomRunLog, type RoomTrade,
 } from './TradeRoomSidebar';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import type { Candle, MarketQuote } from '../types';
 
 /** A persisted agent signal. The room projection carries the full trade. */
@@ -68,6 +69,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [resetBusy, setResetBusy] = useState(false);
   const [openRouterHealth, setOpenRouterHealth] = useState<'checking' | 'healthy' | 'unhealthy'>('checking');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [buyRoomOpen, setBuyRoomOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [settingsName, setSettingsName] = useState('');
@@ -77,11 +79,12 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [skillsToAdd, setSkillsToAdd] = useState<string[]>([]);
   const [account, setAccount] = useState<AccountPayload | null>(null);
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
+  const { theme, toggleTheme } = useTheme();
 
   const load = useCallback(async () => {
     try {
       const result = await read<Payload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug), {
-        headers: { Accept: 'application/json' }, cache: 'no-store',
+        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) }, cache: 'no-store',
       }));
       setData(result);
       setError('');
@@ -91,7 +94,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     } finally {
       setLoading(false);
     }
-  }, [slug]);
+  }, [slug, getApiAuthHeaders]);
 
   useEffect(() => {
     void load();
@@ -179,11 +182,14 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
 
 
   const openRoomSettings = useCallback(async () => {
-    if (!data?.team.owner) return;
+    if (!data) return;
+    setSettingsError('');
+    setSettingsOpen(true);
+    if (!data.team.owner) return;
     setSettingsName(data.team.name);
     setSettingsInstructions(data.team.instructions ?? '');
     setSettingsIntervals(data.team.monitoringIntervals?.length ? data.team.monitoringIntervals : [15]);
-    setSkillsToAdd([]); setSettingsError(''); setSettingsOpen(true);
+    setSkillsToAdd([]);
     try {
       const headers = new Headers({ Accept: 'application/json' });
       for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
@@ -556,19 +562,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           >{frame}</button>)}
         </div>
 
-        {data.team.owner && <div className="sg-room-owner-controls">
-          <div className="sg-room-lifecycle-controls">
-            <span className={'sg-room-ai-health is-' + openRouterHealth} role="status" title={openRouterHealth === 'healthy' ? 'OpenRouter model catalogue is responding' : openRouterHealth === 'unhealthy' ? 'OpenRouter API is unavailable or not configured' : 'Checking OpenRouter API'}><span className="sg-room-ai-pulse" />{openRouterHealth === 'healthy' ? 'OpenRouter OK' : openRouterHealth === 'unhealthy' ? 'OpenRouter down' : 'Checking AI'}</span>
-            {(data.team.status === 'PAUSED' || data.team.status === 'DRAFT') ? <button type="button" className="sg-room-lifecycle-button is-play" disabled={lifecycleBusy || resetBusy} onClick={() => void changeTeamLifecycle('PLAY')} title="Start room" aria-label="Start room"><Play size={14} fill="currentColor" /><span>{lifecycleBusy ? 'Starting…' : 'Start'}</span></button> : <button type="button" className="sg-room-lifecycle-button is-pause" disabled={lifecycleBusy || resetBusy} onClick={() => void changeTeamLifecycle('PAUSE')} title="Stop room" aria-label="Stop room"><Pause size={14} fill="currentColor" /><span>{lifecycleBusy ? 'Stopping…' : 'Stop'}</span></button>}
-            <button type="button" className="sg-room-lifecycle-button is-reset" disabled={lifecycleBusy || resetBusy} onClick={() => void resetRoom()} title="Delete this room and start from scratch" aria-label="Reset room"><RotateCcw size={13} /><span>{resetBusy ? 'Resetting…' : 'Reset'}</span></button>
-          </div>
-          <button type="button" className="sg-room-settings-button" onClick={() => void openRoomSettings()} aria-label="Room settings" title="Room settings"><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
-          <div className="sg-room-environment-controls" aria-label="Team market-data environment">
-          <button type="button" disabled={environmentBusy || (data.team.environment ?? 'DEMO') === 'DEMO'} onClick={() => void changeEnvironment('DEMO')} aria-pressed={(data.team.environment ?? 'DEMO') === 'DEMO'}>Demo · BiQuote</button>
-          <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader')} onClick={() => void changeEnvironment('LIVE', 'ctrader')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader'}>Live · cTrader</button>
-          <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid')} onClick={() => void changeEnvironment('LIVE', 'hyperliquid')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid'}>Live · Hyperliquid</button>
-          </div>
-        </div>}
+        <button type="button" className="sg-room-settings-button sg-room-settings-button-public" onClick={() => void openRoomSettings()} aria-label="Room settings" title="Room settings"><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
       </header>
       {environmentNotice && <div className="sg-room-environment-notice" role="status">{environmentNotice}</div>}
       <div className="trade-room-chart">
@@ -606,19 +600,39 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         {panel === 'trades' && <TradesPanel trades={trades} onOpen={setOpenTrade} />}
       </div>
     </aside>
-    {settingsOpen && data.team.owner && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !settingsSaving) setSettingsOpen(false); }}>
+    {settingsOpen && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !settingsSaving) setSettingsOpen(false); }}>
       <section className="tr-room-settings" role="dialog" aria-modal="true" aria-labelledby="tr-room-settings-title">
-        <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">ROOM CONTROL</p><h2 id="tr-room-settings-title">Room settings</h2><p>Changes apply to this room and its deployed agents.</p></div><button type="button" aria-label="Close settings" disabled={settingsSaving} onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
+        <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">{data.team.owner ? 'CREATOR CONTROL' : 'ROOM PREFERENCES'}</p><h2 id="tr-room-settings-title">Settings</h2><p>{data.team.owner ? 'Manage this room, its agents and monitoring.' : 'Personal preferences for this room.'}</p></div><button type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
         <div className="tr-room-settings-body">
-          <label><span>Room name / identity</span><input maxLength={80} value={settingsName} onChange={event => setSettingsName(event.target.value)} placeholder="Name your room" /></label>
+          {!data.team.owner ? <>
+            <div className="tr-room-preference-row"><div><strong>Appearance</strong><p>Choose how SIRGOAT looks on this device.</p></div><button type="button" className="tr-room-preference-toggle" onClick={toggleTheme}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}{theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}</button></div>
+            <div className="tr-room-buy-card"><div className="tr-room-buy-icon"><ShoppingBag size={20} /></div><div className="tr-room-buy-copy"><strong>Get access to this room</strong><p>Buy access to follow this team's agents, research and trading activity. Room purchases are coming soon.</p></div><button type="button" onClick={() => setBuyRoomOpen(true)}>Buy room</button></div>
+          </> : <>
+            <div className="tr-room-creator-actions">
+              <div className="tr-room-settings-label">Room lifecycle</div>
+              <div className="sg-room-lifecycle-controls">
+                <span className={'sg-room-ai-health is-' + openRouterHealth} role="status" title={openRouterHealth === 'healthy' ? 'AI model catalogue is responding' : openRouterHealth === 'unhealthy' ? 'AI provider is unavailable or not configured' : 'Checking AI provider'}><span className="sg-room-ai-pulse" />{openRouterHealth === 'healthy' ? 'AI ready' : openRouterHealth === 'unhealthy' ? 'AI unavailable' : 'Checking AI'}</span>
+                {(data.team.status === 'PAUSED' || data.team.status === 'DRAFT') ? <button type="button" className="sg-room-lifecycle-button is-play" disabled={lifecycleBusy || resetBusy} onClick={() => void changeTeamLifecycle('PLAY')}><Play size={14} fill="currentColor" /><span>{lifecycleBusy ? 'Starting…' : 'Start room'}</span></button> : <button type="button" className="sg-room-lifecycle-button is-pause" disabled={lifecycleBusy || resetBusy} onClick={() => void changeTeamLifecycle('PAUSE')}><Pause size={14} fill="currentColor" /><span>{lifecycleBusy ? 'Stopping…' : 'Stop room'}</span></button>}
+                <button type="button" className="sg-room-lifecycle-button is-reset" disabled={lifecycleBusy || resetBusy} onClick={() => void resetRoom()}><RotateCcw size={13} /><span>{resetBusy ? 'Resetting…' : 'Reset room'}</span></button>
+              </div>
+              <p className="tr-room-settings-hint">Stop preserves room history. Reset permanently deletes this room and its agent history.</p>
+            </div>
+            <div className="tr-room-settings-label">Market-data environment</div>
+            <div className="sg-room-environment-controls" aria-label="Team market-data environment">
+              <button type="button" disabled={environmentBusy || (data.team.environment ?? 'DEMO') === 'DEMO'} onClick={() => void changeEnvironment('DEMO')} aria-pressed={(data.team.environment ?? 'DEMO') === 'DEMO'}>Demo · BiQuote</button>
+              <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader')} onClick={() => void changeEnvironment('LIVE', 'ctrader')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader'}>Live · cTrader</button>
+              <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid')} onClick={() => void changeEnvironment('LIVE', 'hyperliquid')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid'}>Live · Hyperliquid</button>
+            </div>          <label><span>Room name / identity</span><input maxLength={80} value={settingsName} onChange={event => setSettingsName(event.target.value)} placeholder="Name your room" /></label>
           <label><span>Team instructions</span><textarea rows={3} maxLength={4000} value={settingsInstructions} onChange={event => setSettingsInstructions(event.target.value)} placeholder="Shared rules and context for every agent" /></label>
           <div><p className="tr-room-settings-label">Market monitoring intervals</p><p className="tr-room-settings-hint">The fastest selected interval controls automatic AI review cadence. Deterministic trackers run independently.</p><div className="tr-room-intervals">{ROOM_MONITOR_INTERVALS.map(option => <label key={option.value}><input type="checkbox" checked={settingsIntervals.includes(option.value)} onChange={event => setSettingsIntervals(previous => event.target.checked ? [...new Set([...previous, option.value])].sort((a,b) => a-b) : previous.filter(value => value !== option.value))} /><span>{option.label}</span></label>)}</div></div>
           <div><p className="tr-room-settings-label">Add skills to all room agents</p><p className="tr-room-settings-hint">New skills are added without pausing the room and are used on the next review.</p><div className="tr-room-skill-list">{roomSkills.map(skill => <label key={skill.id}><input type="checkbox" checked={skillsToAdd.includes(skill.id)} onChange={event => setSkillsToAdd(previous => event.target.checked ? [...previous, skill.id] : previous.filter(id => id !== skill.id))} /><span><b>{skill.name}</b>{skill.description && <small>{skill.description}</small>}</span></label>)}</div></div>
           {settingsError && <p className="tr-room-settings-error" role="alert">{settingsError}</p>}
+          </>}
         </div>
-        <footer className="tr-room-settings-foot"><button type="button" disabled={settingsSaving} onClick={() => setSettingsOpen(false)}>Cancel</button><button type="button" disabled={settingsSaving || !settingsIntervals.length} onClick={() => void saveRoomSettings()}><Save size={14} />{settingsSaving ? 'Saving…' : 'Save changes'}</button></footer>
+        {data.team.owner && <footer className="tr-room-settings-foot"><button type="button" disabled={settingsSaving} onClick={() => setSettingsOpen(false)}>Cancel</button><button type="button" disabled={settingsSaving || !settingsIntervals.length} onClick={() => void saveRoomSettings()}><Save size={14} />{settingsSaving ? 'Saving…' : 'Save changes'}</button></footer>}
       </section>
     </div>}
+    {buyRoomOpen && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setBuyRoomOpen(false); }}><section className="tr-room-coming-soon" role="dialog" aria-modal="true" aria-labelledby="tr-room-coming-title"><button type="button" className="tr-room-coming-close" aria-label="Close" onClick={() => setBuyRoomOpen(false)}><X size={17} /></button><div className="tr-room-buy-icon"><ShoppingBag size={22} /></div><p className="tr-room-settings-eyebrow">ROOM MARKETPLACE</p><h2 id="tr-room-coming-title">Room purchases are coming soon</h2><p>We're building secure room access and payments. You can view this room for now; buying access will be available here later.</p><button type="button" onClick={() => setBuyRoomOpen(false)}>Got it</button></section></div>}
     {openTrade && <TradeModal trade={openTrade} onClose={() => setOpenTrade(null)} />}
   </main>;
 }
