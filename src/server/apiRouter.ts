@@ -3768,19 +3768,42 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
   if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
   const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
   const details = await Promise.all(members.map(async member => {
-    const [theses, signals] = await Promise.all([
+    const [theses, signals, activities] = await Promise.all([
       persistence.theses.listByGoat(member!.id, 1),
       persistence.signals.listByGoat(member!.id, 5),
+      // Only a submitted execution is a trade that reached a venue. Claimed and
+      // failed rows are attempts, and counting them would overstate activity.
+      goatWorkflowStore.listActivities(member!.id, 500),
     ]);
     return {
       id: member!.id, name: member!.name, goal: member!.goal, markets: member!.markets,
       status: member!.status, provider: resolveGoatTradingProvider(member!), timeframe: member!.timeframe || theses[0]?.relevantTimeframe || "15m",
       latestThesis: theses[0] ? { market: theses[0].market, bias: theses[0].directionalHypothesis, summary: theses[0].summary ?? theses[0].assetState ?? "Market review recorded.", updatedAt: theses[0].updatedAt } : null,
       signals: signals.map(signal => ({ id: signal.id, market: signal.market, direction: signal.direction, status: signal.status, decision: signal.decision, decidedAt: signal.decidedAt, entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis, rationale: signal.rationale, createdAt: signal.createdAt })),
+      trades: activities.filter(activity => activity.type === "EXECUTION_SUBMITTED").length,
     };
   }));
   res.setHeader("Cache-Control", "public, max-age=5, stale-while-revalidate=10");
-  res.json({ team: { id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status, coordinationMode: team.coordinationMode, memberCount: details.length, markets: [...new Set(details.flatMap(member => member.markets))], asset: team.deployment?.asset, provider: team.deployment?.provider }, members: details });
+  res.json({
+    team: {
+      id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status,
+      coordinationMode: team.coordinationMode, memberCount: details.length,
+      markets: [...new Set(details.flatMap(member => member.markets))],
+      asset: team.deployment?.asset, provider: team.deployment?.provider,
+      /** Whether this room may place real orders, as chosen when it was created. */
+      liveTrading: team.deployment?.liveTrading === true,
+      /**
+       * The balance set at creation. A demo room has no broker behind it, so
+       * this is its real balance. A live room's owner sees the connected
+       * account's live balance instead, fetched from
+       * `GET /api/team-rooms/:slug/account` — that route is authenticated, so
+       * a per-user balance cannot be served from this public, cached response.
+       */
+      balance: team.deployment?.startingBalance ?? null,
+      trades: details.reduce((total, member) => total + member.trades, 0),
+    },
+    members: details,
+  });
 }));
 
 /**
@@ -3909,6 +3932,77 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
 }));
 
 apiRouter.use(authMiddleware);
+
+/**
+ * The room owner's live account balance.
+ *
+ * `GET /api/team-rooms/:slug` is public and served from a shared cache, so a
+ * balance that depends on WHO is asking cannot live there. This route is
+ * authenticated and owner-only: the balance belongs to a broker account bound
+ * to one person, and a share link must never expose it to a visitor.
+ *
+ * Falls back to the balance recorded at room creation, so a demo room — which
+ * has no broker behind it at all — still reports a real number instead of
+ * nothing. `balance` is null only when neither source can answer.
+ */
+apiRouter.get("/team-rooms/:slug/account", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const team = await goatTeamStore.getPublicBySlug(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+
+  const user = requireUser(req);
+  if (team.ownerUserId !== user.uid) {
+    return fail(res, 403, "TEAM_NOT_OWNER", "Only the owner of this room can read its trading account.");
+  }
+
+  const recorded = team.deployment?.startingBalance ?? null;
+  const provider = team.deployment?.provider === "ctrader" ? "ctrader" : "hyperliquid";
+  const profile = await persistence.profiles.get(user.uid).catch(() => null);
+
+  /**
+   * `source` is what the UI shows next to the number. A live balance and a
+   * recorded one are not the same claim, and silently substituting one for
+   * the other would report a trader's real money as a placeholder.
+   */
+  try {
+    if (provider === "hyperliquid") {
+      const accountId = profile?.autoTradeAccountId;
+      if (accountId) {
+        const risk = await propDaoFor(user.uid).risk(accountId);
+        const live = risk.balance ?? risk.equity;
+        if (Number.isFinite(live)) return res.json({ balance: live, currency: "USD", source: "live", accountId });
+        return res.json({
+          balance: recorded, currency: "USD", source: "recorded",
+          reason: risk.incomplete ? "PropDAO did not return a balance for this account." : null,
+        });
+      }
+      return res.json({ balance: recorded, currency: "USD", source: "recorded", reason: "No PropDAO account is connected to this room." });
+    }
+
+    const accountId = profile?.ctraderAccountId;
+    if (accountId && (await credentialVault.hasCredential(user.uid, "ctrader"))) {
+      const client = await cTraderClientForUser(user.uid);
+      const details = await client.getAccountDetails();
+      if (Number.isFinite(details.balance)) {
+        return res.json({
+          balance: details.balance, currency: "USD", source: "live", accountId,
+          // cTrader accounts are explicitly demo or live; the owner selecting
+          // a live account is what makes the room live.
+          environment: profile?.ctraderAccountIsLive === true ? "live" : "demo",
+        });
+      }
+    }
+    return res.json({ balance: recorded, currency: "USD", source: "recorded", reason: "No cTrader account is connected to this room." });
+  } catch (error) {
+    // A broker outage must not blank the header: the recorded balance is still
+    // a true statement about the room, so it is returned with the reason.
+    return res.json({
+      balance: recorded, currency: "USD", source: "recorded",
+      reason: error instanceof Error ? error.message : "The trading account is unavailable.",
+    });
+  }
+}));
 
 /** Publish the existing GOAT under a stable, shareable URL. */
 apiRouter.post("/goats/:id/publish", handle(async (req, res) => {
@@ -5668,7 +5762,13 @@ function normaliseTeamDeployment(raw: unknown): TeamDeploymentSettings | null {
    * point at which a venue credential becomes necessary, and only then.
    */
   const liveTrading = body.liveTrading === true;
-  return { provider: body.provider, asset, risk, liveTrading };
+  /**
+   * The room's account balance. Demo rooms have no broker behind them, so this
+   * is the balance they run on; live rooms override it with the connected
+   * account's real balance when one is readable.
+   */
+  const startingBalance = normalisePercent(body.startingBalance, 0, 10_000_000);
+  return { provider: body.provider, asset, risk, liveTrading, ...(startingBalance !== undefined ? { startingBalance } : {}) };
 }
 
 /**

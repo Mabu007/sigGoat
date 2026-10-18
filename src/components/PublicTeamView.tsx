@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet } from 'lucide-react';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
+import { useAuth } from '../context/AuthContext';
 import type { Candle, MarketQuote } from '../types';
 
 type Signal = { id: string; market: string; direction: string; status: string; entry?: number; stopLoss?: number; takeProfit?: number; thesis: string; rationale: string; createdAt: string; decision?: string };
 type Member = { id: string; name: string; goal: string; markets: string[]; status: string; provider: string; timeframe?: string; latestThesis: null | { market: string; bias: string; summary: string; updatedAt: string }; signals: Signal[] };
-type Room = { id: string; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; memberCount: number; markets: string[]; asset?: string; provider?: string };
+type Room = { id: string; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; memberCount: number; markets: string[]; asset?: string; provider?: string; liveTrading?: boolean; balance?: number | null; trades?: number };
+type AccountPayload = { balance: number | null; currency?: string; source?: 'live' | 'recorded'; environment?: 'live' | 'demo'; reason?: string | null };
 type Payload = { team: Room; members: Member[] };
 type FeedItem = { id: string; memberName: string; kind: string; title: string; body: string; at: string; signal?: Signal; member?: Member };
 type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string };
@@ -42,6 +44,8 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [dataMode, setDataMode] = useState('');
   const [timeframe, setTimeframe] = useState('15m');
   const [streamVisible, setStreamVisible] = useState(true);
+  const [account, setAccount] = useState<AccountPayload | null>(null);
+  const { currentUser, authMode, getApiAuthHeaders } = useAuth();
 
   const load = useCallback(async () => {
     try {
@@ -162,6 +166,54 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   }, [data, activeMarket]);
 
   const priceDigits = marketSymbol.toUpperCase().includes('BTC') ? 2 : marketSymbol.toUpperCase().includes('ETH') ? 2 : 5;
+
+  /**
+   * The owner's connected trading account.
+   *
+   * Only the owner may read it, so this is fetched when signed in and the
+   * header falls back to the balance recorded at room creation for everyone
+   * else. Polled rarely: a broker balance is not a tick-rate number.
+   */
+  useEffect(() => {
+    if (authMode !== 'dev' && !currentUser) return;
+    let cancelled = false;
+    const refreshAccount = async () => {
+      try {
+        const headers = await getApiAuthHeaders();
+        const result = await read<AccountPayload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/account', {
+          headers: { Accept: 'application/json', ...headers }, cache: 'no-store',
+        }));
+        if (!cancelled) setAccount(result);
+      } catch {
+        // The recorded balance from the room payload stands in. A broker being
+        // unreachable must never blank the header.
+      }
+    };
+    void refreshAccount();
+    const timer = window.setInterval(() => void refreshAccount(), 30000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [slug, currentUser, authMode, getApiAuthHeaders]);
+
+  /**
+   * A one-second clock, started at mount so the first paint already has the
+   * real time instead of a placeholder that pops a frame later.
+   */
+  const [clock, setClock] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const roomClock = useMemo(() => clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }), [clock]);
+
+  const balance = account?.balance ?? data?.team.balance ?? null;
+  const balanceLabel = balance == null ? '—' : balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const balanceTitle = balance == null
+    ? 'No account balance is available for this room yet.'
+    : account?.source === 'live'
+      ? 'Live balance from the connected trading account.'
+      : data?.team.liveTrading
+        ? 'Balance recorded when this room was created.' + (account?.reason ? ' ' + account.reason : '')
+        : 'Demo balance set when this room was created.';
   const quoteStatus = !quoteHasPrice(marketQuote)
     ? 'unavailable'
     : quoteIsFresh(marketQuote) && dataMode.toUpperCase() !== 'PAPER'
@@ -188,9 +240,28 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         <span>Back<span className="trade-room-back-target"> to {backLabel}</span></span>
       </button>
       <div className="trade-room-identity">
-        <span className={'trade-room-identity-status is-' + quoteStatus}>{quoteStatus === 'live' ? 'Live' : quoteStatus === 'stale' ? 'Stale' : 'No feed'}</span>
         <span className="trade-room-identity-name">{data.team.name}</span>
       </div>
+      <dl className="trade-room-stats">
+        <div className="trade-room-stat trade-room-stat-clock">
+          <dt><Clock size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Room clock</span></dt>
+          <dd className="trade-room-stat-value">{roomClock}</dd>
+        </div>
+        <div className="trade-room-stat">
+          <dt><Wallet size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Account balance</span></dt>
+          <dd className="trade-room-stat-value" title={balanceTitle}>
+            {balance == null ? '—' : <><span className="trade-room-stat-unit trade-room-stat-currency">{account?.currency ?? 'USD'}</span>{balanceLabel}</>}
+          </dd>
+        </div>
+        <div className="trade-room-stat">
+          <dt><ArrowLeftRight size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Trades</span></dt>
+          <dd className="trade-room-stat-value">{data.team.trades ?? 0}<span className="trade-room-stat-unit">trades</span></dd>
+        </div>
+        <div className={'trade-room-stat trade-room-stat-mode' + (data.team.liveTrading ? ' is-live' : ' is-demo')}>
+          <dt><span className="sr-only">Account mode</span></dt>
+          <dd className="trade-room-stat-value">{data.team.liveTrading ? 'Live' : 'Demo'}</dd>
+        </div>
+      </dl>
       <button
         type="button"
         className="trade-room-stream-toggle"
@@ -236,6 +307,13 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
       </div>
     </section>
     <aside id="trade-room-stream" className="trade-room-stream" aria-label="AI collaboration stream" aria-hidden={!streamVisible}>
+      <div className="trade-room-stream-header">
+        <h2 className="trade-room-stream-title">AI collaboration</h2>
+        <span
+          className={'trade-room-identity-status is-' + quoteStatus}
+          title={quoteStatusText}
+        >{quoteStatus === 'live' ? 'Live' : quoteStatus === 'stale' ? 'Stale' : 'No feed'}</span>
+      </div>
       <div className="trade-room-stream-list">
         {feed.length ? feed.map(item => <article key={item.id} className="trade-room-stream-item">
           <div className="trade-room-stream-meta"><span className="trade-room-agent">{item.memberName}</span><time dateTime={item.at}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>

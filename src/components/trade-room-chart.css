@@ -93,18 +93,23 @@
 .trade-room-minimal > * { min-width: 0; min-height: 0; }
 
 /* -------------------------------------------------------------------------
-   3. Toolbar — Back, room identity, chat toggle
+   3. Toolbar — back control, room identity, live stats, chat toggle
    ------------------------------------------------------------------------- */
 .trade-room-topbar {
   grid-area: bar;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
-  padding: 6px;
-  border: 1px solid var(--tr-line);
-  border-radius: var(--tr-radius);
-  background: var(--color-surface);
+  /*
+   * Seamless: no card, no border, no fill. The controls sit directly on the
+   * page canvas, so the room reads as one surface with the chart and the chat
+   * below rather than a banner stacked on top of a panel.
+   */
+  padding: 2px 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 /* --- shared button chrome --------------------------------------------- */
@@ -158,23 +163,102 @@
 .trade-room-identity {
   display: flex;
   flex: 1 1 auto;
-  align-items: center;
-  justify-content: center;
+  align-items: baseline;
   gap: 8px;
   min-width: 0;
-  padding: 0 4px;
+  padding: 0 6px;
 }
 
 .trade-room-identity-name {
   overflow: hidden;
   color: var(--color-fg);
-  font: 650 13px/1.2 var(--tr-sans);
-  letter-spacing: -.005em;
+  font: 700 14px/1.2 var(--tr-sans);
+  letter-spacing: -.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Status chip. Tinted per state so the quote freshness is readable at a
+/* --- live stats — clock, balance, trades, account mode ------------------- */
+.trade-room-stats {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+}
+
+.trade-room-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 9px;
+  border-radius: 8px;
+}
+
+.trade-room-stat dt {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--color-fg-subtle);
+}
+
+.trade-room-stat-value {
+  display: flex;
+  align-items: baseline;
+  /* A flex gap, not a literal space: bare text nodes become anonymous flex
+     items here, and whitespace at their edges is collapsed away. */
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-fg);
+  font: 600 12px/1.2 var(--tr-mono);
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trade-room-stat-unit {
+  color: var(--color-fg-subtle);
+  font-family: var(--tr-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* Account mode is a state, not a measurement, so it reads as a pill. */
+.trade-room-stat-mode {
+  padding: 4px 10px;
+  border: 1px solid var(--tr-line);
+}
+
+.trade-room-stat-mode .trade-room-stat-value {
+  font-family: var(--tr-sans);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.trade-room-stat-mode.is-demo {
+  border-color: color-mix(in srgb, var(--color-info) 40%, transparent);
+  background: var(--color-info-soft);
+}
+
+.trade-room-stat-mode.is-demo .trade-room-stat-value { color: var(--color-info); }
+
+.trade-room-stat-mode.is-live {
+  border-color: color-mix(in srgb, var(--color-positive) 40%, transparent);
+  background: var(--color-positive-soft);
+}
+
+.trade-room-stat-mode.is-live .trade-room-stat-value { color: var(--color-positive); }
+
+/* Status chip for quote freshness. Lives in the chat panel header, where it
+   describes the feed below it. Tinted per state so freshness is readable at a
    glance without reading the stage header. */
 .trade-room-identity-status {
   display: inline-flex;
@@ -383,6 +467,31 @@
 }
 
 .trade-room-minimal.is-stream-hidden .trade-room-stream { display: none; }
+
+/* Panel header. Holds the feed's freshness, so the chip describes what is
+   directly beneath it rather than the room as a whole. */
+.trade-room-stream-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--tr-line-soft);
+  background: var(--color-raised);
+}
+
+.trade-room-stream-title {
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-fg-muted);
+  font: 700 10px/1.3 var(--tr-sans);
+  letter-spacing: .1em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 
 .trade-room-stream-list {
   flex: 1 1 0;
@@ -725,6 +834,13 @@
   .trade-room-stream { border-radius: 12px; }
 }
 
+@media (max-width: 1180px) {
+  /* Balance and trade count are the two numbers a room is judged on, so they
+     stay. The seconds-resolution clock is the first thing to go — it is the
+     only stat whose value changes every frame. */
+  .trade-room-stat-clock { display: none; }
+}
+
 @media (max-width: 720px) {
   .trade-room-minimal {
     grid-template-rows: auto minmax(180px, 48%) minmax(0, 1fr);
@@ -732,13 +848,17 @@
   }
 
   .trade-room-minimal.is-stream-hidden { grid-template-rows: auto minmax(0, 1fr); }
-  .trade-room-topbar { padding: 5px; }
+  .trade-room-topbar { flex-wrap: wrap; row-gap: 6px; padding: 2px; }
   .trade-room-back, .trade-room-stream-toggle { min-height: 32px; padding: 0 9px; font-size: 11px; }
 
-  /* The toolbar cannot fit a room name, two buttons and a status chip on a
-     phone, so the chip is dropped and the back target is trimmed. */
-  .trade-room-identity-status { display: none; }
+  /* The room name yields to the stats, and the "trades" word yields to the
+     number: on a phone the figures matter more than their labels. */
+  .trade-room-identity { order: 3; flex: 1 0 100%; padding: 0 2px; }
   .trade-room-identity-name { font-size: 12px; }
+  .trade-room-stats { order: 2; flex: 0 1 auto; margin-left: auto; }
+  /* The currency marks the balance as money; only the trades word goes. */
+  .trade-room-stat-unit:not(.trade-room-stat-currency) { display: none; }
+  .trade-room-stat { padding: 4px 7px; }
 
   .sg-room-header { gap: 8px; padding: 9px 11px; }
   .sg-room-price { font-size: 19px; }

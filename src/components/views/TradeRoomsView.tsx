@@ -86,6 +86,9 @@ const PROVIDER_OPTIONS: Array<{ id: TradingProvider; label: string; blurb: strin
 /** Sensible starting risk so the deployment step is never an empty form. */
 const DEFAULT_RISK = { maxPositionSizePercent: '1', maxDailyLossPercent: '3', maxOpenPositions: '3', stopLossPercent: '1.5', takeProfitPercent: '3' };
 
+/** Demo rooms have no broker, so this is the balance they actually run on. */
+const DEFAULT_BALANCE = '10000';
+
 export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled, showDirectoryContent = true, onOpenRoom, onShowDirectory }: { createTeamRequested: boolean; onCreateTeamRequestHandled: () => void; showDirectoryContent?: boolean; onOpenRoom: (type: 'team' | 'bot', slug: string, backLabel: string) => void; onShowDirectory: () => void }) {
   const { refreshGoats } = useGoat();
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
@@ -121,6 +124,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
   const [asset, setAsset] = useState('');
   const [risk, setRisk] = useState(DEFAULT_RISK);
   const [liveTrading, setLiveTrading] = useState(false);
+  const [startingBalance, setStartingBalance] = useState('10000');
   const [assets, setAssets] = useState<AssetOption[]>([]);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assetsNote, setAssetsNote] = useState('');
@@ -192,7 +196,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     setStep('team');
     setTeamName(''); setInstructions(''); setVisibility('PRIVATE');
     setPoolMembers([]); setReuseMemberId(''); setDrafts([emptyDraft()]);
-    setProvider('ctrader'); setAsset(''); setRisk(DEFAULT_RISK); setLiveTrading(false);
+    setProvider('ctrader'); setAsset(''); setRisk(DEFAULT_RISK); setLiveTrading(false); setStartingBalance(DEFAULT_BALANCE);
     setAssets([]); setAssetsNote(''); setAssetsLive({ available: false, reason: null, dataMode: 'PAPER' });
     assetsProviderRef.current = null;
     setSkillAuthor(null); setSkillMarkdown(SKILL_STARTER); setSkillError('');
@@ -420,6 +424,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
               provider,
               asset: asset.trim().toUpperCase(),
               liveTrading,
+              startingBalance: Number(startingBalance),
               risk: {
                 maxPositionSizePercent: Number(risk.maxPositionSizePercent),
                 maxDailyLossPercent: Number(risk.maxDailyLossPercent),
@@ -785,6 +790,27 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                           </span>
                         </span>
                       </label>
+                      <div>
+                        <span className="mb-2 block text-xs font-medium text-fg-muted">Account balance</span>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-medium text-fg-muted">Room balance (USD)</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={startingBalance}
+                              onChange={event => setStartingBalance(event.target.value)}
+                              className="input w-full"
+                            />
+                          </label>
+                          <p className="self-end rounded-lg border border-line bg-raised px-2.5 py-2 text-[10px] leading-4 text-fg-muted">
+                            {liveTrading
+                              ? 'Live rooms show the connected account’s real balance instead; this stays as the recorded baseline.'
+                              : 'No broker is behind this room, so this is the balance it runs on and sizes positions against.'}
+                          </p>
+                        </div>
+                      </div>
                       <div>
                         <span className="mb-2 block text-xs font-medium text-fg-muted">Risk parameters</span>
                         <div className="grid gap-2 sm:grid-cols-2">

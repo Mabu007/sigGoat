@@ -38,6 +38,15 @@ export interface TeamDeploymentSettings {
    * and the API refuses to deploy live without one.
    */
   liveTrading?: boolean;
+  /**
+   * The room's own account balance, in the deposit currency the venue reports.
+   *
+   * A demo team has no broker behind it, so this is the only balance it will
+   * ever have — it is what the room header shows and what position sizing is
+   * read against. A live team overrides it with the connected account's real
+   * balance at read time; this value remains as the recorded baseline.
+   */
+  startingBalance?: number;
 }
 
 export interface GoatTeam {
