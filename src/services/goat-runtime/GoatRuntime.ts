@@ -1356,9 +1356,9 @@ export class GoatRuntime {
               workflowRunId,
               failed ? "wake_failed" : "wake_finished",
               failed ? "FAILED" : "COMPLETED",
-              failed ? { error: "wake_failed" } : undefined,
+              failed ? { error: (this.runtimeState.lastError || "Unexpected wake error").slice(0, 240) } : undefined,
               undefined,
-              failed ? "WAKE_FAILED" : undefined,
+              failed ? `WAKE_FAILED: ${(this.runtimeState.lastError || "Unexpected wake error").replace(/[\\r\\n]+/g, " ").slice(0, 180)}` : undefined,
             );
           }
         } catch (ledgerError) {
