@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet } from 'lucide-react';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
+import {
+  MemoryPanel, NewsPanel, ToolsPanel, TradeModal, TradeRoomSidebar, TrackersPanel, TradesPanel,
+  type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId, type RoomTrade,
+} from './TradeRoomSidebar';
 import { useAuth } from '../context/AuthContext';
 import type { Candle, MarketQuote } from '../types';
 
-type Signal = { id: string; market: string; direction: string; status: string; entry?: number; stopLoss?: number; takeProfit?: number; thesis: string; rationale: string; createdAt: string; decision?: string };
-type Member = { id: string; name: string; goal: string; markets: string[]; status: string; provider: string; timeframe?: string; latestThesis: null | { market: string; bias: string; summary: string; updatedAt: string }; signals: Signal[] };
+/** A persisted agent signal. The room projection carries the full trade. */
+type Signal = RoomTrade;
+type Member = RoomMember;
 type Room = { id: string; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; memberCount: number; markets: string[]; asset?: string; provider?: string; liveTrading?: boolean; balance?: number | null; trades?: number };
 type AccountPayload = { balance: number | null; currency?: string; source?: 'live' | 'recorded'; environment?: 'live' | 'demo'; reason?: string | null };
 type Payload = { team: Room; members: Member[] };
 type FeedItem = { id: string; memberName: string; kind: string; title: string; body: string; at: string; signal?: Signal; member?: Member };
-type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string };
+type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string; indicators?: RoomIndicators };
 
 async function read<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
@@ -42,6 +47,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [marketSymbol, setMarketSymbol] = useState('');
   const [marketProvider, setMarketProvider] = useState('');
   const [dataMode, setDataMode] = useState('');
+  const [indicators, setIndicators] = useState<RoomIndicators | null>(null);
   const [timeframe, setTimeframe] = useState('15m');
   const [streamVisible, setStreamVisible] = useState(true);
   const [account, setAccount] = useState<AccountPayload | null>(null);
@@ -110,6 +116,9 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         setCandlesTimeframe(timeframe);
         setMarketProvider(result.provider || data?.team.provider || '');
         setDataMode(result.dataMode || '');
+        // The Memory panel reads the same deterministic context the agents are
+        // woken with, so it is kept rather than recomputed in the browser.
+        if (result.indicators) setIndicators(result.indicators);
         setMarketError(quoteHasPrice(quote) || nextCandles.length ? '' : quote?.unavailableReason || 'Market data unavailable from this provider.');
       } catch (err) {
         if (!cancelled) {
@@ -166,6 +175,42 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   }, [data, activeMarket]);
 
   const priceDigits = marketSymbol.toUpperCase().includes('BTC') ? 2 : marketSymbol.toUpperCase().includes('ETH') ? 2 : 5;
+
+  /**
+   * The sidebar is a switchable control surface. News is fetched only once a
+   * panel actually reports on it — it is the one request in this view that
+   * costs an upstream round trip, and a visitor reading the chat has no use for
+   * headlines. The Tools panel reports news status too, so opening it counts.
+   */
+  const [panel, setPanel] = useState<RoomPanelId>('chat');
+  const [news, setNews] = useState<RoomNewsPayload | null>(null);
+  const [newsLoading, setNewsLoading] = useState(false);
+  useEffect(() => {
+    if ((panel !== 'news' && panel !== 'tools') || news) return;
+    let cancelled = false;
+    setNewsLoading(true);
+    (async () => {
+      const result = await read<RoomNewsPayload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/news', {
+        headers: { Accept: 'application/json' }, cache: 'no-store',
+      }));
+      if (!cancelled) setNews(result);
+    })().catch(error => {
+      if (!cancelled) setNews({ market: marketSymbol, ok: false, error: error instanceof Error ? error.message : 'News unavailable.', fetchedAt: new Date().toISOString(), headlines: [] });
+    }).finally(() => {
+      if (!cancelled) setNewsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [panel, news, slug, marketSymbol]);
+
+  const [openTrade, setOpenTrade] = useState<RoomTrade | null>(null);
+
+  /** Every agent's trades, newest first, each attributed to the agent that raised it. */
+  const trades = useMemo<RoomTrade[]>(() => (data?.members ?? [])
+    .flatMap(member => member.signals.map(signal => ({ ...signal, agentName: member.name })))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)), [data]);
+
+  const trackers = useMemo(() => (data?.members ?? [])
+    .flatMap(member => member.latestThesis?.trackers ?? []), [data]);
 
   /**
    * The owner's connected trading account.
@@ -306,23 +351,37 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         /> : <div className="trade-room-chart-empty"><span>{marketError || (candlesTimeframe !== timeframe ? 'Loading ' + timeframe + ' candles…' : 'Waiting for provider candle history')}</span></div>}
       </div>
     </section>
-    <aside id="trade-room-stream" className="trade-room-stream" aria-label="AI collaboration stream" aria-hidden={!streamVisible}>
-      <div className="trade-room-stream-header">
-        <h2 className="trade-room-stream-title">AI collaboration</h2>
-        <span
-          className={'trade-room-identity-status is-' + quoteStatus}
-          title={quoteStatusText}
-        >{quoteStatus === 'live' ? 'Live' : quoteStatus === 'stale' ? 'Stale' : 'No feed'}</span>
-      </div>
+    <aside id="trade-room-stream" className="trade-room-stream" aria-label="Room control panel" aria-hidden={!streamVisible}>
+      <TradeRoomSidebar
+        panel={panel}
+        onPanelChange={setPanel}
+        status={quoteStatus}
+        statusTitle={quoteStatusText}
+        badges={{
+          news: news?.headlines.length ?? 0,
+          trades: trades.length,
+          trackers: trackers.filter(item => item.status === 'HIT').length,
+        }}
+      />
       <div className="trade-room-stream-list">
-        {feed.length ? feed.map(item => <article key={item.id} className="trade-room-stream-item">
+        {panel === 'chat' && (feed.length ? feed.map(item => <article key={item.id} className="trade-room-stream-item">
           <div className="trade-room-stream-meta"><span className="trade-room-agent">{item.memberName}</span><time dateTime={item.at}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
           <div className="trade-room-stream-kind">{item.kind.replaceAll('_', ' ')}</div>
           <h2>{item.title}</h2>
           {item.body && <p>{item.body}</p>}
           {item.signal && <div className="trade-room-levels"><span>Entry <b>{formatPrice(item.signal.entry)}</b></span><span>Stop <b>{formatPrice(item.signal.stopLoss)}</b></span><span>Target <b>{formatPrice(item.signal.takeProfit)}</b></span></div>}
-        </article>) : <div className="trade-room-stream-empty">{error || 'Waiting for the bots to share their first market review.'}</div>}
+        </article>) : <div className="trade-room-stream-empty">{error || 'Waiting for the bots to share their first market review.'}</div>)}
+
+        {panel === 'news' && <NewsPanel news={news} loading={newsLoading} />}
+        {panel === 'trackers' && <TrackersPanel members={data.members} />}
+        {panel === 'tools' && <ToolsPanel
+          members={data.members} provider={marketProvider || data.team.provider || ''} dataMode={dataMode}
+          asset={activeMarket || ''} liveTrading={data.team.liveTrading === true} indicators={indicators} news={news}
+        />}
+        {panel === 'memory' && <MemoryPanel members={data.members} indicators={indicators} asset={activeMarket || ''} />}
+        {panel === 'trades' && <TradesPanel trades={trades} onOpen={setOpenTrade} />}
       </div>
     </aside>
+    {openTrade && <TradeModal trade={openTrade} onClose={() => setOpenTrade(null)} />}
   </main>;
 }

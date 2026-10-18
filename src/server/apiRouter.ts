@@ -14,6 +14,7 @@ import express, { Request, Response, NextFunction } from "express";
 import { randomBytes } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import {
+  Candle,
   FundGoat,
   GoatSchedule,
   GoatRuntimeState,
@@ -22,6 +23,7 @@ import {
   ChatMessage,
   UserProfile,
   TradingProvider,
+  TradingSkill,
   AutonomyMode,
   normaliseAutonomyMode,
 } from "../types";
@@ -55,6 +57,8 @@ import {
   type AiProvider,
 } from "./reasoningGateway";
 import { buildGoatContext } from "./goatContext";
+import { newsService } from "../services/news/NewsService";
+import { calculateATR, calculateEMA, calculateRSI, analyzeMarketStructure } from "../services/tracker-sdk/indicators";
 import { configureCredentialVault, credentialVault } from "./security/instance";
 import { CredentialVaultError } from "./security/CredentialVault";
 import { createVaultBackedKeyStore } from "./security/vaultKeyStore";
@@ -3767,19 +3771,70 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
   const team = await goatTeamStore.getPublicBySlug(slug);
   if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
   const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+  // One lookup for the whole team: every member belongs to the same owner, so
+  // this resolves skill names without an extra query per agent.
+  const skillNames = new Map<string, string>(
+    (await persistence.skills.listByUser(team.ownerUserId).catch(() => [] as TradingSkill[]))
+      .map(skill => [skill.id, skill.name] as const),
+  );
   const details = await Promise.all(members.map(async member => {
     const [theses, signals, activities] = await Promise.all([
       persistence.theses.listByGoat(member!.id, 1),
-      persistence.signals.listByGoat(member!.id, 5),
+      // A room shows a trade log, not a five-item preview: the Trades panel
+      // needs history. Still bounded so a long-lived room cannot grow this
+      // public, cached response without limit.
+      persistence.signals.listByGoat(member!.id, 20),
       // Only a submitted execution is a trade that reached a venue. Claimed and
       // failed rows are attempts, and counting them would overstate activity.
       goatWorkflowStore.listActivities(member!.id, 500),
     ]);
+    const thesis = theses[0];
     return {
       id: member!.id, name: member!.name, goal: member!.goal, markets: member!.markets,
-      status: member!.status, provider: resolveGoatTradingProvider(member!), timeframe: member!.timeframe || theses[0]?.relevantTimeframe || "15m",
-      latestThesis: theses[0] ? { market: theses[0].market, bias: theses[0].directionalHypothesis, summary: theses[0].summary ?? theses[0].assetState ?? "Market review recorded.", updatedAt: theses[0].updatedAt } : null,
-      signals: signals.map(signal => ({ id: signal.id, market: signal.market, direction: signal.direction, status: signal.status, decision: signal.decision, decidedAt: signal.decidedAt, entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, thesis: signal.thesis, rationale: signal.rationale, createdAt: signal.createdAt })),
+      status: member!.status, provider: resolveGoatTradingProvider(member!), timeframe: member!.timeframe || thesis?.relevantTimeframe || "15m",
+      skills: member!.skillIds.map(id => skillNames.get(id)).filter((name): name is string => Boolean(name)),
+      /**
+       * The agent's working memory: the live directional hypothesis plus the
+       * conditions that would confirm or invalidate it. `trackers` are the
+       * machine-checkable subset — the room renders them as their own panel,
+       * so they travel with the thesis rather than needing a second endpoint.
+       */
+      latestThesis: thesis ? {
+        market: thesis.market, bias: thesis.directionalHypothesis,
+        summary: thesis.summary ?? thesis.assetState ?? "Market review recorded.",
+        assetState: thesis.assetState ?? null,
+        confidence: thesis.confidence,
+        invalidation: thesis.invalidationConditions ?? [],
+        confirmation: thesis.confirmationConditions ?? [],
+        observationPlan: thesis.observationPlan ?? null,
+        relevantTimeframe: thesis.relevantTimeframe,
+        trackers: thesis.trackers ?? [],
+        updatedAt: thesis.updatedAt,
+      } : null,
+      /**
+       * The full projection a trade detail view needs. The room is public, so
+       * this stays to what a visitor may already see on the trade itself — no
+       * owner ids, no thesis ids, no execution internals.
+       */
+      signals: signals.map(signal => ({
+        id: signal.id, market: signal.market, direction: signal.direction, status: signal.status,
+        decision: signal.decision, decidedAt: signal.decidedAt, decisionNote: signal.decisionNote ?? null,
+        orderType: signal.orderType,
+        entry: signal.entry,
+        entryZone: signal.entryZone ?? null,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        riskReward: signal.riskReward ?? null,
+        confidence: signal.confidence,
+        thesis: signal.thesis,
+        rationale: signal.rationale,
+        invalidation: signal.invalidation,
+        supportingEvidence: signal.supportingEvidence ?? [],
+        contradictoryEvidence: signal.contradictoryEvidence ?? [],
+        confirmationRequired: signal.confirmationRequired,
+        expiresAt: signal.expiresAt ?? null,
+        createdAt: signal.createdAt,
+      })),
       trades: activities.filter(activity => activity.type === "EXECUTION_SUBMITTED").length,
     };
   }));
@@ -3912,6 +3967,27 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
     : goat.markets[0] || fallbackSymbol);
   const timeframe = typeof req.query.timeframe === "string" ? req.query.timeframe : "1h";
   const count = Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120));
+  /**
+   * The room's Memory panel reads the agent's working context: the exact
+   * deterministic indicators `goatContext.ts` hands the model on every wake.
+   * Computed from the candles already fetched, so it costs arithmetic rather
+   * than another provider round-trip on a route polled every 5 seconds.
+   */
+  const indicatorsFor = (candles: readonly Candle[], mid: number) => {
+    const structure = analyzeMarketStructure(candles, mid);
+    return {
+      rsi14: calculateRSI(candles, 14),
+      ema20: calculateEMA(candles, 20),
+      ema50: calculateEMA(candles, 50),
+      atr14: calculateATR(candles, 14),
+      structureBias: structure.bias,
+      lastSwingHigh: structure.lastSwingHigh,
+      lastSwingLow: structure.lastSwingLow,
+      retracementPct: structure.retracementPct,
+      demandZone: structure.demandZone,
+      supplyZone: structure.supplyZone,
+    };
+  };
   try {
     if (hyperliquidRoom) {
       const provider = await marketDataProviderForUser(team.ownerUserId, "hyperliquid");
@@ -3920,15 +3996,48 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
         provider.getCandles(symbol, timeframe, count),
       ]);
       res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
-      return res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, fetchedAt: new Date().toISOString() });
+      return res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, indicators: indicatorsFor(candles, quotes[0]?.mid ?? 0), fetchedAt: new Date().toISOString() });
     }
     const market = await biQuoteRoomMarket(symbol, timeframe, count);
     res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
-    return res.json({ symbol, ...market, fetchedAt: new Date().toISOString() });
+    return res.json({ symbol, ...market, indicators: indicatorsFor(market.candles, market.quotes[0]?.mid ?? 0), fetchedAt: new Date().toISOString() });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The room's market data provider is unavailable.";
     return fail(res, 503, "ROOM_MARKET_UNAVAILABLE", message);
   }
+}));
+
+/**
+ * Breaking news for the room's instrument.
+ *
+ * Sourced from `NewsService` (Google News RSS), NOT BiQuote: BiQuote is a
+ * tick and OHLC provider — `biquote.io/api/<symbol>/news` answers `404 No tick
+ * data available`. The service already caches per market for 15 minutes and
+ * drops anything older than three days, so this route stays cheap and honest
+ * even though every viewer polls it.
+ */
+apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const team = await goatTeamStore.getPublicBySlug(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+
+  const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+  const market = team.deployment?.asset
+    || members[0]?.markets[0]
+    || (team.deployment?.provider === "ctrader" ? "EURUSD" : "XYZ:GOLD");
+  if (!market) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This room has no market configured, so there is nothing to research.");
+
+  // Never throws: research failure is reported in-band so the panel can say so.
+  const snapshot = await newsService.getNews(market);
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  res.json({
+    market: snapshot.market,
+    ok: snapshot.ok,
+    error: snapshot.error ?? null,
+    fetchedAt: new Date(snapshot.fetchedAt).toISOString(),
+    headlines: snapshot.headlines,
+  });
 }));
 
 apiRouter.use(authMiddleware);
