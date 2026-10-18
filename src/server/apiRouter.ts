@@ -6702,7 +6702,7 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
     const intervalMinutes = Math.min(...monitoringIntervals);
     for (const goatId of updated.memberGoatIds) {
       const member = await persistence.goats.getForUser(goatId, user.uid);
-      if (!member) continue;
+      if (!member || member.deploymentState === "DRAFT") continue;
       const scheduled = { ...member, schedule: { mode: "INTERVAL", intervalMinutes } as GoatSchedule, updatedAt: new Date().toISOString() };
       await persistence.goats.save(scheduled);
       await syncSchedule(scheduled);
@@ -6784,6 +6784,13 @@ apiRouter.post("/goat-teams/:id/status", handle(async (req, res) => {
   const results: Array<{ goatId: string; ok: boolean; error?: string }> = [];
   for (const goatId of team.memberGoatIds) {
     try {
+      if (action === "PLAY") {
+        const member = await persistence.goats.getForUser(goatId, user.uid);
+        if (member) {
+          const intervalMinutes = Math.min(...(team.monitoringIntervals ?? [15]));
+          await persistence.goats.save({ ...member, schedule: { mode: "INTERVAL", intervalMinutes } as GoatSchedule, updatedAt: new Date().toISOString() });
+        }
+      }
       await setGoatStatusFor(user.uid, goatId, action === "PAUSE");
       results.push({ goatId, ok: true });
     } catch (error) {
