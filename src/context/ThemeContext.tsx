@@ -11,9 +11,8 @@
  *   as a flash of the wrong theme on every page load.
  *
  * DEFAULT
- *   Follow the OS (`prefers-color-scheme`), then remember any explicit choice.
- *   The OS preference is the best guess available before anyone has expressed
- *   an opinion, and hard-coding one would flash for half the users.
+ *   Dark is the product default. An explicit user choice is remembered and
+ *   always wins on subsequent visits.
  *
  * PERSISTENCE
  *   `localStorage`, with a hardcoded default if storage is unavailable
@@ -55,7 +54,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 /** Reads the theme the pre-paint script already applied. */
 function readAppliedTheme(): Theme {
-  if (typeof document === 'undefined') return 'light';
+  if (typeof document === 'undefined') return 'dark';
   return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
 }
 
@@ -73,14 +72,6 @@ function readStoredPreference(): Theme | null {
   } catch {
     // Private browsing / storage disabled. The OS preference still works.
     return null;
-  }
-}
-
-function systemTheme(): Theme {
-  try {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  } catch {
-    return 'light';
   }
 }
 
@@ -117,27 +108,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [applyTheme],
   );
 
-  /**
-   * Follow the OS while the user has expressed no preference.
-   *
-   * Only active until an explicit choice is made: after the user picks a
-   * theme, their choice wins even if they later change their OS setting.
-   */
+  /** First visit defaults to dark; saved light/dark preferences are respected. */
   useEffect(() => {
     if (readStoredPreference() !== null) return;
-    let query: MediaQueryList;
-    try {
-      query = window.matchMedia('(prefers-color-scheme: dark)');
-    } catch {
-      return;
-    }
-    const onChange = () => {
-      const next = query.matches ? 'dark' : 'light';
-      setThemeState(next);
-      document.documentElement.setAttribute('data-theme', next);
-    };
-    query.addEventListener('change', onChange);
-    return () => query.removeEventListener('change', onChange);
+    setThemeState('dark');
+    document.documentElement.setAttribute('data-theme', 'dark');
   }, []);
 
   const value = useMemo<ThemeContextValue>(
