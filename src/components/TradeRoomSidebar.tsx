@@ -148,6 +148,9 @@ export interface RoomIndicators {
   rsi14: number; ema20: number; ema50: number; atr14: number;
   structureBias: 'BULLISH' | 'BEARISH' | 'RANGING';
   lastSwingHigh: number; lastSwingLow: number; retracementPct: number;
+  sma20?: number; macd?: { macd: number; signal: number; histogram: number };
+  bollingerBands20?: { middle: number; upper: number; lower: number; bandwidthPct: number };
+  stochastic14?: { k: number; d: number }; vwap?: number;
   demandZone: { low: number; high: number }; supplyZone: { low: number; high: number };
 }
 
@@ -547,7 +550,15 @@ function ToolsPanel({
     },
     {
       name: 'Technical indicators',
-      detail: indicators ? `RSI ${indicators.rsi14.toFixed(1)} · ATR ${money(indicators.atr14, indicators.atr14 < 10 ? 4 : 2)}` : 'Waiting for candles',
+      detail: indicators ? [
+        `RSI(14) ${indicators.rsi14.toFixed(1)}`,
+        `EMA(20/50) ${money(indicators.ema20)} / ${money(indicators.ema50)}`,
+        `ATR(14) ${money(indicators.atr14, indicators.atr14 < 10 ? 4 : 2)}`,
+        indicators.macd ? `MACD ${indicators.macd.macd.toFixed(4)}` : '',
+        indicators.stochastic14 ? `Stoch ${indicators.stochastic14.k.toFixed(1)}/${indicators.stochastic14.d.toFixed(1)}` : '',
+        indicators.bollingerBands20 ? `BB ${money(indicators.bollingerBands20.lower)}–${money(indicators.bollingerBands20.upper)}` : '',
+        indicators.vwap != null ? `VWAP ${money(indicators.vwap)}` : '',
+      ].filter(Boolean).join(' · ') : 'Waiting for candles',
       state: indicators ? 'live' : 'off',
     },
     {
