@@ -161,12 +161,23 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       // A non-empty string is not proof of a usable credential. Validate both
       // account and server fallback keys before reporting the provider connected.
       if (userKey && isPlausibleGroqKey(userKey)) return { provider, key: userKey };
-      return {
-        provider,
-        key: serverKey && isPlausibleGroqKey(serverKey) ? serverKey : undefined,
-      };
+      if (serverKey && isPlausibleGroqKey(serverKey)) return { provider, key: serverKey };
+      // A deployment-level OpenRouter key is an explicit server fallback. If
+      // the user's selected provider has no usable key, keep the room's AI
+      // review working through that configured server credential.
+      const serverOpenRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+      if (serverOpenRouterKey && isPlausibleOpenRouterKey(serverOpenRouterKey)) {
+        return { provider: 'openrouter', key: serverOpenRouterKey };
+      }
+      return { provider, key: undefined };
     }
-    if (provider === 'spacebunny') return { provider, key: (await this.keys.getSpaceBunnyKey?.(userId))?.trim() || undefined };
+    if (provider === 'spacebunny') {
+      const userKey = (await this.keys.getSpaceBunnyKey?.(userId))?.trim();
+      if (userKey) return { provider, key: userKey };
+      const serverOpenRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+      if (serverOpenRouterKey && isPlausibleOpenRouterKey(serverOpenRouterKey)) return { provider: 'openrouter', key: serverOpenRouterKey };
+      return { provider, key: undefined };
+    }
 
     const userKey = await this.keys.getOpenRouterKey(userId);
     if (userKey && isPlausibleOpenRouterKey(userKey)) {
@@ -265,11 +276,43 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     // Existing GOATs may still carry a Groq or Space Bunny model after the
     // account provider changes. Repair provider-mismatched IDs before calling
     // OpenRouter; preserve valid OpenRouter slugs as configured.
-    const selectedModel = typeof model === 'string' && model.includes('/')
-      ? model
-      : (await this.pickAnyModel(context.userId, provider)) || model;
-    const { result } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
-    return result;
+    // Prefer the saved model, but repair it when OpenRouter confirms it has
+    // been retired. Catalogue outages should not prevent trying a configured
+    // model; the actual completion call remains the source of truth.
+    let selectedModel = typeof model === 'string' && model.includes('/') ? model : '';
+    try {
+      if (selectedModel && !(await this.isModelAvailable(context.userId, selectedModel, provider))) selectedModel = '';
+    } catch (catalogueError) {
+      console.warn('[reasoning] OpenRouter model catalogue unavailable; trying the saved model:', catalogueError instanceof Error ? catalogueError.message : 'unknown error');
+    }
+    if (!selectedModel) {
+      try { selectedModel = (await this.pickAnyModel(context.userId, provider)) || ''; }
+      catch (catalogueError) { console.warn('[reasoning] Could not select an OpenRouter fallback model:', catalogueError instanceof Error ? catalogueError.message : 'unknown error'); }
+    }
+    if (!selectedModel) {
+      throw new Error('OPENROUTER_NO_USABLE_MODEL: OpenRouter is configured, but no model could be selected. Check the key, model access, and account credits.');
+    }
+    try {
+      const { result } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
+      return result;
+    } catch (firstError) {
+      const firstDetail = firstError instanceof Error ? firstError.message : String(firstError);
+      // If a saved model is unavailable at completion time, retry once with a
+      // currently listed model. Never loop and never turn provider errors into a trade.
+      if (selectedModel !== model && !/404|model.*not found|no endpoints found|model_not_listed/i.test(firstDetail)) {
+        throw new Error('OPENROUTER_REVIEW_FAILED: ' + firstDetail);
+      }
+      let fallback = '';
+      try { fallback = (await this.pickAnyModel(context.userId, provider)) || ''; } catch { /* report the original provider error below */ }
+      if (!fallback || fallback === selectedModel) throw new Error('OPENROUTER_REVIEW_FAILED: ' + firstDetail);
+      try {
+        const { result } = await (client as OpenRouterClient).evaluateGoat(context, fallback);
+        return result;
+      } catch (fallbackError) {
+        const detail = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        throw new Error('OPENROUTER_REVIEW_FAILED: initial model failed (' + firstDetail + '); fallback model failed (' + detail + ').');
+      }
+    }
   }
 
   async answerGoatQuestion(

@@ -1716,3 +1716,63 @@
   .sg-room-environment-controls { width: 100%; }
   .sg-room-environment-controls button { flex: 1 1 auto; }
 }
+
+
+/* Live-stream chat: compact WhatsApp-like message rows, not separate cards. */
+.tr-chat { gap: 0; padding: 5px 12px 16px; }
+.tr-chat-msg {
+  position: relative; padding: 11px 2px 12px; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--tr-line-soft) 72%, transparent);
+  border-radius: 0; background: transparent; box-shadow: none; transform: none; text-align: left;
+}
+.tr-chat-msg:hover { border-color: var(--tr-line-soft); background: color-mix(in srgb, var(--color-accent) 5%, transparent); box-shadow: none; transform: none; }
+.tr-chat-msg.is-failed { border-left: 0; }
+.tr-chat-msg.is-failed .tr-chat-headline { color: var(--color-negative); }
+.tr-chat-msg-head { gap: 7px; }
+.tr-agent-avatar { width: 25px; height: 25px; flex-basis: 25px; border-radius: 50%; font-size: 8px; }
+.tr-chat-msg-title { margin: 5px 0 4px 32px; gap: 6px; }
+.tr-chat-summary { margin-left: 32px; font-size: 11px; line-height: 1.55; }
+.tr-chat-msg .trade-room-levels { margin: 8px 0 0 32px; border: 0; border-radius: 7px; background: color-mix(in srgb, var(--color-raised) 80%, transparent); }
+.tr-chat-msg-foot { margin: 7px 0 0 32px; padding-top: 0; border-top: 0; gap: 7px; }
+.tr-chat-open { margin-left: auto; color: var(--color-accent); }
+.tr-news-refresh { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--tr-line-soft); border-radius:7px; padding:4px 7px; background:var(--color-surface); color:var(--color-fg-muted); font:650 9px/1.2 var(--tr-sans); cursor:pointer; }
+.tr-news-refresh:hover:not(:disabled) { border-color:var(--color-accent); color:var(--color-fg); }
+.tr-news-refresh:disabled { opacity:.65; cursor:wait; }
+.tr-news-refresh .is-spinning { animation: tr-refresh-spin .9s linear infinite; }
+@keyframes tr-refresh-spin { to { transform:rotate(360deg); } }
+.sg-room-owner-controls { display:flex; flex-direction:column; align-items:flex-end; gap:5px; }
+.sg-room-settings-button { display:inline-flex; align-items:center; gap:5px; min-height:27px; padding:5px 9px; border:1px solid var(--color-line); border-radius:8px; background:var(--color-raised); color:var(--color-fg-muted); font:700 10px/1 var(--tr-sans); cursor:pointer; }
+.sg-room-settings-button:hover { border-color:var(--color-accent); color:var(--color-fg); }
+.tr-room-settings-backdrop { position:fixed; inset:0; z-index:150; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(0,0,0,.68); backdrop-filter:blur(8px); }
+.tr-room-settings { display:flex; flex-direction:column; width:min(100%,560px); max-height:min(88vh,800px); overflow:hidden; border:1px solid var(--color-line); border-radius:18px; background:var(--color-surface); color:var(--color-fg); box-shadow:0 24px 80px rgba(0,0,0,.38); }
+.tr-room-settings-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding:19px 20px 15px; border-bottom:1px solid var(--color-line); }
+.tr-room-settings-head h2 { margin:2px 0 4px; font:800 19px/1.2 var(--tr-sans); }
+.tr-room-settings-head p:not(.tr-room-settings-eyebrow) { margin:0; color:var(--color-fg-muted); font:400 11px/1.5 var(--tr-sans); }
+.tr-room-settings-eyebrow { margin:0; color:var(--color-accent); font:800 9px/1.2 var(--tr-sans); letter-spacing:.13em; }
+.tr-room-settings-head > button { display:grid; place-items:center; width:30px; height:30px; border:1px solid var(--color-line); border-radius:8px; background:var(--color-raised); color:var(--color-fg-muted); }
+.tr-room-settings-body { display:flex; flex-direction:column; gap:18px; padding:18px 20px; overflow:auto; }
+.tr-room-settings-body > label { display:flex; flex-direction:column; gap:7px; color:var(--color-fg-muted); font:700 11px/1.4 var(--tr-sans); }
+.tr-room-settings-body input:not([type=checkbox]), .tr-room-settings-body textarea { width:100%; border:1px solid var(--color-line); border-radius:9px; padding:10px 11px; outline:none; background:var(--color-raised); color:var(--color-fg); font:500 12px/1.5 var(--tr-sans); }
+.tr-room-settings-body input:focus, .tr-room-settings-body textarea:focus { border-color:var(--color-accent); }
+.tr-room-settings-label { margin:0 0 5px; color:var(--color-fg); font:750 11px/1.4 var(--tr-sans); }
+.tr-room-settings-hint { margin:0 0 9px; color:var(--color-fg-subtle); font:400 10px/1.5 var(--tr-sans); }
+.tr-room-intervals { display:flex; flex-wrap:wrap; gap:7px; }
+.tr-room-intervals label { display:flex; align-items:center; gap:7px; padding:8px 10px; border:1px solid var(--color-line); border-radius:8px; background:var(--color-raised); color:var(--color-fg-muted); font:650 10px/1 var(--tr-sans); }
+.tr-room-intervals input, .tr-room-skill-list input { accent-color:var(--color-accent); }
+.tr-room-skill-list { display:flex; flex-direction:column; max-height:210px; overflow:auto; border:1px solid var(--color-line); border-radius:10px; }
+.tr-room-skill-list label { display:flex; align-items:flex-start; gap:9px; padding:10px; border-bottom:1px solid var(--color-line); cursor:pointer; }
+.tr-room-skill-list label:last-child { border-bottom:0; }
+.tr-room-skill-list span { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.tr-room-skill-list b { color:var(--color-fg); font:700 10px/1.4 var(--tr-sans); }
+.tr-room-skill-list small { color:var(--color-fg-subtle); font:400 9px/1.45 var(--tr-sans); }
+.tr-room-settings-error { margin:0; border-radius:8px; padding:9px 10px; background:color-mix(in srgb, var(--color-negative) 10%, transparent); color:var(--color-negative); font:600 11px/1.5 var(--tr-sans); }
+.tr-room-settings-foot { display:flex; justify-content:flex-end; gap:8px; padding:13px 20px; border-top:1px solid var(--color-line); }
+.tr-room-settings-foot button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:8px 12px; border:1px solid var(--color-line); border-radius:9px; background:var(--color-raised); color:var(--color-fg-muted); font:700 10px/1 var(--tr-sans); }
+.tr-room-settings-foot button:last-child { border-color:var(--color-accent); background:var(--color-accent); color:white; }
+.tr-room-settings-foot button:disabled { opacity:.55; cursor:wait; }
+@media (max-width:600px) {
+  .sg-room-owner-controls { width:100%; flex-direction:row; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  .sg-room-owner-controls .sg-room-environment-controls { flex:1 1 100%; }
+  .tr-room-settings-backdrop { align-items:flex-end; padding:0; }
+  .tr-room-settings { max-height:92vh; border-radius:18px 18px 0 0; }
+  .tr-room-settings-head, .tr-room-settings-body { padding-left:15px; padding-right:15px; }
+}

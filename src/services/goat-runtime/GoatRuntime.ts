@@ -50,7 +50,7 @@ import {
 } from '../tracker-sdk/TrackerEvaluator';
 import { evaluateTracker } from '../tracker-sdk/DeterministicTrackerEvaluator';
 import { SessionSchedule } from '../tracker-sdk/SessionSchedule';
-import { analyzeMarketStructure, calculateRSI, calculateEMA, calculateATR } from '../tracker-sdk/indicators';
+import { analyzeMarketStructure, calculateRSI, calculateEMA, calculateATR, calculateSMA, calculateMACD, calculateBollingerBands, calculateStochastic, calculateVWAP } from '../tracker-sdk/indicators';
 import {
   cachedMultiTimeframeCandles,
   loadMultiTimeframeCandles,
@@ -876,9 +876,14 @@ export class GoatRuntime {
       const struct = analyzeMarketStructure(candles, quote.mid);
       const deterministicIndicators: Record<string, unknown> = {
         rsi14: calculateRSI(candles, 14),
+        sma20: calculateSMA(candles, 20),
         ema20: calculateEMA(candles, 20),
         ema50: calculateEMA(candles, 50),
         atr14: calculateATR(candles, 14),
+        macd: calculateMACD(candles, 12, 26, 9),
+        bollingerBands20: calculateBollingerBands(candles, 20, 2),
+        stochastic14: calculateStochastic(candles, 14, 3),
+        vwap: calculateVWAP(candles),
         structureBias: struct.bias,
         demandZone: struct.demandZone,
         supplyZone: struct.supplyZone,
@@ -1356,9 +1361,10 @@ export class GoatRuntime {
               workflowRunId,
               failed ? "wake_failed" : "wake_finished",
               failed ? "FAILED" : "COMPLETED",
-              failed ? { error: "wake_failed" } : undefined,
+              failed ? { error: this.runtimeState.lastError ?? "wake_failed" } : undefined,
               undefined,
               failed ? "WAKE_FAILED" : undefined,
+              failed ? this.runtimeState.lastError ?? "The review failed without an error detail." : undefined,
             );
           }
         } catch (ledgerError) {

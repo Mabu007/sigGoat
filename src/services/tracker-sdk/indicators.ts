@@ -111,6 +111,46 @@ export function calculateMACD(
   return { macd, signal, histogram };
 }
 
+/** Classic Bollinger Bands: SMA(period) +/- deviations * population standard deviation. */
+export function calculateBollingerBands(candles: readonly OhlcCandle[], period = 20, deviations = 2): { middle: number; upper: number; lower: number; bandwidthPct: number } {
+  if (!candles.length) return { middle: 0, upper: 0, lower: 0, bandwidthPct: 0 };
+  const sample = candles.slice(-Math.max(1, period));
+  const middle = sample.reduce((sum, candle) => sum + candle.close, 0) / sample.length;
+  const variance = sample.reduce((sum, candle) => sum + (candle.close - middle) ** 2, 0) / sample.length;
+  const width = Math.sqrt(variance) * deviations;
+  const upper = middle + width, lower = middle - width;
+  return { middle: Number(middle.toFixed(5)), upper: Number(upper.toFixed(5)), lower: Number(lower.toFixed(5)), bandwidthPct: middle ? Number(((upper - lower) / Math.abs(middle) * 100).toFixed(3)) : 0 };
+}
+
+/** Stochastic %K/%D with a 14-bar range and 3-bar signal average. */
+export function calculateStochastic(candles: readonly OhlcCandle[], period = 14, signalPeriod = 3): { k: number; d: number } {
+  if (!candles.length) return { k: 50, d: 50 };
+  const values: number[] = [];
+  const lastStart = Math.max(0, candles.length - Math.max(period, signalPeriod));
+  for (let end = lastStart; end < candles.length; end++) {
+    const sample = candles.slice(Math.max(0, end - period + 1), end + 1);
+    const high = Math.max(...sample.map(candle => candle.high));
+    const low = Math.min(...sample.map(candle => candle.low));
+    values.push(high === low ? 50 : ((candles[end].close - low) / (high - low)) * 100);
+  }
+  const k = values[values.length - 1] ?? 50;
+  const dValues = values.slice(-signalPeriod);
+  const d = dValues.reduce((sum, value) => sum + value, 0) / (dValues.length || 1);
+  return { k: Number(k.toFixed(1)), d: Number(d.toFixed(1)) };
+}
+
+/** Rolling volume-weighted average price over available candle history. */
+export function calculateVWAP(candles: readonly OhlcCandle[]): number | null {
+  let weighted = 0, volumeTotal = 0;
+  for (const candle of candles) {
+    const volume = Number(candle.volume ?? 0);
+    if (!Number.isFinite(volume) || volume <= 0) continue;
+    weighted += ((candle.high + candle.low + candle.close) / 3) * volume;
+    volumeTotal += volume;
+  }
+  return volumeTotal > 0 ? Number((weighted / volumeTotal).toFixed(5)) : null;
+}
+
 export function getHighestHigh(candles: readonly OhlcCandle[], lookback: number = 20): number {
   if (!candles.length) return 0;
   const slice = candles.slice(-lookback);

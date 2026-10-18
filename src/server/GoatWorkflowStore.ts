@@ -35,6 +35,8 @@ export interface GoatWorkflowRun {
   status: GoatWorkflowStatus;
   signalId?: string;
   errorCode?: string;
+  /** Sanitized human-readable failure detail for room activity and diagnostics. */
+  errorMessage?: string;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -181,6 +183,7 @@ export class GoatWorkflowStore {
     details?: GoatWorkflowActivity["details"],
     signalId?: string,
     errorCode?: string,
+    errorMessage?: string,
   ): Promise<GoatWorkflowRun | null> {
     const key = safeId(id);
     if (this.firestore) {
@@ -199,6 +202,7 @@ export class GoatWorkflowStore {
           updatedAt: now,
           ...(signalId ? { signalId } : {}),
           ...(errorCode ? { errorCode } : {}),
+          ...(errorMessage ? { errorMessage: errorMessage.slice(0, 600) } : {}),
           ...(isTerminal(nextStatus) ? { completedAt: now } : {}),
         };
         const type: GoatWorkflowActivity["type"] =
@@ -224,6 +228,7 @@ export class GoatWorkflowStore {
       ...current, stage, status: nextStatus, updatedAt: now,
       ...(signalId ? { signalId } : {}),
       ...(errorCode ? { errorCode } : {}),
+      ...(errorMessage ? { errorMessage: errorMessage.slice(0, 600) } : {}),
       ...(isTerminal(nextStatus) ? { completedAt: now } : {}),
     };
     const type: GoatWorkflowActivity["type"] =

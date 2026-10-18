@@ -60,7 +60,7 @@ import {
 } from "./reasoningGateway";
 import { buildGoatContext } from "./goatContext";
 import { newsService } from "../services/news/NewsService";
-import { calculateATR, calculateEMA, calculateRSI, analyzeMarketStructure } from "../services/tracker-sdk/indicators";
+import { calculateATR, calculateEMA, calculateRSI, calculateSMA, calculateMACD, calculateBollingerBands, calculateStochastic, calculateVWAP, analyzeMarketStructure } from "../services/tracker-sdk/indicators";
 import { configureCredentialVault, credentialVault } from "./security/instance";
 import { CredentialVaultError } from "./security/CredentialVault";
 import { createVaultBackedKeyStore } from "./security/vaultKeyStore";
@@ -3785,6 +3785,7 @@ function summariseRoomRun(
   run: GoatWorkflowRun,
   theses: MarketThesis[],
   signals: TradeSignal[],
+  isOwner = false,
 ) {
   const startedAt = Date.parse(run.createdAt);
   const endedAt = Date.parse(run.completedAt ?? run.updatedAt ?? run.createdAt);
@@ -3811,6 +3812,7 @@ function summariseRoomRun(
     status: run.status,
     stage: run.stage,
     errorCode: run.errorCode ?? null,
+    errorMessage: isOwner ? run.errorMessage ?? null : null,
     outcome,
     at: run.createdAt,
     completedAt: run.completedAt ?? null,
@@ -3822,7 +3824,7 @@ function summariseRoomRun(
           ? `${thesis.directionalHypothesis} · ${thesis.market}`
           : `Review of ${run.market}`,
     summary: failed
-      ? (run.errorCode ?? "The review did not complete.")
+      ? (isOwner ? (run.errorMessage ?? run.errorCode ?? "The review did not complete.") : "This review failed. The room owner can inspect the diagnostic details.")
       : run.status === "RUNNING" && !signal && !thesis
         ? "Working through " + run.stage.replace(/_/g, " ") + "."
         : signal ? [signal.thesis, signal.rationale].filter(Boolean).join("\n\n")
@@ -3929,14 +3931,15 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
        * Chat: a message is not a rendered thesis but a run, so clicking it can
        * open that run's real activity log rather than inventing a transcript.
        */
-      runs: runs.slice(0, 8).map(run => summariseRoomRun(run, theses, signals)),
+      runs: runs.slice(0, 8).map(run => summariseRoomRun(run, theses, signals, isOwner)),
     };
   }));
   // Per-viewer `owner` means this response must never land in a shared cache.
   res.setHeader("Cache-Control", isOwner ? "private, no-store" : "public, max-age=5, stale-while-revalidate=10");
   res.json({
     team: {
-      id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status,
+      id: team.id, slug: team.publicSlug, name: team.name, instructions: isOwner ? (team.instructions ?? "") : undefined,
+      monitoringIntervals: team.monitoringIntervals ?? [15], visibility: team.visibility ?? "PRIVATE", status: team.status,
       owner: isOwner,
       coordinationMode: team.coordinationMode,
       environment: team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO"),
@@ -3973,6 +3976,11 @@ function biQuoteSymbol(symbol: string): string {
     GOLD: "XAUUSD", XAU: "XAUUSD", SILVER: "XAGUSD", XAG: "XAGUSD",
     BTC: "BTCUSD", ETH: "ETHUSD", SOL: "SOLUSD", XRP: "XRPUSD",
     DOGE: "DOGEUSD", ADA: "ADAUSD", BNB: "BNBUSD", LTC: "LTCUSD",
+    AVAX: "AVAXUSD", LINK: "LINKUSD", DOT: "DOTUSD", BCH: "BCHUSD",
+    TRX: "TRXUSD", ATOM: "ATOMUSD", UNI: "UNIUSD", NEAR: "NEARUSD",
+    AAVE: "AAVEUSD", ETC: "ETCUSD", SHIB: "SHIBUSD", TON: "TONUSD",
+    SUI: "SUIUSD", PEPE: "PEPEUSD", XLM: "XLMUSD", HBAR: "HBARUSD",
+    ICP: "ICPUSD", FIL: "FILUSD", OP: "OPUSD", ARB: "ARBUSD", INJ: "INJUSD",
   };
   if (aliases[normalized]) return aliases[normalized];
   if (/^[A-Z0-9]+(?:USD|USDT|EUR|GBP|JPY|CHF|AUD|CAD|NZD)$/.test(normalized)) {
@@ -4112,9 +4120,14 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
     const structure = analyzeMarketStructure(candles, mid);
     return {
       rsi14: calculateRSI(candles, 14),
+      sma20: calculateSMA(candles, 20),
       ema20: calculateEMA(candles, 20),
       ema50: calculateEMA(candles, 50),
       atr14: calculateATR(candles, 14),
+      macd: calculateMACD(candles, 12, 26, 9),
+      bollingerBands20: calculateBollingerBands(candles, 20, 2),
+      stochastic14: calculateStochastic(candles, 14, 3),
+      vwap: calculateVWAP(candles),
       structureBias: structure.bias,
       lastSwingHigh: structure.lastSwingHigh,
       lastSwingLow: structure.lastSwingLow,
@@ -4221,6 +4234,8 @@ apiRouter.get("/team-rooms/:slug/runs/:workflowId", handle(async (req, res) => {
  * drops anything older than three days, so this route stays cheap and honest
  * even though every viewer polls it.
  */
+const forcedNewsRefreshAt = new Map<string, number>();
+
 apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
   const slug = String(req.params.slug || "");
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
@@ -4234,8 +4249,12 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
   if (!market) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This room has no market configured, so there is nothing to research.");
 
   // Never throws: research failure is reported in-band so the panel can say so.
-  const snapshot = await newsService.getNews(market);
-  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  const requestedForceRefresh = req.query?.refresh === "1";
+  const lastForcedAt = forcedNewsRefreshAt.get(market.toUpperCase()) ?? 0;
+  const forceRefresh = requestedForceRefresh && Date.now() - lastForcedAt >= 60_000;
+  if (forceRefresh) forcedNewsRefreshAt.set(market.toUpperCase(), Date.now());
+  const snapshot = await newsService.getNews(market, forceRefresh);
+  res.setHeader("Cache-Control", forceRefresh ? "no-store" : "public, max-age=60, stale-while-revalidate=300");
   res.json({
     market: snapshot.market,
     ok: snapshot.ok,
@@ -6438,6 +6457,14 @@ apiRouter.delete("/team-members/:id", handle(async (req, res) => {
   res.status(204).end();
 }));
 
+// Allowed recurring AI review cadences. Tracker checks remain deterministic and separate.
+const TEAM_MONITORING_INTERVAL_OPTIONS = [5, 15, 30, 60, 240] as const;
+function normaliseTeamMonitoringIntervals(value: unknown): number[] {
+  if (!Array.isArray(value)) return [15];
+  const selected = [...new Set(value.map(Number).filter((n): n is number => Number.isInteger(n) && TEAM_MONITORING_INTERVAL_OPTIONS.includes(n as typeof TEAM_MONITORING_INTERVAL_OPTIONS[number])))].sort((a, b) => a - b);
+  return selected.length ? selected : [];
+}
+
 // ---- GOAT teams: the single creation unit for trading agents ----
 
 apiRouter.get("/goat-teams", handle(async (req, res) => {
@@ -6487,6 +6514,8 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     return fail(res, 400, "INVALID_COORDINATION_MODE", "coordinationMode must be INDEPENDENT, CONSENSUS, or LEAD_REVIEW.");
   }
 
+  const monitoringIntervals = normaliseTeamMonitoringIntervals(req.body?.monitoringIntervals);
+  if (!monitoringIntervals.length) return fail(res, 400, "INVALID_MONITORING_INTERVALS", "Choose at least one monitoring interval.");
   const deployment = normaliseTeamDeployment(req.body?.deployment);
   if (req.body?.deployment !== undefined && req.body?.deployment !== null && !deployment) {
     return fail(res, 400, "INVALID_DEPLOYMENT_SETTINGS", "Deployment settings are incomplete. Choose a trading provider and an asset.");
@@ -6528,6 +6557,7 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     publicSlug: shareSlug,
     environment: "DEMO",
     marketDataProvider: "biquote",
+    monitoringIntervals,
     ...(leadGoatId ? { leadGoatId } : {}),
     ...(deployment ? { deployment } : {}),
     status: "DRAFT",
@@ -6563,7 +6593,7 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
           ...member,
           tradingProvider: deployment.provider,
           markets: [deployment.asset],
-          schedule: member.schedule ?? normaliseSchedule(undefined),
+          schedule: { mode: "INTERVAL", intervalMinutes: Math.min(...(team.monitoringIntervals ?? [15])) },
           timeframe: member.timeframe ?? normaliseTrackingTimeframe(undefined),
           updatedAt: new Date().toISOString(),
         });
@@ -6646,6 +6676,10 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
   const visibility = req.body?.visibility === undefined
     ? team.visibility
     : req.body.visibility === "PUBLIC" ? "PUBLIC" as const : "PRIVATE" as const;
+  const monitoringIntervals = req.body?.monitoringIntervals === undefined
+    ? (team.monitoringIntervals ?? [15])
+    : normaliseTeamMonitoringIntervals(req.body.monitoringIntervals);
+  if (!monitoringIntervals.length) return fail(res, 400, "INVALID_MONITORING_INTERVALS", "Choose at least one monitoring interval.");
 
   /**
    * `save` writes the whole record, so an omitted field is genuinely cleared.
@@ -6658,10 +6692,55 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
     name,
     ...(instructions ? { instructions } : {}),
     visibility,
+    monitoringIntervals,
     updatedAt: new Date().toISOString(),
   });
   await stampTeamInstructions(user.uid, updated.memberGoatIds, instructions);
+  // Keep deployed members and their scheduler records aligned with the room's cadence.
+  // Editing a draft must never arm background analysis before the creator deploys it.
+  if (updated.status !== "DRAFT") {
+    const intervalMinutes = Math.min(...monitoringIntervals);
+    for (const goatId of updated.memberGoatIds) {
+      const member = await persistence.goats.getForUser(goatId, user.uid);
+      if (!member || member.deploymentState === "DRAFT") continue;
+      const scheduled = { ...member, schedule: { mode: "INTERVAL", intervalMinutes } as GoatSchedule, updatedAt: new Date().toISOString() };
+      await persistence.goats.save(scheduled);
+      await syncSchedule(scheduled);
+      const runtime = await ensureGoatRuntime(scheduled);
+      runtime.updateConfig(scheduled, await allSkillsFor(user.uid));
+      runtime.setSchedule(scheduled.schedule);
+    }
+  }
   res.json({ team: updated });
+}));
+
+/** Add selected skills to every member in a running room without stopping the room. */
+apiRouter.post("/goat-teams/:id/skills", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+  const requested = Array.isArray(req.body?.skillIds)
+    ? [...new Set<string>(req.body.skillIds.filter((id: unknown): id is string => typeof id === "string" && id.trim().length > 0).map((id: string) => id.trim()))]
+    : [];
+  if (!requested.length) return fail(res, 400, "SKILLS_REQUIRED", "Choose at least one skill to add.");
+  const catalogue = await allSkillsFor(user.uid);
+  const valid = new Set(catalogue.map(skill => skill.id));
+  const invalid = requested.filter(id => !valid.has(id));
+  if (invalid.length) return fail(res, 400, "UNKNOWN_SKILL", "One or more selected skills are unavailable. Refresh the skill list and try again.");
+  const changed: string[] = [];
+  for (const goatId of team.memberGoatIds) {
+    const member = await persistence.goats.getForUser(goatId, user.uid);
+    if (!member) continue;
+    const skillIds = [...new Set([...(member.skillIds ?? []), ...requested])];
+    const skills = [...new Set([...(member.skills ?? []), ...catalogue.filter(skill => requested.includes(skill.id)).map(skill => skill.name)])];
+    const updatedMember = { ...member, skillIds, skills, updatedAt: new Date().toISOString() };
+    await persistence.goats.save(updatedMember);
+    const runtime = await ensureGoatRuntime(updatedMember);
+    runtime.updateConfig(updatedMember, catalogue);
+    changed.push(goatId);
+  }
+  if (!changed.length) return fail(res, 409, "TEAM_MEMBERS_MISSING", "No room members were available to update.");
+  res.json({ teamId: team.id, skillIds: requested, updatedMembers: changed.length, message: "Skills added. The room remains deployed; members will use them on their next review." });
 }));
 
 apiRouter.get("/goat-teams/:id/assessment", handle(async (req, res) => {
@@ -6705,6 +6784,13 @@ apiRouter.post("/goat-teams/:id/status", handle(async (req, res) => {
   const results: Array<{ goatId: string; ok: boolean; error?: string }> = [];
   for (const goatId of team.memberGoatIds) {
     try {
+      if (action === "PLAY") {
+        const member = await persistence.goats.getForUser(goatId, user.uid);
+        if (member) {
+          const intervalMinutes = Math.min(...(team.monitoringIntervals ?? [15]));
+          await persistence.goats.save({ ...member, schedule: { mode: "INTERVAL", intervalMinutes } as GoatSchedule, updatedAt: new Date().toISOString() });
+        }
+      }
       await setGoatStatusFor(user.uid, goatId, action === "PAUSE");
       results.push({ goatId, ok: true });
     } catch (error) {
