@@ -150,7 +150,7 @@ export interface RoomIndicators {
   lastSwingHigh: number; lastSwingLow: number; retracementPct: number;
   sma20?: number; macd?: { macd: number; signal: number; histogram: number };
   bollingerBands20?: { middle: number; upper: number; lower: number; bandwidthPct: number };
-  stochastic14?: { k: number; d: number }; vwap?: number;
+  stochastic14?: { k: number; d: number }; vwap?: number | null;
   demandZone: { low: number; high: number }; supplyZone: { low: number; high: number };
 }
 
@@ -557,7 +557,7 @@ function ToolsPanel({
         indicators.macd ? `MACD ${indicators.macd.macd.toFixed(4)}` : '',
         indicators.stochastic14 ? `Stoch ${indicators.stochastic14.k.toFixed(1)}/${indicators.stochastic14.d.toFixed(1)}` : '',
         indicators.bollingerBands20 ? `BB ${money(indicators.bollingerBands20.lower)}–${money(indicators.bollingerBands20.upper)}` : '',
-        indicators.vwap != null ? `VWAP ${money(indicators.vwap)}` : '',
+        indicators.vwap != null && indicators.vwap > 0 ? `VWAP ${money(indicators.vwap)}` : '',
       ].filter(Boolean).join(' · ') : 'Waiting for candles',
       state: indicators ? 'live' : 'off',
     },
