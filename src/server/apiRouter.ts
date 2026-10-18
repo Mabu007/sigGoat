@@ -6689,6 +6689,35 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
   res.json({ team: updated });
 }));
 
+/** Add selected skills to every member in a running room without stopping the room. */
+apiRouter.post("/goat-teams/:id/skills", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+  const requested = Array.isArray(req.body?.skillIds)
+    ? [...new Set<string>(req.body.skillIds.filter((id: unknown): id is string => typeof id === "string" && id.trim()).map((id: string) => id.trim()))]
+    : [];
+  if (!requested.length) return fail(res, 400, "SKILLS_REQUIRED", "Choose at least one skill to add.");
+  const catalogue = await allSkillsFor(user.uid);
+  const valid = new Set(catalogue.map(skill => skill.id));
+  const invalid = requested.filter(id => !valid.has(id));
+  if (invalid.length) return fail(res, 400, "UNKNOWN_SKILL", "One or more selected skills are unavailable. Refresh the skill list and try again.");
+  const changed: string[] = [];
+  for (const goatId of team.memberGoatIds) {
+    const member = await persistence.goats.getForUser(goatId, user.uid);
+    if (!member) continue;
+    const skillIds = [...new Set([...(member.skillIds ?? []), ...requested])];
+    const skills = [...new Set([...(member.skills ?? []), ...catalogue.filter(skill => requested.includes(skill.id)).map(skill => skill.name)])];
+    const updatedMember = { ...member, skillIds, skills, updatedAt: new Date().toISOString() };
+    await persistence.goats.save(updatedMember);
+    const runtime = await ensureGoatRuntime(updatedMember);
+    runtime.updateConfig(updatedMember, catalogue);
+    changed.push(goatId);
+  }
+  if (!changed.length) return fail(res, 409, "TEAM_MEMBERS_MISSING", "No room members were available to update.");
+  res.json({ teamId: team.id, skillIds: requested, updatedMembers: changed.length, message: "Skills added. The room remains deployed; members will use them on their next review." });
+}));
+
 apiRouter.get("/goat-teams/:id/assessment", handle(async (req, res) => {
   const user = requireUser(req);
   const team = await goatTeamStore.getForUser(req.params.id, user.uid);
