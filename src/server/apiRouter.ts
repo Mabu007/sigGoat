@@ -3811,6 +3811,7 @@ function summariseRoomRun(
     status: run.status,
     stage: run.stage,
     errorCode: run.errorCode ?? null,
+    errorMessage: run.errorMessage ?? null,
     outcome,
     at: run.createdAt,
     completedAt: run.completedAt ?? null,
@@ -3822,7 +3823,7 @@ function summariseRoomRun(
           ? `${thesis.directionalHypothesis} · ${thesis.market}`
           : `Review of ${run.market}`,
     summary: failed
-      ? (run.errorCode ?? "The review did not complete.")
+      ? (run.errorMessage ?? run.errorCode ?? "The review did not complete.")
       : run.status === "RUNNING" && !signal && !thesis
         ? "Working through " + run.stage.replace(/_/g, " ") + "."
         : signal ? [signal.thesis, signal.rationale].filter(Boolean).join("\n\n")
