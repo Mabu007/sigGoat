@@ -32,8 +32,7 @@
 
       Three cases, in priority order:
         1. an explicit stored preference  -> use it
-        2. no preference                 -> follow the OS
-        3. nothing at all                -> light, then corrected below
+        2. no preference                 -> dark product default
     -->
     <script>
       (function () {
@@ -47,12 +46,8 @@
           var stored =
             localStorage.getItem('sirgoat.theme') ||
             localStorage.getItem('fundagoat.theme');
-          var theme =
-            stored === 'light' || stored === 'dark'
-              ? stored
-              : window.matchMedia('(prefers-color-scheme: dark)').matches
-                ? 'dark'
-                : 'light';
+          /* Dark is the product default. An explicit saved choice always wins. */
+          var theme = stored === 'light' || stored === 'dark' ? stored : 'dark';
           document.documentElement.setAttribute('data-theme', theme);
         } catch (error) {
           /* Private mode, or storage disabled. The markup default stands. */
