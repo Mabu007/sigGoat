@@ -297,7 +297,7 @@ export function ChatPanel({ runs, onOpenRun, canRun, onRun, running }: {
               onClick={() => onOpenRun(run)}
             >
               <div className="tr-chat-msg-head">
-                <span className="tr-agent-avatar" aria-hidden="true">{run.agentName.split(/\\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()}</span>
+                <span className="tr-agent-avatar" aria-hidden="true">{run.agentName.split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()}</span>
                 <span className="tr-agent-name">{run.agentName}</span>
                 <span className={cx('tr-chat-kind', 'is-' + run.outcome)}>{OUTCOME_LABEL[run.outcome]}</span>
                 <time dateTime={run.at} title={new Date(run.at).toLocaleString()}><span className="tr-chat-clock">{localMessageTime(run.at)}</span><span className="tr-chat-relative">{relativeTime(run.at)}</span></time>
