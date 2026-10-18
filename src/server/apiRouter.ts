@@ -6582,7 +6582,7 @@ apiRouter.post("/goat-teams/:id/environment", handle(async (req, res) => {
   if (environment === "DEMO") {
     const updatedTeam = await goatTeamStore.save({
       ...team, environment: "DEMO", marketDataProvider: "biquote",
-      liveTradingProvider: undefined, updatedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     });
     return res.json({
       team: updatedTeam, executionEnabled: team.deployment?.liveTrading === true,
