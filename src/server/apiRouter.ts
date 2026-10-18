@@ -6438,6 +6438,14 @@ apiRouter.delete("/team-members/:id", handle(async (req, res) => {
   res.status(204).end();
 }));
 
+// Allowed recurring AI review cadences. Tracker checks remain deterministic and separate.
+const TEAM_MONITORING_INTERVAL_OPTIONS = [5, 15, 30, 60, 240] as const;
+function normaliseTeamMonitoringIntervals(value: unknown): number[] {
+  if (!Array.isArray(value)) return [15];
+  const selected = [...new Set(value.map(Number).filter((n): n is number => Number.isInteger(n) && TEAM_MONITORING_INTERVAL_OPTIONS.includes(n as typeof TEAM_MONITORING_INTERVAL_OPTIONS[number])))].sort((a, b) => a - b);
+  return selected.length ? selected : [];
+}
+
 // ---- GOAT teams: the single creation unit for trading agents ----
 
 apiRouter.get("/goat-teams", handle(async (req, res) => {
@@ -6528,6 +6536,7 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     publicSlug: shareSlug,
     environment: "DEMO",
     marketDataProvider: "biquote",
+    monitoringIntervals: normaliseTeamMonitoringIntervals(req.body?.monitoringIntervals),
     ...(leadGoatId ? { leadGoatId } : {}),
     ...(deployment ? { deployment } : {}),
     status: "DRAFT",
@@ -6563,7 +6572,7 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
           ...member,
           tradingProvider: deployment.provider,
           markets: [deployment.asset],
-          schedule: member.schedule ?? normaliseSchedule(undefined),
+          schedule: { mode: "INTERVAL", intervalMinutes: Math.min(...(team.monitoringIntervals ?? [15])) },
           timeframe: member.timeframe ?? normaliseTrackingTimeframe(undefined),
           updatedAt: new Date().toISOString(),
         });
@@ -6646,6 +6655,10 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
   const visibility = req.body?.visibility === undefined
     ? team.visibility
     : req.body.visibility === "PUBLIC" ? "PUBLIC" as const : "PRIVATE" as const;
+  const monitoringIntervals = req.body?.monitoringIntervals === undefined
+    ? (team.monitoringIntervals ?? [15])
+    : normaliseTeamMonitoringIntervals(req.body.monitoringIntervals);
+  if (!monitoringIntervals.length) return fail(res, 400, "INVALID_MONITORING_INTERVALS", "Choose at least one monitoring interval.");
 
   /**
    * `save` writes the whole record, so an omitted field is genuinely cleared.
@@ -6658,9 +6671,21 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
     name,
     ...(instructions ? { instructions } : {}),
     visibility,
+    monitoringIntervals,
     updatedAt: new Date().toISOString(),
   });
   await stampTeamInstructions(user.uid, updated.memberGoatIds, instructions);
+  // Keep deployed members and their scheduler records aligned with the room's cadence.
+  const intervalMinutes = Math.min(...monitoringIntervals);
+  for (const goatId of updated.memberGoatIds) {
+    const member = await persistence.goats.getForUser(goatId, user.uid);
+    if (!member) continue;
+    const scheduled = { ...member, schedule: { mode: "INTERVAL", intervalMinutes } as GoatSchedule, updatedAt: new Date().toISOString() };
+    await persistence.goats.save(scheduled);
+    await syncSchedule(scheduled);
+    const runtime = await ensureGoatRuntime(scheduled);
+    runtime.updateConfig(scheduled, await allSkillsFor(user.uid));
+  }
   res.json({ team: updated });
 }));
 
