@@ -6700,6 +6700,7 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
     await syncSchedule(scheduled);
     const runtime = await ensureGoatRuntime(scheduled);
     runtime.updateConfig(scheduled, await allSkillsFor(user.uid));
+    runtime.setSchedule(scheduled.schedule);
   }
   res.json({ team: updated });
 }));
