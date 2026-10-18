@@ -4062,6 +4062,33 @@ async function biQuoteRoomMarket(symbol: string, timeframe: string, count: numbe
 const ROOM_MARKET_CACHE_MS = 3_000;
 const roomMarketCache = new Map<string, { expiresAt: number; payload: Record<string, unknown> }>();
 
+/**
+ * Room charts poll frequently, but a GOAT's durable configuration does not
+ * change on every poll. Keep only the room-member lookup in a tiny, short-lived
+ * process cache; market quotes/candles remain sourced from the selected provider
+ * and prompt context is never persisted here. The current team record and its
+ * member list are still checked on every request before this cache is consulted.
+ */
+const ROOM_GOAT_LOOKUP_CACHE_MS = 10_000;
+const ROOM_GOAT_LOOKUP_CACHE_MAX = 500;
+const roomGoatLookupCache = new Map<string, { expiresAt: number; goat: FundGoat }>();
+
+async function roomGoatForOwner(memberId: string, ownerUserId: string): Promise<FundGoat | null> {
+  const key = `${ownerUserId}:${memberId}`;
+  const cached = roomGoatLookupCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.goat;
+  if (cached) roomGoatLookupCache.delete(key);
+
+  const goat = await persistence.goats.getForUser(memberId, ownerUserId);
+  if (!goat) return null; // Never cache missing/deleted records.
+  if (roomGoatLookupCache.size >= ROOM_GOAT_LOOKUP_CACHE_MAX) {
+    const oldest = roomGoatLookupCache.keys().next().value;
+    if (oldest !== undefined) roomGoatLookupCache.delete(oldest);
+  }
+  roomGoatLookupCache.set(key, { expiresAt: Date.now() + ROOM_GOAT_LOOKUP_CACHE_MS, goat });
+  return goat;
+}
+
 function roomMarketCached(key: string, load: () => Promise<Record<string, unknown>>) {
   const hit = roomMarketCache.get(key);
   if (hit && hit.expiresAt > Date.now()) return Promise.resolve(hit.payload);
@@ -4094,7 +4121,7 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
   const memberId = typeof req.query.memberId === "string" ? req.query.memberId : "";
   if (!memberId || !team.memberGoatIds.includes(memberId)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "That bot is not part of this team.");
-  const goat = await persistence.goats.getForUser(memberId, team.ownerUserId);
+  const goat = await roomGoatForOwner(memberId, team.ownerUserId);
   if (!goat) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "That team bot is no longer available.");
   const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
   // Team environment selects the market-data source only. It never enables or disables order execution.
