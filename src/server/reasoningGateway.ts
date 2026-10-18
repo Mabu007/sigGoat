@@ -299,12 +299,21 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       const firstDetail = firstError instanceof Error ? firstError.message : String(firstError);
       // If a saved model is unavailable at completion time, retry once with a
       // currently listed model. Never loop and never turn provider errors into a trade.
-      if (selectedModel !== model && !/404|model.*not found|no endpoints found|model_not_listed/i.test(firstDetail)) {
+      let fallback = '';
+      try {
+        // Exclude the model that just failed so recovery uses a genuinely different candidate.
+        fallback = (await this.pickAnyModel(context.userId, provider, selectedModel)) || '';
+      } catch (fallbackSelectionError) {
+        console.warn(
+          '[reasoning] Could not select an OpenRouter fallback model:',
+          fallbackSelectionError instanceof Error
+            ? fallbackSelectionError.message
+            : 'unknown error',
+        );
+      }
+      if (!fallback || fallback === selectedModel) {
         throw new Error('OPENROUTER_REVIEW_FAILED: ' + firstDetail);
       }
-      let fallback = '';
-      try { fallback = (await this.pickAnyModel(context.userId, provider)) || ''; } catch { /* report the original provider error below */ }
-      if (!fallback || fallback === selectedModel) throw new Error('OPENROUTER_REVIEW_FAILED: ' + firstDetail);
       try {
         const { result } = await (client as OpenRouterClient).evaluateGoat(context, fallback);
         return result;
@@ -378,7 +387,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
    * is unreachable: the caller has a fallback and a catalogue outage should
    * not be the reason a GOAT cannot be created.
    */
-  async pickAnyModel(userId: string, providerOverride?: AiProvider): Promise<string | null> {
+  async pickAnyModel(userId: string, providerOverride?: AiProvider, excludeModelId?: string): Promise<string | null> {
     const resolved = await this.clientFor(userId, providerOverride);
     if (!resolved) return null;
 
@@ -388,15 +397,19 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     if (provider === 'spacebunny') return SPACE_BUNNY_MODEL;
 
     const catalogue = await (client as OpenRouterClient).fetchModels();
-    const models = catalogue.models;
+    // A failed model must not be selected again as its own fallback.
+    const models = catalogue.models.filter((m) => m.id !== excludeModelId);
     if (models.length === 0) return null;
 
     const pool = models.filter((m) => m.id.endsWith(':free'));
     const candidates = pool.length > 0 ? pool : models.filter((m) => m.free);
     const usable = candidates.length > 0 ? candidates : models;
 
-    const structured = usable.filter((m) => m.supportsStructuredOutputs);
-    const chosen = structured[0] ?? usable[0];
+    // GOAT reviews require structured JSON, so prefer compatible models within
+    // the chosen price tier rather than selecting the first catalogue entry.
+    const structured = usable.filter((m) => m.supportsStructuredOutputs && m.textOutput);
+    const textModels = usable.filter((m) => m.textOutput);
+    const chosen = structured[0] ?? textModels[0] ?? usable[0];
 
     return chosen?.id ?? null;
   }
