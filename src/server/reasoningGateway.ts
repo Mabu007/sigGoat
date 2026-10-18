@@ -265,11 +265,22 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     // Existing GOATs may still carry a Groq or Space Bunny model after the
     // account provider changes. Repair provider-mismatched IDs before calling
     // OpenRouter; preserve valid OpenRouter slugs as configured.
-    const selectedModel = typeof model === 'string' && model.includes('/')
+    // Validate saved OpenRouter model IDs against the live catalogue. A retired
+    // or inaccessible model must not make every scheduled wake fail forever.
+    const selectedModel = typeof model === 'string' && model.includes('/') &&
+      await this.isModelAvailable(context.userId, model, provider)
       ? model
-      : (await this.pickAnyModel(context.userId, provider)) || model;
-    const { result } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
-    return result;
+      : await this.pickAnyModel(context.userId, provider);
+    if (!selectedModel) {
+      throw new Error('OPENROUTER_NO_USABLE_MODEL: OpenRouter is configured, but its model catalogue returned no usable model. Check the key, credits, and provider availability.');
+    }
+    try {
+      const { result } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
+      return result;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error('OPENROUTER_REVIEW_FAILED: ' + detail);
+    }
   }
 
   async answerGoatQuestion(
