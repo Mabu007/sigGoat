@@ -6991,6 +6991,7 @@ async function stopAndResetGoatFor(userId: string, goatId: string): Promise<Fund
     persistence.theses.deleteByGoat(goat.id),
     persistence.wakeEvents.deleteByGoat(goat.id),
     notificationOutbox.store.deleteByGoat(goat.id),
+    goatWorkflowStore.deleteByGoat(goat.id),
   ]);
 
   return reset;
