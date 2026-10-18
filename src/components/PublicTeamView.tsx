@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet, Settings, RefreshCw, X, Save, Plus } from 'lucide-react';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
 import {
   ChatPanel, MemoryPanel, NewsPanel, RunLogView, ToolsPanel, TradeModal, TradeRoomSidebar,
@@ -12,7 +12,9 @@ import type { Candle, MarketQuote } from '../types';
 /** A persisted agent signal. The room projection carries the full trade. */
 type Signal = RoomTrade;
 type Member = RoomMember;
-type Room = { id: string; owner?: boolean; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; environment?: 'DEMO' | 'LIVE'; marketDataProvider?: string | null; liveTradingProvider?: 'ctrader' | 'hyperliquid' | null; memberCount: number; markets: string[]; asset?: string; provider?: string; liveTrading?: boolean; balance?: number | null; trades?: number };
+type Room = { id: string; owner?: boolean; slug: string; name: string; instructions?: string; monitoringIntervals?: number[]; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; environment?: 'DEMO' | 'LIVE'; marketDataProvider?: string | null; liveTradingProvider?: 'ctrader' | 'hyperliquid' | null; memberCount: number; markets: string[]; asset?: string; provider?: string; liveTrading?: boolean; balance?: number | null; trades?: number };
+type RoomSkill = { id: string; name: string; description?: string; isDefault?: boolean };
+const ROOM_MONITOR_INTERVALS = [{ value: 5, label: '5 min' }, { value: 15, label: '15 min' }, { value: 30, label: '30 min' }, { value: 60, label: '1 hour' }, { value: 240, label: '4 hours' }];
 type AccountPayload = { balance: number | null; currency?: string; source?: 'live' | 'recorded'; environment?: 'live' | 'demo'; reason?: string | null };
 type Payload = { team: Room; members: Member[] };
 type FeedItem = { id: string; memberName: string; kind: string; title: string; body: string; at: string; signal?: Signal; member?: Member };
@@ -62,6 +64,14 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [streamVisible, setStreamVisible] = useState(true);
   const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [environmentNotice, setEnvironmentNotice] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
+  const [settingsName, setSettingsName] = useState('');
+  const [settingsInstructions, setSettingsInstructions] = useState('');
+  const [settingsIntervals, setSettingsIntervals] = useState<number[]>([15]);
+  const [roomSkills, setRoomSkills] = useState<RoomSkill[]>([]);
+  const [skillsToAdd, setSkillsToAdd] = useState<string[]>([]);
   const [account, setAccount] = useState<AccountPayload | null>(null);
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
 
@@ -105,6 +115,47 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     } finally { setEnvironmentBusy(false); }
   }, [data, environmentBusy, getApiAuthHeaders, load]);
 
+
+  const openRoomSettings = useCallback(async () => {
+    if (!data?.team.owner) return;
+    setSettingsName(data.team.name);
+    setSettingsInstructions(data.team.instructions ?? '');
+    setSettingsIntervals(data.team.monitoringIntervals?.length ? data.team.monitoringIntervals : [15]);
+    setSkillsToAdd([]); setSettingsError(''); setSettingsOpen(true);
+    try {
+      const headers = new Headers({ Accept: 'application/json' });
+      for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+      const response = await fetch('/api/skills', { headers, cache: 'no-store' });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok && Array.isArray(body.skills)) setRoomSkills(body.skills as RoomSkill[]);
+      else setSettingsError(body?.error?.message || 'Could not load skills. You can still edit the room settings.');
+    } catch { setSettingsError('Could not load skills. You can still edit the room settings.'); }
+  }, [data, getApiAuthHeaders]);
+
+  const saveRoomSettings = useCallback(async () => {
+    if (!data?.team.owner || settingsSaving) return;
+    if (!settingsName.trim()) { setSettingsError('Room name cannot be empty.'); return; }
+    if (!settingsIntervals.length) { setSettingsError('Choose at least one monitoring interval.'); return; }
+    setSettingsSaving(true); setSettingsError('');
+    try {
+      const authHeaders = await getApiAuthHeaders();
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id), {
+        method: 'PATCH', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ name: settingsName.trim(), instructions: settingsInstructions, monitoringIntervals: settingsIntervals }),
+      });
+      await read<{ team: Room }>(response);
+      if (skillsToAdd.length) {
+        const skillResponse = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/skills', {
+          method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify({ skillIds: skillsToAdd }),
+        });
+        await read<{ updatedMembers: number }>(skillResponse);
+      }
+      setSettingsOpen(false);
+      await load();
+    } catch (err) { setSettingsError(err instanceof Error ? err.message : 'Could not save room settings.'); }
+    finally { setSettingsSaving(false); }
+  }, [data, settingsSaving, settingsName, settingsInstructions, settingsIntervals, skillsToAdd, getApiAuthHeaders, load]);
 
   const selectedMember = data?.members.find(member => member.id === selectedMemberId) ?? data?.members[0] ?? null;
   // A deployed room has one immutable instrument. Member markets are only a legacy fallback.
@@ -217,22 +268,24 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [panel, setPanel] = useState<RoomPanelId>('chat');
   const [news, setNews] = useState<RoomNewsPayload | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
-  useEffect(() => {
-    if ((panel !== 'news' && panel !== 'tools') || news) return;
-    let cancelled = false;
+  const loadNews = useCallback(async (force = false) => {
+    if (newsLoading && !force) return;
     setNewsLoading(true);
-    (async () => {
-      const result = await read<RoomNewsPayload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/news', {
+    try {
+      const result = await read<RoomNewsPayload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/news' + (force ? '?refresh=1' : ''), {
         headers: { Accept: 'application/json' }, cache: 'no-store',
       }));
-      if (!cancelled) setNews(result);
-    })().catch(error => {
-      if (!cancelled) setNews({ market: marketSymbol, ok: false, error: error instanceof Error ? error.message : 'News unavailable.', fetchedAt: new Date().toISOString(), headlines: [] });
-    }).finally(() => {
-      if (!cancelled) setNewsLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, [panel, news, slug, marketSymbol]);
+      setNews(result);
+    } catch (error) {
+      setNews({ market: marketSymbol, ok: false, error: error instanceof Error ? error.message : 'News unavailable.', fetchedAt: new Date().toISOString(), headlines: [] });
+    } finally { setNewsLoading(false); }
+  }, [slug, marketSymbol, newsLoading]);
+  useEffect(() => {
+    if (panel !== 'news' && panel !== 'tools') return;
+    void loadNews();
+    const timer = window.setInterval(() => void loadNews(true), 15 * 60_000);
+    return () => window.clearInterval(timer);
+  }, [panel, loadNews]);
 
   const [openTrade, setOpenTrade] = useState<RoomTrade | null>(null);
 
@@ -442,10 +495,13 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           >{frame}</button>)}
         </div>
 
-        {data.team.owner && <div className="sg-room-environment-controls" aria-label="Team market-data environment">
+        {data.team.owner && <div className="sg-room-owner-controls">
+          <button type="button" className="sg-room-settings-button" onClick={() => void openRoomSettings()} aria-label="Room settings" title="Room settings"><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
+          <div className="sg-room-environment-controls" aria-label="Team market-data environment">
           <button type="button" disabled={environmentBusy || (data.team.environment ?? 'DEMO') === 'DEMO'} onClick={() => void changeEnvironment('DEMO')} aria-pressed={(data.team.environment ?? 'DEMO') === 'DEMO'}>Demo · BiQuote</button>
           <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader')} onClick={() => void changeEnvironment('LIVE', 'ctrader')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader'}>Live · cTrader</button>
           <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid')} onClick={() => void changeEnvironment('LIVE', 'hyperliquid')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid'}>Live · Hyperliquid</button>
+          </div>
         </div>}
       </header>
       {environmentNotice && <div className="sg-room-environment-notice" role="status">{environmentNotice}</div>}
@@ -474,7 +530,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           ? <RunLogView log={runLog} loading={logLoading} onBack={() => setLogRun(null)} />
           : <ChatPanel runs={runs} onOpenRun={setLogRun} canRun={canRun} onRun={runTeam} running={teamRunActive} />)}
 
-        {panel === 'news' && <NewsPanel news={news} loading={newsLoading} />}
+        {panel === 'news' && <NewsPanel news={news} loading={newsLoading} onRefresh={() => void loadNews(true)} />}
         {panel === 'trackers' && <TrackersPanel members={data.members} />}
         {panel === 'tools' && <ToolsPanel
           members={data.members} provider={marketProvider || data.team.provider || ''} dataMode={dataMode}
@@ -484,6 +540,19 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         {panel === 'trades' && <TradesPanel trades={trades} onOpen={setOpenTrade} />}
       </div>
     </aside>
+    {settingsOpen && data.team.owner && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !settingsSaving) setSettingsOpen(false); }}>
+      <section className="tr-room-settings" role="dialog" aria-modal="true" aria-labelledby="tr-room-settings-title">
+        <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">ROOM CONTROL</p><h2 id="tr-room-settings-title">Room settings</h2><p>Changes apply to this room and its deployed agents.</p></div><button type="button" aria-label="Close settings" disabled={settingsSaving} onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
+        <div className="tr-room-settings-body">
+          <label><span>Room name / identity</span><input maxLength={80} value={settingsName} onChange={event => setSettingsName(event.target.value)} placeholder="Name your room" /></label>
+          <label><span>Team instructions</span><textarea rows={3} maxLength={4000} value={settingsInstructions} onChange={event => setSettingsInstructions(event.target.value)} placeholder="Shared rules and context for every agent" /></label>
+          <div><p className="tr-room-settings-label">Market monitoring intervals</p><p className="tr-room-settings-hint">The fastest selected interval controls automatic AI review cadence. Deterministic trackers run independently.</p><div className="tr-room-intervals">{ROOM_MONITOR_INTERVALS.map(option => <label key={option.value}><input type="checkbox" checked={settingsIntervals.includes(option.value)} onChange={event => setSettingsIntervals(previous => event.target.checked ? [...new Set([...previous, option.value])].sort((a,b) => a-b) : previous.filter(value => value !== option.value))} /><span>{option.label}</span></label>)}</div></div>
+          <div><p className="tr-room-settings-label">Add skills to all room agents</p><p className="tr-room-settings-hint">New skills are added without pausing the room and are used on the next review.</p><div className="tr-room-skill-list">{roomSkills.map(skill => <label key={skill.id}><input type="checkbox" checked={skillsToAdd.includes(skill.id)} onChange={event => setSkillsToAdd(previous => event.target.checked ? [...previous, skill.id] : previous.filter(id => id !== skill.id))} /><span><b>{skill.name}</b>{skill.description && <small>{skill.description}</small>}</span></label>)}</div></div>
+          {settingsError && <p className="tr-room-settings-error" role="alert">{settingsError}</p>}
+        </div>
+        <footer className="tr-room-settings-foot"><button type="button" disabled={settingsSaving} onClick={() => setSettingsOpen(false)}>Cancel</button><button type="button" disabled={settingsSaving || !settingsIntervals.length} onClick={() => void saveRoomSettings()}><Save size={14} />{settingsSaving ? 'Saving…' : 'Save changes'}</button></footer>
+      </section>
+    </div>}
     {openTrade && <TradeModal trade={openTrade} onClose={() => setOpenTrade(null)} />}
   </main>;
 }
