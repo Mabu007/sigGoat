@@ -191,3 +191,46 @@ export function requireUser(req: Request): AuthenticatedUser {
   }
   return req.user;
 }
+
+/**
+ * Attaches `req.user` when valid credentials are present, and otherwise does
+ * nothing at all.
+ *
+ * For PUBLIC routes whose response legitimately differs by viewer — a share
+ * link that shows its owner a Run button but shows a visitor none. Running
+ * `authMiddleware` instead would 401 every anonymous visitor of a public link,
+ * and duplicating the token dance inline would let the two paths drift.
+ *
+ * Failures are deliberately silent here: an invalid token is treated as "not
+ * signed in", which is exactly what it means for a route that never required
+ * a session. No response is written and `next()` is always called.
+ */
+export function optionalAuthMiddleware(req: Request, _res: Response, next: NextFunction): void {
+  const mode = resolveAuthMode();
+  if (mode === 'none') return next();
+
+  if (mode === 'dev') {
+    const devUid = req.header('x-dev-user-id');
+    if (devUid && /^[a-zA-Z0-9_\-:.]{1,128}$/.test(devUid)) {
+      req.user = { uid: devUid, email: `${devUid}@dev.local` };
+    }
+    return next();
+  }
+
+  const header = req.header('authorization') ?? '';
+  if (!header.startsWith('Bearer ')) return next();
+  const token = header.slice(7).trim();
+  if (!token) return next();
+
+  const verifier = getFirebaseVerifier();
+  if (!verifier) return next();
+
+  verifier(token)
+    .then((user) => {
+      req.user = { uid: user.uid, email: user.email };
+    })
+    .catch(() => {
+      // Treated as signed out. The route did not require a session.
+    })
+    .finally(() => next());
+}

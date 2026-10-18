@@ -28,8 +28,8 @@
 
 import React, { useMemo, useState } from 'react';
 import {
-  BrainCircuit, CheckCircle2, ExternalLink, ListOrdered, MessagesSquare,
-  Newspaper, Target, Wrench, X,
+  BrainCircuit, ChevronLeft, ExternalLink, ListOrdered, MessagesSquare,
+  Newspaper, Target, Wrench, X, Zap,
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------
@@ -72,6 +72,37 @@ export interface RoomThesis {
   updatedAt: string;
 }
 
+/**
+ * One unit of work an agent actually did.
+ *
+ * This is what a Team Chat message IS. The room payload derives it from the
+ * durable workflow run, so the chat cannot drift from what happened — and the
+ * run id is what the click-through reads to show the real activity log.
+ */
+export interface RoomRun {
+  workflowId: string;
+  market: string;
+  triggerType: string;
+  status: string;
+  stage: string;
+  errorCode: string | null;
+  outcome: 'review' | 'proposal' | 'no_trade' | 'failed' | 'running';
+  at: string;
+  completedAt: string | null;
+  headline: string;
+  summary: string;
+  bias: string | null;
+  confidence: number | null;
+  levels: { entry?: number; stopLoss?: number; takeProfit?: number; riskReward: string | null } | null;
+  agentName: string;
+}
+
+export interface RoomRunLog {
+  run: { workflowId: string; market: string; triggerType: string; stage: string; status: string; errorCode: string | null; createdAt: string; completedAt: string | null };
+  agent: { id: string; name: string } | null;
+  activities: { id: string; type: string; stage: string; at: string; details?: Record<string, string | number | boolean | null> }[];
+}
+
 export interface RoomMember {
   id: string;
   name: string;
@@ -83,6 +114,7 @@ export interface RoomMember {
   skills: string[];
   latestThesis: RoomThesis | null;
   signals: RoomTrade[];
+  runs: RoomRun[];
   trades: number;
 }
 
@@ -186,6 +218,153 @@ function relativeTime(value?: string | number): string {
 const BIAS_TONE: Record<string, string> = {
   BULLISH: 'is-positive', BEARISH: 'is-negative', RANGING: 'is-muted', NEUTRAL: 'is-muted',
 };
+
+/* =========================================================================
+   PANEL — Team Chat
+   A message is a run, not a rendered thesis. Each one opens the run's real
+   activity ledger, because "what did this agent actually do" is a question the
+   durable workflow record answers and a generated transcript would not.
+   ========================================================================= */
+
+const OUTCOME_LABEL: Record<RoomRun['outcome'], string> = {
+  review: 'Market review', proposal: 'Proposal', no_trade: 'No trade',
+  failed: 'Failed', running: 'Running',
+};
+
+export function ChatPanel({ runs, onOpenRun, canRun, onRun, running }: {
+  runs: RoomRun[];
+  onOpenRun: (run: RoomRun) => void;
+  canRun: boolean;
+  onRun: () => void;
+  running: boolean;
+}) {
+  if (!runs.length) {
+    return (
+      <>
+        <PanelEmpty
+          title="No work yet"
+          hint={canRun
+            ? 'Run the team to have every bot review the market. Each review appears here as a message.'
+            : 'The bots in this room have not run yet. Their reviews will appear here as they work.'}
+        />
+        {canRun && <button type="button" className="tr-chat-run" onClick={onRun} disabled={running}>
+          <Zap size={13} strokeWidth={2.4} aria-hidden="true" />
+          {running ? 'Starting…' : 'Run the team'}
+        </button>}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {canRun && (
+        <button type="button" className="tr-chat-run" onClick={onRun} disabled={running}>
+          <Zap size={13} strokeWidth={2.4} aria-hidden="true" />
+          {running ? 'Starting…' : 'Run the team'}
+        </button>
+      )}
+      <div className="tr-chat">
+        {runs.map(run => {
+          const tone = run.bias ? (BIAS_TONE[run.bias] ?? 'is-muted') : null;
+          return (
+            <button
+              type="button"
+              key={run.workflowId}
+              className={'tr-chat-msg' + (run.outcome === 'failed' ? ' is-failed' : '')}
+              onClick={() => onOpenRun(run)}
+            >
+              <div className="tr-chat-msg-head">
+                <span className="tr-agent-name">{run.agentName}</span>
+                <span className={cx('tr-chat-kind', 'is-' + run.outcome)}>{OUTCOME_LABEL[run.outcome]}</span>
+                <time dateTime={run.at}>{relativeTime(run.at)}</time>
+              </div>
+              <div className="tr-chat-msg-title">
+                {tone && <span className={'tr-chip ' + tone}>{run.bias}</span>}
+                <span className="tr-chat-headline">{run.headline}</span>
+              </div>
+              {run.summary && <p className="tr-chat-summary">{run.summary}</p>}
+              {run.levels && (
+                <div className="trade-room-levels">
+                  <span>Entry <b>{money(run.levels.entry)}</b></span>
+                  <span>Stop <b>{money(run.levels.stopLoss)}</b></span>
+                  <span>Target <b>{money(run.levels.takeProfit)}</b></span>
+                </div>
+              )}
+              <div className="tr-chat-msg-foot">
+                <span className="tr-chat-stage">{run.stage.replaceAll('_', ' ')}</span>
+                {run.confidence != null && <span>{Math.round(run.confidence)}% confidence</span>}
+                <span className="tr-chat-open">View log</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+/* --------------------------------------------------------------------------
+   RUN LOG — replaces the chat in place, not a modal.
+
+   The user asked to "turn the chat area to logs". Keeping it in the same
+   scroll region preserves context: the chart and sidebar frame never move, so
+   Back returns to exactly where the list was.
+   -------------------------------------------------------------------------- */
+export function RunLogView({ log, loading, onBack }: { log: RoomRunLog | null; loading: boolean; onBack: () => void }) {
+  return (
+    <>
+      <div className="tr-log-bar">
+        <button type="button" className="tr-log-back" onClick={onBack}>
+          <ChevronLeft size={14} strokeWidth={2.4} aria-hidden="true" />
+          Back to chat
+        </button>
+        {log?.agent && <span className="tr-log-agent">{log.agent.name}</span>}
+      </div>
+      {loading && !log ? (
+        <PanelEmpty title="Loading log…" />
+      ) : !log ? (
+        <PanelEmpty title="Log unavailable" tone="bad" hint="This run's record is no longer available." />
+      ) : (
+        <div className="tr-log">
+          <dl className="tr-kv">
+            <Row label="Run" value={log.run.market} />
+            <Row label="Trigger" value={log.run.triggerType.replaceAll('_', ' ').toLowerCase()} />
+            <Row label="Outcome" value={log.run.status.replaceAll('_', ' ')} />
+            <Row label="Final stage" value={log.run.stage.replaceAll('_', ' ')} />
+          </dl>
+          <div className="tr-log-timeline">
+            {log.activities.length === 0
+              ? <PanelEmpty title="No stages recorded" />
+              : log.activities.map(activity => (
+                <div className={'tr-log-step' + (activity.type.startsWith('WORKFLOW_FAILED') || activity.type.endsWith('_FAILED') ? ' is-failed' : '')} key={activity.id}>
+                  <span className="tr-log-dot" aria-hidden="true" />
+                  <div className="tr-log-step-body">
+                    <div className="tr-log-step-head">
+                      <span className="tr-log-stage">{activity.stage.replaceAll('_', ' ')}</span>
+                      <time dateTime={activity.at}>{new Date(activity.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
+                    </div>
+                    <span className="tr-log-type">{activity.type.replaceAll('_', ' ')}</span>
+                    {activity.details && Object.keys(activity.details).length > 0 && (
+                      <ul className="tr-log-details">
+                        {Object.entries(activity.details).map(([key, value]) => (
+                          <li key={key}><span>{key.replaceAll('_', ' ')}</span><b>{String(value)}</b></li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              ))}
+          </div>
+          <p className="tr-panel-disclaimer">
+            This is the run's durable workflow record — the stages it actually
+            passed through. Model prompts and responses are not retained by this
+            system, so they cannot be shown here.
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
 
 /* =========================================================================
    PANEL — Breaking News

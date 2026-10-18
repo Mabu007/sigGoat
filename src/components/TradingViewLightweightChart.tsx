@@ -62,6 +62,12 @@ function normalizeCandles(input: Candle[]) {
   return [...byTime.entries()].sort((a, b) => a[0] - b[0]).map(([time, candle]) => ({ ...candle, time }));
 }
 
+/** Bars shown before the user scrolls back into history. */
+const INITIAL_VISIBLE_BARS = 180;
+/** Bars added per reveal, and how close to the left edge triggers one. */
+const REVEAL_CHUNK = 300;
+const REVEAL_TRIGGER_FROM = 40;
+
 function isFreshQuote(quote: MarketQuote | null) {
   if (!quote || quote.stale || !Number.isFinite(quote.mid) || quote.mid <= 0) return false;
   if (typeof quote.quoteAgeSeconds === 'number' && quote.quoteAgeSeconds > 60) return false;
@@ -79,6 +85,8 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   const { theme } = useTheme();
   const palette = useMemo(() => readChartPalette(), [theme]);
   const chartRef = useRef<IChartApi | null>(null);
+  const candlesRef = useRef(candles);
+  candlesRef.current = candles;
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const markerPluginRef = useRef<{ setMarkers: (markers: SeriesMarker<Time>[]) => void } | null>(null);
@@ -88,6 +96,27 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   const shouldFitRef = useRef(true);
   const userInteractedRef = useRef(false);
   const [crosshairBar, setCrosshairBar] = useState<{ open: number; high: number; low: number; close: number } | null>(null);
+
+  /**
+   * How much of the fetched history is on screen.
+   *
+   * The full series is fetched once — 500 five-minute bars cost the same
+   * upstream request as 160, and re-fetching on every pan back would be both
+   * slower and rate-limit-hungry. Rendering all of them at once is the
+   * problem instead: 500 bars in a 1000px pane is two pixels each, which is
+   * unreadable. So the chart holds a window and widens it as the user scrolls
+   * back into history, revealing older bars into an already-loaded series.
+   */
+  const [revealed, setRevealed] = useState(INITIAL_VISIBLE_BARS);
+  useEffect(() => {
+    // A shorter series (timeframe switch, or a room with thin history) must
+    // not leave the chart showing fewer bars than it has.
+    setRevealed(current => Math.min(Math.max(current, INITIAL_VISIBLE_BARS), candles.length));
+  }, [candles.length]);
+  const visibleCandles = useMemo(
+    () => (candles.length > revealed ? candles.slice(-revealed) : candles),
+    [candles, revealed],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -159,6 +188,14 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
       const bars = lastBarsRef.current;
       if (!range || bars.length === 0) return;
       userInteractedRef.current = range.to < bars.length - 1.5;
+      /**
+       * Scrolled back to the start of what is on screen: reveal another chunk
+       * of already-fetched history. Guarded by `bars.length < total` so this
+       * fires once per chunk rather than on every pixel of a pan.
+       */
+      if (range.from <= REVEAL_TRIGGER_FROM && bars.length < candlesRef.current.length) {
+        setRevealed(current => Math.min(current + REVEAL_CHUNK, candlesRef.current.length));
+      }
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRangeChange);
     const onCrosshairMove = (param: any) => {
@@ -206,7 +243,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     const volumeSeries = volumeSeriesRef.current;
     const chart = chartRef.current;
     if (!candleSeries || !volumeSeries || !chart) return;
-    const normalized = normalizeCandles(candles);
+    const normalized = normalizeCandles(visibleCandles);
     if (normalized.length === 0) {
       candleSeries.setData([]);
       volumeSeries.setData([]);
@@ -241,12 +278,23 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     } else {
       const oldRange = chart.timeScale().getVisibleLogicalRange();
       const wasAtLiveEdge = !userInteractedRef.current || !oldRange || oldRange.to >= previous.length - 2;
+      /**
+       * Bars were PREPENDED — the user scrolled back into history and a chunk
+       * of already-fetched history was revealed. `setData` rewrites the whole
+       * series, so every logical index shifts right by however many bars were
+       * added; without compensating, the viewport would jump forward by that
+       * amount on every reveal, which is the opposite of scrolling back.
+       */
+      const prepended = oldRange && nextBars.length > previous.length;
       candleSeries.setData(nextBars);
       volumeSeries.setData(nextVolumes);
       if (shouldFitRef.current || previous.length === 0) {
         chart.timeScale().fitContent();
         shouldFitRef.current = false;
         userInteractedRef.current = false;
+      } else if (prepended) {
+        const added = nextBars.length - previous.length;
+        chart.timeScale().setVisibleLogicalRange({ from: oldRange!.from + added, to: oldRange!.to + added });
       } else if (wasAtLiveEdge) {
         chart.timeScale().scrollToRealTime();
       } else if (oldRange) {
@@ -273,7 +321,7 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
         } as SeriesMarker<Time>;
       });
     markerPluginRef.current?.setMarkers(markers);
-  }, [candles, timeframe, agentEvents, palette, symbol]);
+  }, [visibleCandles, timeframe, agentEvents, palette, symbol]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -304,6 +352,11 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
         <span>C <b>{crosshairBar.close.toLocaleString(undefined, { maximumFractionDigits: digits })}</b></span>
       </div>}
       <div ref={containerRef} className="sg-pulse-canvas" aria-label={symbol + ' ' + timeframe + ' candlestick chart'} />
+      {candles.length > revealed && (
+        <div className="sg-pulse-history-hint" role="status">
+          {revealed} of {candles.length} {timeframe} bars · scroll back for more
+        </div>
+      )}
       {activeQuote && isFreshQuote(activeQuote) && dataMode.toUpperCase() !== 'PAPER' && <div className="sg-pulse-live-pip" aria-hidden="true" />}
     </div>
   );

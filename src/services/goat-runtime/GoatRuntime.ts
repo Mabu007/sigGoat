@@ -51,6 +51,11 @@ import {
 import { evaluateTracker } from '../tracker-sdk/DeterministicTrackerEvaluator';
 import { SessionSchedule } from '../tracker-sdk/SessionSchedule';
 import { analyzeMarketStructure, calculateRSI, calculateEMA, calculateATR } from '../tracker-sdk/indicators';
+import {
+  cachedMultiTimeframeCandles,
+  loadMultiTimeframeCandles,
+  type TimeframeContext,
+} from '../market-data/multiTimeframeCandles';
 import { ReasoningGateway } from '../../server/reasoningGateway';
 import { runGoatReasoningGraph } from '../agent/GoatReasoningGraph';
 import { newsService } from '../news/NewsService';
@@ -879,6 +884,28 @@ export class GoatRuntime {
         supplyZone: struct.supplyZone,
       };
 
+      // ---- Stage 2b: multi-timeframe context ---------------------------
+      /**
+       * The gate above proved the primary timeframe is usable. Everything
+       * here is enrichment and is deliberately non-fatal: a review with 1h
+       * structure and no daily context is far more useful than no review, and
+       * the prompt reports which timeframes actually loaded.
+       */
+      let candlesByTimeframe: Record<string, TimeframeContext> | undefined;
+      try {
+        const multi = await cachedMultiTimeframeCandles(
+          `${market}:wake`,
+          () => loadMultiTimeframeCandles(
+            market,
+            (symbol, timeframe, count) => this.marketProvider.getCandles(symbol, timeframe, count),
+            quote.mid,
+          ),
+        );
+        candlesByTimeframe = multi.timeframes;
+      } catch (err) {
+        console.warn(`[goat ${this.id}] multi-timeframe candles unavailable:`, err);
+      }
+
       // ---- Stage 3: internet research (never fatal) ---------------------
       // Research failure must not break the wake; the prompt is told the
       // research was unavailable so the model cannot imply it searched.
@@ -904,6 +931,7 @@ export class GoatRuntime {
         markets: this.goatConfig.markets,
         quote,
         candles,
+        candlesByTimeframe,
         skills: this.skills,
         activeThesis: this.runtimeState.currentThesis,
         wakeReason: reason,

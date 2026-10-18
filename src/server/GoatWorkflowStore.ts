@@ -363,6 +363,25 @@ export class GoatWorkflowStore {
     return updated;
   }
 
+  /**
+   * A GOAT's recent runs, newest first.
+   *
+   * The room's Team Chat is built from these: a message is a unit of work an
+   * agent actually did, and its log is the run's activity ledger. Reading the
+   * ledger alone cannot produce that, because activities carry no prose —
+   * only the run knows when the work happened and how it ended.
+   */
+  async listRuns(goatId: string, limit = 20): Promise<GoatWorkflowRun[]> {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    if (this.firestore) {
+      const snapshot = await this.runsCollection().where("goatId", "==", goatId).get();
+      return snapshot.docs.map((doc) => doc.data() as GoatWorkflowRun)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, safeLimit);
+    }
+    return Object.values(this.db.runs).filter((run) => run.goatId === goatId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, safeLimit);
+  }
+
   async listActivities(goatId: string, limit = 100): Promise<GoatWorkflowActivity[]> {
     const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     if (this.firestore) {
