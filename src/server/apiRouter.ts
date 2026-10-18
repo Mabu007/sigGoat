@@ -4234,8 +4234,9 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
   if (!market) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This room has no market configured, so there is nothing to research.");
 
   // Never throws: research failure is reported in-band so the panel can say so.
-  const snapshot = await newsService.getNews(market);
-  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  const forceRefresh = req.query?.refresh === "1";
+  const snapshot = await newsService.getNews(market, forceRefresh);
+  res.setHeader("Cache-Control", forceRefresh ? "no-store" : "public, max-age=60, stale-while-revalidate=300");
   res.json({
     market: snapshot.market,
     ok: snapshot.ok,
