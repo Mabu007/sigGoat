@@ -3821,9 +3821,15 @@ function summariseRoomRun(
         : thesis
           ? `${thesis.directionalHypothesis} · ${thesis.market}`
           : `Review of ${run.market}`,
-    summary: signal ? [signal.thesis, signal.rationale].filter(Boolean).join("\n\n")
-      : thesis ? thesis.summary ?? thesis.assetState ?? ""
-        : failed ? (run.errorCode ?? "The review did not complete.") : "No trade was proposed on this review.",
+    summary: failed
+      ? (run.errorCode ?? "The review did not complete.")
+      : run.status === "RUNNING" && !signal && !thesis
+        ? "Working through " + run.stage.replace(/_/g, " ") + "."
+        : signal ? [signal.thesis, signal.rationale].filter(Boolean).join("\n\n")
+          : thesis ? thesis.summary ?? thesis.assetState ?? ""
+            : run.status === "RUNNING"
+              ? "Review in progress: " + run.stage.replace(/_/g, " ") + "."
+              : "No trade was proposed on this review.",
     bias: thesis?.directionalHypothesis ?? null,
     confidence: thesis?.confidence ?? signal?.confidence ?? null,
     levels: signal
