@@ -12,11 +12,11 @@ import type { Candle, MarketQuote } from '../types';
 /** A persisted agent signal. The room projection carries the full trade. */
 type Signal = RoomTrade;
 type Member = RoomMember;
-type Room = { id: string; owner?: boolean; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; memberCount: number; markets: string[]; asset?: string; provider?: string; liveTrading?: boolean; balance?: number | null; trades?: number };
+type Room = { id: string; owner?: boolean; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; environment?: 'DEMO' | 'LIVE'; marketDataProvider?: string | null; liveTradingProvider?: 'ctrader' | 'hyperliquid' | null; memberCount: number; markets: string[]; asset?: string; provider?: string; liveTrading?: boolean; balance?: number | null; trades?: number };
 type AccountPayload = { balance: number | null; currency?: string; source?: 'live' | 'recorded'; environment?: 'live' | 'demo'; reason?: string | null };
 type Payload = { team: Room; members: Member[] };
 type FeedItem = { id: string; memberName: string; kind: string; title: string; body: string; at: string; signal?: Signal; member?: Member };
-type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string; indicators?: RoomIndicators; availableBars?: number; requestedCount?: number };
+type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string; environment?: 'DEMO' | 'LIVE'; marketDataProvider?: string; executionAllowed?: boolean; indicators?: RoomIndicators; availableBars?: number; requestedCount?: number };
 
 /**
  * History requested per timeframe, matching the agent's candle plan.
@@ -60,6 +60,8 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [indicators, setIndicators] = useState<RoomIndicators | null>(null);
   const [timeframe, setTimeframe] = useState('15m');
   const [streamVisible, setStreamVisible] = useState(true);
+  const [environmentBusy, setEnvironmentBusy] = useState(false);
+  const [environmentNotice, setEnvironmentNotice] = useState('');
   const [account, setAccount] = useState<AccountPayload | null>(null);
   const { currentUser, authMode, getApiAuthHeaders } = useAuth();
 
@@ -83,6 +85,26 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     const interval = window.setInterval(() => void load(), 15000);
     return () => window.clearInterval(interval);
   }, [load]);
+
+  const changeEnvironment = useCallback(async (environment: 'DEMO' | 'LIVE', provider?: 'ctrader' | 'hyperliquid') => {
+    if (!data || !data.team.owner || environmentBusy) return;
+    if (environment === 'LIVE' && !window.confirm('Switch this room to live market data? This does not enable or disable trading. Existing GOAT execution permissions remain unchanged.')) return;
+    setEnvironmentBusy(true); setEnvironmentNotice(''); setError('');
+    try {
+      const authHeaders = await getApiAuthHeaders();
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/environment', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ environment, ...(provider ? { provider } : {}) }),
+      });
+      const result = await read<{ team: Room; message: string }>(response);
+      setEnvironmentNotice(result.message);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not change the market-data environment.');
+    } finally { setEnvironmentBusy(false); }
+  }, [data, environmentBusy, getApiAuthHeaders, load]);
+
 
   const selectedMember = data?.members.find(member => member.id === selectedMemberId) ?? data?.members[0] ?? null;
   // A deployed room has one immutable instrument. Member markets are only a legacy fallback.
@@ -239,23 +261,31 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   }, [logRun, slug]);
 
   const [running, setRunning] = useState(false);
+  const [runRequestedAt, setRunRequestedAt] = useState<number | null>(null);
   const runTeam = useCallback(async () => {
+    if (running || runRequestedAt !== null) return;
+    const requestedAt = Date.now();
     setRunning(true);
+    setRunRequestedAt(requestedAt);
+    setError('');
     try {
       const headers = await getApiAuthHeaders();
-      await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/run', {
+      const response = await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/run', {
         method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({ market: marketSymbol }),
       });
-      // The run is sequential across members and takes minutes; the 15s room
-      // poll brings in each message as its run completes.
-    } catch {
-      // Surface nothing on failure: the room poll still shows whatever landed.
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || body?.message || 'The team could not start its review.');
+      // The server returns 202 while agents work. Keep the live indicator on
+      // until the room poll sees a fresh, terminal run for every member.
+    } catch (err) {
+      setRunRequestedAt(null);
+      setError(err instanceof Error ? err.message : 'The team could not start its review.');
     } finally {
       setRunning(false);
     }
-  }, [slug, marketSymbol, getApiAuthHeaders]);
+  }, [slug, marketSymbol, getApiAuthHeaders, running, runRequestedAt]);
 
   const runs = useMemo<RoomRun[]>(() => (data?.members ?? [])
     .flatMap(member => (member.runs ?? []).map(run => ({ ...run, agentName: member.name })))
@@ -263,6 +293,14 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
 
   /** Only the room owner may spend model calls; visitors get no Run button. */
   const canRun = (authMode === 'dev' || Boolean(currentUser)) && data?.team.owner === true;
+  const teamRunActive = running || runRequestedAt !== null;
+  useEffect(() => {
+    if (runRequestedAt === null || !data?.members.length) return;
+    const startedAfterRequest = (run: RoomRun) => Date.parse(run.at) >= runRequestedAt - 5_000;
+    const membersWithFreshRuns = data.members.filter(member => member.runs.some(startedAfterRequest));
+    const hasActiveFreshRun = runs.some(run => startedAfterRequest(run) && run.outcome === 'running');
+    if (Date.now() - runRequestedAt > 15 * 60_000 || (membersWithFreshRuns.length === data.members.length && !hasActiveFreshRun)) setRunRequestedAt(null);
+  }, [data, runs, runRequestedAt]);
 
   /** Every agent's trades, newest first, each attributed to the agent that raised it. */
   const trades = useMemo<RoomTrade[]>(() => (data?.members ?? [])
@@ -387,7 +425,8 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           <div className="sg-room-symbol-line">
             <span className="sg-room-symbol">{activeMarket || 'No asset configured'}</span>
             <span className="sg-room-provider">{(marketProvider || data.team.provider || 'MARKET').toUpperCase()}</span>
-            {dataMode && <span className="sg-room-provider">{dataMode.toUpperCase()}</span>}
+            <span className={'sg-room-provider ' + ((data.team.environment ?? 'DEMO') === 'LIVE' ? 'is-live' : 'is-demo')}>{(data.team.environment ?? 'DEMO') === 'LIVE' ? 'LIVE FEED' : 'DEMO FEED'}</span>
+            {dataMode && <span className="sg-room-provider">{dataMode.toUpperCase() === 'DEMO_REFERENCE' ? 'REFERENCE' : dataMode.toUpperCase()}</span>}
           </div>
           <div className="sg-room-price-row">
             <span className="sg-room-price">{quoteHasPrice(marketQuote) ? formatPrice(marketQuote!.mid, priceDigits) : '—'}</span>
@@ -402,7 +441,14 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
             aria-pressed={timeframe === frame} className="sg-room-timeframe"
           >{frame}</button>)}
         </div>
+
+        {data.team.owner && <div className="sg-room-environment-controls" aria-label="Team market-data environment">
+          <button type="button" disabled={environmentBusy || (data.team.environment ?? 'DEMO') === 'DEMO'} onClick={() => void changeEnvironment('DEMO')} aria-pressed={(data.team.environment ?? 'DEMO') === 'DEMO'}>Demo · BiQuote</button>
+          <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader')} onClick={() => void changeEnvironment('LIVE', 'ctrader')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader'}>Live · cTrader</button>
+          <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid')} onClick={() => void changeEnvironment('LIVE', 'hyperliquid')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid'}>Live · Hyperliquid</button>
+        </div>
       </header>
+      {environmentNotice && <div className="sg-room-environment-notice" role="status">{environmentNotice}</div>}
       <div className="trade-room-chart">
         {candles.length && candlesTimeframe === timeframe ? <TradingViewLightweightChart
           candles={candles} activeQuote={marketQuote} timeframe={timeframe}
@@ -426,7 +472,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
       <div className="trade-room-stream-list">
         {panel === 'chat' && (logRun
           ? <RunLogView log={runLog} loading={logLoading} onBack={() => setLogRun(null)} />
-          : <ChatPanel runs={runs} onOpenRun={setLogRun} canRun={canRun} onRun={runTeam} running={running} />)}
+          : <ChatPanel runs={runs} onOpenRun={setLogRun} canRun={canRun} onRun={runTeam} running={teamRunActive} />)}
 
         {panel === 'news' && <NewsPanel news={news} loading={newsLoading} />}
         {panel === 'trackers' && <TrackersPanel members={data.members} />}

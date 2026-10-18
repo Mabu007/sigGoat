@@ -18,6 +18,8 @@ type TradeRoom = {
   latestThesis: null | { market: string; bias: string; summary: string; updatedAt: string };
   roomType?: 'bot' | 'team';
   memberCount?: number;
+  environment?: 'DEMO' | 'LIVE';
+  marketDataProvider?: string | null;
   visibility?: TeamVisibility;
 };
 type TeamVisibility = 'PUBLIC' | 'PRIVATE';
@@ -179,6 +181,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
         status: team.status || 'SAVED', creatorName: 'You', publishedAt: team.createdAt, updatedAt: team.updatedAt,
         mode: team.status === 'DEPLOYED' ? 'TEAM' : 'PAPER', latestThesis: null, roomType: 'team',
         visibility: team.visibility === 'PUBLIC' ? 'PUBLIC' : 'PRIVATE',
+        environment: team.environment || 'DEMO', marketDataProvider: team.marketDataProvider || 'biquote',
         memberCount: Array.isArray(team.memberGoatIds) ? team.memberGoatIds.length : Array.isArray(team.members) ? team.members.length : 0,
       }));
       setMyRooms(teams);
@@ -512,7 +515,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                   <div className="yt-room-thumbnail">
                     <div className="yt-thumb-topline">
                       <span className="yt-thumb-market">{marketLabel}</span>
-                      <span className="yt-thumb-mode">{room.mode === 'PAPER' ? 'PAPER' : 'ACTIVE'}</span>
+                      <span className="yt-thumb-mode">{room.mode === 'PAPER' ? 'PAPER' : 'ACTIVE'}</span>{room.roomType === 'team' && <span className="yt-thumb-mode">{room.environment || 'DEMO'}</span>}
                     </div>
                     <svg viewBox="0 0 480 180" preserveAspectRatio="none" aria-hidden="true" className="yt-thumb-chart">
                       <path d="M0 142 L35 128 L63 139 L92 94 L119 109 L145 77 L176 91 L204 58 L230 81 L256 49 L286 70 L314 42 L341 58 L369 29 L398 47 L426 24 L455 38 L480 17 L480 180 L0 180 Z" fill="var(--color-accent)" fillOpacity=".12" />

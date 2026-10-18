@@ -3756,6 +3756,8 @@ apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
     const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     return {
       id: team.id, slug: team.publicSlug, name: team.name, description: `${members.length} AI traders · ${team.coordinationMode.toLowerCase().replace("_", " ")} coordination`,
+      environment: team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO"),
+      marketDataProvider: (team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO")) === "DEMO" ? "biquote" : (team.liveTradingProvider ?? team.deployment?.provider ?? null),
       creatorName: "AI Trading Team", status: team.status, mode: "TEAM" as const,
       memberCount: members.length, markets: [...new Set(members.flatMap(member => member?.markets ?? []))],
       latestThesis: latest ? { market: latest.market, bias: latest.directionalHypothesis, summary: latest.summary ?? latest.assetState ?? "Market review recorded.", updatedAt: latest.updatedAt } : null,
@@ -3930,7 +3932,11 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
     team: {
       id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status,
       owner: isOwner,
-      coordinationMode: team.coordinationMode, memberCount: details.length,
+      coordinationMode: team.coordinationMode,
+      environment: team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO"),
+      marketDataProvider: (team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO")) === "DEMO" ? "biquote" : (team.liveTradingProvider ?? team.deployment?.provider ?? null),
+      liveTradingProvider: team.liveTradingProvider ?? team.deployment?.provider ?? null,
+      memberCount: details.length,
       markets: [...new Set(details.flatMap(member => member.markets))],
       asset: team.deployment?.asset, provider: team.deployment?.provider,
       /** Whether this room may place real orders, as chosen when it was created. */
@@ -4077,7 +4083,10 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   const goat = await persistence.goats.getForUser(memberId, team.ownerUserId);
   if (!goat) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "That team bot is no longer available.");
   const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
-  const hyperliquidRoom = team.deployment?.provider === "hyperliquid";
+  // Team environment selects the market-data source only. It never enables or disables order execution.
+  const environment: "DEMO" | "LIVE" = team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO");
+  const selectedLiveProvider = team.liveTradingProvider ?? team.deployment?.provider;
+  const hyperliquidRoom = environment === "LIVE" && selectedLiveProvider === "hyperliquid";
   const fallbackSymbol = hyperliquidRoom ? "BTC" : "EURUSD";
   const deployedRoomAsset = team.deployment?.asset;
   // The deployment asset is authoritative. It is not required to appear in a
@@ -4110,18 +4119,24 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   };
   try {
     const payload = await roomMarketCached(
-      `${team.id}:${symbol}:${timeframe}:${count}`,
+      `${team.id}:${environment}:${selectedLiveProvider ?? "biquote"}:${symbol}:${timeframe}:${count}`,
       async () => {
-        if (hyperliquidRoom) {
-          const provider = await marketDataProviderForUser(team.ownerUserId, "hyperliquid");
+        if (environment === "LIVE") {
+          if (selectedLiveProvider !== "ctrader" && selectedLiveProvider !== "hyperliquid") {
+            throw new Error("Choose cTrader or Hyperliquid before using the Live market-data environment.");
+          }
+          const provider = await marketDataProviderForUser(team.ownerUserId, selectedLiveProvider);
           const [quotes, candles] = await Promise.all([
             provider.getQuotes([symbol]),
             provider.getCandles(symbol, timeframe, count),
           ]);
-          return { symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, requestedCount: count };
+          return {
+            symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode,
+            requestedCount: count, environment, marketDataProvider: selectedLiveProvider, executionAllowed: false,
+          };
         }
         const market = await biQuoteRoomMarket(symbol, timeframe, count);
-        return { symbol, ...market };
+        return { symbol, ...market, environment, marketDataProvider: "biquote", dataMode: "DEMO_REFERENCE", executionAllowed: false };
       },
     );
     const candles = (payload.candles ?? []) as Candle[];
@@ -4129,6 +4144,9 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
     res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
     return res.json({
       ...payload,
+      environment,
+      marketDataProvider: environment === "DEMO" ? "biquote" : selectedLiveProvider,
+      executionAllowed: false,
       indicators: indicatorsFor(candles, quotes[0]?.mid ?? 0),
       /**
        * Reported so the UI can say "193 of 400 bars" instead of implying the
@@ -6502,6 +6520,8 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     coordinationMode,
     visibility,
     publicSlug: shareSlug,
+    environment: "DEMO",
+    marketDataProvider: "biquote",
     ...(leadGoatId ? { leadGoatId } : {}),
     ...(deployment ? { deployment } : {}),
     status: "DRAFT",
@@ -6552,6 +6572,45 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   res.status(201).json({ team, members: [...ownedMembers.filter(Boolean), ...createdMembers], shareUrl: `/team/${shareSlug}`, discoverable: visibility === "PUBLIC" && team.status === "DEPLOYED" });
 }));
 
+/** Change a team market-data environment. This never changes order-execution permissions. */
+apiRouter.post("/goat-teams/:id/environment", handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getForUser(req.params.id, user.uid);
+  if (!team) return notFound(res);
+
+  const environment = req.body?.environment;
+  if (environment === "DEMO") {
+    const updatedTeam = await goatTeamStore.save({
+      ...team, environment: "DEMO", marketDataProvider: "biquote",
+      updatedAt: new Date().toISOString(),
+    });
+    return res.json({
+      team: updatedTeam, executionEnabled: team.deployment?.liveTrading === true,
+      message: "Demo selects BiQuote reference market data only. Existing GOAT order permissions are unchanged; this is not a paper-trading safety switch.",
+    });
+  }
+  if (environment !== "LIVE") return fail(res, 400, "INVALID_TEAM_ENVIRONMENT", "environment must be DEMO or LIVE.");
+
+  const selected = req.body?.provider;
+  if (selected !== "ctrader" && selected !== "hyperliquid") {
+    return fail(res, 400, "LIVE_PROVIDER_REQUIRED", "Choose cTrader or Hyperliquid as the live market-data provider.");
+  }
+  const readiness = await tradingProviderReadinessForUser(user.uid, selected);
+  if (!readiness.ready) return fail(res, 409, "LIVE_PROVIDER_NOT_READY", readiness.reason ?? "Connect the selected provider first.");
+  const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, user.uid)))).filter(Boolean);
+  if (members.length !== team.memberGoatIds.length) return fail(res, 409, "TEAM_MEMBER_MISSING", "A team member is missing; repair the team before switching environments.");
+  const mismatched = members.filter(member => resolveGoatTradingProvider(member!) !== selected);
+  if (mismatched.length) return fail(res, 409, "TEAM_PROVIDER_MISMATCH", "All team bots must be configured for " + selected + " before this room can use that live market feed.");
+
+  const updatedTeam = await goatTeamStore.save({
+    ...team, environment: "LIVE", marketDataProvider: selected, liveTradingProvider: selected,
+    updatedAt: new Date().toISOString(),
+  });
+  return res.json({
+    team: updatedTeam, executionEnabled: team.deployment?.liveTrading === true,
+    message: "Live " + selected + " market data selected. This does not grant execution permission or change existing risk checks.",
+  });
+}));
 apiRouter.get("/goat-teams/:id", handle(async (req, res) => {
   const user = requireUser(req);
   const team = await goatTeamStore.getForUser(req.params.id, user.uid);

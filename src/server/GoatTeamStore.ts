@@ -6,6 +6,8 @@ import type { TradingProvider } from "../types";
 
 export type GoatTeamCoordinationMode = "INDEPENDENT" | "CONSENSUS" | "LEAD_REVIEW";
 export type GoatTeamStatus = "DRAFT" | "DEPLOYED" | "PAUSED" | "PARTIAL";
+export type GoatTeamEnvironment = "DEMO" | "LIVE";
+export type GoatTeamMarketDataProvider = "biquote" | "ctrader" | "hyperliquid";
 
 /**
  * Risk limits chosen in the deployment step. These are a deployment-time
@@ -67,6 +69,12 @@ export interface GoatTeam {
   instructions?: string;
   /** How members reconcile their views. Derived from instructions by default. */
   coordinationMode: GoatTeamCoordinationMode;
+  /** Market-data environment only; it never grants or revokes order execution. */
+  environment?: GoatTeamEnvironment;
+  /** DEMO uses BiQuote reference prices; LIVE uses the selected venue feed. */
+  marketDataProvider?: GoatTeamMarketDataProvider;
+  /** Selected live market-data venue, not an execution permission. */
+  liveTradingProvider?: "ctrader" | "hyperliquid";
   leadGoatId?: string;
   /** Public teams appear in the discovery feed; private teams are owner-only. */
   visibility?: "PUBLIC" | "PRIVATE";
