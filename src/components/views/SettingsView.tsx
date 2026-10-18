@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Check, Moon, Palette as PaletteIcon, Sun } from 'lucide-react';
+import { Check, Moon, Palette as PaletteIcon, Sun, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { PropDaoSettings } from './PropDaoSettings';
