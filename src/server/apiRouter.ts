@@ -6508,6 +6508,8 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     return fail(res, 400, "INVALID_COORDINATION_MODE", "coordinationMode must be INDEPENDENT, CONSENSUS, or LEAD_REVIEW.");
   }
 
+  const monitoringIntervals = normaliseTeamMonitoringIntervals(req.body?.monitoringIntervals);
+  if (!monitoringIntervals.length) return fail(res, 400, "INVALID_MONITORING_INTERVALS", "Choose at least one monitoring interval.");
   const deployment = normaliseTeamDeployment(req.body?.deployment);
   if (req.body?.deployment !== undefined && req.body?.deployment !== null && !deployment) {
     return fail(res, 400, "INVALID_DEPLOYMENT_SETTINGS", "Deployment settings are incomplete. Choose a trading provider and an asset.");
@@ -6549,7 +6551,7 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     publicSlug: shareSlug,
     environment: "DEMO",
     marketDataProvider: "biquote",
-    monitoringIntervals: normaliseTeamMonitoringIntervals(req.body?.monitoringIntervals),
+    monitoringIntervals,
     ...(leadGoatId ? { leadGoatId } : {}),
     ...(deployment ? { deployment } : {}),
     status: "DRAFT",
