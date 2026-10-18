@@ -3936,7 +3936,8 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
   res.setHeader("Cache-Control", isOwner ? "private, no-store" : "public, max-age=5, stale-while-revalidate=10");
   res.json({
     team: {
-      id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status,
+      id: team.id, slug: team.publicSlug, name: team.name, instructions: isOwner ? (team.instructions ?? "") : undefined,
+      monitoringIntervals: team.monitoringIntervals ?? [15], visibility: team.visibility ?? "PRIVATE", status: team.status,
       owner: isOwner,
       coordinationMode: team.coordinationMode,
       environment: team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO"),
