@@ -7,7 +7,7 @@
  */
 
 import { GoatReasoningContext } from '../services/ai/OpenRouterClient';
-import { calculateEMA, calculateRSI, calculateATR, analyzeMarketStructure } from '../services/tracker-sdk/indicators';
+import { calculateEMA, calculateRSI, calculateATR, calculateSMA, calculateMACD, calculateBollingerBands, calculateStochastic, calculateVWAP, analyzeMarketStructure } from '../services/tracker-sdk/indicators';
 import { MarketDataProvider } from '../services/market-data/MarketDataProvider';
 import { TradingSkill } from '../types';
 import { GoatRepository, SkillRepository, NotFoundError } from './repositories';
@@ -62,9 +62,14 @@ export async function buildGoatContext(
   const struct = analyzeMarketStructure(candles, quote?.mid ?? 0);
   const deterministicIndicators = {
     rsi14: calculateRSI(candles, 14),
+    sma20: calculateSMA(candles, 20),
     ema20: calculateEMA(candles, 20),
     ema50: calculateEMA(candles, 50),
     atr14: calculateATR(candles, 14),
+    macd: calculateMACD(candles, 12, 26, 9),
+    bollingerBands20: calculateBollingerBands(candles, 20, 2),
+    stochastic14: calculateStochastic(candles, 14, 3),
+    vwap: calculateVWAP(candles),
     structureBias: struct.bias,
     demandZone: struct.demandZone,
     supplyZone: struct.supplyZone,
