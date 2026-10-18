@@ -398,19 +398,19 @@ export function RunLogView({ log, loading, onBack }: { log: RoomRunLog | null; l
    ========================================================================= */
 
 function NewsPanel({ news, loading, onRefresh }: { news: RoomNewsPayload | null; loading: boolean; onRefresh: () => void }) {
-  if (loading && !news) return <PanelEmpty title="Researching headlines…" />;
-  if (!news) return <PanelEmpty title="News unavailable" tone="bad" />;
-  if (!news.ok && news.headlines.length === 0) {
-    return <PanelEmpty title="No current headlines" tone="bad" hint={news.error ?? 'The news feed returned nothing for this instrument.'} />;
-  }
-  if (news.headlines.length === 0) return <PanelEmpty title="No current headlines" hint={`Nothing published for ${news.market} in the last three days.`} />;
+  const refreshButton = <button type="button" className="tr-news-refresh" onClick={onRefresh} disabled={loading} aria-label="Refresh news" title="Refresh news"><RefreshCw size={12} className={loading ? 'is-spinning' : ''} /><span>{loading ? 'Updating…' : 'Refresh'}</span></button>;
+  const meta = <div className="tr-news-meta"><span className="tr-news-market">{news?.market ?? 'BREAKING NEWS'}</span>{news && <span>{relativeTime(news.fetchedAt)}</span>}{refreshButton}</div>;
+  if (loading && !news) return <><div className="tr-news">{meta}<PanelEmpty title="Researching headlines…" /></div></>;
+  if (!news) return <div className="tr-news">{meta}<PanelEmpty title="News unavailable" tone="bad" /></div>;
+  if (!news.ok && news.headlines.length === 0) return <div className="tr-news">{meta}<PanelEmpty title="No current headlines" tone="bad" hint={news.error ?? 'The news feed returned nothing for this instrument.'} /></div>;
+  if (news.headlines.length === 0) return <div className="tr-news">{meta}<PanelEmpty title="No current headlines" hint={`Nothing published for ${news.market} in the last three days.`} /></div>;
 
   return (
     <div className="tr-news">
       <div className="tr-news-meta">
         <span className="tr-news-market">{news.market}</span>
         <span>{relativeTime(news.fetchedAt)}</span>
-        <button type="button" className="tr-news-refresh" onClick={onRefresh} disabled={loading} aria-label="Refresh news" title="Refresh news"><RefreshCw size={12} className={loading ? 'is-spinning' : ''} /><span>{loading ? 'Updating…' : 'Refresh'}</span></button>
+        {refreshButton}
       </div>
       {news.headlines.map((headline, index) => (
         <article className="tr-news-item" key={(headline.link ?? '') + index}>
