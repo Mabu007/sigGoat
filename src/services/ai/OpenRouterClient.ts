@@ -6,6 +6,7 @@ import {
   TradingSkill,
 } from '../../types';
 
+import type { TimeframeContext } from '../../services/market-data/multiTimeframeCandles';
 import type { NewsSnapshot } from '../news/NewsService';
 import { NewsService } from '../news/NewsService';
 
@@ -36,6 +37,14 @@ export interface GoatReasoningContext {
 
   quote?: MarketQuote;
   candles?: Candle[];
+  /**
+   * Per-timeframe history and derived structure.
+   *
+   * This is the agent's real working memory across horizons. `candles` stays
+   * the primary timeframe for backward compatibility, but a model that sees
+   * only 5m bars cannot tell an uptrend pullback from a downtrend pullback.
+   */
+  candlesByTimeframe?: Record<string, TimeframeContext>;
   skills: TradingSkill[];
   activeThesis: MarketThesis | null;
   wakeReason?: string;
@@ -1010,6 +1019,14 @@ export function buildReasoningUserPrompt(
     deterministicIndicators,
 
     candles,
+
+    /**
+     * Multi-timeframe context. Structure is derived over the WHOLE series on
+     * the server, so the model gets levels it could not have computed from the
+     * short recent tail, and coverage per timeframe is stated explicitly so a
+     * thin series is never mistaken for a flat one.
+     */
+    timeframes: context.candlesByTimeframe ?? null,
 
     activeThesis:
       serialiseThesis(

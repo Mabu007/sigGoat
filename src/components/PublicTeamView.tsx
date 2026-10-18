@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet } from 'lucide-react';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
 import {
-  MemoryPanel, NewsPanel, ToolsPanel, TradeModal, TradeRoomSidebar, TrackersPanel, TradesPanel,
-  type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId, type RoomTrade,
+  ChatPanel, MemoryPanel, NewsPanel, RunLogView, ToolsPanel, TradeModal, TradeRoomSidebar,
+  TrackersPanel, TradesPanel,
+  type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId, type RoomRun, type RoomRunLog, type RoomTrade,
 } from './TradeRoomSidebar';
 import { useAuth } from '../context/AuthContext';
 import type { Candle, MarketQuote } from '../types';
@@ -11,11 +12,20 @@ import type { Candle, MarketQuote } from '../types';
 /** A persisted agent signal. The room projection carries the full trade. */
 type Signal = RoomTrade;
 type Member = RoomMember;
-type Room = { id: string; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; memberCount: number; markets: string[]; asset?: string; provider?: string; liveTrading?: boolean; balance?: number | null; trades?: number };
+type Room = { id: string; owner?: boolean; slug: string; name: string; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; memberCount: number; markets: string[]; asset?: string; provider?: string; liveTrading?: boolean; balance?: number | null; trades?: number };
 type AccountPayload = { balance: number | null; currency?: string; source?: 'live' | 'recorded'; environment?: 'live' | 'demo'; reason?: string | null };
 type Payload = { team: Room; members: Member[] };
 type FeedItem = { id: string; memberName: string; kind: string; title: string; body: string; at: string; signal?: Signal; member?: Member };
-type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string; indicators?: RoomIndicators };
+type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string; indicators?: RoomIndicators; availableBars?: number; requestedCount?: number };
+
+/**
+ * History requested per timeframe, matching the agent's candle plan.
+ *
+ * Fetching the full series once and revealing it in the chart is far cheaper
+ * than paging on scroll: the upstream request is identical either way, and the
+ * chart never waits on the network to go back in time.
+ */
+const ROOM_TIMEFRAME_BARS: Record<string, number> = { '1D': 100, '4h': 200, '1h': 300, '15m': 400, '5m': 500 };
 
 async function read<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
@@ -103,7 +113,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
       try {
         const url = '/api/team-rooms/' + encodeURIComponent(slug) + '/market?memberId=' +
           encodeURIComponent(selectedMember.id) + '&symbol=' + encodeURIComponent(activeMarket) +
-          '&timeframe=' + encodeURIComponent(timeframe) + '&count=160';
+          '&timeframe=' + encodeURIComponent(timeframe) + '&count=' + (ROOM_TIMEFRAME_BARS[timeframe] ?? 300);
         const result = await read<MarketPayload>(await fetch(url, {
           headers: { Accept: 'application/json' }, cache: 'no-store',
         }));
@@ -203,6 +213,56 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   }, [panel, news, slug, marketSymbol]);
 
   const [openTrade, setOpenTrade] = useState<RoomTrade | null>(null);
+
+  /**
+   * Team Chat is run-backed: opening a message swaps the chat region for that
+   * run's activity ledger rather than opening a modal over it, so the chart
+   * and sidebar frame never move and Back lands where the list was.
+   */
+  const [logRun, setLogRun] = useState<RoomRun | null>(null);
+  const [runLog, setRunLog] = useState<RoomRunLog | null>(null);
+  const [logLoading, setLogLoading] = useState(false);
+  useEffect(() => {
+    if (!logRun) return;
+    let cancelled = false;
+    setLogLoading(true);
+    setRunLog(null);
+    (async () => {
+      const result = await read<RoomRunLog>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/runs/' + encodeURIComponent(logRun.workflowId), {
+        headers: { Accept: 'application/json' }, cache: 'no-store',
+      }));
+      if (!cancelled) setRunLog(result);
+    })()
+      .catch(() => { if (!cancelled) setRunLog(null); })
+      .finally(() => { if (!cancelled) setLogLoading(false); });
+    return () => { cancelled = true; };
+  }, [logRun, slug]);
+
+  const [running, setRunning] = useState(false);
+  const runTeam = useCallback(async () => {
+    setRunning(true);
+    try {
+      const headers = await getApiAuthHeaders();
+      await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/run', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ market: marketSymbol }),
+      });
+      // The run is sequential across members and takes minutes; the 15s room
+      // poll brings in each message as its run completes.
+    } catch {
+      // Surface nothing on failure: the room poll still shows whatever landed.
+    } finally {
+      setRunning(false);
+    }
+  }, [slug, marketSymbol, getApiAuthHeaders]);
+
+  const runs = useMemo<RoomRun[]>(() => (data?.members ?? [])
+    .flatMap(member => (member.runs ?? []).map(run => ({ ...run, agentName: member.name })))
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at)), [data]);
+
+  /** Only the room owner may spend model calls; visitors get no Run button. */
+  const canRun = (authMode === 'dev' || Boolean(currentUser)) && data?.team.owner === true;
 
   /** Every agent's trades, newest first, each attributed to the agent that raised it. */
   const trades = useMemo<RoomTrade[]>(() => (data?.members ?? [])
@@ -364,13 +424,9 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         }}
       />
       <div className="trade-room-stream-list">
-        {panel === 'chat' && (feed.length ? feed.map(item => <article key={item.id} className="trade-room-stream-item">
-          <div className="trade-room-stream-meta"><span className="trade-room-agent">{item.memberName}</span><time dateTime={item.at}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
-          <div className="trade-room-stream-kind">{item.kind.replaceAll('_', ' ')}</div>
-          <h2>{item.title}</h2>
-          {item.body && <p>{item.body}</p>}
-          {item.signal && <div className="trade-room-levels"><span>Entry <b>{formatPrice(item.signal.entry)}</b></span><span>Stop <b>{formatPrice(item.signal.stopLoss)}</b></span><span>Target <b>{formatPrice(item.signal.takeProfit)}</b></span></div>}
-        </article>) : <div className="trade-room-stream-empty">{error || 'Waiting for the bots to share their first market review.'}</div>)}
+        {panel === 'chat' && (logRun
+          ? <RunLogView log={runLog} loading={logLoading} onBack={() => setLogRun(null)} />
+          : <ChatPanel runs={runs} onOpenRun={setLogRun} canRun={canRun} onRun={runTeam} running={running} />)}
 
         {panel === 'news' && <NewsPanel news={news} loading={newsLoading} />}
         {panel === 'trackers' && <TrackersPanel members={data.members} />}

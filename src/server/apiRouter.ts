@@ -15,6 +15,8 @@ import { randomBytes } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import {
   Candle,
+  MarketQuote,
+  MarketThesis,
   FundGoat,
   GoatSchedule,
   GoatRuntimeState,
@@ -27,7 +29,7 @@ import {
   AutonomyMode,
   normaliseAutonomyMode,
 } from "../types";
-import { authMiddleware, requireUser, resolveAuthMode } from "./auth";
+import { authMiddleware, optionalAuthMiddleware, requireUser, resolveAuthMode } from "./auth";
 import { isTradingProvider, resolveGoatTradingProvider, resolveUserTradingProvider } from "../services/trading-provider/TradingProvider";
 import { getTradingProviderRegistration, isTradingProviderReady } from "../services/trading-provider/TradingProviderRegistry";
 import { buildCTraderAuthorizationUrl, exchangeCTraderAuthorizationCode, resolveValidCTraderToken, verifyCTraderOAuthState, type CTraderAccount } from "../services/ctrader/CTraderOAuthService";
@@ -49,7 +51,7 @@ import {
   PersistenceLayer,
   NotFoundError,
 } from "./repositories";
-import { createGoatWorkflowStore } from "./GoatWorkflowStore";
+import { createGoatWorkflowStore, type GoatWorkflowRun } from "./GoatWorkflowStore";
 import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode, type TeamDeploymentSettings, type TeamRiskParameters } from "./GoatTeamStore";
 import { assessGoatTeamMarket } from "./GoatTeamCoordination";
 import {
@@ -3764,12 +3766,84 @@ apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
   res.json({ rooms });
 }));
 
+/**
+ * Turns one workflow run into a Team Chat message.
+ *
+ * A run is a fact: it started, it moved through stages, it produced a review
+ * or a proposal or nothing, and it finished or failed. The chat needs a human
+ * headline for that fact, so it is derived from the run's OWN time window —
+ * matched against the review and proposal that run persisted — and never from
+ * the agent's latest state, which would relabel every historical message with
+ * whatever the agent happens to think now.
+ *
+ * No LLM transcript exists anywhere in this system, so nothing here invents
+ * one: the click-through opens the run's durable activity ledger instead.
+ */
+function summariseRoomRun(
+  run: GoatWorkflowRun,
+  theses: MarketThesis[],
+  signals: TradeSignal[],
+) {
+  const startedAt = Date.parse(run.createdAt);
+  const endedAt = Date.parse(run.completedAt ?? run.updatedAt ?? run.createdAt);
+  const window = [startedAt - 5_000, endedAt + 5_000];
+
+  const inWindow = <T extends { createdAt?: string; updatedAt?: string }>(rows: T[], stamp: (row: T) => string) =>
+    rows.filter((row) => { const at = Date.parse(stamp(row)); return Number.isFinite(at) && at >= window[0] && at <= window[1]; });
+
+  const signal = (run.signalId ? signals.find((item) => item.id === run.signalId) : undefined)
+    ?? inWindow(signals, (row) => row.createdAt)[0];
+  const thesis = inWindow(theses, (row) => row.updatedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+
+  const failed = run.status === "FAILED" || Boolean(run.errorCode);
+  const outcome = failed ? "failed"
+    : run.status === "RUNNING" || run.status === "WAITING_APPROVAL" ? "running"
+      : signal ? "proposal"
+        : thesis ? "review"
+          : "no_trade";
+
+  return {
+    workflowId: run.id,
+    market: run.market,
+    triggerType: run.triggerType,
+    status: run.status,
+    stage: run.stage,
+    errorCode: run.errorCode ?? null,
+    outcome,
+    at: run.createdAt,
+    completedAt: run.completedAt ?? null,
+    headline: failed
+      ? `Review failed${run.errorCode ? ` · ${run.errorCode}` : ""}`
+      : signal
+        ? `${signal.direction} · ${signal.market}`
+        : thesis
+          ? `${thesis.directionalHypothesis} · ${thesis.market}`
+          : `Review of ${run.market}`,
+    summary: signal ? [signal.thesis, signal.rationale].filter(Boolean).join("\n\n")
+      : thesis ? thesis.summary ?? thesis.assetState ?? ""
+        : failed ? (run.errorCode ?? "The review did not complete.") : "No trade was proposed on this review.",
+    bias: thesis?.directionalHypothesis ?? null,
+    confidence: thesis?.confidence ?? signal?.confidence ?? null,
+    levels: signal
+      ? { entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, riskReward: signal.riskReward ?? null }
+      : null,
+  };
+}
+
 /** Share-link room details. Public rooms are discoverable; private rooms require their unguessable slug. */
-apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
+apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, res) => {
   const slug = String(req.params.slug || "");
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
   const team = await goatTeamStore.getPublicBySlug(slug);
   if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  /**
+   * Whether the CALLER owns this room. The route is public and uncached at the
+   * edge (`private, no-store`) precisely because the answer differs per viewer
+   * — it decides whether the room offers a Run button, which spends the
+   * owner's model credits. The response is otherwise identical for everyone.
+   */
+  const viewerId = req.user?.uid ?? null;
+  const isOwner = viewerId != null && viewerId === team.ownerUserId;
   const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
   // One lookup for the whole team: every member belongs to the same owner, so
   // this resolves skill names without an extra query per agent.
@@ -3778,8 +3852,13 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
       .map(skill => [skill.id, skill.name] as const),
   );
   const details = await Promise.all(members.map(async member => {
-    const [theses, signals, activities] = await Promise.all([
-      persistence.theses.listByGoat(member!.id, 1),
+    const [theses, signals, activities, runs] = await Promise.all([
+      /**
+       * More than one thesis so each run can be matched to the review it
+       * produced by time window — otherwise every message in Team Chat would
+       * show the newest review regardless of when it ran.
+       */
+      persistence.theses.listByGoat(member!.id, 8),
       // A room shows a trade log, not a five-item preview: the Trades panel
       // needs history. Still bounded so a long-lived room cannot grow this
       // public, cached response without limit.
@@ -3787,6 +3866,7 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
       // Only a submitted execution is a trade that reached a venue. Claimed and
       // failed rows are attempts, and counting them would overstate activity.
       goatWorkflowStore.listActivities(member!.id, 500),
+      goatWorkflowStore.listRuns(member!.id, 12),
     ]);
     const thesis = theses[0];
     return {
@@ -3836,12 +3916,20 @@ apiRouter.get("/team-rooms/:slug", handle(async (req, res) => {
         createdAt: signal.createdAt,
       })),
       trades: activities.filter(activity => activity.type === "EXECUTION_SUBMITTED").length,
+      /**
+       * One entry per unit of work an agent actually did. This IS the Team
+       * Chat: a message is not a rendered thesis but a run, so clicking it can
+       * open that run's real activity log rather than inventing a transcript.
+       */
+      runs: runs.slice(0, 8).map(run => summariseRoomRun(run, theses, signals)),
     };
   }));
-  res.setHeader("Cache-Control", "public, max-age=5, stale-while-revalidate=10");
+  // Per-viewer `owner` means this response must never land in a shared cache.
+  res.setHeader("Cache-Control", isOwner ? "private, no-store" : "public, max-age=5, stale-while-revalidate=10");
   res.json({
     team: {
       id: team.id, slug: team.publicSlug, name: team.name, visibility: team.visibility ?? "PRIVATE", status: team.status,
+      owner: isOwner,
       coordinationMode: team.coordinationMode, memberCount: details.length,
       markets: [...new Set(details.flatMap(member => member.markets))],
       asset: team.deployment?.asset, provider: team.deployment?.provider,
@@ -3939,7 +4027,39 @@ async function biQuoteRoomMarket(symbol: string, timeframe: string, count: numbe
   })).filter((bar) => Number.isFinite(bar.time) && [bar.open, bar.high, bar.low, bar.close].every((value) => Number.isFinite(value) && value > 0))
     .sort((a, b) => a.time - b.time);
   if (!candles.length) throw new Error(`BiQuote returned no usable ${timeframe} candle history for ${biSymbol}.`);
-  return { quotes: [quote], candles, provider: "BiQuote", dataMode: "LIVE" };
+  return { quotes: [quote], candles, provider: "BiQuote", dataMode: "LIVE", requestedCount: count };
+}
+
+/**
+ * Short-lived cache for room market responses.
+ *
+ * A room polls this route every few seconds per viewer, and now asks for up to
+ * 500 bars of history. Those bars change once per candle, not once per poll,
+ * so re-fetching them on every request spends provider quota to produce an
+ * identical payload. The window is deliberately shorter than the chart's poll
+ * interval so live price still feels live.
+ */
+const ROOM_MARKET_CACHE_MS = 3_000;
+const roomMarketCache = new Map<string, { expiresAt: number; payload: Record<string, unknown> }>();
+
+function roomMarketCached(key: string, load: () => Promise<Record<string, unknown>>) {
+  const hit = roomMarketCache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return Promise.resolve(hit.payload);
+  return load()
+    .then(payload => {
+      // Bound the map: rooms are long-lived and symbols are unbounded.
+      if (roomMarketCache.size > 200) {
+        const oldest = roomMarketCache.keys().next().value;
+        if (oldest !== undefined) roomMarketCache.delete(oldest);
+      }
+      roomMarketCache.set(key, { expiresAt: Date.now() + ROOM_MARKET_CACHE_MS, payload });
+      return payload;
+    })
+    .catch(error => {
+      // Never cache a failure: a recovered provider should recover immediately.
+      roomMarketCache.delete(key);
+      throw error;
+    });
 }
 
 /**
@@ -3989,22 +4109,83 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
     };
   };
   try {
-    if (hyperliquidRoom) {
-      const provider = await marketDataProviderForUser(team.ownerUserId, "hyperliquid");
-      const [quotes, candles] = await Promise.all([
-        provider.getQuotes([symbol]),
-        provider.getCandles(symbol, timeframe, count),
-      ]);
-      res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
-      return res.json({ symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, indicators: indicatorsFor(candles, quotes[0]?.mid ?? 0), fetchedAt: new Date().toISOString() });
-    }
-    const market = await biQuoteRoomMarket(symbol, timeframe, count);
+    const payload = await roomMarketCached(
+      `${team.id}:${symbol}:${timeframe}:${count}`,
+      async () => {
+        if (hyperliquidRoom) {
+          const provider = await marketDataProviderForUser(team.ownerUserId, "hyperliquid");
+          const [quotes, candles] = await Promise.all([
+            provider.getQuotes([symbol]),
+            provider.getCandles(symbol, timeframe, count),
+          ]);
+          return { symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode, requestedCount: count };
+        }
+        const market = await biQuoteRoomMarket(symbol, timeframe, count);
+        return { symbol, ...market };
+      },
+    );
+    const candles = (payload.candles ?? []) as Candle[];
+    const quotes = (payload.quotes ?? []) as MarketQuote[];
     res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=5");
-    return res.json({ symbol, ...market, indicators: indicatorsFor(market.candles, market.quotes[0]?.mid ?? 0), fetchedAt: new Date().toISOString() });
+    return res.json({
+      ...payload,
+      indicators: indicatorsFor(candles, quotes[0]?.mid ?? 0),
+      /**
+       * Reported so the UI can say "193 of 400 bars" instead of implying the
+       * provider delivered everything that was asked for.
+       */
+      availableBars: candles.length,
+      fetchedAt: new Date().toISOString(),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The room's market data provider is unavailable.";
     return fail(res, 503, "ROOM_MARKET_UNAVAILABLE", message);
   }
+}));
+
+/**
+ * The durable activity log for one run.
+ *
+ * This is the click-through behind a Team Chat message. It is the workflow
+ * ledger — real, persisted stage transitions with timestamps — not a generated
+ * transcript. There is no LLM transcript in this system to show: the reasoning
+ * graph returns only its final result and the gateway discards raw content and
+ * token usage. Showing an invented "thinking" log would be worse than showing
+ * the honest record of what the run actually did.
+ */
+apiRouter.get("/team-rooms/:slug/runs/:workflowId", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const workflowId = String(req.params.workflowId || "");
+  if (!workflowId || workflowId.length > 160 || !/^[A-Za-z0-9_:-]+$/.test(workflowId)) {
+    return fail(res, 400, "INVALID_WORKFLOW_ID", "That run identifier is not valid.");
+  }
+  const team = await goatTeamStore.getPublicBySlug(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+
+  const run = await goatWorkflowStore.getRun(workflowId);
+  /**
+   * Ownership is checked against the TEAM, not the requester: the ledger is
+   * already public on this share link, but a run belonging to some other team
+   * must not be reachable just because its id was guessed.
+   */
+  if (!run || !team.memberGoatIds.includes(run.goatId)) {
+    return fail(res, 404, "RUN_NOT_FOUND", "That run is no longer available.");
+  }
+
+  const member = await persistence.goats.getForUser(run.goatId, team.ownerUserId);
+  const activities = await goatWorkflowStore.listActivities(run.goatId, 500);
+  res.setHeader("Cache-Control", "public, max-age=10, stale-while-revalidate=30");
+  res.json({
+    run: {
+      workflowId: run.id, market: run.market, triggerType: run.triggerType, stage: run.stage,
+      status: run.status, signalId: run.signalId ?? null, errorCode: run.errorCode ?? null,
+      createdAt: run.createdAt, completedAt: run.completedAt ?? null,
+    },
+    agent: member ? { id: member.id, name: member.name } : null,
+    // Scoped to THIS run: the store is per-agent, and the ledger holds every run that agent ever did.
+    activities: activities.filter(activity => activity.workflowId === run.id),
+  });
 }));
 
 /**
@@ -4041,6 +4222,58 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
 }));
 
 apiRouter.use(authMiddleware);
+
+/**
+ * Wake every member of a team.
+ *
+ * Owner-only, because a wake is a real model call with a real cost and it
+ * mutates each member's thesis. Members are woken SEQUENTIALLY: they share a
+ * market and a team playbook, so running them concurrently would have agents
+ * reasoning about the same instrument from the same instant with no ordering,
+ * and each would pay for a context the team had not yet formed.
+ *
+ * `wait` defaults to false so the UI is not blocked on several minutes of
+ * sequential reasoning — the Team Chat updates on its existing poll.
+ */
+apiRouter.post("/team-rooms/:slug/run", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const team = await goatTeamStore.getPublicBySlug(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+
+  const user = requireUser(req);
+  if (team.ownerUserId !== user.uid) {
+    return fail(res, 403, "TEAM_NOT_OWNER", "Only the owner of this room can run its bots.");
+  }
+
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.slice(0, 200) : "Owner requested a team review from the room";
+  const market = typeof req.body?.market === "string" ? req.body.market : (team.deployment?.asset ?? "");
+  const wait = req.body?.wait === true;
+
+  const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+  if (!members.length) return fail(res, 409, "TEAM_EMPTY", "This room has no bots to run.");
+
+  const wakeAll = async () => {
+    const results: { id: string; name: string; ok: boolean; error?: string }[] = [];
+    for (const member of members) {
+      try {
+        const runtime = await ensureGoatRuntime(member);
+        await runtime.wake(reason, "MANUAL_REEVALUATE", market || undefined);
+        results.push({ id: member.id, name: member.name, ok: true });
+      } catch (error) {
+        // One member failing must not abort the team: the rest still reviewed.
+        results.push({ id: member.id, name: member.name, ok: false, error: error instanceof Error ? error.message : "Review failed." });
+      }
+    }
+    return results;
+  };
+
+  if (!wait) {
+    waitUntil(wakeAll().catch(error => console.warn('[team-run] background wake failed:', error)));
+    return res.status(202).json({ started: true, members: members.length });
+  }
+  return res.json({ started: true, members: (await wakeAll()).length });
+}));
 
 /**
  * The room owner's live account balance.
