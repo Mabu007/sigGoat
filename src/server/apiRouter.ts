@@ -60,7 +60,7 @@ import {
 } from "./reasoningGateway";
 import { buildGoatContext } from "./goatContext";
 import { newsService } from "../services/news/NewsService";
-import { calculateATR, calculateEMA, calculateRSI, analyzeMarketStructure } from "../services/tracker-sdk/indicators";
+import { calculateATR, calculateEMA, calculateRSI, calculateSMA, calculateMACD, calculateBollingerBands, calculateStochastic, calculateVWAP, analyzeMarketStructure } from "../services/tracker-sdk/indicators";
 import { configureCredentialVault, credentialVault } from "./security/instance";
 import { CredentialVaultError } from "./security/CredentialVault";
 import { createVaultBackedKeyStore } from "./security/vaultKeyStore";
@@ -3974,6 +3974,11 @@ function biQuoteSymbol(symbol: string): string {
     GOLD: "XAUUSD", XAU: "XAUUSD", SILVER: "XAGUSD", XAG: "XAGUSD",
     BTC: "BTCUSD", ETH: "ETHUSD", SOL: "SOLUSD", XRP: "XRPUSD",
     DOGE: "DOGEUSD", ADA: "ADAUSD", BNB: "BNBUSD", LTC: "LTCUSD",
+    AVAX: "AVAXUSD", LINK: "LINKUSD", DOT: "DOTUSD", BCH: "BCHUSD",
+    TRX: "TRXUSD", ATOM: "ATOMUSD", UNI: "UNIUSD", NEAR: "NEARUSD",
+    AAVE: "AAVEUSD", ETC: "ETCUSD", SHIB: "SHIBUSD", TON: "TONUSD",
+    SUI: "SUIUSD", PEPE: "PEPEUSD", XLM: "XLMUSD", HBAR: "HBARUSD",
+    ICP: "ICPUSD", FIL: "FILUSD", OP: "OPUSD", ARB: "ARBUSD", INJ: "INJUSD",
   };
   if (aliases[normalized]) return aliases[normalized];
   if (/^[A-Z0-9]+(?:USD|USDT|EUR|GBP|JPY|CHF|AUD|CAD|NZD)$/.test(normalized)) {
@@ -4113,9 +4118,14 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
     const structure = analyzeMarketStructure(candles, mid);
     return {
       rsi14: calculateRSI(candles, 14),
+      sma20: calculateSMA(candles, 20),
       ema20: calculateEMA(candles, 20),
       ema50: calculateEMA(candles, 50),
       atr14: calculateATR(candles, 14),
+      macd: calculateMACD(candles, 12, 26, 9),
+      bollingerBands20: calculateBollingerBands(candles, 20, 2),
+      stochastic14: calculateStochastic(candles, 14, 3),
+      vwap: calculateVWAP(candles),
       structureBias: structure.bias,
       lastSwingHigh: structure.lastSwingHigh,
       lastSwingLow: structure.lastSwingLow,
