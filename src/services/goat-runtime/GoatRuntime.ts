@@ -1364,6 +1364,7 @@ export class GoatRuntime {
               failed ? { error: this.runtimeState.lastError ?? "wake_failed" } : undefined,
               undefined,
               failed ? "WAKE_FAILED" : undefined,
+              failed ? this.runtimeState.lastError ?? "The review failed without an error detail." : undefined,
             );
           }
         } catch (ledgerError) {
