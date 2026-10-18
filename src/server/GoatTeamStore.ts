@@ -75,6 +75,8 @@ export interface GoatTeam {
   marketDataProvider?: GoatTeamMarketDataProvider;
   /** Selected live market-data venue, not an execution permission. */
   liveTradingProvider?: "ctrader" | "hyperliquid";
+  /** User-selected analysis cadences in minutes; defaults to one review every 15 minutes. */
+  monitoringIntervals?: number[];
   leadGoatId?: string;
   /** Public teams appear in the discovery feed; private teams are owner-only. */
   visibility?: "PUBLIC" | "PRIVATE";
