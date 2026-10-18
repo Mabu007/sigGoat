@@ -3785,6 +3785,7 @@ function summariseRoomRun(
   run: GoatWorkflowRun,
   theses: MarketThesis[],
   signals: TradeSignal[],
+  isOwner = false,
 ) {
   const startedAt = Date.parse(run.createdAt);
   const endedAt = Date.parse(run.completedAt ?? run.updatedAt ?? run.createdAt);
@@ -3811,7 +3812,7 @@ function summariseRoomRun(
     status: run.status,
     stage: run.stage,
     errorCode: run.errorCode ?? null,
-    errorMessage: run.errorMessage ?? null,
+    errorMessage: isOwner ? run.errorMessage ?? null : null,
     outcome,
     at: run.createdAt,
     completedAt: run.completedAt ?? null,
@@ -3823,7 +3824,7 @@ function summariseRoomRun(
           ? `${thesis.directionalHypothesis} · ${thesis.market}`
           : `Review of ${run.market}`,
     summary: failed
-      ? (run.errorMessage ?? run.errorCode ?? "The review did not complete.")
+      ? (isOwner ? (run.errorMessage ?? run.errorCode ?? "The review did not complete.") : "This review failed. The room owner can inspect the diagnostic details.")
       : run.status === "RUNNING" && !signal && !thesis
         ? "Working through " + run.stage.replace(/_/g, " ") + "."
         : signal ? [signal.thesis, signal.rationale].filter(Boolean).join("\n\n")
@@ -3930,7 +3931,7 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
        * Chat: a message is not a rendered thesis but a run, so clicking it can
        * open that run's real activity log rather than inventing a transcript.
        */
-      runs: runs.slice(0, 8).map(run => summariseRoomRun(run, theses, signals)),
+      runs: runs.slice(0, 8).map(run => summariseRoomRun(run, theses, signals, isOwner)),
     };
   }));
   // Per-viewer `owner` means this response must never land in a shared cache.
@@ -6691,16 +6692,19 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
   });
   await stampTeamInstructions(user.uid, updated.memberGoatIds, instructions);
   // Keep deployed members and their scheduler records aligned with the room's cadence.
-  const intervalMinutes = Math.min(...monitoringIntervals);
-  for (const goatId of updated.memberGoatIds) {
-    const member = await persistence.goats.getForUser(goatId, user.uid);
-    if (!member) continue;
-    const scheduled = { ...member, schedule: { mode: "INTERVAL", intervalMinutes } as GoatSchedule, updatedAt: new Date().toISOString() };
-    await persistence.goats.save(scheduled);
-    await syncSchedule(scheduled);
-    const runtime = await ensureGoatRuntime(scheduled);
-    runtime.updateConfig(scheduled, await allSkillsFor(user.uid));
-    runtime.setSchedule(scheduled.schedule);
+  // Editing a draft must never arm background analysis before the creator deploys it.
+  if (updated.status !== "DRAFT") {
+    const intervalMinutes = Math.min(...monitoringIntervals);
+    for (const goatId of updated.memberGoatIds) {
+      const member = await persistence.goats.getForUser(goatId, user.uid);
+      if (!member) continue;
+      const scheduled = { ...member, schedule: { mode: "INTERVAL", intervalMinutes } as GoatSchedule, updatedAt: new Date().toISOString() };
+      await persistence.goats.save(scheduled);
+      await syncSchedule(scheduled);
+      const runtime = await ensureGoatRuntime(scheduled);
+      runtime.updateConfig(scheduled, await allSkillsFor(user.uid));
+      runtime.setSchedule(scheduled.schedule);
+    }
   }
   res.json({ team: updated });
 }));
