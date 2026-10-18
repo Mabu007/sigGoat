@@ -269,7 +269,6 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [news, setNews] = useState<RoomNewsPayload | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const loadNews = useCallback(async (force = false) => {
-    if (newsLoading && !force) return;
     setNewsLoading(true);
     try {
       const result = await read<RoomNewsPayload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/news' + (force ? '?refresh=1' : ''), {
@@ -279,7 +278,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     } catch (error) {
       setNews({ market: marketSymbol, ok: false, error: error instanceof Error ? error.message : 'News unavailable.', fetchedAt: new Date().toISOString(), headlines: [] });
     } finally { setNewsLoading(false); }
-  }, [slug, marketSymbol, newsLoading]);
+  }, [slug, marketSymbol]);
   useEffect(() => {
     if (panel !== 'news' && panel !== 'tools') return;
     void loadNews();
