@@ -171,7 +171,13 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       }
       return { provider, key: undefined };
     }
-    if (provider === 'spacebunny') return { provider, key: (await this.keys.getSpaceBunnyKey?.(userId))?.trim() || undefined };
+    if (provider === 'spacebunny') {
+      const userKey = (await this.keys.getSpaceBunnyKey?.(userId))?.trim();
+      if (userKey) return { provider, key: userKey };
+      const serverOpenRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+      if (serverOpenRouterKey && isPlausibleOpenRouterKey(serverOpenRouterKey)) return { provider: 'openrouter', key: serverOpenRouterKey };
+      return { provider, key: undefined };
+    }
 
     const userKey = await this.keys.getOpenRouterKey(userId);
     if (userKey && isPlausibleOpenRouterKey(userKey)) {
