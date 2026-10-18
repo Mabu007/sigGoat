@@ -181,7 +181,7 @@ export class NewsService {
    * Returns recent headlines for a market. NEVER throws: research failure is
    * reported in-band via `ok: false` so the prompt stays truthful.
    */
-  async getNews(market: string): Promise<NewsSnapshot> {
+  async getNews(market: string, forceRefresh = false): Promise<NewsSnapshot> {
     const key = market.trim().toUpperCase();
     const now = Date.now();
 
