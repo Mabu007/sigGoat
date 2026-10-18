@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet, Settings, X, Save } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet, Settings, X, Save, Play, Pause, RotateCcw } from 'lucide-react';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
 import {
   ChatPanel, MemoryPanel, NewsPanel, RunLogView, ToolsPanel, TradeModal, TradeRoomSidebar,
@@ -64,6 +64,9 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [streamVisible, setStreamVisible] = useState(true);
   const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [environmentNotice, setEnvironmentNotice] = useState('');
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [openRouterHealth, setOpenRouterHealth] = useState<'checking' | 'healthy' | 'unhealthy'>('checking');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState('');
@@ -95,6 +98,65 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     const interval = window.setInterval(() => void load(), 15000);
     return () => window.clearInterval(interval);
   }, [load]);
+
+  const changeTeamLifecycle = useCallback(async (action: 'PLAY' | 'PAUSE') => {
+    if (!data?.team.owner || lifecycleBusy) return;
+    setLifecycleBusy(true); setError(''); setEnvironmentNotice('');
+    try {
+      const authHeaders = await getApiAuthHeaders();
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/status', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ action }),
+      });
+      const result = await read<{ team: Room; message?: string }>(response);
+      setEnvironmentNotice(action === 'PLAY' ? 'Room started. Agents are scheduled and the first review will begin.' : 'Room stopped. Agents will not run scheduled reviews.');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not change room status.');
+    } finally { setLifecycleBusy(false); }
+  }, [data, lifecycleBusy, getApiAuthHeaders, load]);
+
+  const resetRoom = useCallback(async () => {
+    if (!data?.team.owner || resetBusy) return;
+    const confirmed = window.confirm('Reset this room completely? This permanently deletes the room, its agents, their saved configuration, trade proposals, market reviews and activity history. You will need to create the room again from scratch.');
+    if (!confirmed) return;
+    setResetBusy(true); setError('');
+    try {
+      const authHeaders = await getApiAuthHeaders();
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/reset', {
+        method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ confirm: true }),
+      });
+      await read<{ success: boolean }>(response);
+      window.location.href = '/#/rooms';
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reset this room.');
+      setResetBusy(false);
+    }
+  }, [data, resetBusy, getApiAuthHeaders]);
+
+  useEffect(() => {
+    if (!data?.team.owner || (authMode !== 'dev' && !currentUser)) {
+      setOpenRouterHealth('checking');
+      return;
+    }
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const headers = await getApiAuthHeaders();
+        const response = await fetch('/api/ai/models?provider=openrouter', { headers: { Accept: 'application/json', ...headers }, cache: 'no-store' });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || !Array.isArray(body.models) || body.models.length === 0) throw new Error('OpenRouter unavailable');
+        if (!cancelled) setOpenRouterHealth('healthy');
+      } catch {
+        if (!cancelled) setOpenRouterHealth('unhealthy');
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 60_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [data?.team.owner, authMode, currentUser, getApiAuthHeaders]);
 
   const changeEnvironment = useCallback(async (environment: 'DEMO' | 'LIVE', provider?: 'ctrader' | 'hyperliquid') => {
     if (!data || !data.team.owner || environmentBusy) return;
@@ -495,6 +557,11 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         </div>
 
         {data.team.owner && <div className="sg-room-owner-controls">
+          <div className="sg-room-lifecycle-controls">
+            <span className={'sg-room-ai-health is-' + openRouterHealth} role="status" title={openRouterHealth === 'healthy' ? 'OpenRouter model catalogue is responding' : openRouterHealth === 'unhealthy' ? 'OpenRouter API is unavailable or not configured' : 'Checking OpenRouter API'}><span className="sg-room-ai-pulse" />{openRouterHealth === 'healthy' ? 'OpenRouter OK' : openRouterHealth === 'unhealthy' ? 'OpenRouter down' : 'Checking AI'}</span>
+            {(data.team.status === 'PAUSED' || data.team.status === 'DRAFT') ? <button type="button" className="sg-room-lifecycle-button is-play" disabled={lifecycleBusy || resetBusy} onClick={() => void changeTeamLifecycle('PLAY')} title="Start room" aria-label="Start room"><Play size={14} fill="currentColor" /><span>{lifecycleBusy ? 'Starting…' : 'Start'}</span></button> : <button type="button" className="sg-room-lifecycle-button is-pause" disabled={lifecycleBusy || resetBusy} onClick={() => void changeTeamLifecycle('PAUSE')} title="Stop room" aria-label="Stop room"><Pause size={14} fill="currentColor" /><span>{lifecycleBusy ? 'Stopping…' : 'Stop'}</span></button>}
+            <button type="button" className="sg-room-lifecycle-button is-reset" disabled={lifecycleBusy || resetBusy} onClick={() => void resetRoom()} title="Delete this room and start from scratch" aria-label="Reset room"><RotateCcw size={13} /><span>{resetBusy ? 'Resetting…' : 'Reset'}</span></button>
+          </div>
           <button type="button" className="sg-room-settings-button" onClick={() => void openRoomSettings()} aria-label="Room settings" title="Room settings"><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
           <div className="sg-room-environment-controls" aria-label="Team market-data environment">
           <button type="button" disabled={environmentBusy || (data.team.environment ?? 'DEMO') === 'DEMO'} onClick={() => void changeEnvironment('DEMO')} aria-pressed={(data.team.environment ?? 'DEMO') === 'DEMO'}>Demo · BiQuote</button>

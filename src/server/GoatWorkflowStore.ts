@@ -376,6 +376,33 @@ export class GoatWorkflowStore {
    * ledger alone cannot produce that, because activities carry no prose —
    * only the run knows when the work happened and how it ended.
    */
+  /** Permanently remove a GOAT's run history, activity ledger and execution intents. */
+  async deleteByGoat(goatId: string): Promise<void> {
+    if (this.firestore) {
+      const collections = [this.runsCollection(), this.activitiesCollection(), this.executionsCollection()];
+      for (const collection of collections) {
+        const snapshot = await collection.where("goatId", "==", goatId).get();
+        for (let offset = 0; offset < snapshot.docs.length; offset += 400) {
+          const batch = this.firestore.batch();
+          for (const doc of snapshot.docs.slice(offset, offset + 400)) batch.delete(doc.ref);
+          await batch.commit();
+        }
+      }
+      return;
+    }
+    let changed = false;
+    for (const [id, run] of Object.entries(this.db.runs)) {
+      if (run.goatId === goatId) { delete this.db.runs[id]; changed = true; }
+    }
+    for (const [id, activity] of Object.entries(this.db.activities)) {
+      if (activity.goatId === goatId) { delete this.db.activities[id]; changed = true; }
+    }
+    for (const [id, intent] of Object.entries(this.db.executions)) {
+      if (intent.goatId === goatId) { delete this.db.executions[id]; changed = true; }
+    }
+    if (changed) this.persist();
+  }
+
   async listRuns(goatId: string, limit = 20): Promise<GoatWorkflowRun[]> {
     const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
     if (this.firestore) {

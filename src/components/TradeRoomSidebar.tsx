@@ -230,6 +230,13 @@ function compactChatLine(value: string, maxLength = 170): string {
   return clean.slice(0, cutoff).trimEnd() + '…';
 }
 
+const AGENT_NAME_COLORS = ['#7c9cff', '#52d6a2', '#f0b35a', '#e58bc4', '#63c7e8', '#b7a0ff', '#f28f75'];
+function agentNameColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  return AGENT_NAME_COLORS[Math.abs(hash) % AGENT_NAME_COLORS.length];
+}
+
 function localMessageTime(value: string): string {
   const date = new Date(value);
   return Number.isFinite(date.getTime())
@@ -300,9 +307,8 @@ export function ChatPanel({ runs, onOpenRun, canRun, onRun, running }: {
               onClick={() => onOpenRun(run)}
             >
               <div className="tr-chat-msg-head">
-                <span className="tr-agent-avatar" aria-hidden="true">{run.agentName.split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()}</span>
-                <span className="tr-agent-name">{run.agentName}</span>
-                <span className={cx('tr-chat-kind', 'is-' + run.outcome)}>{OUTCOME_LABEL[run.outcome]}</span>
+                <span className={'tr-agent-pulse' + (run.outcome === 'running' ? ' is-working' : '')} aria-hidden="true" />
+                <span className="tr-agent-name" style={{ color: agentNameColor(run.agentName) }}>{run.agentName}</span>
                 <time dateTime={run.at} title={new Date(run.at).toLocaleString()}><span className="tr-chat-clock">{localMessageTime(run.at)}</span><span className="tr-chat-relative">{relativeTime(run.at)}</span></time>
               </div>
               <div className="tr-chat-msg-title">
