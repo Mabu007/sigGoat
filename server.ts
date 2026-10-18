@@ -8,6 +8,7 @@ import { createViteGuard } from './src/server/devViteGuard';
 import { appPersistence, restoreRuntimes, seedDefaultSkills } from './src/server/apiRouter';
 import { goatRuntimeRegistry } from './src/services/goat-runtime/GoatRuntimeRegistry';
 import { hyperliquidProvider } from './src/services/market-data/hyperliquid/HyperliquidMarketDataProvider';
+import { paperProvider } from './src/services/market-data/PaperMarketDataProvider';
 import { marketStateStore } from './src/server/apiRouter';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -17,7 +18,11 @@ function logStartup(mode: string): void {
   console.log('  SIRGOAT starting up');
   console.log(`  Persistence mode: ${appPersistence.mode}`);
   console.log(`  Auth mode: see GET /api/settings/status`);
-  console.log(`  Market data: PAPER (deterministic simulated feed — not live prices)`);
+  const marketProvider =
+    process.env.MARKET_DATA_PROVIDER === 'paper'
+      ? paperProvider
+      : hyperliquidProvider;
+  console.log(`  Market data: ${marketProvider.name} (${marketProvider.dataMode})`);
   console.log('');
 }
 
