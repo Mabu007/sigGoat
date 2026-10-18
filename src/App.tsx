@@ -49,7 +49,7 @@ function tabFromHash(): TabId {
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
   const [createTeamRequested, setCreateTeamRequested] = useState(false);
-  const [selectedRoom, setSelectedRoom] = useState<{ type: 'team' | 'bot'; slug: string } | null>(null);
+  const [selectedRoom, setSelectedRoom] = useState<{ type: 'team' | 'bot'; slug: string; categoryName: string } | null>(null);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
@@ -90,11 +90,11 @@ const MainApp: React.FC = () => {
             createTeamRequested={createTeamRequested}
             onCreateTeamRequestHandled={() => setCreateTeamRequested(false)}
             showDirectoryContent={activeTab === 'rooms' && !selectedRoom}
-            onOpenRoom={(type, slug) => { setSelectedRoom({ type, slug }); setActiveTab('rooms'); }}
+            onOpenRoom={(type, slug, categoryName) => { setSelectedRoom({ type, slug, categoryName }); setActiveTab('rooms'); }}
             onShowDirectory={() => navigate('rooms')}
           />
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {selectedRoom?.type === 'team' && <PublicTeamView slug={selectedRoom.slug} onBack={() => setSelectedRoom(null)} />}
+            {selectedRoom?.type === 'team' && <PublicTeamView slug={selectedRoom.slug} categoryName={selectedRoom.categoryName} onBack={() => setSelectedRoom(null)} />}
             {selectedRoom?.type === 'bot' && <PublicRobotView slug={selectedRoom.slug} onBack={() => setSelectedRoom(null)} />}
             {!selectedRoom && activeTab === 'trades' && <ProposalsView />}
             {!selectedRoom && activeTab === 'skills' && <SkillsView />}
