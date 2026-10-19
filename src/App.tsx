@@ -34,7 +34,7 @@ const ViewLoadingFallback: React.FC = () => (
  */
 function tabFromHash(): TabId {
   if (typeof window === 'undefined') return 'rooms';
-  const raw = window.location.hash.replace(/^#\/?/, '');
+  const raw = hashPath();
   const allowed: TabId[] = ['rooms', 'trades', 'settings', 'markets', 'proposals', 'skills', 'backtest'];
   /**
    * `goats` is no longer a destination: trading agents are created as teams.
@@ -46,15 +46,39 @@ function tabFromHash(): TabId {
   return allowed.includes(raw as TabId) ? (raw as TabId) : 'rooms';
 }
 
+/** The path part of the hash, without any query string. */
+function hashPath(): string {
+  if (typeof window === 'undefined') return '';
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  const query = raw.indexOf('?');
+  return query >= 0 ? raw.slice(0, query) : raw;
+}
+
+/**
+ * The section of the current tab to put in view.
+ *
+ * A room's "Connect Broker" panel sends the member to the exact connection
+ * screen they need — cTrader or PropDAO — rather than to the top of a long
+ * settings page and leaving them to hunt for it.
+ */
+function hashSection(): string {
+  if (typeof window === 'undefined') return '';
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  const query = raw.indexOf('?');
+  if (query < 0) return '';
+  return new URLSearchParams(raw.slice(query + 1)).get('section') ?? '';
+}
+
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
+  const [settingsSection, setSettingsSection] = useState<string>(hashSection);
   const [createTeamRequested, setCreateTeamRequested] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState<{ type: 'team' | 'bot'; slug: string; backLabel: string } | null>(null);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
   useEffect(() => {
-    const onHashChange = () => { setSelectedRoom(null); setActiveTab(tabFromHash()); };
+    const onHashChange = () => { setSelectedRoom(null); setActiveTab(tabFromHash()); setSettingsSection(hashSection()); };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
@@ -99,7 +123,7 @@ const MainApp: React.FC = () => {
             {!selectedRoom && activeTab === 'trades' && <ProposalsView />}
             {!selectedRoom && activeTab === 'skills' && <SkillsView />}
             {!selectedRoom && activeTab === 'backtest' && <BacktestView />}
-            {!selectedRoom && activeTab === 'settings' && <SettingsView />}
+            {!selectedRoom && activeTab === 'settings' && <SettingsView section={settingsSection} />}
           </React.Suspense>
         </main>
       </div>

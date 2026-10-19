@@ -96,7 +96,7 @@ function validateProviderKey(raw: string, provider: AiProvider): string | null {
   return null;
 }
 
-export const SettingsView: React.FC = () => {
+export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
   const { theme, setTheme } = useTheme();
   const {
     currentUser,
@@ -141,6 +141,23 @@ export const SettingsView: React.FC = () => {
   const [isSavingPreferences, setIsSavingPreferences] = useState(false);
   const [preferencesError, setPreferencesError] = useState<string | null>(null);
   const [isSavingAutonomy, setIsSavingAutonomy] = useState(false);
+
+  /**
+   * Bring the requested section into view.
+   *
+   * A room's "Connect Broker" panel links straight to the connection screen
+   * the member needs, so the section is scrolled into place once it is on
+   * the page. The delay lets the section mount before it is measured.
+   */
+  useEffect(() => {
+    if (!section) return;
+    const target = document.getElementById(section);
+    if (!target) return;
+    const timer = window.setTimeout(() => {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [section]);
 
   const savePreferences = useCallback(
     async (patch: Partial<Pick<UserPreferences, 'tradingProvider' | 'autonomyMode' | 'aiModel'>>) => {

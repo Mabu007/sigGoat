@@ -1429,7 +1429,7 @@
 
 
 /* ==========================================================================
-   TEAM CHAT — concise, time-stamped agent activity
+   ROOM CHAT — the shared conversation of a human-led room
    ========================================================================== */
 .tr-chat-status {
   display: flex;
@@ -1620,6 +1620,286 @@
 }
 .tr-chat-stage { text-transform: capitalize; }
 .tr-chat-open { margin-left: auto; color: var(--color-accent); font-weight: 800; }
+/* ---- composer ---------------------------------------------------------- */
+.tr-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 11px 12px 4px;
+  padding: 9px 9px 8px;
+  border: 1px solid var(--tr-line-soft);
+  border-radius: 12px;
+  background: var(--color-surface);
+}
+.tr-composer:focus-within {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--tr-line));
+}
+.tr-composer.is-locked {
+  align-items: flex-start;
+  gap: 8px;
+}
+.tr-composer-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 7px 8px;
+  border: 1px solid var(--tr-line-soft);
+  border-radius: 9px;
+  background: var(--color-raised);
+  color: var(--color-fg);
+  font: 400 11px/1.5 var(--tr-sans);
+  resize: vertical;
+  outline: none;
+}
+.tr-composer-input:focus {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--tr-line));
+}
+.tr-composer-input::placeholder { color: var(--color-fg-subtle); }
+.tr-composer-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tr-composer-count {
+  color: var(--color-fg-subtle);
+  font: 500 8px/1 var(--tr-sans);
+}
+.tr-composer-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 6px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 44%, var(--tr-line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-accent) 15%, var(--color-surface));
+  color: var(--color-fg);
+  font: 750 10px/1.2 var(--tr-sans);
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease;
+}
+.tr-composer-send:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 24%, var(--color-surface));
+  border-color: var(--color-accent);
+}
+.tr-composer-send:active:not(:disabled) { transform: translateY(1px); }
+.tr-composer-send:disabled { cursor: not-allowed; opacity: .55; }
+.tr-composer-send:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.tr-composer-locked-text {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font: 400 10px/1.5 var(--tr-sans);
+}
+
+/* ---- message cards ---------------------------------------------------- */
+.tr-chat-msg.is-static {
+  cursor: default;
+  border-radius: 12px;
+}
+.tr-chat-msg.is-static:hover {
+  border-color: var(--tr-line-soft);
+  background: var(--color-surface);
+  box-shadow: none;
+  transform: none;
+}
+.tr-chat-msg.is-self { border-left: 2px solid var(--color-accent); }
+.tr-chat-summary.is-body {
+  margin-top: 8px;
+  white-space: pre-wrap;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.tr-chat-kind.is-agent {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, var(--tr-line));
+  color: var(--color-accent);
+}
+.tr-chat-kind.is-private {
+  border-color: color-mix(in srgb, var(--color-positive) 40%, var(--tr-line));
+  color: var(--color-positive);
+}
+.tr-panel-error {
+  margin: 10px 12px 4px;
+  color: var(--color-negative);
+  font: 500 10px/1.5 var(--tr-sans);
+}
+
+/* ---- private mentor thread -------------------------------------------- */
+.tr-mentor-threads {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 11px 12px 4px;
+}
+.tr-mentor-thread {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--tr-line-soft);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-fg);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease;
+}
+.tr-mentor-thread:hover { border-color: color-mix(in srgb, var(--color-accent) 45%, var(--tr-line)); }
+.tr-mentor-thread.is-active {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--color-surface));
+}
+.tr-mentor-thread-name {
+  min-width: 0;
+  overflow: hidden;
+  font: 750 10px/1.3 var(--tr-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tr-mentor-thread-time {
+  color: var(--color-fg-subtle);
+  font: 500 8px/1.3 var(--tr-sans);
+  white-space: nowrap;
+}
+.tr-mentor-thread-last {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--color-fg-muted);
+  font: 400 9.5px/1.4 var(--tr-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- group details ---------------------------------------------------- */
+.tr-details { padding-bottom: 10px; }
+.tr-details-card {
+  margin: 0 12px;
+  padding: 11px 11px 8px;
+  border: 1px solid var(--tr-line-soft);
+  border-radius: 12px;
+  background: var(--color-surface);
+}
+.tr-details-name {
+  margin: 0;
+  color: var(--color-fg);
+  font: 800 13px/1.35 var(--tr-sans);
+  overflow-wrap: anywhere;
+}
+.tr-details-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+.tr-details-description {
+  margin: 9px 0 0;
+  color: var(--color-fg-muted);
+  font: 400 10.5px/1.6 var(--tr-sans);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tr-details-description.is-empty { color: var(--color-fg-subtle); font-style: italic; }
+.tr-details-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+}
+.tr-details-row + .tr-details-row { border-top: 1px solid var(--tr-line-soft); }
+.tr-details-row-label {
+  flex: 0 0 auto;
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.4 var(--tr-sans);
+}
+.tr-details-row-value {
+  min-width: 0;
+  color: var(--color-fg);
+  font: 650 10.5px/1.4 var(--tr-sans);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.tr-details-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 12px;
+}
+.tr-details-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 9px;
+}
+.tr-details-member:nth-child(odd) { background: color-mix(in srgb, var(--color-raised) 55%, transparent); }
+.tr-details-member-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-fg);
+  font: 650 10.5px/1.3 var(--tr-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tr-details-member-since {
+  margin-left: auto;
+  color: var(--color-fg-subtle);
+  font: 500 8px/1.3 var(--tr-sans);
+  white-space: nowrap;
+}
+
+/* ---- connect broker --------------------------------------------------- */
+.tr-broker { padding-bottom: 10px; }
+.tr-broker-card {
+  margin: 0 12px 9px;
+  padding: 11px 11px 10px;
+  border: 1px solid var(--tr-line-soft);
+  border-radius: 12px;
+  background: var(--color-surface);
+}
+.tr-broker-card.is-connected { border-color: color-mix(in srgb, var(--color-positive) 35%, var(--tr-line)); }
+.tr-broker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tr-broker-name {
+  color: var(--color-fg);
+  font: 800 12px/1.3 var(--tr-sans);
+}
+.tr-broker-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-fg-subtle);
+  font: 650 9px/1.3 var(--tr-sans);
+}
+.tr-broker-state.is-connected { color: var(--color-positive); }
+.tr-broker-detail {
+  margin: 7px 0 9px;
+  color: var(--color-fg-muted);
+  font: 400 10px/1.55 var(--tr-sans);
+  overflow-wrap: anywhere;
+}
+.tr-broker-action {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 40%, var(--tr-line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-accent) 11%, var(--color-surface));
+  color: var(--color-fg);
+  font: 700 10.5px/1.3 var(--tr-sans);
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease;
+}
+.tr-broker-action:hover { background: color-mix(in srgb, var(--color-accent) 20%, var(--color-surface)); }
+.tr-broker-action:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 .tr-log-bar {
   display: flex;
   align-items: center;

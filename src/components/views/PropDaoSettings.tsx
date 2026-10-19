@@ -167,7 +167,7 @@ export function PropDaoSettings() {
   const saved = credential?.configured === true;
 
   return (
-    <section className="panel overflow-hidden">
+    <section id="propdao-connection" className="panel overflow-hidden">
       <div className="flex items-start justify-between gap-3 border-b border-line p-4">
         <div className="flex items-start gap-3">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent-text">

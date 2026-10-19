@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet, Settings, X, Save, Play, Pause, RotateCcw, Sun, Moon, ShoppingBag } from 'lucide-react';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
 import {
-  ChatPanel, MemoryPanel, NewsPanel, RunLogView, ToolsPanel, TradeModal, TradeRoomSidebar,
-  TrackersPanel, TradesPanel,
+  ConnectBrokerPanel, GroupDetailsPanel, MentorChatPanel, NewsPanel, RoomChatPanel, RunLogView, ToolsPanel, TradeRoomSidebar,
+  type BrokerConnectionState, type MentorThreadSummary, type RoomChatMessage, type RoomGroupDetails, type RoomGroupMember,
   type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId, type RoomRun, type RoomRunLog, type RoomTrade,
 } from './TradeRoomSidebar';
 import { useAuth } from '../context/AuthContext';
@@ -20,6 +20,33 @@ type AccountPayload = { balance: number | null; currency?: string; source?: 'liv
 type Payload = { team: Room; members: Member[] };
 type FeedItem = { id: string; memberName: string; kind: string; title: string; body: string; at: string; signal?: Signal; member?: Member };
 type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string; environment?: 'DEMO' | 'LIVE'; marketDataProvider?: string; executionAllowed?: boolean; indicators?: RoomIndicators; availableBars?: number; requestedCount?: number };
+
+/**
+ * WHO AM I IN THIS ROOM.
+ *
+ * The room document itself is public and shared-cache, so everything that
+ * depends on the viewer lives on its own authenticated route.
+ */
+type RoomIdentity = {
+  signedIn: boolean;
+  isOwner: boolean;
+  isMember: boolean;
+  role: 'LEADER' | 'MEMBER' | null;
+  room: RoomGroupDetails;
+  memberCount: number;
+  members: RoomGroupMember[];
+};
+
+/** One page of the room conversation. */
+type RoomChatPage = { messages: RoomChatMessage[]; hasMore: boolean };
+
+/** The private line between a member and the room's leader. */
+type MentorChatPayload = {
+  role: 'LEADER' | 'MEMBER';
+  mentor: { id: string; displayName: string };
+  threads: MentorThreadSummary[];
+  thread: { memberId: string; memberName: string; messages: RoomChatMessage[] } | null;
+};
 
 /**
  * History requested per timeframe, matching the agent's candle plan.
@@ -78,13 +105,45 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [roomSkills, setRoomSkills] = useState<RoomSkill[]>([]);
   const [skillsToAdd, setSkillsToAdd] = useState<string[]>([]);
   const [account, setAccount] = useState<AccountPayload | null>(null);
-  const { currentUser, authMode, getApiAuthHeaders } = useAuth();
+  const [roomIdentity, setRoomIdentity] = useState<RoomIdentity | null>(null);
+  const [identityError, setIdentityError] = useState('');
+  const [joining, setJoining] = useState(false);
+  const [chatMessages, setChatMessages] = useState<RoomChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const [chatSending, setChatSending] = useState(false);
+  const [mentorThreads, setMentorThreads] = useState<MentorThreadSummary[]>([]);
+  const [mentorMessages, setMentorMessages] = useState<RoomChatMessage[]>([]);
+  const [mentorMemberId, setMentorMemberId] = useState<string | null>(null);
+  const [mentorLoading, setMentorLoading] = useState(false);
+  const [mentorError, setMentorError] = useState('');
+  const [mentorSending, setMentorSending] = useState(false);
+  const [broker, setBroker] = useState<BrokerConnectionState>({ cTrader: null, propDao: null });
+  const [brokerLoading, setBrokerLoading] = useState(false);
+  const [brokerError, setBrokerError] = useState('');
+  const { currentUser, authMode, getApiAuthHeaders, loginWithGoogle } = useAuth();
   const { theme, toggleTheme } = useTheme();
+
+  /**
+   * Auth headers for a room request, or none at all for a visitor who is not
+   * signed in.
+   *
+   * A room link is public: someone who has never signed in must still be
+   * able to OPEN it and read what it is. Asking for a token they do not have
+   * would turn a public page into an error.
+   */
+  const optionalAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    if (authMode === 'dev') {
+      try { return await getApiAuthHeaders(); } catch { return {}; }
+    }
+    if (!currentUser) return {};
+    try { return await getApiAuthHeaders(); } catch { return {}; }
+  }, [authMode, currentUser, getApiAuthHeaders]);
 
   const load = useCallback(async () => {
     try {
       const result = await read<Payload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug), {
-        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) }, cache: 'no-store',
+        headers: { Accept: 'application/json', ...(await optionalAuthHeaders()) }, cache: 'no-store',
       }));
       setData(result);
       setError('');
@@ -94,7 +153,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     } finally {
       setLoading(false);
     }
-  }, [slug, getApiAuthHeaders]);
+  }, [slug, optionalAuthHeaders]);
 
   useEffect(() => {
     void load();
@@ -354,12 +413,232 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     return () => window.clearInterval(timer);
   }, [panel, loadNews]);
 
-  const [openTrade, setOpenTrade] = useState<RoomTrade | null>(null);
+  /* ------------------------------------------------------------------ */
+  /* The room community: who I am, the room chat, the mentor thread.     */
+  /* ------------------------------------------------------------------ */
+
+  const signedIn = Boolean(currentUser) || authMode === 'dev';
+
+  /** The viewer's standing in this room. Cheap, and polled with the room. */
+  const loadIdentity = useCallback(async () => {
+    try {
+      const result = await read<RoomIdentity>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/me', {
+        headers: { Accept: 'application/json', ...(await optionalAuthHeaders()) }, cache: 'no-store',
+      }));
+      setRoomIdentity(result);
+      setIdentityError('');
+    } catch (err) {
+      setIdentityError(err instanceof Error ? err.message : 'Could not load your access to this room.');
+    }
+  }, [slug, optionalAuthHeaders]);
+
+  useEffect(() => {
+    void loadIdentity();
+    const timer = window.setInterval(() => void loadIdentity(), 30000);
+    return () => window.clearInterval(timer);
+  }, [loadIdentity]);
+
+  /** Joining is what makes the room conversation available to this person. */
+  const joinRoom = useCallback(async () => {
+    if (joining) return;
+    if (!signedIn) {
+      /**
+       * A room link is public, so a visitor who has never signed in can be
+       * looking at it. Joining needs an identity, so the first step is
+       * signing in — the room stays exactly where it is afterwards.
+       */
+      setChatError('');
+      try {
+        await loginWithGoogle();
+      } catch (err) {
+        setChatError(err instanceof Error ? err.message : 'Sign-in failed.');
+      }
+      return;
+    }
+    setJoining(true); setChatError(''); setMentorError('');
+    try {
+      const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json' });
+      for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+      await read(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/join', { method: 'POST', headers, body: '{}' }));
+      await loadIdentity();
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'Could not join this room.');
+    } finally { setJoining(false); }
+  }, [joining, signedIn, slug, getApiAuthHeaders, loadIdentity, loginWithGoogle]);
 
   /**
-   * Team Chat is run-backed: opening a message swaps the chat region for that
-   * run's activity ledger rather than opening a modal over it, so the chart
-   * and sidebar frame never move and Back lands where the list was.
+   * The room conversation.
+   *
+   * Read incrementally: the first read takes the latest page, and every
+   * poll after it asks only for what has been written since the last message
+   * this browser saw. The room's history is never re-read.
+   *
+   * The cursor lives in a ref, not in state: putting it in state would make
+   * every new message restart the poll and re-read the page.
+   */
+  const chatCursor = useRef<string | null>(null);
+  const chatMessagesRef = useRef<RoomChatMessage[]>([]);
+  const applyChatMessages = useCallback((next: RoomChatMessage[]) => {
+    chatMessagesRef.current = next;
+    setChatMessages(next);
+  }, []);
+
+  const loadChat = useCallback(async (incremental: boolean) => {
+    if (!roomIdentity?.isMember) return;
+    if (!incremental) setChatLoading(true);
+    try {
+      const cursor = incremental ? chatCursor.current : null;
+      const query = cursor ? '?since=' + encodeURIComponent(cursor) : '';
+      const result = await read<RoomChatPage>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/chat' + query, {
+        headers: { Accept: 'application/json', ...(await optionalAuthHeaders()) }, cache: 'no-store',
+      }));
+      const previous = chatMessagesRef.current;
+      const merged = cursor
+        ? [...previous, ...result.messages.filter(message => !previous.some(existing => existing.id === message.id))]
+        : result.messages;
+      applyChatMessages(merged);
+      chatCursor.current = merged.length ? merged[merged.length - 1].createdAt : null;
+      setChatError('');
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'The room conversation is unavailable.');
+    } finally { setChatLoading(false); }
+  }, [slug, roomIdentity?.isMember, optionalAuthHeaders, applyChatMessages]);
+
+  useEffect(() => {
+    if (panel !== 'chat' || !roomIdentity?.isMember) return;
+    chatCursor.current = null;
+    void loadChat(false);
+    const timer = window.setInterval(() => void loadChat(true), 6000);
+    return () => window.clearInterval(timer);
+  }, [panel, roomIdentity?.isMember, loadChat]);
+
+  const sendChatMessage = useCallback(async (content: string) => {
+    setChatSending(true); setChatError('');
+    try {
+      const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json' });
+      for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+      const result = await read<{ message: RoomChatMessage }>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/chat', {
+        method: 'POST', headers, body: JSON.stringify({ content }),
+      }));
+      const previous = chatMessagesRef.current;
+      if (!previous.some(message => message.id === result.message.id)) {
+        applyChatMessages([...previous, result.message]);
+        chatCursor.current = result.message.createdAt;
+      }
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'Your message could not be posted.');
+    } finally { setChatSending(false); }
+  }, [slug, getApiAuthHeaders, applyChatMessages]);
+
+  /**
+   * The private line to the room's leader. A member reads their own thread;
+   * the leader reads the threads their members started.
+   *
+   * The selected thread is kept in a ref so that choosing one does not
+   * restart the poll and drop the leader back to an empty inbox.
+   */
+  const mentorSelection = useRef<string | null>(null);
+
+  const loadMentorChat = useCallback(async (memberId?: string | null) => {
+    if (!roomIdentity?.isMember) return;
+    setMentorLoading(true);
+    try {
+      const query = memberId ? '?memberId=' + encodeURIComponent(memberId) : '';
+      const result = await read<MentorChatPayload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/mentor-chat' + query, {
+        headers: { Accept: 'application/json', ...(await optionalAuthHeaders()) }, cache: 'no-store',
+      }));
+      setMentorThreads(result.threads);
+      setMentorMessages(result.thread?.messages ?? []);
+      mentorSelection.current = result.thread?.memberId ?? mentorSelection.current;
+      setMentorMemberId(result.thread?.memberId ?? null);
+      setMentorError('');
+    } catch (err) {
+      setMentorError(err instanceof Error ? err.message : 'The private conversation is unavailable.');
+    } finally { setMentorLoading(false); }
+  }, [slug, roomIdentity?.isMember, optionalAuthHeaders]);
+
+  useEffect(() => {
+    if (panel !== 'mentor' || !roomIdentity?.isMember) return;
+    void loadMentorChat(mentorSelection.current);
+    const timer = window.setInterval(() => void loadMentorChat(mentorSelection.current), 8000);
+    return () => window.clearInterval(timer);
+  }, [panel, roomIdentity?.isMember, loadMentorChat]);
+
+  const selectMentorThread = useCallback((memberId: string) => {
+    mentorSelection.current = memberId;
+    setMentorMemberId(memberId);
+    void loadMentorChat(memberId);
+  }, [loadMentorChat]);
+
+  const sendMentorMessage = useCallback(async (content: string) => {
+    setMentorSending(true); setMentorError('');
+    try {
+      const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json' });
+      for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+      const result = await read<{ message: RoomChatMessage; memberId: string }>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/mentor-chat', {
+        method: 'POST', headers,
+        body: JSON.stringify({ content, ...(roomIdentity?.role === 'LEADER' && mentorMemberId ? { memberId: mentorMemberId } : {}) }),
+      }));
+      setMentorMessages(previous => previous.some(message => message.id === result.message.id) ? previous : [...previous, result.message]);
+    } catch (err) {
+      setMentorError(err instanceof Error ? err.message : 'Your message could not be sent.');
+    } finally { setMentorSending(false); }
+  }, [slug, getApiAuthHeaders, roomIdentity?.role, mentorMemberId]);
+
+  /**
+   * The member's own broker connections. The panel only reports what the
+   * server verified; the connection itself is made in Settings, which owns
+   * the OAuth flow and the vault.
+   */
+  const loadBrokerState = useCallback(async () => {
+    if (!signedIn) return;
+    setBrokerLoading(true);
+    try {
+      const headers = { Accept: 'application/json', ...(await getApiAuthHeaders()) };
+      const [cTraderResponse, propDaoResponse] = await Promise.all([
+        fetch('/api/ctrader/status', { headers }),
+        fetch('/api/propdao/status', { headers }),
+      ]);
+      const cTraderBody = await cTraderResponse.json().catch(() => null);
+      const propDaoBody = await propDaoResponse.json().catch(() => null);
+      setBroker({
+        cTrader: cTraderResponse.ok && cTraderBody
+          ? {
+              configured: cTraderBody.configured === true,
+              connected: cTraderBody.connected === true,
+              selectedAccountId: cTraderBody.selectedAccountId ?? null,
+              selectedAccountIsLive: cTraderBody.selectedAccountIsLive === true,
+            }
+          : null,
+        propDao: propDaoResponse.ok && propDaoBody
+          ? { configured: propDaoBody.credential?.configured === true, connected: propDaoBody.connected === true }
+          : null,
+      });
+      setBrokerError(cTraderResponse.ok && propDaoResponse.ok ? '' : 'Could not read your broker connections.');
+    } catch (err) {
+      setBrokerError(err instanceof Error ? err.message : 'Could not read your broker connections.');
+    } finally { setBrokerLoading(false); }
+  }, [signedIn, getApiAuthHeaders]);
+
+  useEffect(() => {
+    if (panel !== 'broker') return;
+    void loadBrokerState();
+  }, [panel, loadBrokerState]);
+
+  /**
+   * The connection screens live in Settings, which is where the OAuth
+   * callback, the account selection and the vault all are. The room sends
+   * the member there with the right section in view.
+   */
+  const openBrokerSettings = useCallback((section: 'ctrader' | 'propdao') => {
+    window.location.hash = '/settings?section=' + section;
+  }, []);
+
+  /**
+   * The room conversation is human-led, but the room's agents still report
+   * what they did. Opening one of those entries swaps the chat region for
+   * that run's activity ledger rather than opening a modal over it, so the
+   * chart and sidebar frame never move and Back lands where the list was.
    */
   const [logRun, setLogRun] = useState<RoomRun | null>(null);
   const [runLog, setRunLog] = useState<RoomRunLog | null>(null);
@@ -421,14 +700,6 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     const hasActiveFreshRun = runs.some(run => startedAfterRequest(run) && run.outcome === 'running');
     if (Date.now() - runRequestedAt > 15 * 60_000 || (membersWithFreshRuns.length === data.members.length && !hasActiveFreshRun)) setRunRequestedAt(null);
   }, [data, runs, runRequestedAt]);
-
-  /** Every agent's trades, newest first, each attributed to the agent that raised it. */
-  const trades = useMemo<RoomTrade[]>(() => (data?.members ?? [])
-    .flatMap(member => member.signals.map(signal => ({ ...signal, agentName: member.name })))
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)), [data]);
-
-  const trackers = useMemo(() => (data?.members ?? [])
-    .flatMap(member => member.latestThesis?.trackers ?? []), [data]);
 
   /**
    * The owner's connected trading account.
@@ -581,23 +852,71 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         statusTitle={quoteStatusText}
         badges={{
           news: news?.headlines.length ?? 0,
-          trades: trades.length,
-          trackers: trackers.filter(item => item.status === 'HIT').length,
+          messages: chatMessages.length,
         }}
       />
       <div className="trade-room-stream-list">
         {panel === 'chat' && (logRun
           ? <RunLogView log={runLog} loading={logLoading} onBack={() => setLogRun(null)} />
-          : <ChatPanel runs={runs} onOpenRun={setLogRun} canRun={canRun} onRun={runTeam} running={teamRunActive} />)}
+          : <RoomChatPanel
+              messages={chatMessages}
+              runs={runs}
+              onOpenRun={setLogRun}
+              canRun={canRun}
+              onRun={runTeam}
+              running={teamRunActive}
+              canPost={Boolean(roomIdentity?.isMember)}
+              onSend={content => void sendChatMessage(content)}
+              sending={chatSending}
+              onJoin={() => void joinRoom()}
+              joining={joining}
+              joinError={chatError || identityError}
+              viewerId={currentUser?.uid ?? null}
+              participantCount={roomIdentity?.memberCount ?? 0}
+              signedIn={signedIn}
+            />)}
 
         {panel === 'news' && <NewsPanel news={news} loading={newsLoading} onRefresh={() => void loadNews(true)} />}
-        {panel === 'trackers' && <TrackersPanel members={data.members} />}
+
+        {panel === 'mentor' && <MentorChatPanel
+          threads={mentorThreads}
+          activeMemberId={mentorMemberId}
+          onSelectThread={selectMentorThread}
+          messages={mentorMessages}
+          counterpartName={roomIdentity?.room.leader.displayName ?? 'the room leader'}
+          isLeader={roomIdentity?.role === 'LEADER'}
+          onSend={content => void sendMentorMessage(content)}
+          sending={mentorSending}
+          canPost={Boolean(roomIdentity?.isMember)}
+          onJoin={() => void joinRoom()}
+          joining={joining}
+          joinError={mentorError}
+          viewerId={currentUser?.uid ?? null}
+          loading={mentorLoading}
+          signedIn={signedIn}
+        />}
+
+        {panel === 'details' && <GroupDetailsPanel
+          room={roomIdentity?.room ?? null}
+          members={roomIdentity?.members ?? []}
+          memberCount={roomIdentity?.memberCount ?? 0}
+          isMember={Boolean(roomIdentity?.isMember)}
+          onJoin={() => void joinRoom()}
+          joining={joining}
+          joinError={identityError}
+        />}
+
+        {panel === 'broker' && <ConnectBrokerPanel
+          state={broker}
+          loading={brokerLoading}
+          error={brokerError}
+          onOpenSettings={openBrokerSettings}
+        />}
+
         {panel === 'tools' && <ToolsPanel
           members={data.members} provider={marketProvider || data.team.provider || ''} dataMode={dataMode}
           asset={activeMarket || ''} liveTrading={data.team.liveTrading === true} indicators={indicators} news={news}
         />}
-        {panel === 'memory' && <MemoryPanel members={data.members} indicators={indicators} asset={activeMarket || ''} />}
-        {panel === 'trades' && <TradesPanel trades={trades} onOpen={setOpenTrade} />}
       </div>
     </aside>
     {settingsOpen && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !settingsSaving) setSettingsOpen(false); }}>
@@ -633,6 +952,5 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
       </section>
     </div>}
     {buyRoomOpen && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setBuyRoomOpen(false); }}><section className="tr-room-coming-soon" role="dialog" aria-modal="true" aria-labelledby="tr-room-coming-title"><button type="button" className="tr-room-coming-close" aria-label="Close" onClick={() => setBuyRoomOpen(false)}><X size={17} /></button><div className="tr-room-buy-icon"><ShoppingBag size={22} /></div><p className="tr-room-settings-eyebrow">ROOM MARKETPLACE</p><h2 id="tr-room-coming-title">Room purchases are coming soon</h2><p>We're building secure room access and payments. You can view this room for now; buying access will be available here later.</p><button type="button" onClick={() => setBuyRoomOpen(false)}>Got it</button></section></div>}
-    {openTrade && <TradeModal trade={openTrade} onClose={() => setOpenTrade(null)} />}
   </main>;
 }

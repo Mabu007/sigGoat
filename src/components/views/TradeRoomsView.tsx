@@ -178,7 +178,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
       if (!response.ok) throw new Error(body?.error?.message || 'Could not load your rooms.');
       const teams: TradeRoom[] = (Array.isArray(body.teams) ? body.teams : []).map((team: any) => ({
         slug: team.publicSlug || team.id, name: team.name,
-        description: team.instructions || team.description || 'Your AI trading team.',
+        description: team.instructions || team.description || 'Your trading room.',
         markets: team.deployment?.asset ? [team.deployment.asset] : Array.isArray(team.members) ? team.members.flatMap((member: any) => member.markets || []).filter(Boolean) : [],
         status: team.status || 'SAVED', creatorName: 'You', publishedAt: team.createdAt, updatedAt: team.updatedAt,
         mode: team.status === 'DEPLOYED' ? 'TEAM' : 'PAPER', latestThesis: null, roomType: 'team',
@@ -378,11 +378,18 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
     });
   }, [visibleRooms, query, directoryMode]);
 
-  /* A team of one is valid: one specialist is just the smallest team. */
+  /**
+   * The roster of AI agents that work in this room.
+   *
+   * It is OPTIONAL. A room is a human-led community: the person creating it
+   * is its leader, and the agents are automation they may add later or never.
+   * So an empty roster is a valid room, and every drafted agent still has to
+   * be complete before the room can be saved.
+   */
   const reusedMember = reuseMemberId ? poolMembers.find(member => member.id === reuseMemberId) ?? null : null;
   const rosterCount = drafts.length + (reusedMember ? 1 : 0);
   const allDraftsValid = drafts.every(draft => Boolean(draft.name.trim() && draft.jobTitle.trim() && draft.jobDescription.trim()));
-  const stepMembersReady = rosterCount >= 1 && allDraftsValid;
+  const stepMembersReady = allDraftsValid;
 
   const updateDraft = (key: string, patch: Partial<MemberDraft>) => setDrafts(previous => previous.map(draft => draft.key === key ? { ...draft, ...patch } : draft));
   const removeDraft = (key: string) => setDrafts(previous => previous.filter(draft => draft.key !== key));
@@ -390,10 +397,10 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
   const createTeam = async (event: FormEvent, deploy: boolean) => {
     event.preventDefault();
     setCreateError(''); setCreateNotice('');
-    if (!currentUser && authMode !== 'dev') { setCreateError('Sign in first to create your team.'); return; }
-    if (!teamName.trim()) { setCreateError('Give your team a name.'); return; }
-    if (!stepMembersReady) { setCreateError(drafts.length === 0 ? 'Add at least one team member.' : 'Every member needs a name, a job title, and a job description.'); return; }
-    if (deploy && !asset.trim()) { setCreateError('Choose the asset this team trades.'); return; }
+    if (!currentUser && authMode !== 'dev') { setCreateError('Sign in first to create your room.'); return; }
+    if (!teamName.trim()) { setCreateError('Give your room a name.'); return; }
+    if (!stepMembersReady) { setCreateError('Every agent needs a name, a job title, and a job description.'); return; }
+    if (deploy && !asset.trim()) { setCreateError('Choose the asset this room trades.'); return; }
     if (!monitoringIntervals.length) { setCreateError('Choose at least one market monitoring interval.'); return; }
 
     setSaving(true);
@@ -451,16 +458,16 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
       await loadMyRooms().catch(() => {});
       await loadRooms();
 
-      if (body.team?.status === 'PARTIAL') setCreateNotice('Team saved, but some members did not deploy. Open My Rooms to review the results.');
-      else if (deploy) setCreateNotice(visibility === 'PUBLIC' ? 'Team deployed and published to the homepage.' : 'Team saved and deployed. Share its link any time.');
-      else setCreateNotice('Team saved. Deploy it later to start trading, or share its link now.');
+      if (body.team?.status === 'PARTIAL') setCreateNotice('Room saved, but some agents did not deploy. Open My Rooms to review the results.');
+      else if (deploy) setCreateNotice(visibility === 'PUBLIC' ? 'Room deployed and published to the homepage.' : 'Room saved and deployed. Share its link any time.');
+      else setCreateNotice('Room saved. Start it from the room to publish it, or share its link now.');
     } catch (err) { setCreateError(err instanceof Error ? err.message : 'Could not create the team.'); }
     finally { setSaving(false); }
   };
 
   const STEPS: Array<{ id: BuildStep; label: string }> = [
-    { id: 'team', label: 'Team' },
-    { id: 'members', label: 'Members' },
+    { id: 'team', label: 'Room' },
+    { id: 'members', label: 'Agents' },
     { id: 'deploy', label: 'Deploy' },
   ];
   const stepIndex = STEPS.findIndex(item => item.id === step);
@@ -549,7 +556,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
           <p className="mx-auto mt-2 max-w-md text-sm text-fg-muted">
             {visibleRooms.length ? 'Try another name or choose a different room category.' : directoryMode === 'mine' || directoryMode === 'private' ? 'Your private and saved teams will appear here. Create a team to get started.' : 'No public rooms match this category yet. Create a team, add the members you need, then publish it.'}
           </p>
-          <button type="button" onClick={openCreateTeam} className="btn btn-primary mt-5"><CirclePlus size={15} /> Create Bot Team</button>
+          <button type="button" onClick={openCreateTeam} className="btn btn-primary mt-5"><CirclePlus size={15} /> Create Room</button>
         </div>
       )}
 
@@ -565,8 +572,8 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
             <header className="flex items-start justify-between gap-4 border-b border-line p-5">
               <div className="min-w-0">
                 <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-line bg-raised text-accent-text"><Users size={19} /></div>
-                <h2 id="create-team-title" className="text-xl font-semibold text-fg">Create Bot Team</h2>
-                <p className="mt-1 text-sm leading-5 text-fg-muted">Name the team, add its members, then choose how it trades.</p>
+                <h2 id="create-team-title" className="text-xl font-semibold text-fg">Create Room</h2>
+                <p className="mt-1 text-sm leading-5 text-fg-muted">Name your room, add trading agents if you want them, then choose how it trades. You lead the room.</p>
               </div>
               <button type="button" aria-label="Close create team dialog" disabled={saving} onClick={() => setCreateOpen(false)} className="rounded-lg p-2 text-fg-muted hover:bg-raised"><X size={18} /></button>
             </header>
@@ -605,11 +612,11 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                   {step === 'team' && (
                     <>
                       <label className="block">
-                        <span className="mb-1.5 block text-xs font-medium text-fg-muted">Team name</span>
-                        <input autoFocus maxLength={80} value={teamName} onChange={event => setTeamName(event.target.value)} className="input" placeholder="e.g. London Breakout Team" />
+                        <span className="mb-1.5 block text-xs font-medium text-fg-muted">Room name</span>
+                        <input autoFocus maxLength={80} value={teamName} onChange={event => setTeamName(event.target.value)} className="input" placeholder="e.g. London Breakout Room" />
                       </label>
                       <label className="block">
-                        <span className="mb-1.5 block text-xs font-medium text-fg-muted">How should the team work?</span>
+                        <span className="mb-1.5 block text-xs font-medium text-fg-muted">How does your room work?</span>
                         <textarea
                           rows={5}
                           maxLength={4000}
@@ -619,7 +626,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                           placeholder={'e.g. Only trade London hours.\nRequire two members to agree before entering.\nNever hold overnight.'}
                         />
                         <span className="mt-1.5 block text-[11px] leading-4 text-fg-subtle">
-                          These instructions apply to every member of this team and override their personal habits.
+                          This is the room description your members read, and it sets the rules for every agent working in it.
                         </span>
                       </label>
                       <div>
@@ -628,12 +635,12 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                           <button type="button" onClick={() => setVisibility('PRIVATE')} aria-pressed={visibility === 'PRIVATE'} className={`rounded-xl border p-3 text-left ${visibility === 'PRIVATE' ? 'border-accent bg-accent-soft' : 'border-line bg-raised'}`}>
                             <LockKeyhole size={16} className="text-accent-text" />
                             <span className="mt-2 block text-sm font-semibold text-fg">Private</span>
-                            <span className="mt-1 block text-[11px] text-fg-muted">Only people with your link can view it.</span>
+                            <span className="mt-1 block text-[11px] text-fg-muted">Only people with your link can view and join it.</span>
                           </button>
                           <button type="button" onClick={() => setVisibility('PUBLIC')} aria-pressed={visibility === 'PUBLIC'} className={`rounded-xl border p-3 text-left ${visibility === 'PUBLIC' ? 'border-accent bg-accent-soft' : 'border-line bg-raised'}`}>
                             <Globe size={16} className="text-accent-text" />
                             <span className="mt-2 block text-sm font-semibold text-fg">Public</span>
-                            <span className="mt-1 block text-[11px] text-fg-muted">Shows in the homepage feed after deployment.</span>
+                            <span className="mt-1 block text-[11px] text-fg-muted">Shows in the homepage feed once the room is live.</span>
                           </button>
                         </div>
                       </div>
@@ -676,16 +683,16 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
 
                       <div>
                         <div className="mb-2 flex items-center justify-between">
-                          <span className="text-xs font-medium text-fg-muted">New members</span>
-                          <span className="text-[11px] text-fg-subtle">{rosterCount} of {MAX_MEMBERS} on this team</span>
+                          <span className="text-xs font-medium text-fg-muted">New agents</span>
+                          <span className="text-[11px] text-fg-subtle">{rosterCount} of {MAX_MEMBERS} in this room</span>
                         </div>
                         <div className="space-y-3">
                           {drafts.map((draft, index) => (
                             <div key={draft.key} className="rounded-xl border border-line p-3">
                               <div className="mb-2 flex items-center justify-between">
-                                <p className="text-[11px] font-semibold text-fg">Member {index + 1}</p>
+                                <p className="text-[11px] font-semibold text-fg">Agent {index + 1}</p>
                                 {drafts.length > 1 && (
-                                  <button type="button" onClick={() => removeDraft(draft.key)} aria-label={`Remove member ${index + 1}`} className="rounded-lg p-1 text-fg-subtle hover:bg-raised hover:text-negative"><Trash2 size={14} /></button>
+                                  <button type="button" onClick={() => removeDraft(draft.key)} aria-label={`Remove agent ${index + 1}`} className="rounded-lg p-1 text-fg-subtle hover:bg-raised hover:text-negative"><Trash2 size={14} /></button>
                                 )}
                               </div>
                               <div className="grid gap-2 sm:grid-cols-2">
@@ -700,7 +707,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                               </div>
                               <label className="mt-2 block">
                                 <span className="mb-1 block text-[11px] font-medium text-fg-muted">Job description</span>
-                                <textarea rows={2} maxLength={1000} value={draft.jobDescription} onChange={event => updateDraft(draft.key, { jobDescription: event.target.value })} className="input" placeholder="What is this member responsible for?" />
+                                <textarea rows={2} maxLength={1000} value={draft.jobDescription} onChange={event => updateDraft(draft.key, { jobDescription: event.target.value })} className="input" placeholder="What is this agent responsible for?" />
                               </label>
                               <div className="mt-2">
                                 <span className="mb-1 block text-[11px] font-medium text-fg-muted">Skills</span>
@@ -712,7 +719,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                                     onChange={ids => updateDraft(draft.key, { skillIds: ids })}
                                     placeholder={skills.length ? 'Choose skills…' : 'Loading skills…'}
                                     searchPlaceholder="Search skills…"
-                                    aria-label={`Skills for member ${index + 1}`}
+                                    aria-label={`Skills for agent ${index + 1}`}
                                   />
                                   <button
                                     type="button"
@@ -724,14 +731,14 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                                   </button>
                                 </div>
                                 <span className="mt-1 block text-[10px] text-fg-subtle">
-                                  Skills are shared across every member you create.
+                                  Skills are shared across every agent you create.
                                 </span>
                               </div>
                             </div>
                           ))}
                         </div>
-                        <button type="button" onClick={() => setDrafts(previous => previous.length >= MAX_MEMBERS ? previous : [...previous, emptyDraft()])} className="btn btn-secondary mt-3 w-full"><Plus size={15} /> Add another member</button>
-                        <p className="mt-2 text-[11px] leading-4 text-fg-subtle">A team needs at least one member. One member is a valid team.</p>
+                        <button type="button" onClick={() => setDrafts(previous => previous.length >= MAX_MEMBERS ? previous : [...previous, emptyDraft()])} className="btn btn-secondary mt-3 w-full"><Plus size={15} /> Add another agent</button>
+                        <p className="mt-2 text-[11px] leading-4 text-fg-subtle">Agents are optional. A room works without them — you lead it, and members join it to talk about the market.</p>
                       </div>
                     </>
                   )}
@@ -871,7 +878,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                   <button type="button" disabled={saving} onClick={() => setCreateOpen(false)} className="btn btn-secondary flex-1">Cancel</button>
                   {step === 'deploy' ? (
                     <>
-                      <button type="submit" disabled={saving} className="btn btn-secondary flex-1">{saving ? 'Saving…' : 'Save team'}</button>
+                      <button type="submit" disabled={saving} className="btn btn-secondary flex-1">{saving ? 'Saving…' : 'Save room'}</button>
                       <button type="button" disabled={saving || !asset.trim()} onClick={event => void createTeam(event, true)} className="btn btn-primary flex-1">{saving ? 'Deploying…' : <><Rocket size={15} /> Save &amp; deploy</>}</button>
                     </>
                   ) : (
@@ -881,7 +888,7 @@ export function TradeRoomsView({ createTeamRequested, onCreateTeamRequestHandled
                       onClick={() => setStep(STEPS[stepIndex + 1].id)}
                       className="btn btn-primary flex-1"
                     >
-                      {step === 'team' ? <>Next: members <Check size={15} /></> : <>Next: deploy <Check size={15} /></>}
+                      {step === 'team' ? <>Next: agents <Check size={15} /></> : <>Next: deploy <Check size={15} /></>}
                     </button>
                   )}
                 </footer>

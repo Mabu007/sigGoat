@@ -53,6 +53,7 @@ import {
 } from "./repositories";
 import { createGoatWorkflowStore, type GoatWorkflowRun } from "./GoatWorkflowStore";
 import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode, type TeamDeploymentSettings, type TeamRiskParameters } from "./GoatTeamStore";
+import { createRoomMemberStore } from "./RoomMemberStore";
 import { assessGoatTeamMarket } from "./GoatTeamCoordination";
 import {
   UserScopedReasoningGateway,
@@ -185,6 +186,7 @@ const persistence: PersistenceLayer = createPersistence();
 export const appPersistence = persistence;
 const goatWorkflowStore = createGoatWorkflowStore();
 const goatTeamStore = createGoatTeamStore();
+const roomMemberStore = createRoomMemberStore();
 
 /**
  * Bind the credential vault to THIS persistence layer, before any route can
@@ -3754,11 +3756,23 @@ apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
     const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
     const theses = await Promise.all(team.memberGoatIds.map(id => persistence.theses.listByGoat(id, 1)));
     const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    /**
+     * A room is a human-led community, so it describes ITSELF. The old
+     * "N AI traders · … coordination" string is only the fallback for a room
+     * whose leader never wrote a description.
+     */
+    const described = (team.instructions ?? "").trim();
+    /**
+     * The card credits a person, not a product: the leader is the creator
+     * of the room.
+     */
+    const creator = await persistence.profiles.get(team.ownerUserId).catch(() => null);
     return {
-      id: team.id, slug: team.publicSlug, name: team.name, description: `${members.length} AI traders · ${team.coordinationMode.toLowerCase().replace("_", " ")} coordination`,
+      id: team.id, slug: team.publicSlug, name: team.name,
+      description: described ? described.slice(0, 220) : `${members.length} AI traders · ${team.coordinationMode.toLowerCase().replace("_", " ")} coordination`,
       environment: team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO"),
       marketDataProvider: (team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO")) === "DEMO" ? "biquote" : (team.liveTradingProvider ?? team.deployment?.provider ?? null),
-      creatorName: "AI Trading Team", status: team.status, mode: "TEAM" as const,
+      creatorName: creator?.displayName?.trim() || "Room leader", status: team.status, mode: "TEAM" as const,
       memberCount: members.length, markets: [...new Set(members.flatMap(member => member?.markets ?? []))],
       latestThesis: latest ? { market: latest.market, bias: latest.directionalHypothesis, summary: latest.summary ?? latest.assetState ?? "Market review recorded.", updatedAt: latest.updatedAt } : null,
       updatedAt: team.updatedAt,
@@ -4414,6 +4428,444 @@ apiRouter.get("/team-rooms/:slug/account", handle(async (req, res) => {
       reason: error instanceof Error ? error.message : "The trading account is unavailable.",
     });
   }
+}));
+
+/* ------------------------------------------------------------------ */
+/* ROOM COMMUNITY — membership, room chat and the private mentor thread */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A trading room is a human-led community.
+ *
+ * The room has a LEADER (its owner) and MEMBERS (people who joined it). The
+ * shared room conversation is for everyone in the room; the mentor thread is
+ * a private one-to-one line between a member and the leader.
+ *
+ * Both live in the existing chat/message infrastructure: a room conversation
+ * is a chat document of kind 'room' and a mentor thread is a chat document of
+ * kind 'direct' whose `participantIds` are exactly the two people allowed to
+ * read it. The documents are written and read through the server, so the
+ * authorization below is the enforcement point — the browser never talks to
+ * the message store directly.
+ */
+
+/** How many messages one page of a conversation may carry. */
+const ROOM_MESSAGE_PAGE_LIMIT = 30;
+const ROOM_MESSAGE_MAX_LENGTH = 2000;
+
+/** The shared conversation of one room. */
+function roomConversationId(roomId: string): string {
+  return `room_${roomId}`;
+}
+
+/** The private thread between a room leader and one member. */
+function mentorThreadId(roomId: string, memberId: string): string {
+  return `dm_${roomId}_${memberId}`;
+}
+
+/** The name to show for a person, without ever exposing an email address. */
+async function displayNameFor(userId: string, fallback: string): Promise<string> {
+  const profile = await persistence.profiles.get(userId).catch(() => null);
+  const name = profile?.displayName?.trim();
+  return name ? name.slice(0, 80) : fallback;
+}
+
+/** The shape a message takes on the wire. Never carries an email or a uid-only label. */
+function roomMessageView(message: ChatMessage) {
+  return {
+    id: message.id,
+    authorId: message.userId,
+    authorName: message.authorName ?? "Member",
+    content: message.content,
+    createdAt: message.createdAt,
+    role: message.role,
+  };
+}
+
+/**
+ * Resolves the room behind a slug.
+ *
+ * The room record is the authority on who the LEADER is; membership for
+ * everyone else is a separate record, scoped to this one room.
+ */
+async function resolveRoom(slug: string): Promise<GoatTeam | null> {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return null;
+  return goatTeamStore.getPublicBySlug(slug);
+}
+
+/**
+ * Whether a person is in a room: the leader always is, and anyone else has
+ * to have a membership row for THAT room.
+ */
+async function isRoomMember(team: GoatTeam, userId: string | null): Promise<boolean> {
+  if (!userId) return false;
+  if (team.ownerUserId === userId) return true;
+  return Boolean(await roomMemberStore.get(team.id, userId));
+}
+
+/**
+ * WHO AM I IN THIS ROOM.
+ *
+ * The room page itself is a public, shared-cache document, so anything that
+ * depends on WHO is asking lives here instead: the caller's role, the room
+ * description they are allowed to read, and the member roster.
+ */
+apiRouter.get("/team-rooms/:slug/me", optionalAuthMiddleware, handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+
+  const viewerId = req.user?.uid ?? null;
+  const roster = await roomMemberStore.list(team.id);
+  const isOwner = viewerId != null && viewerId === team.ownerUserId;
+  const isMember = isOwner || (viewerId != null && roster.some(member => member.userId === viewerId));
+  const leaderName = await displayNameFor(team.ownerUserId, "Room leader");
+
+  /**
+   * A public room's description is public — it is already shown on its
+   * directory card. A private room's description is only for the people in
+   * it, so a visitor of a private link sees that there is a description
+   * without being shown it.
+   */
+  const descriptionVisible = team.visibility === "PUBLIC" || isMember;
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    signedIn: Boolean(viewerId),
+    isOwner,
+    isMember,
+    role: isOwner ? "LEADER" : isMember ? "MEMBER" : null,
+    room: {
+      id: team.id,
+      name: team.name,
+      description: descriptionVisible ? (team.instructions ?? "") : null,
+      visibility: team.visibility ?? "PRIVATE",
+      status: team.status,
+      market: team.deployment?.asset ?? null,
+      provider: team.deployment?.provider ?? null,
+      environment: team.environment ?? "DEMO",
+      agentCount: team.memberGoatIds.length,
+      createdAt: team.createdAt,
+      leader: { id: team.ownerUserId, displayName: leaderName },
+    },
+    /** The real number of people in the room. Never a made-up figure. */
+    memberCount: roster.length + 1,
+    /** Names are only for the people in the room. */
+    members: isMember
+      ? [
+          { id: team.ownerUserId, displayName: leaderName, role: "LEADER" as const, joinedAt: team.createdAt },
+          ...roster.map(member => ({
+            id: member.userId,
+            displayName: member.displayName,
+            role: "MEMBER" as const,
+            joinedAt: member.joinedAt,
+          })),
+        ]
+      : [],
+  });
+}));
+
+/**
+ * JOIN A ROOM.
+ *
+ * A room is joined by following its link: a public room is discoverable, and
+ * a private room's slug is an unguessable capability. Either way the person
+ * joining has to be signed in, so a conversation always has a real author.
+ */
+apiRouter.post("/team-rooms/:slug/join", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const user = requireUser(req);
+  const isOwner = team.ownerUserId === user.uid;
+
+  // The leader is already in the room; there is nothing to record.
+  if (isOwner) {
+    return res.json({
+      joined: true,
+      role: "LEADER",
+      member: {
+        id: user.uid,
+        displayName: await displayNameFor(user.uid, "Room leader"),
+        role: "LEADER",
+        joinedAt: team.createdAt,
+      },
+    });
+  }
+
+  const displayName = await displayNameFor(user.uid, "Member");
+  const membership = await roomMemberStore.join(team.id, user.uid, displayName);
+  res.json({
+    joined: true,
+    role: "MEMBER",
+    member: {
+      id: membership.userId,
+      displayName: membership.displayName,
+      role: "MEMBER",
+      joinedAt: membership.joinedAt,
+    },
+  });
+}));
+
+/**
+ * THE ROOM CONVERSATION.
+ *
+ * Every member of the room — and the leader — can read it, and every member
+ * can post to it. The audience is checked on the server: hiding the composer
+ * in the browser would not stop a request.
+ *
+ * Reads are incremental. `since` asks for what is new since a cursor, and
+ * `before` pages backwards through history; neither re-reads the whole
+ * conversation.
+ */
+apiRouter.get("/team-rooms/:slug/chat", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  if (!req.user?.uid) return fail(res, 401, "UNAUTHENTICATED", "Sign in to read the room conversation.");
+  if (!(await isRoomMember(team, req.user.uid))) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room to read and post in its conversation.");
+  }
+
+  const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || ROOM_MESSAGE_PAGE_LIMIT), 10) || ROOM_MESSAGE_PAGE_LIMIT));
+  const since = typeof req.query.since === "string" ? req.query.since : "";
+  const before = typeof req.query.before === "string" ? req.query.before : "";
+  const chatId = roomConversationId(team.id);
+
+  let messages: ChatMessage[];
+  if (since) messages = await persistence.messages.listSince(chatId, since, limit);
+  else if (before) messages = await persistence.messages.listBefore(chatId, before, limit);
+  else messages = await persistence.messages.listLatest(chatId, limit);
+
+  /**
+   * Whether anything older exists. One extra message is read to find out,
+   * which is cheaper than a second count query — and it is only asked for
+   * when a page is actually being opened, never on an incremental poll.
+   */
+  let hasMore = false;
+  if (!since) {
+    const oldest = messages[0]?.createdAt;
+    hasMore = oldest
+      ? (await persistence.messages.listBefore(chatId, oldest, 1)).length > 0
+      : false;
+  }
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ messages: messages.map(roomMessageView), hasMore });
+}));
+
+/** POST A MESSAGE IN THE ROOM CONVERSATION. */
+apiRouter.post("/team-rooms/:slug/chat", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const user = requireUser(req);
+  const isLeader = team.ownerUserId === user.uid;
+  if (!(await isRoomMember(team, user.uid))) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room before posting in its conversation.");
+  }
+
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+  if (!content) return fail(res, 400, "EMPTY_MESSAGE", "Write something before posting.");
+  if (content.length > ROOM_MESSAGE_MAX_LENGTH) {
+    return fail(res, 400, "MESSAGE_TOO_LONG", `Messages must be ${ROOM_MESSAGE_MAX_LENGTH} characters or fewer.`);
+  }
+
+  const now = new Date().toISOString();
+  const chatId = roomConversationId(team.id);
+
+  /**
+   * The conversation document is created with the first message and reused
+   * afterwards, so an idle room costs nothing and a busy room writes one
+   * document rather than one per post.
+   */
+  const existing = await persistence.chats.get(chatId);
+  if (!existing) {
+    await persistence.chats.create({
+      id: chatId,
+      userId: team.ownerUserId,
+      title: team.name,
+      kind: "room",
+      roomId: team.id,
+      createdAt: now,
+      updatedAt: now,
+      lastMessageAt: now,
+    });
+  }
+
+  const message: ChatMessage = {
+    id: `msg_${Date.now()}_${randomBytes(6).toString("hex")}`,
+    chatId,
+    userId: user.uid,
+    role: "user",
+    content,
+    authorName: await displayNameFor(user.uid, isLeader ? "Room leader" : "Member"),
+    createdAt: now,
+  };
+  await persistence.messages.create(chatId, message);
+  await persistence.chats.update(chatId, { updatedAt: now, lastMessageAt: now });
+
+  res.status(201).json({ message: roomMessageView(message) });
+}));
+
+/**
+ * THE PRIVATE MENTOR THREAD.
+ *
+ * One conversation between a member and the room leader. The leader sees the
+ * list of threads their members have started; a member sees their own thread
+ * with the leader. Nobody else can read either.
+ */
+apiRouter.get("/team-rooms/:slug/mentor-chat", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const user = requireUser(req);
+  if (!(await isRoomMember(team, user.uid))) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room to talk to its leader.");
+  }
+
+  const isOwner = team.ownerUserId === user.uid;
+  const leaderName = await displayNameFor(team.ownerUserId, "Room leader");
+  const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || ROOM_MESSAGE_PAGE_LIMIT), 10) || ROOM_MESSAGE_PAGE_LIMIT));
+  const requestedMemberId = typeof req.query.memberId === "string" ? req.query.memberId : "";
+
+  /**
+   * The leader's inbox: one thread per member who has written to them. The
+   * thread document is the source of truth for who the members are, and each
+   * one carries only the leader and that member.
+   */
+  const threads = isOwner
+    ? (await persistence.chats.listByParticipant(team.ownerUserId))
+        .filter(chat => chat.kind === "direct" && chat.roomId === team.id)
+        .map(chat => {
+          const memberId = (chat.participantIds ?? []).find(id => id !== team.ownerUserId) ?? "";
+          return { chat, memberId };
+        })
+        .filter(entry => entry.memberId.length > 0)
+    : [];
+
+  const selectedMemberId = isOwner
+    ? requestedMemberId
+    : user.uid;
+
+  let thread: {
+    memberId: string;
+    memberName: string;
+    messages: ReturnType<typeof roomMessageView>[];
+  } | null = null;
+
+  if (selectedMemberId) {
+    /**
+     * Only a member of THIS room can be the other side of the leader's
+     * thread, so the leader cannot open a conversation with someone who is
+     * not in the room.
+     */
+    if (isOwner && selectedMemberId !== team.ownerUserId) {
+      const membership = await roomMemberStore.get(team.id, selectedMemberId);
+      if (!membership) {
+        return fail(res, 404, "ROOM_MEMBER_NOT_FOUND", "That person is not a member of this room.");
+      }
+    }
+    const threadId = mentorThreadId(team.id, selectedMemberId);
+    const messages = await persistence.messages.listLatest(threadId, limit);
+    const memberName = isOwner
+      ? await displayNameFor(selectedMemberId, "Member")
+      : leaderName;
+    thread = { memberId: selectedMemberId, memberName, messages: messages.map(roomMessageView) };
+  }
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    role: isOwner ? "LEADER" : "MEMBER",
+    mentor: { id: team.ownerUserId, displayName: leaderName },
+    threads: await Promise.all(threads.map(async ({ chat, memberId }) => {
+      /**
+       * One message is read per thread: the preview and its timestamp. The
+       * conversation itself is not read here, so a leader with a busy inbox
+       * does not pay for every thread's history on every poll.
+       */
+      const last = (await persistence.messages.listLatest(chat.id, 1)).at(-1) ?? null;
+      return {
+        memberId,
+        memberName: await displayNameFor(memberId, "Member"),
+        lastMessageAt: last?.createdAt ?? null,
+        lastMessage: last?.content ?? null,
+      };
+    })),
+    thread,
+  });
+}));
+
+/** POST IN THE PRIVATE MENTOR THREAD. */
+apiRouter.post("/team-rooms/:slug/mentor-chat", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const user = requireUser(req);
+  if (!(await isRoomMember(team, user.uid))) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room before writing to its leader.");
+  }
+
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+  if (!content) return fail(res, 400, "EMPTY_MESSAGE", "Write something before sending.");
+  if (content.length > ROOM_MESSAGE_MAX_LENGTH) {
+    return fail(res, 400, "MESSAGE_TOO_LONG", `Messages must be ${ROOM_MESSAGE_MAX_LENGTH} characters or fewer.`);
+  }
+
+  const isOwner = team.ownerUserId === user.uid;
+  const requestedMemberId = typeof req.body?.memberId === "string" ? req.body.memberId.trim() : "";
+
+  /**
+   * A member writes to the leader; the leader writes back to a member. The
+   * other side is NEVER taken from an unverified field on a member's request:
+   * a member's request can only ever address their own thread with the
+   * leader.
+   */
+  const memberId = isOwner ? requestedMemberId : user.uid;
+  if (!memberId) {
+    return fail(res, 400, "MEMBER_REQUIRED", "Choose the member you want to write to.");
+  }
+  if (isOwner && memberId === team.ownerUserId) {
+    return fail(res, 400, "MEMBER_REQUIRED", "Choose the member you want to write to.");
+  }
+  if (isOwner) {
+    const membership = await roomMemberStore.get(team.id, memberId);
+    if (!membership) {
+      return fail(res, 404, "ROOM_MEMBER_NOT_FOUND", "That person is not a member of this room.");
+    }
+  }
+
+  const now = new Date().toISOString();
+  const threadId = mentorThreadId(team.id, memberId);
+  const existing = await persistence.chats.get(threadId);
+  if (!existing) {
+    await persistence.chats.create({
+      id: threadId,
+      userId: team.ownerUserId,
+      title: `Mentor thread · ${team.name}`,
+      kind: "direct",
+      roomId: team.id,
+      /** Exactly the two people who may read this conversation. */
+      participantIds: [team.ownerUserId, memberId],
+      createdAt: now,
+      updatedAt: now,
+      lastMessageAt: now,
+    });
+  }
+
+  const message: ChatMessage = {
+    id: `msg_${Date.now()}_${randomBytes(6).toString("hex")}`,
+    chatId: threadId,
+    userId: user.uid,
+    role: "user",
+    content,
+    authorName: await displayNameFor(user.uid, isOwner ? "Room leader" : "Member"),
+    createdAt: now,
+  };
+  await persistence.messages.create(threadId, message);
+  await persistence.chats.update(threadId, { updatedAt: now, lastMessageAt: now });
+
+  res.status(201).json({ message: roomMessageView(message), memberId });
 }));
 
 /** Publish the existing GOAT under a stable, shareable URL. */
@@ -6530,12 +6982,14 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
    * trading agent comes into existence, so creation accepts both already-saved
    * members (reused across teams) and freshly authored ones.
    *
-   * One member is a valid team: creating a single specialist is the degenerate
-   * case of creating a team, which is why this floor is 1 and not 2.
+   * A room does NOT need an agent. A room is a human-led community: the
+   * person creating it is its leader, and the AI agents are optional
+   * automation they may add later. Zero members is therefore valid — it is
+   * the case where a mentor opens a room to talk about the market before
+   * deciding whether to bring agents along.
    */
   const newMemberInputs: unknown[] = Array.isArray(req.body?.newMembers) ? req.body.newMembers : [];
   const totalMembers = existingMemberIds.length + newMemberInputs.length;
-  if (totalMembers < 1) return fail(res, 400, "INVALID_TEAM_MEMBERS", "Add at least one team member.");
   if (totalMembers > MAX_MEMBERS_PER_TEAM) return fail(res, 400, "INVALID_TEAM_MEMBERS", `A team can hold at most ${MAX_MEMBERS_PER_TEAM} members.`);
   if (req.body?.coordinationMode !== undefined && !["INDEPENDENT", "CONSENSUS", "LEAD_REVIEW"].includes(req.body.coordinationMode)) {
     return fail(res, 400, "INVALID_COORDINATION_MODE", "coordinationMode must be INDEPENDENT, CONSENSUS, or LEAD_REVIEW.");
@@ -8764,12 +9218,20 @@ apiRouter.get("/chats", authMiddleware, async (req, res) => {
   try {
     const chats = await persistence.chats.listByUser(user.uid);
     res.json({
-      chats: chats.map((c) => ({
-        id: c.id,
-        title: c.title,
-        lastMessageAt: c.lastMessageAt,
-        updatedAt: c.updatedAt,
-      })),
+      /**
+       * Only the AI assistant's own sessions. A room conversation and a
+       * mentor thread are stored in the same collections, and the leader
+       * "owns" both — listing them here would put a community conversation
+       * inside the assistant's sidebar.
+       */
+      chats: chats
+        .filter((c) => (c.kind ?? "assistant") === "assistant")
+        .map((c) => ({
+          id: c.id,
+          title: c.title,
+          lastMessageAt: c.lastMessageAt,
+          updatedAt: c.updatedAt,
+        })),
     });
   } catch (error) {
     return fail(
@@ -8790,6 +9252,7 @@ apiRouter.post("/chats", authMiddleware, async (req, res) => {
       id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       userId: user.uid,
       title: "New chat",
+      kind: "assistant",
       createdAt: now,
       updatedAt: now,
       lastMessageAt: now,
@@ -8842,12 +9305,17 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
     if (chatId) {
       chat = await persistence.chats.getForUser(String(chatId), user.uid);
       if (!chat) return fail(res, 404, "CHAT_NOT_FOUND", "This chat does not exist or is not yours.");
+      /** The assistant never streams into a room conversation. */
+      if ((chat.kind ?? "assistant") !== "assistant") {
+        return fail(res, 404, "CHAT_NOT_FOUND", "This chat does not exist or is not yours.");
+      }
     } else {
       const now = new Date().toISOString();
       chat = await persistence.chats.create({
         id: "chat_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
         userId: user.uid,
         title: "New chat",
+        kind: "assistant",
         createdAt: now,
         updatedAt: now,
         lastMessageAt: now,
@@ -9102,11 +9570,20 @@ apiRouter.post("/chat", authMiddleware, async (req, res) => {
         "This chat does not exist or is not yours.",
       );
     }
+    /**
+     * The assistant only ever writes into its own sessions. A room
+     * conversation is owned by the room leader, so without this check the
+     * assistant would post its replies into a member's room chat.
+     */
+    if ((chat.kind ?? "assistant") !== "assistant") {
+      return fail(res, 404, "CHAT_NOT_FOUND", "This chat does not exist or is not yours.");
+    }
   } else {
     const newChat: Chat = {
       id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       userId: user.uid,
       title: message.trim().slice(0, 60),
+      kind: "assistant",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       lastMessageAt: new Date().toISOString(),
@@ -9214,6 +9691,14 @@ apiRouter.get("/chat", authMiddleware, async (req, res) => {
       "This chat does not exist or is not yours.",
     );
   }
+  /**
+   * The assistant's own sessions only. A room conversation is owned by the
+   * room leader, so `getForUser` would happily hand it to the leader through
+   * this route — and the leader's room chat is NOT the assistant's history.
+   */
+  if ((chat.kind ?? "assistant") !== "assistant") {
+    return fail(res, 404, "CHAT_NOT_FOUND", "This chat does not exist or is not yours.");
+  }
 
   const messages = await persistence.messages.listByChat(chatId);
   res.json({ chat: { id: chat.id, title: chat.title }, messages });
@@ -9231,6 +9716,10 @@ apiRouter.delete("/chat/:id", authMiddleware, async (req, res) => {
       "CHAT_NOT_FOUND",
       "This chat does not exist or is not yours.",
     );
+  }
+  /** A room conversation is not the assistant's to delete. */
+  if ((chat.kind ?? "assistant") !== "assistant") {
+    return fail(res, 404, "CHAT_NOT_FOUND", "This chat does not exist or is not yours.");
   }
 
   try {

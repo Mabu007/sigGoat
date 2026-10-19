@@ -9,27 +9,29 @@
  * The sidebar answers four different questions a trader asks mid-session, and
  * they do not want to be interleaved in one scroll:
  *
- *   Team Chat    — what are the agents saying right now?
+ *   Room Chat     — what is the room talking about right now?
  *   Breaking News — what moved the macro tape underneath them?
- *   Trackers     — which of their conditions have actually fired?
+ *   Chat to Mentor — a private word with the room's leader
+ *   Group Details — who runs this room, and what is it about?
+ *   Connect Broker — which account am I trading this room with?
  *   Tools        — what can these agents even see and do?
- *   Memory       — what are they holding as context, and how confident?
- *   Trades       — what have they done, and why?
  *
  * A trade log interleaved with market commentary is unreadable: the entries
  * have wildly different lifetimes (a headline is relevant for minutes, a
- * thesis for hours, a filled trade is permanent). Splitting them by lifetime
- * is what makes each panel scannable on its own terms.
+ * question in the room chat for an afternoon, a filled trade is permanent).
+ * Splitting them by lifetime is what makes each panel scannable on its own
+ * terms.
  *
  * Every panel is driven by real server state and renders an explicit empty or
- * unavailable state. Nothing here invents a value to fill a gap — a tracker
- * that does not exist says "None", a news feed that failed says why.
+ * unavailable state. Nothing here invents a value to fill a gap — a room
+ * that has no messages says so, a news feed that failed says why.
  */
 
 import React, { useMemo, useState } from 'react';
 import {
-  BrainCircuit, ChevronLeft, ExternalLink, ListOrdered, MessagesSquare,
-  Newspaper, Target, Wrench, X, Zap, RefreshCw,
+  BrainCircuit, ChevronLeft, ExternalLink, Link2, ListOrdered, MessageCircle,
+  MessagesSquare, Newspaper, Target, Users, Wrench, X, Zap, RefreshCw, Send,
+  ShieldCheck, CheckCircle2, AlertCircle,
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------
@@ -166,15 +168,15 @@ export interface RoomNewsPayload {
    Panel registry
    ------------------------------------------------------------------------- */
 
-export type RoomPanelId = 'chat' | 'news' | 'trackers' | 'tools' | 'memory' | 'trades';
+export type RoomPanelId = 'chat' | 'news' | 'mentor' | 'details' | 'broker' | 'tools';
 
 export const ROOM_PANELS: { id: RoomPanelId; label: string; icon: React.ComponentType<{ size?: number; strokeWidth?: number }> }[] = [
-  { id: 'chat', label: 'Team Chat', icon: MessagesSquare },
+  { id: 'chat', label: 'Room Chat', icon: MessagesSquare },
   { id: 'news', label: 'Breaking News', icon: Newspaper },
-  { id: 'trackers', label: 'Trackers', icon: Target },
+  { id: 'mentor', label: 'Chat to Mentor', icon: MessageCircle },
+  { id: 'details', label: 'Group Details', icon: Users },
+  { id: 'broker', label: 'Connect Broker', icon: Link2 },
   { id: 'tools', label: 'Tools', icon: Wrench },
-  { id: 'memory', label: 'Memory', icon: BrainCircuit },
-  { id: 'trades', label: 'Trades', icon: ListOrdered },
 ];
 
 /* -------------------------------------------------------------------------
@@ -199,6 +201,11 @@ function SectionLabel({ children, aside }: { children: React.ReactNode; aside?: 
       {aside}
     </div>
   );
+}
+
+/** One label/value line, used by the run log and the room details. */
+function Row({ label, value }: { label: string; value: string }) {
+  return <div className="tr-kv-row"><dt>{label}</dt><dd>{value}</dd></div>;
 }
 
 const money = (value?: number, digits = 2) =>
@@ -245,93 +252,195 @@ function localMessageTime(value: string): string {
 }
 
 /* =========================================================================
-   PANEL — Team Chat
-   A message is a run, not a rendered thesis. Each one opens the run's real
-   activity ledger, because "what did this agent actually do" is a question the
-   durable workflow record answers and a generated transcript would not.
+   PANEL — Room Chat
+   The shared conversation of the room.
+
+   A room is a human-led community, so the feed has two kinds of entry:
+   what the PEOPLE in the room said, and what the room's agents did. Both are
+   attributed and timestamped the same way, because both are part of the same
+   conversation.
+
+   A message written by a person is not a drill-down, so it is rendered as a
+   static card; an agent's run still opens that run's real activity ledger.
    ========================================================================= */
+
+/** One message written by a member of the room. */
+export interface RoomChatMessage {
+  id: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  createdAt: string;
+}
 
 const OUTCOME_LABEL: Record<RoomRun['outcome'], string> = {
   review: 'Market review', proposal: 'Proposal', no_trade: 'No trade',
   failed: 'Failed', running: 'Running',
 };
 
-export function ChatPanel({ runs, onOpenRun, canRun, onRun, running }: {
+/** Human label for what an agent's run ended up doing. */
+export function runOutcomeLabel(outcome: RoomRun['outcome']): string {
+  return OUTCOME_LABEL[outcome] ?? outcome;
+}
+
+export function RoomChatPanel({
+  messages, runs, onOpenRun, canRun, onRun, running,
+  canPost, onSend, sending, onJoin, joining, joinError, viewerId, participantCount, signedIn,
+}: {
+  messages: RoomChatMessage[];
   runs: RoomRun[];
   onOpenRun: (run: RoomRun) => void;
   canRun: boolean;
   onRun: () => void;
   running: boolean;
+  canPost: boolean;
+  onSend: (content: string) => void;
+  sending: boolean;
+  onJoin: () => void;
+  joining: boolean;
+  joinError: string;
+  viewerId: string | null;
+  participantCount: number;
+  signedIn: boolean;
 }) {
-  if (!runs.length) {
-    return (
-      <>
-        <div className="tr-chat-status" aria-live="polite">
-          <span className="tr-chat-status-left"><span className={'tr-chat-live-dot' + (running ? ' is-working' : '')} /><span>{running ? 'AGENTS IN MOTION' : 'TEAM ACTIVITY'}</span></span>
-          <span className="tr-chat-status-right">{running ? 'Reviewing the market…' : 'Waiting for the next run'}</span>
-        </div>
-        <PanelEmpty
-          title="No work yet"
-          hint={canRun
-            ? 'Run the team to have every bot review the market. Each review appears here as a message.'
-            : 'The bots in this room have not run yet. Their reviews will appear here as they work.'}
-        />
-        {canRun && <button type="button" className="tr-chat-run" onClick={onRun} disabled={running}>
-          <Zap size={13} strokeWidth={2.4} aria-hidden="true" />
-          {running ? 'Agents working…' : 'Run the team'}
-        </button>}
-      </>
-    );
-  }
+  const [draft, setDraft] = useState('');
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const content = draft.trim();
+    if (!content || sending) return;
+    onSend(content);
+    setDraft('');
+  };
+
+  /**
+   * One feed, newest first. The agent's run keeps its own card because it
+   * opens a real record; a person's message is a statement, not a run.
+   */
+  const feed = useMemo(() => {
+    const entries: ({ kind: 'message'; at: number; message: RoomChatMessage } | { kind: 'run'; at: number; run: RoomRun })[] = [];
+    for (const message of messages) entries.push({ kind: 'message', at: Date.parse(message.createdAt), message });
+    for (const run of runs) entries.push({ kind: 'run', at: Date.parse(run.at), run });
+    return entries.sort((left, right) => right.at - left.at);
+  }, [messages, runs]);
 
   return (
     <>
       <div className="tr-chat-status" aria-live="polite">
-        <span className="tr-chat-status-left"><span className={'tr-chat-live-dot' + (running ? ' is-working' : '')} /><span>{running ? 'AGENTS IN MOTION' : 'TEAM ACTIVITY'}</span></span>
-        <span className="tr-chat-status-right">{running ? 'Reviewing the market…' : `${runs.length} updates recorded`}</span>
+        <span className="tr-chat-status-left"><span className={'tr-chat-live-dot' + (running ? ' is-working' : '')} /><span>ROOM CHAT</span></span>
+        <span className="tr-chat-status-right">
+          {participantCount > 0 ? `${participantCount} in the room` : 'No members yet'}
+        </span>
       </div>
+
+      {canPost ? (
+        <form className="tr-composer" onSubmit={submit}>
+          <textarea
+            className="tr-composer-input"
+            value={draft}
+            onChange={event => setDraft(event.target.value)}
+            maxLength={2000}
+            rows={2}
+            placeholder="Share what the market is doing, or ask the room…"
+            aria-label="Message the room"
+          />
+          <div className="tr-composer-foot">
+            <span className="tr-composer-count">{draft.trim().length}/2000</span>
+            <button type="submit" className="tr-composer-send" disabled={sending || !draft.trim()}>
+              <Send size={12} strokeWidth={2.4} aria-hidden="true" />
+              {sending ? 'Sending…' : 'Send'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="tr-composer is-locked">
+          <p className="tr-composer-locked-text">
+            {joinError || (signedIn
+              ? 'Join this room to post in its conversation.'
+              : 'Sign in to join this room and post in its conversation.')}
+          </p>
+          <button type="button" className="tr-composer-send" onClick={onJoin} disabled={joining}>
+            {joining ? 'Joining…' : signedIn ? 'Join room' : 'Sign in'}
+          </button>
+        </div>
+      )}
+
       {canRun && (
         <button type="button" className="tr-chat-run" onClick={onRun} disabled={running}>
           <Zap size={13} strokeWidth={2.4} aria-hidden="true" />
           {running ? 'Agents working…' : 'Run the team'}
         </button>
       )}
-      <div className="tr-chat">
-        {runs.map(run => {
-          const tone = run.bias ? (BIAS_TONE[run.bias] ?? 'is-muted') : null;
-          return (
-            <button
-              type="button"
-              key={run.workflowId}
-              className={'tr-chat-msg' + (run.outcome === 'failed' ? ' is-failed' : '')}
-              onClick={() => onOpenRun(run)}
-            >
-              <div className="tr-chat-msg-head">
-                <span className={'tr-agent-pulse' + (run.outcome === 'running' ? ' is-working' : '')} aria-hidden="true" />
-                <span className="tr-agent-name" style={{ color: agentNameColor(run.agentName) }}>{run.agentName}</span>
-                <time dateTime={run.at} title={new Date(run.at).toLocaleString()}><span className="tr-chat-clock">{localMessageTime(run.at)}</span><span className="tr-chat-relative">{relativeTime(run.at)}</span></time>
-              </div>
-              <div className="tr-chat-msg-title">
-                {tone && <span className={'tr-chip ' + tone}>{run.bias}</span>}
-                <span className="tr-chat-headline">{run.headline}</span>
-              </div>
-              {run.summary && <p className="tr-chat-summary">{compactChatLine(run.summary)}</p>}
-              {run.levels && (
-                <div className="trade-room-levels">
-                  <span>Entry <b>{money(run.levels.entry)}</b></span>
-                  <span>Stop <b>{money(run.levels.stopLoss)}</b></span>
-                  <span>Target <b>{money(run.levels.takeProfit)}</b></span>
+
+      {feed.length === 0 ? (
+        <PanelEmpty
+          title="No messages yet"
+          hint="Start the conversation — share an idea, ask a question, or post what you are watching."
+        />
+      ) : (
+        <div className="tr-chat">
+          {feed.map(entry => {
+            if (entry.kind === 'message') {
+              const { message } = entry;
+              const own = viewerId != null && message.authorId === viewerId;
+              return (
+                <article
+                  key={message.id}
+                  className={'tr-chat-msg is-static' + (own ? ' is-self' : '')}
+                >
+                  <div className="tr-chat-msg-head">
+                    <span className="tr-agent-avatar" aria-hidden="true">
+                      {message.authorName.slice(0, 2).toUpperCase()}
+                    </span>
+                    <span className="tr-agent-name">{message.authorName}</span>
+                    <span className="tr-chat-kind">Member</span>
+                    <time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>
+                      <span className="tr-chat-clock">{localMessageTime(message.createdAt)}</span>
+                      <span className="tr-chat-relative">{relativeTime(message.createdAt)}</span>
+                    </time>
+                  </div>
+                  <p className="tr-chat-summary is-body">{message.content}</p>
+                </article>
+              );
+            }
+
+            const run = entry.run;
+            const tone = run.bias ? (BIAS_TONE[run.bias] ?? 'is-muted') : null;
+            return (
+              <button
+                type="button"
+                key={run.workflowId}
+                className={'tr-chat-msg' + (run.outcome === 'failed' ? ' is-failed' : '') + ' is-agent'}
+                onClick={() => onOpenRun(run)}
+              >
+                <div className="tr-chat-msg-head">
+                  <span className={'tr-agent-pulse' + (run.outcome === 'running' ? ' is-working' : '')} aria-hidden="true" />
+                  <span className="tr-agent-name" style={{ color: agentNameColor(run.agentName) }}>{run.agentName}</span>
+                  <span className="tr-chat-kind is-agent">Agent</span>
+                  <time dateTime={run.at} title={new Date(run.at).toLocaleString()}><span className="tr-chat-clock">{localMessageTime(run.at)}</span><span className="tr-chat-relative">{relativeTime(run.at)}</span></time>
                 </div>
-              )}
-              <div className="tr-chat-msg-foot">
-                <span className="tr-chat-stage">{run.stage.replaceAll('_', ' ')}</span>
-                {run.confidence != null && <span>{Math.round(run.confidence)}% confidence</span>}
-                <span className="tr-chat-open">View log</span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+                <div className="tr-chat-msg-title">
+                  {tone && <span className={'tr-chip ' + tone}>{run.bias}</span>}
+                  <span className="tr-chat-headline">{run.headline}</span>
+                </div>
+                {run.summary && <p className="tr-chat-summary">{compactChatLine(run.summary)}</p>}
+                {run.levels && (
+                  <div className="trade-room-levels">
+                    <span>Entry <b>{money(run.levels.entry)}</b></span>
+                    <span>Stop <b>{money(run.levels.stopLoss)}</b></span>
+                    <span>Target <b>{money(run.levels.takeProfit)}</b></span>
+                  </div>
+                )}
+                <div className="tr-chat-msg-foot">
+                  <span className="tr-chat-stage">{run.stage.replaceAll('_', ' ')}</span>
+                  {run.confidence != null && <span>{Math.round(run.confidence)}% confidence</span>}
+                  <span className="tr-chat-open">View log</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </>
   );
 }
@@ -438,82 +547,6 @@ function NewsPanel({ news, loading, onRefresh }: { news: RoomNewsPayload | null;
 }
 
 /* =========================================================================
-   PANEL — Trackers
-   ========================================================================= */
-
-/**
- * Tracker types whose condition is a number. For everything else the value is
- * a label or an enum, so printing it as `0.0000` is noise that reads as a real
- * reading.
- */
-const NUMERIC_TRACKER_TYPES = new Set(['PRICE_LEVEL', 'RSI_THRESHOLD', 'TIME_WINDOW', 'SPREAD']);
-
-function TrackersPanel({ members }: { members: RoomMember[] }) {
-  const rows = useMemo(
-    () => members.flatMap(member => (member.latestThesis?.trackers ?? []).map(tracker => ({ tracker, agentName: member.name }))),
-    [members],
-  );
-
-  if (rows.length === 0) {
-    return <PanelEmpty title="None" hint="No tracked conditions yet. An agent records them when it publishes a thesis, and each one is checked deterministically against every candle." />;
-  }
-
-  const order: Record<TrackerStatus, number> = { HIT: 0, PENDING: 1, UNEVALUABLE: 2, INVALIDATED: 3, EXPIRED: 4 };
-  const sorted = [...rows].sort((a, b) =>
-    (order[a.tracker.status ?? 'PENDING'] - order[b.tracker.status ?? 'PENDING'])
-    || (b.tracker.lastEvaluatedAt ?? 0) - (a.tracker.lastEvaluatedAt ?? 0));
-
-  return (
-    <div className="tr-trackers">
-      {sorted.map(({ tracker, agentName }) => {
-        const status = tracker.status ?? 'PENDING';
-        const numeric = NUMERIC_TRACKER_TYPES.has(tracker.type);
-        const current = tracker.currentCalculatedValue;
-        const target = tracker.targetValue ?? tracker.rangeLow;
-        const digits = target != null && Math.abs(target) < 10 ? 4 : 2;
-
-        /**
-         * Distance to target, not progress toward it. A price at 2,318 with a
-         * 2,340 target is 99% of the way to 2,340 by magnitude — which would
-         * render a near-miss as an almost-complete bar. What a trader wants is
-         * how far away the trigger still is.
-         */
-        let distance: string | null = null;
-        if (numeric && current != null && target != null) {
-          const gap = tracker.operator === 'LESS_THAN' ? current - target : target - current;
-          distance = gap >= 0
-            ? `${gap.toLocaleString(undefined, { maximumFractionDigits: digits })} to go`
-            : `passed by ${Math.abs(gap).toLocaleString(undefined, { maximumFractionDigits: digits })}`;
-        }
-
-        return (
-          <article className={'tr-tracker' + (status === 'HIT' ? ' is-hit' : '') + (status === 'INVALIDATED' || status === 'EXPIRED' ? ' is-dead' : '')} key={tracker.id}>
-            <div className="tr-tracker-head">
-              <span className="tr-tracker-type">{tracker.type.replaceAll('_', ' ')}</span>
-              <span className={'tr-tracker-status is-' + status.toLowerCase()}>{status}</span>
-            </div>
-            <p className="tr-tracker-desc">{tracker.description}</p>
-            <div className="tr-tracker-foot">
-              <span>{agentName}</span>
-              {numeric && current != null && <span>now {money(current, digits)}</span>}
-              {numeric && tracker.targetValue != null && <span>target {money(tracker.targetValue, digits)}</span>}
-              {distance && <span className={gapPassed(status) ? 'is-passed' : undefined}>{distance}</span>}
-              {tracker.rangeLow != null && tracker.rangeHigh != null && (
-                <span>range {money(tracker.rangeLow, tracker.rangeLow < 10 ? 4 : 2)}–{money(tracker.rangeHigh, tracker.rangeHigh < 10 ? 4 : 2)}</span>
-              )}
-              <span>{relativeTime(tracker.lastEvaluatedAt)}</span>
-            </div>
-            {tracker.lastEvaluationReason && <p className="tr-tracker-reason">{tracker.lastEvaluationReason}</p>}
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-const gapPassed = (status: TrackerStatus) => status === 'HIT';
-
-/* =========================================================================
    PANEL — Tools
    ========================================================================= */
 
@@ -607,198 +640,357 @@ function ToolsPanel({
 }
 
 /* =========================================================================
-   PANEL — Memory
+   PANEL — Chat to Mentor
+   A private line between one member and the room's leader.
+
+   The leader sees a list of the conversations their members have started; a
+   member sees their own conversation with the leader. These messages are
+   never mixed into the room conversation.
    ========================================================================= */
 
-/**
- * The agents' working context.
- *
- * Two layers, because the room has two: the deterministic indicators every
- * agent in the room is woken with (identical for all of them), and each
- * agent's own thesis — which is per-agent and diverges over time.
- */
-function MemoryPanel({ members, indicators, asset }: { members: RoomMember[]; indicators: RoomIndicators | null; asset: string }) {
+export interface MentorThreadSummary {
+  memberId: string;
+  memberName: string;
+  lastMessageAt: string | null;
+  lastMessage: string | null;
+}
+
+export function MentorChatPanel({
+  threads, activeMemberId, onSelectThread, messages, counterpartName, isLeader,
+  onSend, sending, canPost, onJoin, joining, joinError, viewerId, loading, signedIn,
+}: {
+  threads: MentorThreadSummary[];
+  activeMemberId: string | null;
+  onSelectThread: (memberId: string) => void;
+  messages: RoomChatMessage[];
+  counterpartName: string;
+  isLeader: boolean;
+  onSend: (content: string) => void;
+  sending: boolean;
+  canPost: boolean;
+  onJoin: () => void;
+  joining: boolean;
+  joinError: string;
+  viewerId: string | null;
+  loading: boolean;
+  signedIn: boolean;
+}) {
+  const [draft, setDraft] = useState('');
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const content = draft.trim();
+    if (!content || sending) return;
+    onSend(content);
+    setDraft('');
+  };
+
   return (
-    <div className="tr-memory">
-      <SectionLabel aside={<span className="tr-metrics-timeframe">{indicators ? 'Live' : 'Waiting'}</span>}>Working context</SectionLabel>
-      {indicators ? (
-        <>
-          <div className="tr-metrics">
-            <Metric label="RSI 14" value={indicators.rsi14.toFixed(1)} />
-            <Metric label="EMA 20" value={money(indicators.ema20, indicators.ema20 < 10 ? 4 : 2)} />
-            <Metric label="EMA 50" value={money(indicators.ema50, indicators.ema50 < 10 ? 4 : 2)} />
-            <Metric label="ATR 14" value={money(indicators.atr14, indicators.atr14 < 10 ? 4 : 2)} />
+    <>
+      <div className="tr-chat-status" aria-live="polite">
+        <span className="tr-chat-status-left"><MessageCircle size={12} strokeWidth={2.2} aria-hidden="true" /><span>PRIVATE</span></span>
+        <span className="tr-chat-status-right">
+          {isLeader ? 'Only you and the member can read this' : `You and ${counterpartName}`}
+        </span>
+      </div>
+
+      {isLeader && threads.length > 0 && (
+        <div className="tr-mentor-threads" role="list" aria-label="Member conversations">
+          {threads.map(thread => (
+            <button
+              type="button"
+              role="listitem"
+              key={thread.memberId}
+              className={'tr-mentor-thread' + (thread.memberId === activeMemberId ? ' is-active' : '')}
+              onClick={() => onSelectThread(thread.memberId)}
+            >
+              <span className="tr-mentor-thread-name">{thread.memberName}</span>
+              <span className="tr-mentor-thread-last">
+                {thread.lastMessage ? thread.lastMessage.slice(0, 60) : 'No messages yet'}
+              </span>
+              <span className="tr-mentor-thread-time">
+                {thread.lastMessageAt ? relativeTime(thread.lastMessageAt) : ''}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {canPost && !(isLeader && !activeMemberId) ? (
+        <form className="tr-composer" onSubmit={submit}>
+          <textarea
+            className="tr-composer-input"
+            value={draft}
+            onChange={event => setDraft(event.target.value)}
+            maxLength={2000}
+            rows={2}
+            placeholder={isLeader ? 'Write to this member…' : `Ask ${counterpartName} a question…`}
+            aria-label="Private message"
+          />
+          <div className="tr-composer-foot">
+            <span className="tr-composer-count">{draft.trim().length}/2000</span>
+            <button type="submit" className="tr-composer-send" disabled={sending || !draft.trim()}>
+              <Send size={12} strokeWidth={2.4} aria-hidden="true" />
+              {sending ? 'Sending…' : 'Send'}
+            </button>
           </div>
-          <div className="tr-structure">
-            <div className="tr-structure-head">
-              <span>Structure</span>
-              <span className={cx('tr-chip', BIAS_TONE[indicators.structureBias] ?? 'is-muted')}>{indicators.structureBias}</span>
-            </div>
-            <dl className="tr-kv">
-              <Row label="Last higher high" value={money(indicators.lastSwingHigh)} />
-              <Row label="Last lower low" value={money(indicators.lastSwingLow)} />
-              <Row label="Retracement" value={indicators.retracementPct.toFixed(1) + '%'} />
-              <Row label="Demand zone" value={`${money(indicators.demandZone.low)} – ${money(indicators.demandZone.high)}`} />
-              <Row label="Supply zone" value={`${money(indicators.supplyZone.low)} – ${money(indicators.supplyZone.high)}`} />
-            </dl>
+        </form>
+      ) : canPost ? (
+        <div className="tr-composer is-locked">
+          <p className="tr-composer-locked-text">
+            {joinError || 'Choose the conversation you want to reply to.'}
+          </p>
+        </div>
+      ) : (
+        <div className="tr-composer is-locked">
+          <p className="tr-composer-locked-text">
+            {joinError || (signedIn
+              ? 'Join this room to write to its leader privately.'
+              : 'Sign in and join this room to write to its leader privately.')}
+          </p>
+          <button type="button" className="tr-composer-send" onClick={onJoin} disabled={joining}>
+            {joining ? 'Joining…' : signedIn ? 'Join room' : 'Sign in'}
+          </button>
+        </div>
+      )}
+
+      {loading ? (
+        <PanelEmpty title="Loading conversation…" />
+      ) : messages.length === 0 ? (
+        <PanelEmpty
+          title="No private messages yet"
+          hint={isLeader
+            ? 'When a member writes to you, the conversation appears here.'
+            : `Start a private conversation with ${counterpartName}.`}
+        />
+      ) : (
+        <div className="tr-chat">
+          {messages.map(message => {
+            const own = viewerId != null && message.authorId === viewerId;
+            return (
+              <article key={message.id} className={'tr-chat-msg is-static' + (own ? ' is-self' : '')}>
+                <div className="tr-chat-msg-head">
+                  <span className="tr-agent-avatar" aria-hidden="true">
+                    {message.authorName.slice(0, 2).toUpperCase()}
+                  </span>
+                  <span className="tr-agent-name">{message.authorName}</span>
+                  <span className="tr-chat-kind is-private">Private</span>
+                  <time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>
+                    <span className="tr-chat-clock">{localMessageTime(message.createdAt)}</span>
+                    <span className="tr-chat-relative">{relativeTime(message.createdAt)}</span>
+                  </time>
+                </div>
+                <p className="tr-chat-summary is-body">{message.content}</p>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* =========================================================================
+   PANEL — Group Details
+   What this room actually is, said by the room's own records.
+
+   Nothing here is estimated: the name, the leader, the visibility and the
+   roster all come from the server's records about this room.
+   ========================================================================= */
+
+export interface RoomGroupDetails {
+  id: string;
+  name: string;
+  description: string | null;
+  visibility: 'PUBLIC' | 'PRIVATE';
+  status: string;
+  market: string | null;
+  provider: string | null;
+  environment: string;
+  agentCount: number;
+  createdAt: string;
+  leader: { id: string; displayName: string };
+}
+
+export interface RoomGroupMember {
+  id: string;
+  displayName: string;
+  role: 'LEADER' | 'MEMBER';
+  joinedAt: string;
+}
+
+export function GroupDetailsPanel({
+  room, members, memberCount, isMember, onJoin, joining, joinError,
+}: {
+  room: RoomGroupDetails | null;
+  members: RoomGroupMember[];
+  memberCount: number;
+  isMember: boolean;
+  onJoin: () => void;
+  joining: boolean;
+  joinError: string;
+}) {
+  if (!room) return <PanelEmpty title="Loading room details…" />;
+
+  const marketLabel = room.market
+    ? `${room.market}${room.provider ? ' · ' + room.provider.toUpperCase() : ''}`
+    : room.agentCount > 0 ? 'Market not set' : 'No market configured';
+
+  return (
+    <div className="tr-details">
+      <SectionLabel>Room</SectionLabel>
+      <div className="tr-details-card">
+        <h3 className="tr-details-name">{room.name}</h3>
+        <div className="tr-details-tags">
+          <span className="tr-chip is-muted">{room.visibility === 'PUBLIC' ? 'Public room' : 'Private room'}</span>
+          <span className="tr-chip is-muted">{room.status}</span>
+          <span className="tr-chip is-muted">{room.environment}</span>
+        </div>
+        {room.description
+          ? <p className="tr-details-description">{room.description}</p>
+          : <p className="tr-details-description is-empty">
+              {isMember
+                ? 'The leader has not written a description for this room yet.'
+                : 'Join this room to read its description.'}
+            </p>}
+      </div>
+
+      <SectionLabel>Leader</SectionLabel>
+      <div className="tr-details-card">
+        <div className="tr-details-row">
+          <span className="tr-details-row-label">Mentor</span>
+          <span className="tr-details-row-value">{room.leader.displayName}</span>
+        </div>
+        <div className="tr-details-row">
+          <span className="tr-details-row-label">Members</span>
+          <span className="tr-details-row-value">{memberCount}</span>
+        </div>
+        <div className="tr-details-row">
+          <span className="tr-details-row-label">Market</span>
+          <span className="tr-details-row-value">{marketLabel}</span>
+        </div>
+        <div className="tr-details-row">
+          <span className="tr-details-row-label">Trading agents</span>
+          <span className="tr-details-row-value">{room.agentCount}</span>
+        </div>
+        <div className="tr-details-row">
+          <span className="tr-details-row-label">Created</span>
+          <span className="tr-details-row-value">{new Date(room.createdAt).toLocaleDateString()}</span>
+        </div>
+      </div>
+
+      {members.length > 0 && (
+        <>
+          <SectionLabel>Who is here</SectionLabel>
+          <div className="tr-details-roster">
+            {members.map(member => (
+              <div className="tr-details-member" key={member.id}>
+                <span className="tr-agent-avatar" aria-hidden="true">{member.displayName.slice(0, 2).toUpperCase()}</span>
+                <span className="tr-details-member-name">{member.displayName}</span>
+                <span className="tr-chat-kind">{member.role === 'LEADER' ? 'Leader' : 'Member'}</span>
+                <span className="tr-details-member-since">{relativeTime(member.joinedAt)}</span>
+              </div>
+            ))}
           </div>
         </>
-      ) : <PanelEmpty title="No market context yet" hint="Deterministic indicators appear as soon as candle history arrives." />}
+      )}
 
-      <SectionLabel>{members.length + ' agents'}</SectionLabel>
-      {members.length === 0
-        ? <PanelEmpty title="None" />
-        : members.map(member => {
-          const thesis = member.latestThesis;
-          return (
-            <article className="tr-memory-agent" key={member.id}>
-              <header className="tr-memory-agent-head">
-                <span className="tr-agent-name">{member.name}</span>
-                {thesis && <span className={cx('tr-chip', BIAS_TONE[thesis.bias] ?? 'is-muted')}>{thesis.bias}</span>}
-              </header>
-              {thesis ? (
-                <>
-                  <p className="tr-memory-summary">{thesis.summary}</p>
-                  <div className="tr-confidence" aria-label={`Confidence ${thesis.confidence} percent`}>
-                    <span className="tr-confidence-bar"><i style={{ width: Math.max(0, Math.min(100, thesis.confidence)) + '%' }} /></span>
-                    <span className="tr-confidence-value">{Math.round(thesis.confidence)}%</span>
-                  </div>
-                  {thesis.observationPlan && (
-                    <div className="tr-memory-block">
-                      <span className="tr-memory-block-label">Observation plan</span>
-                      <p>{thesis.observationPlan}</p>
-                    </div>
-                  )}
-                  {thesis.invalidation.length > 0 && (
-                    <div className="tr-memory-block">
-                      <span className="tr-memory-block-label">Invalidation</span>
-                      <ul>{thesis.invalidation.map(item => <li key={item}>{item}</li>)}</ul>
-                    </div>
-                  )}
-                  <div className="tr-memory-foot">
-                    <span>{asset || thesis.market} · {thesis.relevantTimeframe}</span>
-                    <span>{relativeTime(thesis.updatedAt)}</span>
-                  </div>
-                </>
-              ) : <p className="tr-memory-summary is-empty">No thesis recorded yet.</p>}
-            </article>
-          );
-        })}
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="tr-metric"><span className="tr-metric-label">{label}</span><span className="tr-metric-value">{value}</span></div>;
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return <div className="tr-kv-row"><dt>{label}</dt><dd>{value}</dd></div>;
-}
-
-/* =========================================================================
-   PANEL — Trades
-   ========================================================================= */
-
-function TradeRow({ trade, onOpen }: { trade: RoomTrade; onOpen: (trade: RoomTrade) => void }) {
-  const long = /long|buy/i.test(trade.direction);
-  const digits = trade.entry != null && trade.entry < 10 ? 4 : 2;
-  return (
-    <button type="button" className="tr-trade" onClick={() => onOpen(trade)}>
-      <span className={cx('tr-trade-dir', long ? 'is-long' : 'is-short')}>{trade.direction}</span>
-      <span className="tr-trade-market">{trade.market}</span>
-      <span className="tr-trade-price">{money(trade.entry, digits)}</span>
-      <span className={cx('tr-chip', 'is-muted')}>{trade.status}</span>
-      <span className="tr-trade-agent">{trade.agentName}</span>
-      <span className="tr-trade-time">{relativeTime(trade.createdAt)}</span>
-    </button>
-  );
-}
-
-function TradesPanel({ trades, onOpen }: { trades: RoomTrade[]; onOpen: (trade: RoomTrade) => void }) {
-  if (trades.length === 0) {
-    return <PanelEmpty title="None" hint="No trades have been proposed yet. Every signal an agent raises appears here with its full reasoning." />;
-  }
-  return (
-    <div className="tr-trades">
-      <div className="tr-trades-head" aria-hidden="true">
-        <span>Side</span><span>Market</span><span>Entry</span><span>Status</span>
-      </div>
-      {trades.map(trade => <TradeRow key={trade.id} trade={trade} onOpen={onOpen} />)}
+      {!isMember && (
+        <button type="button" className="tr-chat-run" onClick={onJoin} disabled={joining}>
+          <Users size={13} strokeWidth={2.4} aria-hidden="true" />
+          {joining ? 'Joining…' : 'Join this room'}
+        </button>
+      )}
+      {joinError && <p className="tr-panel-error" role="alert">{joinError}</p>}
     </div>
   );
 }
 
 /* =========================================================================
-   Trade detail modal
+   PANEL — Connect Broker
+   The member's OWN trading account, connected in Settings.
+
+   This panel never shows a credential and never claims an account is
+   connected unless the server verified it. The connection itself happens in
+   the existing Settings screen, which owns the OAuth flow and the vault.
    ========================================================================= */
 
-export function TradeModal({ trade, onClose }: { trade: RoomTrade; onClose: () => void }) {
-  const [digits, setDigits] = useState(4);
-  React.useEffect(() => { setDigits(trade.entry != null && trade.entry < 10 ? 4 : 2); }, [trade]);
-  React.useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+export interface BrokerConnectionState {
+  cTrader: { configured: boolean; connected: boolean; selectedAccountId: string | null; selectedAccountIsLive: boolean } | null;
+  propDao: { configured: boolean; connected: boolean } | null;
+}
 
-  const long = /long|buy/i.test(trade.direction);
+export function ConnectBrokerPanel({
+  state, loading, error, onOpenSettings,
+}: {
+  state: BrokerConnectionState;
+  loading: boolean;
+  error: string;
+  onOpenSettings: (section: 'ctrader' | 'propdao') => void;
+}) {
+  if (loading) return <PanelEmpty title="Checking your connections…" />;
+
+  const cTrader = state.cTrader;
+  const propDao = state.propDao;
 
   return (
-    <div className="tr-modal-backdrop" onClick={onClose} role="presentation">
-      <div className="tr-modal" role="dialog" aria-modal="true" aria-label={`Trade detail · ${trade.market}`} onClick={event => event.stopPropagation()}>
-        <header className="tr-modal-head">
-          <div className="tr-modal-title">
-            <span className={cx('tr-trade-dir', long ? 'is-long' : 'is-short')}>{trade.direction}</span>
-            <span className="tr-modal-market">{trade.market}</span>
-            <span className={cx('tr-chip', 'is-muted')}>{trade.status}</span>
-            {trade.decision && <span className={cx('tr-chip', trade.decision === 'ACCEPTED' ? 'is-positive' : 'is-negative')}>{trade.decision}</span>}
-          </div>
-          <button type="button" className="tr-modal-close" onClick={onClose} aria-label="Close trade detail"><X size={15} strokeWidth={2.4} aria-hidden="true" /></button>
-        </header>
+    <div className="tr-broker">
+      <p className="tr-panel-disclaimer">
+        Connect the account you want to trade this room with. Your connection
+        belongs to you — it is never shared with the room leader, and no
+        credential is ever shown in the room.
+      </p>
 
-        <div className="tr-modal-body">
-          <dl className="tr-kv tr-kv-grid">
-            <Row label="Entry" value={money(trade.entry, digits)} />
-            <Row label="Stop loss" value={money(trade.stopLoss, digits)} />
-            <Row label="Target" value={money(trade.takeProfit, digits)} />
-            <Row label="Risk : reward" value={trade.riskReward ?? '—'} />
-            <Row label="Confidence" value={Math.round(trade.confidence) + '%'} />
-            <Row label="Order type" value={trade.orderType ?? '—'} />
-          </dl>
-
-          <ModalBlock label="Thesis"><p>{trade.thesis}</p></ModalBlock>
-          <ModalBlock label="Rationale"><p>{trade.rationale}</p></ModalBlock>
-          {trade.invalidation && <ModalBlock label="Invalidation"><p>{trade.invalidation}</p></ModalBlock>}
-          {trade.confirmationRequired && <ModalBlock label="Confirmation required"><p>{trade.confirmationRequired}</p></ModalBlock>}
-          {trade.contradictoryEvidence.length > 0 && (
-            <ModalBlock label="Counter-evidence"><ul>{trade.contradictoryEvidence.map(item => <li key={item}>{item}</li>)}</ul></ModalBlock>
-          )}
-          {trade.supportingEvidence.length > 0 && (
-            <ModalBlock label="Supporting evidence"><ul>{trade.supportingEvidence.map(item => <li key={item}>{item}</li>)}</ul></ModalBlock>
-          )}
+      <article className={'tr-broker-card' + (cTrader?.connected ? ' is-connected' : '')}>
+        <div className="tr-broker-head">
+          <span className="tr-broker-name">cTrader</span>
+          {cTrader?.connected
+            ? <span className="tr-broker-state is-connected"><CheckCircle2 size={12} /> Connected</span>
+            : <span className="tr-broker-state"><AlertCircle size={12} /> Not connected</span>}
         </div>
+        <p className="tr-broker-detail">
+          {cTrader?.connected
+            ? cTrader.selectedAccountId
+              ? `Account ${cTrader.selectedAccountId}${cTrader.selectedAccountIsLive ? ' · LIVE' : ' · DEMO'}`
+              : 'Authorized, but no trading account is selected yet.'
+            : cTrader?.configured
+              ? 'Not authorized on this account yet. Connect it to use cTrader prices and orders.'
+              : 'cTrader is not configured on this deployment. Ask the operator to add the cTrader Open API credentials.'}
+        </p>
+        <button type="button" className="tr-broker-action" onClick={() => onOpenSettings('ctrader')}>
+          {cTrader?.connected ? 'Manage cTrader account' : 'Connect cTrader'}
+        </button>
+      </article>
 
-        <footer className="tr-modal-foot">
-          <span>{trade.agentName}</span>
-          <span>Raised {relativeTime(trade.createdAt)}</span>
-          {trade.decidedAt && <span>Decided {relativeTime(trade.decidedAt)}</span>}
-          {trade.expiresAt && <span>Expires {relativeTime(trade.expiresAt)}</span>}
-        </footer>
-      </div>
+      <article className={'tr-broker-card' + (propDao?.connected ? ' is-connected' : '')}>
+        <div className="tr-broker-head">
+          <span className="tr-broker-name">PropDAO</span>
+          {propDao?.connected
+            ? <span className="tr-broker-state is-connected"><CheckCircle2 size={12} /> Connected</span>
+            : <span className="tr-broker-state"><AlertCircle size={12} /> Not connected</span>}
+        </div>
+        <p className="tr-broker-detail">
+          {propDao?.connected
+            ? 'Your PropDAO key is stored and verified.'
+            : propDao?.configured
+              ? 'A key is saved but could not be verified. Open the settings to re-check it.'
+              : 'No PropDAO key is saved on this account yet. Add one to connect a prop-firm account.'}
+        </p>
+        <button type="button" className="tr-broker-action" onClick={() => onOpenSettings('propdao')}>
+          {propDao?.connected ? 'Manage PropDAO connection' : 'Connect PropDAO'}
+        </button>
+      </article>
+
+      {error && <p className="tr-panel-error" role="alert">{error}</p>}
     </div>
   );
-}
-
-function ModalBlock({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div className="tr-modal-block"><span className="tr-modal-block-label">{label}</span><div className="tr-modal-block-body">{children}</div></div>;
 }
 
 /* =========================================================================
    Shell
    ========================================================================= */
 
-export interface SidebarTabBadge { news?: number; trades?: number; trackers?: number }
+export interface SidebarTabBadge { news?: number; messages?: number }
 
 export const TradeRoomSidebar: React.FC<{
   panel: RoomPanelId;
@@ -809,7 +1001,7 @@ export const TradeRoomSidebar: React.FC<{
   badges: SidebarTabBadge;
 }> = ({ panel, onPanelChange, status, statusTitle, badges }) => {
   const active = ROOM_PANELS.find(entry => entry.id === panel) ?? ROOM_PANELS[0];
-  const badgeFor = (id: RoomPanelId) => (id === 'news' ? badges.news : id === 'trades' ? badges.trades : id === 'trackers' ? badges.trackers : 0);
+  const badgeFor = (id: RoomPanelId) => (id === 'news' ? badges.news : id === 'chat' ? badges.messages : 0);
 
   return (
     <div className="trade-room-stream-header">
@@ -844,4 +1036,4 @@ export const TradeRoomSidebar: React.FC<{
   );
 };
 
-export { NewsPanel, TrackersPanel, ToolsPanel, MemoryPanel, TradesPanel, cx, relativeTime, BIAS_TONE, money };
+export { NewsPanel, ToolsPanel, cx, relativeTime, BIAS_TONE, money };
