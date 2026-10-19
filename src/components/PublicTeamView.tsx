@@ -1,25 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowLeftRight, Clock, PanelRightClose, PanelRightOpen, Wallet, Settings, X, Save, Play, Pause, RotateCcw, Sun, Moon, ShoppingBag } from 'lucide-react';
+import { ArrowLeft, Clock, PanelRightClose, PanelRightOpen, Settings, X, Save, Trash2, Users, Globe, LockKeyhole, ChevronDown } from 'lucide-react';
 import { TradingViewLightweightChart } from './TradingViewLightweightChart';
 import {
-  ConnectBrokerPanel, GroupDetailsPanel, MentorChatPanel, NewsPanel, RoomChatPanel, RunLogView, ToolsPanel, TradeRoomSidebar,
+  ConnectBrokerPanel, GroupDetailsPanel, MarketPanel, MentorChatPanel, NewsPanel, RoomChatPanel, TradeRoomSidebar,
   type BrokerConnectionState, type MentorThreadSummary, type RoomChatMessage, type RoomGroupDetails, type RoomGroupMember,
-  type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId, type RoomRun, type RoomRunLog, type RoomTrade,
+  type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId,
 } from './TradeRoomSidebar';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import type { Candle, MarketQuote } from '../types';
 
-/** A persisted agent signal. The room projection carries the full trade. */
-type Signal = RoomTrade;
 type Member = RoomMember;
-type Room = { id: string; owner?: boolean; slug: string; name: string; instructions?: string; monitoringIntervals?: number[]; visibility: 'PUBLIC' | 'PRIVATE'; status: string; coordinationMode: string; environment?: 'DEMO' | 'LIVE'; marketDataProvider?: string | null; liveTradingProvider?: 'ctrader' | 'hyperliquid' | null; memberCount: number; markets: string[]; asset?: string; provider?: string; liveTrading?: boolean; balance?: number | null; trades?: number };
+type Room = {
+  id: string; owner?: boolean; slug: string; name: string; instructions?: string;
+  visibility: 'PUBLIC' | 'PRIVATE'; status: string; memberCount: number; markets: string[];
+  asset?: string; provider?: string; balance?: number | null; trades?: number;
+};
 type RoomSkill = { id: string; name: string; description?: string; isDefault?: boolean };
-const ROOM_MONITOR_INTERVALS = [{ value: 5, label: '5 min' }, { value: 15, label: '15 min' }, { value: 30, label: '30 min' }, { value: 60, label: '1 hour' }, { value: 240, label: '4 hours' }];
 type AccountPayload = { balance: number | null; currency?: string; source?: 'live' | 'recorded'; environment?: 'live' | 'demo'; reason?: string | null };
 type Payload = { team: Room; members: Member[] };
-type FeedItem = { id: string; memberName: string; kind: string; title: string; body: string; at: string; signal?: Signal; member?: Member };
-type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string; environment?: 'DEMO' | 'LIVE'; marketDataProvider?: string; executionAllowed?: boolean; indicators?: RoomIndicators; availableBars?: number; requestedCount?: number };
+type MarketPayload = { quotes: MarketQuote[]; candles: Candle[]; provider?: string; dataMode?: string; indicators?: RoomIndicators; availableBars?: number; requestedCount?: number };
 
 /**
  * WHO AM I IN THIS ROOM.
@@ -48,8 +48,12 @@ type MentorChatPayload = {
   thread: { memberId: string; memberName: string; messages: RoomChatMessage[] } | null;
 };
 
+type AssetOption = { symbol: string; name: string; category: string };
+
+const ROOM_CHART_TIMEFRAMES = ['5m', '15m', '1h', '4h', '1D'];
+
 /**
- * History requested per timeframe, matching the agent's candle plan.
+ * History requested per timeframe.
  *
  * Fetching the full series once and revealing it in the chart is far cheaper
  * than paging on scroll: the upstream request is identical either way, and the
@@ -63,7 +67,6 @@ async function read<T>(response: Response): Promise<T> {
   return body as T;
 }
 const formatPrice = (value?: number, digits = 8) => value == null || !Number.isFinite(value) || value <= 0 ? '—' : value.toLocaleString(undefined, { maximumFractionDigits: digits });
-const ROOM_CHART_TIMEFRAMES = ['5m', '15m', '1h', '4h', '1D'];
 const quoteHasPrice = (quote: MarketQuote | null) => Boolean(quote && Number.isFinite(quote.mid) && quote.mid > 0);
 const quoteIsFresh = (quote: MarketQuote | null) => {
   if (!quoteHasPrice(quote) || quote?.stale) return false;
@@ -79,37 +82,30 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [selectedMemberId, setSelectedMemberId] = useState('');
   const [candles, setCandles] = useState<Candle[]>([]);
   const [candlesTimeframe, setCandlesTimeframe] = useState('');
   const [marketQuote, setMarketQuote] = useState<MarketQuote | null>(null);
   const [marketError, setMarketError] = useState('');
   const [marketSymbol, setMarketSymbol] = useState('');
-  const [marketProvider, setMarketProvider] = useState('');
   const [dataMode, setDataMode] = useState('');
   const [indicators, setIndicators] = useState<RoomIndicators | null>(null);
   const [timeframe, setTimeframe] = useState('15m');
+  const [panel, setPanel] = useState<RoomPanelId>('chat');
   const [streamVisible, setStreamVisible] = useState(true);
-  const [environmentBusy, setEnvironmentBusy] = useState(false);
-  const [environmentNotice, setEnvironmentNotice] = useState('');
-  const [lifecycleBusy, setLifecycleBusy] = useState(false);
-  const [resetBusy, setResetBusy] = useState(false);
-  const [openRouterHealth, setOpenRouterHealth] = useState<'checking' | 'healthy' | 'unhealthy'>('checking');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [buyRoomOpen, setBuyRoomOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [settingsName, setSettingsName] = useState('');
-  const [settingsInstructions, setSettingsInstructions] = useState('');
-  const [settingsIntervals, setSettingsIntervals] = useState<number[]>([15]);
-  const [roomSkills, setRoomSkills] = useState<RoomSkill[]>([]);
-  const [skillsToAdd, setSkillsToAdd] = useState<string[]>([]);
-  const [account, setAccount] = useState<AccountPayload | null>(null);
+  const [settingsDescription, setSettingsDescription] = useState('');
+  const [settingsVisibility, setSettingsVisibility] = useState<'PUBLIC' | 'PRIVATE'>('PRIVATE');
+  const [assets, setAssets] = useState<AssetOption[]>([]);
+  const [assetsLoading, setAssetsLoading] = useState(false);
+  const [assetSaving, setAssetSaving] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [roomIdentity, setRoomIdentity] = useState<RoomIdentity | null>(null);
   const [identityError, setIdentityError] = useState('');
   const [joining, setJoining] = useState(false);
   const [chatMessages, setChatMessages] = useState<RoomChatMessage[]>([]);
-  const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState('');
   const [chatSending, setChatSending] = useState(false);
   const [mentorThreads, setMentorThreads] = useState<MentorThreadSummary[]>([]);
@@ -121,16 +117,18 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [broker, setBroker] = useState<BrokerConnectionState>({ cTrader: null, propDao: null });
   const [brokerLoading, setBrokerLoading] = useState(false);
   const [brokerError, setBrokerError] = useState('');
-  const { currentUser, authMode, getApiAuthHeaders, loginWithGoogle } = useAuth();
+  const { currentUser, authMode, getApiAuthHeaders, openAuthModal } = useAuth();
   const { theme, toggleTheme } = useTheme();
+
+  const signedIn = Boolean(currentUser) || authMode === 'dev';
 
   /**
    * Auth headers for a room request, or none at all for a visitor who is not
    * signed in.
    *
    * A room link is public: someone who has never signed in must still be
-   * able to OPEN it and read what it is. Asking for a token they do not have
-   * would turn a public page into an error.
+   * able to OPEN it and see the chart and the room. Asking for a token they
+   * do not have would turn a public page into an error.
    */
   const optionalAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
     if (authMode === 'dev') {
@@ -147,7 +145,6 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
       }));
       setData(result);
       setError('');
-      setSelectedMemberId(previous => previous && result.members.some(member => member.id === previous) ? previous : result.members[0]?.id || '');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load this room.');
     } finally {
@@ -161,265 +158,11 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     return () => window.clearInterval(interval);
   }, [load]);
 
-  const changeTeamLifecycle = useCallback(async (action: 'PLAY' | 'PAUSE') => {
-    if (!data?.team.owner || lifecycleBusy) return;
-    setLifecycleBusy(true); setError(''); setEnvironmentNotice('');
-    try {
-      const authHeaders = await getApiAuthHeaders();
-      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/status', {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ action }),
-      });
-      const result = await read<{ team: Room; message?: string }>(response);
-      setEnvironmentNotice(action === 'PLAY' ? 'Room started. Agents are scheduled and the first review will begin.' : 'Room stopped. Agents will not run scheduled reviews.');
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not change room status.');
-    } finally { setLifecycleBusy(false); }
-  }, [data, lifecycleBusy, getApiAuthHeaders, load]);
-
-  const resetRoom = useCallback(async () => {
-    if (!data?.team.owner || resetBusy) return;
-    const confirmed = window.confirm('Reset this room completely? This permanently deletes the room, its agents, their saved configuration, trade proposals, market reviews and activity history. You will need to create the room again from scratch.');
-    if (!confirmed) return;
-    setResetBusy(true); setError('');
-    try {
-      const authHeaders = await getApiAuthHeaders();
-      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/reset', {
-        method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ confirm: true }),
-      });
-      await read<{ success: boolean }>(response);
-      window.location.href = '/#/rooms';
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not reset this room.');
-      setResetBusy(false);
-    }
-  }, [data, resetBusy, getApiAuthHeaders]);
-
-  useEffect(() => {
-    if (!data?.team.owner || (authMode !== 'dev' && !currentUser)) {
-      setOpenRouterHealth('checking');
-      return;
-    }
-    let cancelled = false;
-    const check = async () => {
-      try {
-        const headers = await getApiAuthHeaders();
-        const response = await fetch('/api/ai/models?provider=openrouter', { headers: { Accept: 'application/json', ...headers }, cache: 'no-store' });
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok || !Array.isArray(body.models) || body.models.length === 0) throw new Error('OpenRouter unavailable');
-        if (!cancelled) setOpenRouterHealth('healthy');
-      } catch {
-        if (!cancelled) setOpenRouterHealth('unhealthy');
-      }
-    };
-    void check();
-    const timer = window.setInterval(() => void check(), 60_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [data?.team.owner, authMode, currentUser, getApiAuthHeaders]);
-
-  const changeEnvironment = useCallback(async (environment: 'DEMO' | 'LIVE', provider?: 'ctrader' | 'hyperliquid') => {
-    if (!data || !data.team.owner || environmentBusy) return;
-    if (environment === 'LIVE' && !window.confirm('Switch this room to live market data? This does not enable or disable trading. Existing GOAT execution permissions remain unchanged.')) return;
-    setEnvironmentBusy(true); setEnvironmentNotice(''); setError('');
-    try {
-      const authHeaders = await getApiAuthHeaders();
-      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/environment', {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ environment, ...(provider ? { provider } : {}) }),
-      });
-      const result = await read<{ team: Room; message: string }>(response);
-      setEnvironmentNotice(result.message);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not change the market-data environment.');
-    } finally { setEnvironmentBusy(false); }
-  }, [data, environmentBusy, getApiAuthHeaders, load]);
-
-
-  const openRoomSettings = useCallback(async () => {
-    if (!data) return;
-    setSettingsError('');
-    setSettingsOpen(true);
-    if (!data.team.owner) return;
-    setSettingsName(data.team.name);
-    setSettingsInstructions(data.team.instructions ?? '');
-    setSettingsIntervals(data.team.monitoringIntervals?.length ? data.team.monitoringIntervals : [15]);
-    setSkillsToAdd([]);
-    try {
-      const headers = new Headers({ Accept: 'application/json' });
-      for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
-      const response = await fetch('/api/skills', { headers, cache: 'no-store' });
-      const body = await response.json().catch(() => ({}));
-      if (response.ok && Array.isArray(body.skills)) setRoomSkills(body.skills as RoomSkill[]);
-      else setSettingsError(body?.error?.message || 'Could not load skills. You can still edit the room settings.');
-    } catch { setSettingsError('Could not load skills. You can still edit the room settings.'); }
-  }, [data, getApiAuthHeaders]);
-
-  const saveRoomSettings = useCallback(async () => {
-    if (!data?.team.owner || settingsSaving) return;
-    if (!settingsName.trim()) { setSettingsError('Room name cannot be empty.'); return; }
-    if (!settingsIntervals.length) { setSettingsError('Choose at least one monitoring interval.'); return; }
-    setSettingsSaving(true); setSettingsError('');
-    try {
-      const authHeaders = await getApiAuthHeaders();
-      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id), {
-        method: 'PATCH', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ name: settingsName.trim(), instructions: settingsInstructions, monitoringIntervals: settingsIntervals }),
-      });
-      await read<{ team: Room }>(response);
-      if (skillsToAdd.length) {
-        const skillResponse = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/skills', {
-          method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
-          body: JSON.stringify({ skillIds: skillsToAdd }),
-        });
-        await read<{ updatedMembers: number }>(skillResponse);
-      }
-      setSettingsOpen(false);
-      await load();
-    } catch (err) { setSettingsError(err instanceof Error ? err.message : 'Could not save room settings.'); }
-    finally { setSettingsSaving(false); }
-  }, [data, settingsSaving, settingsName, settingsInstructions, settingsIntervals, skillsToAdd, getApiAuthHeaders, load]);
-
-  const selectedMember = data?.members.find(member => member.id === selectedMemberId) ?? data?.members[0] ?? null;
-  // A deployed room has one immutable instrument. Member markets are only a legacy fallback.
-  const activeMarket = data?.team.asset || data?.team.markets?.[0] ||
-    selectedMember?.latestThesis?.market || selectedMember?.markets?.[0] ||
-    selectedMember?.signals?.[0]?.market ||
-    (data?.team.provider === 'ctrader' ? 'EURUSD' : data?.team.provider === 'hyperliquid' ? 'BTC' : '');
-
-  useEffect(() => {
-    const monitored = selectedMember?.timeframe || '15m';
-    setTimeframe(ROOM_CHART_TIMEFRAMES.includes(monitored) ? monitored : '15m');
-  }, [selectedMember?.id, selectedMember?.timeframe]);
-
-  useEffect(() => {
-    if (!selectedMember || !activeMarket) {
-      setCandles([]);
-      setCandlesTimeframe('');
-      setMarketQuote(null);
-      setMarketSymbol(activeMarket);
-      setMarketError(selectedMember ? 'No market configured for this bot.' : '');
-      return;
-    }
-
-    let cancelled = false;
-    let timer: number | undefined;
-    setCandlesTimeframe('');
-    const refreshMarket = async () => {
-      try {
-        const url = '/api/team-rooms/' + encodeURIComponent(slug) + '/market?memberId=' +
-          encodeURIComponent(selectedMember.id) + '&symbol=' + encodeURIComponent(activeMarket) +
-          '&timeframe=' + encodeURIComponent(timeframe) + '&count=' + (ROOM_TIMEFRAME_BARS[timeframe] ?? 300);
-        const result = await read<MarketPayload>(await fetch(url, {
-          headers: { Accept: 'application/json' }, cache: 'no-store',
-        }));
-        if (cancelled) return;
-        const quote = result.quotes?.find(item => item.symbol === activeMarket) ?? result.quotes?.[0] ?? null;
-        const nextCandles = Array.isArray(result.candles) ? result.candles : [];
-        setMarketSymbol(activeMarket);
-        setMarketQuote(quote);
-        setCandles(nextCandles);
-        setCandlesTimeframe(timeframe);
-        setMarketProvider(result.provider || data?.team.provider || '');
-        setDataMode(result.dataMode || '');
-        // The Memory panel reads the same deterministic context the agents are
-        // woken with, so it is kept rather than recomputed in the browser.
-        if (result.indicators) setIndicators(result.indicators);
-        setMarketError(quoteHasPrice(quote) || nextCandles.length ? '' : quote?.unavailableReason || 'Market data unavailable from this provider.');
-      } catch (err) {
-        if (!cancelled) {
-          setMarketQuote(null);
-          setMarketError(err instanceof Error ? err.message : 'Market data unavailable.');
-          // Keep the last valid candle history visible during a transient quote/API failure.
-        }
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => void refreshMarket(), 5000);
-      }
-    };
-    void refreshMarket();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [slug, selectedMember?.id, activeMarket, timeframe, data?.team.provider]);
-
-  const feed = useMemo<FeedItem[]>(() => {
-    if (!data) return [];
-    const entries: FeedItem[] = [];
-    for (const member of data.members) {
-      if (member.latestThesis) entries.push({
-        id: member.id + '-thesis-' + member.latestThesis.updatedAt,
-        memberName: member.name, kind: 'MARKET REVIEW',
-        title: member.latestThesis.bias + ' · ' + member.latestThesis.market,
-        body: member.latestThesis.summary, at: member.latestThesis.updatedAt, member,
-      });
-      for (const signal of member.signals || []) entries.push({
-        id: signal.id, memberName: member.name,
-        kind: signal.decision || signal.status || 'PROPOSAL',
-        title: signal.market + ' · ' + signal.direction,
-        body: [signal.thesis, signal.rationale].filter(Boolean).join('\n\n'),
-        at: signal.createdAt, signal, member,
-      });
-    }
-    return entries.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
-  }, [data]);
-
-  // Markers come only from persisted agent signals with a real timestamp and a defined entry.
-  const agentEvents = useMemo(() => {
-    if (!data || !activeMarket) return [];
-    return data.members.flatMap(member => (member.signals || [])
-      .filter(signal => signal.market.toUpperCase() === activeMarket.toUpperCase() &&
-        Number.isFinite(signal.entry) && (signal.entry || 0) > 0 &&
-        /long|short|buy|sell/i.test(signal.direction) && Number.isFinite(Date.parse(signal.createdAt)))
-      .map(signal => ({
-        id: signal.id,
-        time: Date.parse(signal.createdAt),
-        price: signal.entry,
-        direction: signal.direction,
-        label: member.name + ' · ' + signal.direction,
-      })));
-  }, [data, activeMarket]);
-
-  const priceDigits = marketSymbol.toUpperCase().includes('BTC') ? 2 : marketSymbol.toUpperCase().includes('ETH') ? 2 : 5;
-
-  /**
-   * The sidebar is a switchable control surface. News is fetched only once a
-   * panel actually reports on it — it is the one request in this view that
-   * costs an upstream round trip, and a visitor reading the chat has no use for
-   * headlines. The Tools panel reports news status too, so opening it counts.
-   */
-  const [panel, setPanel] = useState<RoomPanelId>('chat');
-  const [news, setNews] = useState<RoomNewsPayload | null>(null);
-  const [newsLoading, setNewsLoading] = useState(false);
-  const loadNews = useCallback(async (force = false) => {
-    setNewsLoading(true);
-    try {
-      const result = await read<RoomNewsPayload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/news' + (force ? '?refresh=1' : ''), {
-        headers: { Accept: 'application/json' }, cache: 'no-store',
-      }));
-      setNews(result);
-    } catch (error) {
-      setNews({ market: marketSymbol, ok: false, error: error instanceof Error ? error.message : 'News unavailable.', fetchedAt: new Date().toISOString(), headlines: [] });
-    } finally { setNewsLoading(false); }
-  }, [slug, marketSymbol]);
-  useEffect(() => {
-    if (panel !== 'news' && panel !== 'tools') return;
-    void loadNews();
-    const timer = window.setInterval(() => void loadNews(true), 15 * 60_000);
-    return () => window.clearInterval(timer);
-  }, [panel, loadNews]);
-
   /* ------------------------------------------------------------------ */
   /* The room community: who I am, the room chat, the mentor thread.     */
   /* ------------------------------------------------------------------ */
 
-  const signedIn = Boolean(currentUser) || authMode === 'dev';
-
-  /** The viewer's standing in this room. Cheap, and polled with the room. */
+  /** The viewer's standing in this room. */
   const loadIdentity = useCallback(async () => {
     try {
       const result = await read<RoomIdentity>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/me', {
@@ -438,23 +181,18 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     return () => window.clearInterval(timer);
   }, [loadIdentity]);
 
-  /** Joining is what makes the room conversation available to this person. */
+  /**
+   * Whether the visitor has asked to be a member of this room.
+   *
+   * Pressing the locked composer is that ask. When they come back from
+   * signing in, the room lets them in — so "register" really is the only
+   * step between a visitor and the conversation.
+   */
+  const [joinRequested, setJoinRequested] = useState(false);
+
+  /** Joining is what opens the conversation to this person. */
   const joinRoom = useCallback(async () => {
     if (joining) return;
-    if (!signedIn) {
-      /**
-       * A room link is public, so a visitor who has never signed in can be
-       * looking at it. Joining needs an identity, so the first step is
-       * signing in — the room stays exactly where it is afterwards.
-       */
-      setChatError('');
-      try {
-        await loginWithGoogle();
-      } catch (err) {
-        setChatError(err instanceof Error ? err.message : 'Sign-in failed.');
-      }
-      return;
-    }
     setJoining(true); setChatError(''); setMentorError('');
     try {
       const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json' });
@@ -464,7 +202,18 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     } catch (err) {
       setChatError(err instanceof Error ? err.message : 'Could not join this room.');
     } finally { setJoining(false); }
-  }, [joining, signedIn, slug, getApiAuthHeaders, loadIdentity, loginWithGoogle]);
+  }, [joining, slug, getApiAuthHeaders, loadIdentity]);
+
+  /**
+   * A visitor who pressed the locked composer and then signed in is let in
+   * without a second click.
+   */
+  useEffect(() => {
+    if (!joinRequested || !signedIn) return;
+    if (!roomIdentity || roomIdentity.isMember) { setJoinRequested(false); return; }
+    setJoinRequested(false);
+    void joinRoom();
+  }, [joinRequested, signedIn, roomIdentity, joinRoom]);
 
   /**
    * The room conversation.
@@ -485,7 +234,6 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
 
   const loadChat = useCallback(async (incremental: boolean) => {
     if (!roomIdentity?.isMember) return;
-    if (!incremental) setChatLoading(true);
     try {
       const cursor = incremental ? chatCursor.current : null;
       const query = cursor ? '?since=' + encodeURIComponent(cursor) : '';
@@ -501,14 +249,14 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
       setChatError('');
     } catch (err) {
       setChatError(err instanceof Error ? err.message : 'The room conversation is unavailable.');
-    } finally { setChatLoading(false); }
+    }
   }, [slug, roomIdentity?.isMember, optionalAuthHeaders, applyChatMessages]);
 
   useEffect(() => {
     if (panel !== 'chat' || !roomIdentity?.isMember) return;
     chatCursor.current = null;
     void loadChat(false);
-    const timer = window.setInterval(() => void loadChat(true), 6000);
+    const timer = window.setInterval(() => void loadChat(true), 5000);
     return () => window.clearInterval(timer);
   }, [panel, roomIdentity?.isMember, loadChat]);
 
@@ -533,9 +281,6 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   /**
    * The private line to the room's leader. A member reads their own thread;
    * the leader reads the threads their members started.
-   *
-   * The selected thread is kept in a ref so that choosing one does not
-   * restart the poll and drop the leader back to an empty inbox.
    */
   const mentorSelection = useRef<string | null>(null);
 
@@ -634,99 +379,188 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     window.location.hash = '/settings?section=' + section;
   }, []);
 
-  /**
-   * The room conversation is human-led, but the room's agents still report
-   * what they did. Opening one of those entries swaps the chat region for
-   * that run's activity ledger rather than opening a modal over it, so the
-   * chart and sidebar frame never move and Back lands where the list was.
-   */
-  const [logRun, setLogRun] = useState<RoomRun | null>(null);
-  const [runLog, setRunLog] = useState<RoomRunLog | null>(null);
-  const [logLoading, setLogLoading] = useState(false);
-  useEffect(() => {
-    if (!logRun) return;
-    let cancelled = false;
-    setLogLoading(true);
-    setRunLog(null);
-    (async () => {
-      const result = await read<RoomRunLog>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/runs/' + encodeURIComponent(logRun.workflowId), {
-        headers: { Accept: 'application/json' }, cache: 'no-store',
-      }));
-      if (!cancelled) setRunLog(result);
-    })()
-      .catch(() => { if (!cancelled) setRunLog(null); })
-      .finally(() => { if (!cancelled) setLogLoading(false); });
-    return () => { cancelled = true; };
-  }, [logRun, slug]);
+  /* ------------------------------------------------------------------ */
+  /* The chart                                                            */
+  /* ------------------------------------------------------------------ */
 
-  const [running, setRunning] = useState(false);
-  const [runRequestedAt, setRunRequestedAt] = useState<number | null>(null);
-  const runTeam = useCallback(async () => {
-    if (running || runRequestedAt !== null) return;
-    const requestedAt = Date.now();
-    setRunning(true);
-    setRunRequestedAt(requestedAt);
-    setError('');
-    try {
-      const headers = await getApiAuthHeaders();
-      const response = await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/run', {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ market: marketSymbol }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body?.error?.message || body?.message || 'The team could not start its review.');
-      // The server returns 202 while agents work. Keep the live indicator on
-      // until the room poll sees a fresh, terminal run for every member.
-    } catch (err) {
-      setRunRequestedAt(null);
-      setError(err instanceof Error ? err.message : 'The team could not start its review.');
-    } finally {
-      setRunning(false);
+  const activeMarket = data?.team.asset || '';
+
+  useEffect(() => {
+    if (!activeMarket) {
+      setCandles([]);
+      setCandlesTimeframe('');
+      setMarketQuote(null);
+      setMarketError('The leader of this room has not chosen an instrument yet.');
+      return;
     }
-  }, [slug, marketSymbol, getApiAuthHeaders, running, runRequestedAt]);
 
-  const runs = useMemo<RoomRun[]>(() => (data?.members ?? [])
-    .flatMap(member => (member.runs ?? []).map(run => ({ ...run, agentName: member.name })))
-    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at)), [data]);
-
-  /** Only the room owner may spend model calls; visitors get no Run button. */
-  const canRun = (authMode === 'dev' || Boolean(currentUser)) && data?.team.owner === true;
-  const teamRunActive = running || runRequestedAt !== null;
-  useEffect(() => {
-    if (runRequestedAt === null || !data?.members.length) return;
-    const startedAfterRequest = (run: RoomRun) => Date.parse(run.at) >= runRequestedAt - 5_000;
-    const membersWithFreshRuns = data.members.filter(member => member.runs.some(startedAfterRequest));
-    const hasActiveFreshRun = runs.some(run => startedAfterRequest(run) && run.outcome === 'running');
-    if (Date.now() - runRequestedAt > 15 * 60_000 || (membersWithFreshRuns.length === data.members.length && !hasActiveFreshRun)) setRunRequestedAt(null);
-  }, [data, runs, runRequestedAt]);
-
-  /**
-   * The owner's connected trading account.
-   *
-   * Only the owner may read it, so this is fetched when signed in and the
-   * header falls back to the balance recorded at room creation for everyone
-   * else. Polled rarely: a broker balance is not a tick-rate number.
-   */
-  useEffect(() => {
-    if (authMode !== 'dev' && !currentUser) return;
     let cancelled = false;
-    const refreshAccount = async () => {
+    let timer: number | undefined;
+    setCandlesTimeframe('');
+    const refreshMarket = async () => {
       try {
-        const headers = await getApiAuthHeaders();
-        const result = await read<AccountPayload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/account', {
-          headers: { Accept: 'application/json', ...headers }, cache: 'no-store',
+        const url = '/api/team-rooms/' + encodeURIComponent(slug) + '/market?symbol=' +
+          encodeURIComponent(activeMarket) + '&timeframe=' + encodeURIComponent(timeframe) +
+          '&count=' + (ROOM_TIMEFRAME_BARS[timeframe] ?? 300);
+        const result = await read<MarketPayload>(await fetch(url, {
+          headers: { Accept: 'application/json' }, cache: 'no-store',
         }));
-        if (!cancelled) setAccount(result);
-      } catch {
-        // The recorded balance from the room payload stands in. A broker being
-        // unreachable must never blank the header.
+        if (cancelled) return;
+        const quote = result.quotes?.find(item => item.symbol === activeMarket) ?? result.quotes?.[0] ?? null;
+        const nextCandles = Array.isArray(result.candles) ? result.candles : [];
+        setMarketSymbol(activeMarket);
+        setMarketQuote(quote);
+        setCandles(nextCandles);
+        setCandlesTimeframe(timeframe);
+        setDataMode(result.dataMode || '');
+        if (result.indicators) setIndicators(result.indicators);
+        setMarketError(quoteHasPrice(quote) || nextCandles.length ? '' : 'No price data is available for this instrument.');
+      } catch (err) {
+        if (!cancelled) {
+          setMarketQuote(null);
+          setMarketError(err instanceof Error ? err.message : 'Market data unavailable.');
+          // Keep the last valid candle history visible during a transient failure.
+        }
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void refreshMarket(), 5000);
       }
     };
-    void refreshAccount();
-    const timer = window.setInterval(() => void refreshAccount(), 30000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [slug, currentUser, authMode, getApiAuthHeaders]);
+    void refreshMarket();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [slug, activeMarket, timeframe]);
+
+  /* ------------------------------------------------------------------ */
+  /* Owner controls                                                       */
+  /* ------------------------------------------------------------------ */
+
+  const openRoomSettings = useCallback(async () => {
+    if (!data) return;
+    setSettingsError('');
+    setSettingsOpen(true);
+    if (!data.team.owner) return;
+    setSettingsName(data.team.name);
+    setSettingsDescription(data.team.instructions ?? '');
+    setSettingsVisibility(data.team.visibility ?? 'PRIVATE');
+  }, [data]);
+
+  const saveRoomSettings = useCallback(async () => {
+    if (!data?.team.owner || settingsSaving) return;
+    if (!settingsName.trim()) { setSettingsError('Room name cannot be empty.'); return; }
+    setSettingsSaving(true); setSettingsError('');
+    try {
+      const authHeaders = await getApiAuthHeaders();
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id), {
+        method: 'PATCH', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ name: settingsName.trim(), instructions: settingsDescription, visibility: settingsVisibility }),
+      });
+      await read<{ team: Room }>(response);
+      setSettingsOpen(false);
+      await load();
+    } catch (err) { setSettingsError(err instanceof Error ? err.message : 'Could not save the room settings.'); }
+    finally { setSettingsSaving(false); }
+  }, [data, settingsSaving, settingsName, settingsDescription, settingsVisibility, getApiAuthHeaders, load]);
+
+  /**
+   * THE INSTRUMENT ON THE ROOM'S CHART.
+   *
+   * The leader of the room decides what everyone in it is looking at. The
+   * list of instruments is the same one the platform actually quotes, so the
+   * chart can never be pointed at something that does not exist.
+   */
+  const loadAssets = useCallback(async () => {
+    if (!signedIn) return;
+    setAssetsLoading(true);
+    try {
+      const headers = new Headers({ Accept: 'application/json' });
+      for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+      const response = await fetch('/api/markets/assets?provider=ctrader', { headers, cache: 'no-store' });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok && Array.isArray(body.assets)) setAssets(body.assets as AssetOption[]);
+    } catch {
+      setAssets([]);
+    } finally { setAssetsLoading(false); }
+  }, [signedIn, getApiAuthHeaders]);
+
+  const changeRoomAsset = useCallback(async (symbol: string) => {
+    if (!data?.team.owner || !symbol || assetSaving) return;
+    setAssetSaving(true); setSettingsError('');
+    try {
+      const authHeaders = await getApiAuthHeaders();
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id), {
+        method: 'PATCH', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ asset: symbol }),
+      });
+      await read<{ team: Room }>(response);
+      await load();
+    } catch (err) { setSettingsError(err instanceof Error ? err.message : 'Could not change the instrument.'); }
+    finally { setAssetSaving(false); }
+  }, [data, assetSaving, getApiAuthHeaders, load]);
+
+  /**
+   * The room's lifecycle: published rooms are listed in the directory, a
+   * paused room keeps its history and its members but stops being listed.
+   */
+  const toggleRoomPublished = useCallback(async () => {
+    if (!data?.team.owner) return;
+    const action = data.team.status === 'PAUSED' ? 'PLAY' : 'PAUSE';
+    setSettingsSaving(true); setSettingsError('');
+    try {
+      const authHeaders = await getApiAuthHeaders();
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/status', {
+        method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ action }),
+      });
+      await read<{ team: Room }>(response);
+      await load();
+    } catch (err) { setSettingsError(err instanceof Error ? err.message : 'Could not change the room status.'); }
+    finally { setSettingsSaving(false); }
+  }, [data, settingsSaving, getApiAuthHeaders, load]);
+
+  const deleteRoom = useCallback(async () => {
+    if (!data?.team.owner || deleteBusy) return;
+    const confirmed = window.confirm('Delete this room? This permanently removes the room, its conversation and its members. This cannot be undone.');
+    if (!confirmed) return;
+    setDeleteBusy(true); setSettingsError('');
+    try {
+      const authHeaders = await getApiAuthHeaders();
+      const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/reset', {
+        method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ confirm: true }),
+      });
+      await read<{ success: boolean }>(response);
+      window.location.href = '/#/rooms';
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : 'Could not delete the room.');
+      setDeleteBusy(false);
+    }
+  }, [data, deleteBusy, getApiAuthHeaders]);
+
+  /* ------------------------------------------------------------------ */
+  /* Panels                                                              */
+  /* ------------------------------------------------------------------ */
+
+  const [news, setNews] = useState<RoomNewsPayload | null>(null);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const loadNews = useCallback(async (force = false) => {
+    setNewsLoading(true);
+    try {
+      const result = await read<RoomNewsPayload>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/news' + (force ? '?refresh=1' : ''), {
+        headers: { Accept: 'application/json' }, cache: 'no-store',
+      }));
+      setNews(result);
+    } catch (error) {
+      setNews({ market: marketSymbol, ok: false, error: error instanceof Error ? error.message : 'News unavailable.', fetchedAt: new Date().toISOString(), headlines: [] });
+    } finally { setNewsLoading(false); }
+  }, [slug, marketSymbol]);
+  useEffect(() => {
+    if (panel !== 'news' && panel !== 'market') return;
+    void loadNews();
+    const timer = window.setInterval(() => void loadNews(true), 15 * 60_000);
+    return () => window.clearInterval(timer);
+  }, [panel, loadNews]);
 
   /**
    * A one-second clock, started at mount so the first paint already has the
@@ -739,15 +573,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   }, []);
   const roomClock = useMemo(() => clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }), [clock]);
 
-  const balance = account?.balance ?? data?.team.balance ?? null;
-  const balanceLabel = balance == null ? '—' : balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const balanceTitle = balance == null
-    ? 'No account balance is available for this room yet.'
-    : account?.source === 'live'
-      ? 'Live balance from the connected trading account.'
-      : data?.team.liveTrading
-        ? 'Balance recorded when this room was created.' + (account?.reason ? ' ' + account.reason : '')
-        : 'Demo balance set when this room was created.';
+  const priceDigits = marketSymbol.toUpperCase().includes('BTC') ? 2 : marketSymbol.toUpperCase().includes('ETH') ? 2 : 5;
   const quoteStatus = !quoteHasPrice(marketQuote)
     ? 'unavailable'
     : quoteIsFresh(marketQuote) && dataMode.toUpperCase() !== 'PAPER'
@@ -756,12 +582,12 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const quoteStatusText = !quoteHasPrice(marketQuote)
     ? (marketError || 'Quote unavailable · waiting for provider')
     : dataMode.toUpperCase() === 'PAPER'
-      ? 'Paper/simulated market data'
+      ? 'Reference prices'
       : marketQuote?.stale || !quoteIsFresh(marketQuote)
         ? 'Last known price · not streaming'
         : 'Live quote · refreshes every 5 seconds';
 
-  if (loading) return <main className="trade-room-minimal"><div className="trade-room-loading" aria-label="Loading trade room" /></main>;
+  if (loading) return <main className="trade-room-minimal"><div className="trade-room-loading" aria-label="Loading room" /></main>;
   if (!data) return <main className="trade-room-minimal"><div className="trade-room-error" role="alert">
     <span>{error || 'This room is unavailable.'}</span>
     <button type="button" onClick={onBack}><ArrowLeft size={13} strokeWidth={2.5} aria-hidden="true" /> Back to {backLabel}</button>
@@ -782,18 +608,8 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           <dd className="trade-room-stat-value">{roomClock}</dd>
         </div>
         <div className="trade-room-stat">
-          <dt><Wallet size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Account balance</span></dt>
-          <dd className="trade-room-stat-value" title={balanceTitle}>
-            {balance == null ? '—' : <><span className="trade-room-stat-unit trade-room-stat-currency">{account?.currency ?? 'USD'}</span>{balanceLabel}</>}
-          </dd>
-        </div>
-        <div className="trade-room-stat">
-          <dt><ArrowLeftRight size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Trades</span></dt>
-          <dd className="trade-room-stat-value">{data.team.trades ?? 0}<span className="trade-room-stat-unit">trades</span></dd>
-        </div>
-        <div className={'trade-room-stat trade-room-stat-mode' + (data.team.liveTrading ? ' is-live' : ' is-demo')}>
-          <dt><span className="sr-only">Account mode</span></dt>
-          <dd className="trade-room-stat-value">{data.team.liveTrading ? 'Live' : 'Demo'}</dd>
+          <dt><Users size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Members</span></dt>
+          <dd className="trade-room-stat-value">{roomIdentity?.memberCount ?? 1}<span className="trade-room-stat-unit">members</span></dd>
         </div>
       </dl>
       <button
@@ -814,9 +630,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
       <header className="sg-room-header">
         <div className="sg-room-instrument">
           <div className="sg-room-symbol-line">
-            <span className="sg-room-symbol">{activeMarket || 'No asset configured'}</span>
-            <span className="sg-room-provider">{(marketProvider || data.team.provider || 'MARKET').toUpperCase()}</span>
-            <span className={'sg-room-provider ' + ((data.team.environment ?? 'DEMO') === 'LIVE' ? 'is-live' : 'is-demo')}>{(data.team.environment ?? 'DEMO') === 'LIVE' ? 'LIVE FEED' : 'DEMO FEED'}</span>
+            <span className="sg-room-symbol">{activeMarket || 'No instrument yet'}</span>
             {dataMode && <span className="sg-room-provider">{dataMode.toUpperCase() === 'DEMO_REFERENCE' ? 'REFERENCE' : dataMode.toUpperCase()}</span>}
           </div>
           <div className="sg-room-price-row">
@@ -828,20 +642,43 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         </div>
         <div className="sg-room-timeframes" role="group" aria-label="Chart timeframe">
           {ROOM_CHART_TIMEFRAMES.map(frame => <button
-            type="button" key={frame} onClick={() => setTimeframe(frame)}
-            aria-pressed={timeframe === frame} className="sg-room-timeframe"
+            type="button"
+            key={frame}
+            onClick={() => setTimeframe(frame)}
+            aria-pressed={timeframe === frame}
+            className="sg-room-timeframe"
           >{frame}</button>)}
         </div>
 
-        <button type="button" className="sg-room-settings-button sg-room-settings-button-public" onClick={() => void openRoomSettings()} aria-label="Room settings" title="Room settings"><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
+        {data.team.owner && (
+          <div className="sg-room-instrument-picker">
+            <label htmlFor="room-instrument" className="sr-only">Instrument on this room's chart</label>
+            <select
+              id="room-instrument"
+              value={activeMarket}
+              disabled={assetsLoading || assetSaving}
+              onChange={event => void changeRoomAsset(event.target.value)}
+              onFocus={() => { if (!assets.length) void loadAssets(); }}
+              className="sg-room-instrument-select"
+            >
+              {!assets.length && <option value="">{activeMarket || 'Choose an instrument…'}</option>}
+              {assets.map(asset => <option key={asset.symbol} value={asset.symbol}>{asset.symbol} · {asset.name}</option>)}
+            </select>
+            <ChevronDown size={13} strokeWidth={2.2} aria-hidden="true" />
+          </div>
+        )}
+
+        {data.team.owner && (
+          <button type="button" className="sg-room-settings-button sg-room-settings-button-public" onClick={() => void openRoomSettings()} aria-label="Room settings" title="Room settings"><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
+        )}
       </header>
-      {environmentNotice && <div className="sg-room-environment-notice" role="status">{environmentNotice}</div>}
+      {settingsError && <div className="sg-room-environment-notice" role="status">{settingsError}</div>}
       <div className="trade-room-chart">
         {candles.length && candlesTimeframe === timeframe ? <TradingViewLightweightChart
           candles={candles} activeQuote={marketQuote} timeframe={timeframe}
           symbol={marketSymbol} roomName={data.team.name} digits={priceDigits}
-          agentEvents={agentEvents} dataMode={dataMode}
-        /> : <div className="trade-room-chart-empty"><span>{marketError || (candlesTimeframe !== timeframe ? 'Loading ' + timeframe + ' candles…' : 'Waiting for provider candle history')}</span></div>}
+          dataMode={dataMode}
+        /> : <div className="trade-room-chart-empty"><span>{marketError || (candlesTimeframe !== timeframe ? 'Loading ' + timeframe + ' candles…' : 'Waiting for candle history')}</span></div>}
       </div>
     </section>
     <aside id="trade-room-stream" className="trade-room-stream" aria-label="Room control panel" aria-hidden={!streamVisible}>
@@ -856,25 +693,17 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         }}
       />
       <div className="trade-room-stream-list">
-        {panel === 'chat' && (logRun
-          ? <RunLogView log={runLog} loading={logLoading} onBack={() => setLogRun(null)} />
-          : <RoomChatPanel
-              messages={chatMessages}
-              runs={runs}
-              onOpenRun={setLogRun}
-              canRun={canRun}
-              onRun={runTeam}
-              running={teamRunActive}
-              canPost={Boolean(roomIdentity?.isMember)}
-              onSend={content => void sendChatMessage(content)}
-              sending={chatSending}
-              onJoin={() => void joinRoom()}
-              joining={joining}
-              joinError={chatError || identityError}
-              viewerId={currentUser?.uid ?? null}
-              participantCount={roomIdentity?.memberCount ?? 0}
-              signedIn={signedIn}
-            />)}
+        {panel === 'chat' && <RoomChatPanel
+          messages={chatMessages}
+          onSend={content => void sendChatMessage(content)}
+          sending={chatSending}
+          canPost={Boolean(roomIdentity?.isMember)}
+          onRequestSignIn={() => { setJoinRequested(true); openAuthModal('signup'); }}
+          viewerId={currentUser?.uid ?? null}
+          participantCount={roomIdentity?.memberCount ?? 0}
+          signedIn={signedIn}
+          joinError={chatError || identityError}
+        />}
 
         {panel === 'news' && <NewsPanel news={news} loading={newsLoading} onRefresh={() => void loadNews(true)} />}
 
@@ -889,6 +718,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           sending={mentorSending}
           canPost={Boolean(roomIdentity?.isMember)}
           onJoin={() => void joinRoom()}
+          onRequestSignIn={() => { setJoinRequested(true); openAuthModal('signup'); }}
           joining={joining}
           joinError={mentorError}
           viewerId={currentUser?.uid ?? null}
@@ -902,8 +732,10 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           memberCount={roomIdentity?.memberCount ?? 0}
           isMember={Boolean(roomIdentity?.isMember)}
           onJoin={() => void joinRoom()}
+          onRequestSignIn={() => { setJoinRequested(true); openAuthModal('signup'); }}
           joining={joining}
           joinError={identityError}
+          signedIn={signedIn}
         />}
 
         {panel === 'broker' && <ConnectBrokerPanel
@@ -913,44 +745,66 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           onOpenSettings={openBrokerSettings}
         />}
 
-        {panel === 'tools' && <ToolsPanel
-          members={data.members} provider={marketProvider || data.team.provider || ''} dataMode={dataMode}
-          asset={activeMarket || ''} liveTrading={data.team.liveTrading === true} indicators={indicators} news={news}
+        {panel === 'market' && <MarketPanel
+          dataMode={dataMode} asset={activeMarket}
+          indicators={indicators} news={news}
         />}
       </div>
     </aside>
     {settingsOpen && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !settingsSaving) setSettingsOpen(false); }}>
       <section className="tr-room-settings" role="dialog" aria-modal="true" aria-labelledby="tr-room-settings-title">
-        <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">{data.team.owner ? 'CREATOR CONTROL' : 'ROOM PREFERENCES'}</p><h2 id="tr-room-settings-title">Settings</h2><p>{data.team.owner ? 'Manage this room, its agents and monitoring.' : 'Personal preferences for this room.'}</p></div><button type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
+        <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">ROOM CONTROL</p><h2 id="tr-room-settings-title">Settings</h2><p>Your room, its description, who can see it and what it looks at.</p></div><button type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
         <div className="tr-room-settings-body">
           {!data.team.owner ? <>
-            <div className="tr-room-preference-row"><div><strong>Appearance</strong><p>Choose how SIRGOAT looks on this device.</p></div><button type="button" className="tr-room-preference-toggle" onClick={toggleTheme}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}{theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}</button></div>
-            <div className="tr-room-buy-card"><div className="tr-room-buy-icon"><ShoppingBag size={20} /></div><div className="tr-room-buy-copy"><strong>Get access to this room</strong><p>Buy access to follow this team's agents, research and trading activity. Room purchases are coming soon.</p></div><button type="button" onClick={() => setBuyRoomOpen(true)}>Buy room</button></div>
+            <div className="tr-room-preference-row"><div><strong>Appearance</strong><p>Choose how SIRGOAT looks on this device.</p></div><button type="button" className="tr-room-preference-toggle" onClick={toggleTheme}>{theme === 'dark' ? '☀' : '☾'}{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button></div>
           </> : <>
-            <div className="tr-room-creator-actions">
-              <div className="tr-room-settings-label">Room lifecycle</div>
-              <div className="sg-room-lifecycle-controls">
-                <span className={'sg-room-ai-health is-' + openRouterHealth} role="status" title={openRouterHealth === 'healthy' ? 'AI model catalogue is responding' : openRouterHealth === 'unhealthy' ? 'AI provider is unavailable or not configured' : 'Checking AI provider'}><span className="sg-room-ai-pulse" />{openRouterHealth === 'healthy' ? 'AI ready' : openRouterHealth === 'unhealthy' ? 'AI unavailable' : 'Checking AI'}</span>
-                {(data.team.status === 'PAUSED' || data.team.status === 'DRAFT') ? <button type="button" className="sg-room-lifecycle-button is-play" disabled={lifecycleBusy || resetBusy} onClick={() => void changeTeamLifecycle('PLAY')}><Play size={14} fill="currentColor" /><span>{lifecycleBusy ? 'Starting…' : 'Start room'}</span></button> : <button type="button" className="sg-room-lifecycle-button is-pause" disabled={lifecycleBusy || resetBusy} onClick={() => void changeTeamLifecycle('PAUSE')}><Pause size={14} fill="currentColor" /><span>{lifecycleBusy ? 'Stopping…' : 'Stop room'}</span></button>}
-                <button type="button" className="sg-room-lifecycle-button is-reset" disabled={lifecycleBusy || resetBusy} onClick={() => void resetRoom()}><RotateCcw size={13} /><span>{resetBusy ? 'Resetting…' : 'Reset room'}</span></button>
+            <label><span>Room name</span><input maxLength={80} value={settingsName} onChange={event => setSettingsName(event.target.value)} placeholder="Name your room" /></label>
+            <label><span>Room description</span><textarea rows={4} maxLength={4000} value={settingsDescription} onChange={event => setSettingsDescription(event.target.value)} placeholder="What do you trade, and what do you want from the room?" /></label>
+            <div>
+              <p className="tr-room-settings-label">Who can see this room</p>
+              <div className="tr-room-intervals">
+                <label><input type="radio" name="room-visibility" checked={settingsVisibility === 'PUBLIC'} onChange={() => setSettingsVisibility('PUBLIC')} /><span><Globe size={12} /> Listed in the directory</span></label>
+                <label><input type="radio" name="room-visibility" checked={settingsVisibility === 'PRIVATE'} onChange={() => setSettingsVisibility('PRIVATE')} /><span><LockKeyhole size={12} /> Invite only</span></label>
               </div>
-              <p className="tr-room-settings-hint">Stop preserves room history. Reset permanently deletes this room and its agent history.</p>
             </div>
-            <div className="tr-room-settings-label">Market-data environment</div>
-            <div className="sg-room-environment-controls" aria-label="Team market-data environment">
-              <button type="button" disabled={environmentBusy || (data.team.environment ?? 'DEMO') === 'DEMO'} onClick={() => void changeEnvironment('DEMO')} aria-pressed={(data.team.environment ?? 'DEMO') === 'DEMO'}>Demo · BiQuote</button>
-              <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader')} onClick={() => void changeEnvironment('LIVE', 'ctrader')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'ctrader'}>Live · cTrader</button>
-              <button type="button" disabled={environmentBusy || (data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid')} onClick={() => void changeEnvironment('LIVE', 'hyperliquid')} aria-pressed={data.team.environment === 'LIVE' && data.team.liveTradingProvider === 'hyperliquid'}>Live · Hyperliquid</button>
-            </div>          <label><span>Room name / identity</span><input maxLength={80} value={settingsName} onChange={event => setSettingsName(event.target.value)} placeholder="Name your room" /></label>
-          <label><span>Team instructions</span><textarea rows={3} maxLength={4000} value={settingsInstructions} onChange={event => setSettingsInstructions(event.target.value)} placeholder="Shared rules and context for every agent" /></label>
-          <div><p className="tr-room-settings-label">Market monitoring intervals</p><p className="tr-room-settings-hint">The fastest selected interval controls automatic AI review cadence. Deterministic trackers run independently.</p><div className="tr-room-intervals">{ROOM_MONITOR_INTERVALS.map(option => <label key={option.value}><input type="checkbox" checked={settingsIntervals.includes(option.value)} onChange={event => setSettingsIntervals(previous => event.target.checked ? [...new Set([...previous, option.value])].sort((a,b) => a-b) : previous.filter(value => value !== option.value))} /><span>{option.label}</span></label>)}</div></div>
-          <div><p className="tr-room-settings-label">Add skills to all room agents</p><p className="tr-room-settings-hint">New skills are added without pausing the room and are used on the next review.</p><div className="tr-room-skill-list">{roomSkills.map(skill => <label key={skill.id}><input type="checkbox" checked={skillsToAdd.includes(skill.id)} onChange={event => setSkillsToAdd(previous => event.target.checked ? [...previous, skill.id] : previous.filter(id => id !== skill.id))} /><span><b>{skill.name}</b>{skill.description && <small>{skill.description}</small>}</span></label>)}</div></div>
-          {settingsError && <p className="tr-room-settings-error" role="alert">{settingsError}</p>}
+            <div>
+              <p className="tr-room-settings-label">Instrument on the chart</p>
+              <p className="tr-room-settings-hint">Everyone in the room looks at the same market. Change it whenever you like.</p>
+              <div className="tr-room-instrument-row">
+                <select
+                  value={activeMarket}
+                  disabled={assetsLoading || assetSaving}
+                  onChange={event => void changeRoomAsset(event.target.value)}
+                  onFocus={() => { if (!assets.length) void loadAssets(); }}
+                  aria-label="Instrument on the chart"
+                >
+                  {!assets.length && <option value="">{activeMarket || 'Choose an instrument…'}</option>}
+                  {assets.map(asset => <option key={asset.symbol} value={asset.symbol}>{asset.symbol} · {asset.name}</option>)}
+                </select>
+                {assetSaving && <span className="tr-room-settings-hint">Saving…</span>}
+              </div>
+            </div>
+            <div>
+              <p className="tr-room-settings-label">In the directory</p>
+              <div className="tr-room-creator-actions">
+                <button type="button" className="sg-room-lifecycle-button" disabled={settingsSaving} onClick={() => void toggleRoomPublished()}>
+                  {data.team.status === 'PAUSED' ? 'Publish room' : 'Pause room'}
+                </button>
+              </div>
+              <p className="tr-room-settings-hint">A paused room keeps its conversation and its members, but stops appearing in the directory.</p>
+            </div>
+            <div className="tr-room-danger">
+              <p className="tr-room-settings-label">Delete this room</p>
+              <p className="tr-room-settings-hint">Removes the room, its conversation and its members permanently.</p>
+              <button type="button" className="sg-room-lifecycle-button is-reset" disabled={deleteBusy || settingsSaving} onClick={() => void deleteRoom()}>
+                <Trash2 size={13} /> {deleteBusy ? 'Deleting…' : 'Delete room'}
+              </button>
+            </div>
+            {settingsError && <p className="tr-room-settings-error" role="alert">{settingsError}</p>}
           </>}
         </div>
-        {data.team.owner && <footer className="tr-room-settings-foot"><button type="button" disabled={settingsSaving} onClick={() => setSettingsOpen(false)}>Cancel</button><button type="button" disabled={settingsSaving || !settingsIntervals.length} onClick={() => void saveRoomSettings()}><Save size={14} />{settingsSaving ? 'Saving…' : 'Save changes'}</button></footer>}
+        {data.team.owner && <footer className="tr-room-settings-foot"><button type="button" disabled={settingsSaving} onClick={() => setSettingsOpen(false)}>Cancel</button><button type="button" disabled={settingsSaving || !settingsName.trim()} onClick={() => void saveRoomSettings()}><Save size={14} />{settingsSaving ? 'Saving…' : 'Save changes'}</button></footer>}
       </section>
     </div>}
-    {buyRoomOpen && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setBuyRoomOpen(false); }}><section className="tr-room-coming-soon" role="dialog" aria-modal="true" aria-labelledby="tr-room-coming-title"><button type="button" className="tr-room-coming-close" aria-label="Close" onClick={() => setBuyRoomOpen(false)}><X size={17} /></button><div className="tr-room-buy-icon"><ShoppingBag size={22} /></div><p className="tr-room-settings-eyebrow">ROOM MARKETPLACE</p><h2 id="tr-room-coming-title">Room purchases are coming soon</h2><p>We're building secure room access and payments. You can view this room for now; buying access will be available here later.</p><button type="button" onClick={() => setBuyRoomOpen(false)}>Got it</button></section></div>}
   </main>;
 }

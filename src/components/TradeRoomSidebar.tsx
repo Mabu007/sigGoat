@@ -29,9 +29,9 @@
 
 import React, { useMemo, useState } from 'react';
 import {
-  BrainCircuit, ChevronLeft, ExternalLink, Link2, ListOrdered, MessageCircle,
-  MessagesSquare, Newspaper, Target, Users, Wrench, X, Zap, RefreshCw, Send,
-  ShieldCheck, CheckCircle2, AlertCircle,
+  CandlestickChart, ChevronLeft, ExternalLink, Link2, Lock, MessageCircle,
+  MessagesSquare, Newspaper, Users, X, RefreshCw, Send,
+  CheckCircle2, AlertCircle,
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------
@@ -168,7 +168,7 @@ export interface RoomNewsPayload {
    Panel registry
    ------------------------------------------------------------------------- */
 
-export type RoomPanelId = 'chat' | 'news' | 'mentor' | 'details' | 'broker' | 'tools';
+export type RoomPanelId = 'chat' | 'news' | 'mentor' | 'details' | 'broker' | 'market';
 
 export const ROOM_PANELS: { id: RoomPanelId; label: string; icon: React.ComponentType<{ size?: number; strokeWidth?: number }> }[] = [
   { id: 'chat', label: 'Room Chat', icon: MessagesSquare },
@@ -176,7 +176,7 @@ export const ROOM_PANELS: { id: RoomPanelId; label: string; icon: React.Componen
   { id: 'mentor', label: 'Chat to Mentor', icon: MessageCircle },
   { id: 'details', label: 'Group Details', icon: Users },
   { id: 'broker', label: 'Connect Broker', icon: Link2 },
-  { id: 'tools', label: 'Tools', icon: Wrench },
+  { id: 'market', label: 'Market', icon: CandlestickChart },
 ];
 
 /* -------------------------------------------------------------------------
@@ -211,6 +211,24 @@ function Row({ label, value }: { label: string; value: string }) {
 const money = (value?: number, digits = 2) =>
   value == null || !Number.isFinite(value) ? '—'
     : value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+/**
+ * A price, with enough precision to be useful.
+ *
+ * A forex price is around 1.12 and a gold price around 4000. Two decimals
+ * would print every forex swing level as "1.12", so the digits follow the
+ * magnitude of the number.
+ */
+const price = (value?: number) =>
+  value == null || !Number.isFinite(value) ? '—'
+    : value.toLocaleString(undefined, {
+      minimumFractionDigits: Math.abs(value) < 10 ? 4 : 2,
+      maximumFractionDigits: Math.abs(value) < 10 ? 5 : 2,
+    });
+
+/** Whether the prices on screen are reference prices rather than a live feed. */
+const isReferenceFeed = (dataMode: string) =>
+  /PAPER|REFERENCE/i.test(dataMode ?? '');
 
 function relativeTime(value?: string | number): string {
   if (value == null) return '—';
@@ -255,13 +273,13 @@ function localMessageTime(value: string): string {
    PANEL — Room Chat
    The shared conversation of the room.
 
-   A room is a human-led community, so the feed has two kinds of entry:
-   what the PEOPLE in the room said, and what the room's agents did. Both are
-   attributed and timestamped the same way, because both are part of the same
-   conversation.
+   Every entry is something a PERSON in the room said. The room's chat is
+   where the market gets discussed, so it carries names and timestamps and
+   nothing else.
 
-   A message written by a person is not a drill-down, so it is rendered as a
-   static card; an agent's run still opens that run's real activity ledger.
+   A visitor can read the conversation without an account. Posting needs one,
+   so the composer is locked for them and opens the sign-in dialog when they
+   press it.
    ========================================================================= */
 
 /** One message written by a member of the room. */
@@ -273,35 +291,19 @@ export interface RoomChatMessage {
   createdAt: string;
 }
 
-const OUTCOME_LABEL: Record<RoomRun['outcome'], string> = {
-  review: 'Market review', proposal: 'Proposal', no_trade: 'No trade',
-  failed: 'Failed', running: 'Running',
-};
-
-/** Human label for what an agent's run ended up doing. */
-export function runOutcomeLabel(outcome: RoomRun['outcome']): string {
-  return OUTCOME_LABEL[outcome] ?? outcome;
-}
-
 export function RoomChatPanel({
-  messages, runs, onOpenRun, canRun, onRun, running,
-  canPost, onSend, sending, onJoin, joining, joinError, viewerId, participantCount, signedIn,
+  messages, onSend, sending, canPost, onRequestSignIn, viewerId, participantCount, signedIn, joinError,
 }: {
   messages: RoomChatMessage[];
-  runs: RoomRun[];
-  onOpenRun: (run: RoomRun) => void;
-  canRun: boolean;
-  onRun: () => void;
-  running: boolean;
-  canPost: boolean;
   onSend: (content: string) => void;
   sending: boolean;
-  onJoin: () => void;
-  joining: boolean;
-  joinError: string;
+  canPost: boolean;
+  /** Opens the sign-in dialog. Used by the locked composer. */
+  onRequestSignIn: () => void;
   viewerId: string | null;
   participantCount: number;
   signedIn: boolean;
+  joinError: string;
 }) {
   const [draft, setDraft] = useState('');
 
@@ -313,23 +315,12 @@ export function RoomChatPanel({
     setDraft('');
   };
 
-  /**
-   * One feed, newest first. The agent's run keeps its own card because it
-   * opens a real record; a person's message is a statement, not a run.
-   */
-  const feed = useMemo(() => {
-    const entries: ({ kind: 'message'; at: number; message: RoomChatMessage } | { kind: 'run'; at: number; run: RoomRun })[] = [];
-    for (const message of messages) entries.push({ kind: 'message', at: Date.parse(message.createdAt), message });
-    for (const run of runs) entries.push({ kind: 'run', at: Date.parse(run.at), run });
-    return entries.sort((left, right) => right.at - left.at);
-  }, [messages, runs]);
-
   return (
     <>
       <div className="tr-chat-status" aria-live="polite">
-        <span className="tr-chat-status-left"><span className={'tr-chat-live-dot' + (running ? ' is-working' : '')} /><span>ROOM CHAT</span></span>
+        <span className="tr-chat-status-left"><span className="tr-chat-live-dot is-working" /><span>ROOM CHAT</span></span>
         <span className="tr-chat-status-right">
-          {participantCount > 0 ? `${participantCount} in the room` : 'No members yet'}
+          {participantCount > 0 ? `${participantCount} in the room` : 'Be the first to join'}
         </span>
       </div>
 
@@ -353,90 +344,43 @@ export function RoomChatPanel({
           </div>
         </form>
       ) : (
-        <div className="tr-composer is-locked">
-          <p className="tr-composer-locked-text">
+        <button type="button" className="tr-composer is-locked" onClick={onRequestSignIn}>
+          <span className="tr-composer-lock" aria-hidden="true"><Lock size={14} /></span>
+          <span className="tr-composer-locked-text">
             {joinError || (signedIn
               ? 'Join this room to post in its conversation.'
-              : 'Sign in to join this room and post in its conversation.')}
-          </p>
-          <button type="button" className="tr-composer-send" onClick={onJoin} disabled={joining}>
-            {joining ? 'Joining…' : signedIn ? 'Join room' : 'Sign in'}
-          </button>
-        </div>
-      )}
-
-      {canRun && (
-        <button type="button" className="tr-chat-run" onClick={onRun} disabled={running}>
-          <Zap size={13} strokeWidth={2.4} aria-hidden="true" />
-          {running ? 'Agents working…' : 'Run the team'}
+              : 'Sign in or create an account to post in this room.')}
+          </span>
+          <span className="tr-composer-cta">{signedIn ? 'Join room' : 'Sign in'}</span>
         </button>
       )}
 
-      {feed.length === 0 ? (
+      {messages.length === 0 ? (
         <PanelEmpty
           title="No messages yet"
           hint="Start the conversation — share an idea, ask a question, or post what you are watching."
         />
       ) : (
         <div className="tr-chat">
-          {feed.map(entry => {
-            if (entry.kind === 'message') {
-              const { message } = entry;
-              const own = viewerId != null && message.authorId === viewerId;
-              return (
-                <article
-                  key={message.id}
-                  className={'tr-chat-msg is-static' + (own ? ' is-self' : '')}
-                >
-                  <div className="tr-chat-msg-head">
-                    <span className="tr-agent-avatar" aria-hidden="true">
-                      {message.authorName.slice(0, 2).toUpperCase()}
-                    </span>
-                    <span className="tr-agent-name">{message.authorName}</span>
-                    <span className="tr-chat-kind">Member</span>
-                    <time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>
-                      <span className="tr-chat-clock">{localMessageTime(message.createdAt)}</span>
-                      <span className="tr-chat-relative">{relativeTime(message.createdAt)}</span>
-                    </time>
-                  </div>
-                  <p className="tr-chat-summary is-body">{message.content}</p>
-                </article>
-              );
-            }
-
-            const run = entry.run;
-            const tone = run.bias ? (BIAS_TONE[run.bias] ?? 'is-muted') : null;
+          {messages.map(message => {
+            const own = viewerId != null && message.authorId === viewerId;
             return (
-              <button
-                type="button"
-                key={run.workflowId}
-                className={'tr-chat-msg' + (run.outcome === 'failed' ? ' is-failed' : '') + ' is-agent'}
-                onClick={() => onOpenRun(run)}
+              <article
+                key={message.id}
+                className={'tr-chat-msg is-static' + (own ? ' is-self' : '')}
               >
                 <div className="tr-chat-msg-head">
-                  <span className={'tr-agent-pulse' + (run.outcome === 'running' ? ' is-working' : '')} aria-hidden="true" />
-                  <span className="tr-agent-name" style={{ color: agentNameColor(run.agentName) }}>{run.agentName}</span>
-                  <span className="tr-chat-kind is-agent">Agent</span>
-                  <time dateTime={run.at} title={new Date(run.at).toLocaleString()}><span className="tr-chat-clock">{localMessageTime(run.at)}</span><span className="tr-chat-relative">{relativeTime(run.at)}</span></time>
+                  <span className="tr-agent-avatar" aria-hidden="true">
+                    {message.authorName.slice(0, 2).toUpperCase()}
+                  </span>
+                  <span className="tr-agent-name">{message.authorName}</span>
+                  <time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>
+                    <span className="tr-chat-clock">{localMessageTime(message.createdAt)}</span>
+                    <span className="tr-chat-relative">{relativeTime(message.createdAt)}</span>
+                  </time>
                 </div>
-                <div className="tr-chat-msg-title">
-                  {tone && <span className={'tr-chip ' + tone}>{run.bias}</span>}
-                  <span className="tr-chat-headline">{run.headline}</span>
-                </div>
-                {run.summary && <p className="tr-chat-summary">{compactChatLine(run.summary)}</p>}
-                {run.levels && (
-                  <div className="trade-room-levels">
-                    <span>Entry <b>{money(run.levels.entry)}</b></span>
-                    <span>Stop <b>{money(run.levels.stopLoss)}</b></span>
-                    <span>Target <b>{money(run.levels.takeProfit)}</b></span>
-                  </div>
-                )}
-                <div className="tr-chat-msg-foot">
-                  <span className="tr-chat-stage">{run.stage.replaceAll('_', ' ')}</span>
-                  {run.confidence != null && <span>{Math.round(run.confidence)}% confidence</span>}
-                  <span className="tr-chat-open">View log</span>
-                </div>
-              </button>
+                <p className="tr-chat-summary is-body">{message.content}</p>
+              </article>
             );
           })}
         </div>
@@ -547,33 +491,31 @@ function NewsPanel({ news, loading, onRefresh }: { news: RoomNewsPayload | null;
 }
 
 /* =========================================================================
-   PANEL — Tools
+   PANEL — Market
+   What the room is looking at, right now.
+
+   This is the room's data feed, not a list of automations: the instrument on
+   the chart, whether its price is current, the headlines behind it, and the
+   structure of the market as it stands. Every row is read from live state.
    ========================================================================= */
-
-/**
- * What these agents can actually reach.
- *
- * The room's agents have no LLM tool-calling — they run a linear LangGraph
- * shell and receive a plain context prompt. So "tools" here means the concrete
- * data and execution capabilities their runtime is wired to, each with its
- * live status read from the same state the agents read. Anything listed as
- * available is genuinely being consumed right now.
- */
-function ToolsPanel({
-  members, provider, dataMode, asset, liveTrading, indicators, news,
+function MarketPanel({
+  dataMode, asset, indicators, news,
 }: {
-  members: RoomMember[]; provider: string; dataMode: string; asset: string;
-  liveTrading: boolean; indicators: RoomIndicators | null; news: RoomNewsPayload | null;
+  dataMode: string; asset: string;
+  indicators: RoomIndicators | null; news: RoomNewsPayload | null;
 }) {
-  const trackerCount = members.reduce((total, member) => total + (member.latestThesis?.trackers.length ?? 0), 0);
-  const skillCount = members.reduce((total, member) => total + member.skills.length, 0);
-
-  const tools: { name: string; detail: string; state: 'live' | 'ready' | 'off' | 'bad'; note?: string }[] = [
+  const rows: { name: string; detail: string; state: 'live' | 'ready' | 'off' | 'bad'; note?: string }[] = [
     {
-      name: 'Market data',
-      detail: `${provider || 'venue'} · ${asset || 'no asset'}`,
-      state: dataMode ? (dataMode.toUpperCase() === 'PAPER' ? 'ready' : 'live') : 'bad',
-      note: dataMode ? undefined : 'No market data is arriving.',
+      name: 'Instrument',
+      detail: asset || 'No instrument set',
+      state: asset ? 'ready' : 'off',
+      note: asset ? undefined : 'The leader of this room chooses what the chart shows.',
+    },
+    {
+      name: 'Price feed',
+      detail: dataMode ? (isReferenceFeed(dataMode) ? 'Reference prices' : 'Live prices') : 'Waiting for a price feed',
+      state: dataMode ? (isReferenceFeed(dataMode) ? 'ready' : 'live') : 'bad',
+      note: dataMode ? undefined : 'No prices are arriving for this room yet.',
     },
     {
       name: 'Breaking news',
@@ -583,16 +525,15 @@ function ToolsPanel({
     },
     {
       name: 'Market structure',
-      detail: indicators ? `${indicators.structureBias} · swings ${money(indicators.lastSwingLow)}–${money(indicators.lastSwingHigh)}` : 'Waiting for candles',
+      detail: indicators ? `${indicators.structureBias} · swings ${price(indicators.lastSwingLow)}–${price(indicators.lastSwingHigh)}` : 'Waiting for candles',
       state: indicators ? 'live' : 'off',
-      note: 'Deterministic swing, level and regime detection — not model output.',
     },
     {
       name: 'Technical indicators',
       detail: indicators ? [
         `RSI(14) ${indicators.rsi14.toFixed(1)}`,
-        `EMA(20/50) ${money(indicators.ema20)} / ${money(indicators.ema50)}`,
-        `ATR(14) ${money(indicators.atr14, indicators.atr14 < 10 ? 4 : 2)}`,
+        `EMA(20/50) ${price(indicators.ema20)} / ${price(indicators.ema50)}`,
+        `ATR(14) ${price(indicators.atr14)}`,
         indicators.macd ? `MACD ${indicators.macd.macd.toFixed(4)}` : '',
         indicators.stochastic14 ? `Stoch ${indicators.stochastic14.k.toFixed(1)}/${indicators.stochastic14.d.toFixed(1)}` : '',
         indicators.bollingerBands20 ? `BB ${money(indicators.bollingerBands20.lower)}–${money(indicators.bollingerBands20.upper)}` : '',
@@ -600,38 +541,22 @@ function ToolsPanel({
       ].filter(Boolean).join(' · ') : 'Waiting for candles',
       state: indicators ? 'live' : 'off',
     },
-    {
-      name: 'Tracker evaluation',
-      detail: trackerCount ? `${trackerCount} condition${trackerCount === 1 ? '' : 's'} evaluated per candle` : 'No conditions recorded',
-      state: trackerCount ? 'live' : 'ready',
-    },
-    {
-      name: 'Agent skills',
-      detail: skillCount ? `${skillCount} attached across ${members.length} agent${members.length === 1 ? '' : 's'}` : 'No skills attached',
-      state: skillCount ? 'live' : 'ready',
-    },
-    {
-      name: 'Order execution',
-      detail: liveTrading ? `Live · ${provider === 'ctrader' ? 'cTrader' : 'PropDAO'} via Hyperliquid` : 'Off · this room is paper',
-      state: liveTrading ? 'live' : 'off',
-      note: liveTrading ? 'Real orders can be submitted. Every order is re-checked against live risk before it is sent.' : 'Enable live trading when creating the room to submit real orders.',
-    },
   ];
 
   const labels = { live: 'Live', ready: 'Ready', off: 'Off', bad: 'Unavailable' };
 
   return (
     <div className="tr-tools">
-      {tools.map(tool => (
-        <div className="tr-tool" key={tool.name}>
-          <span className={cx('tr-tool-dot', 'is-' + tool.state)} aria-hidden="true" />
+      {rows.map(row => (
+        <div className="tr-tool" key={row.name}>
+          <span className={cx('tr-tool-dot', 'is-' + row.state)} aria-hidden="true" />
           <div className="tr-tool-body">
             <div className="tr-tool-head">
-              <span className="tr-tool-name">{tool.name}</span>
-              <span className={cx('tr-tool-state', 'is-' + tool.state)}>{labels[tool.state]}</span>
+              <span className="tr-tool-name">{row.name}</span>
+              <span className={cx('tr-tool-state', 'is-' + row.state)}>{labels[row.state]}</span>
             </div>
-            <p className="tr-tool-detail">{tool.detail}</p>
-            {tool.note && <p className="tr-tool-note">{tool.note}</p>}
+            <p className="tr-tool-detail">{row.detail}</p>
+            {row.note && <p className="tr-tool-note">{row.note}</p>}
           </div>
         </div>
       ))}
@@ -657,7 +582,7 @@ export interface MentorThreadSummary {
 
 export function MentorChatPanel({
   threads, activeMemberId, onSelectThread, messages, counterpartName, isLeader,
-  onSend, sending, canPost, onJoin, joining, joinError, viewerId, loading, signedIn,
+  onSend, sending, canPost, onJoin, onRequestSignIn, joining, joinError, viewerId, loading, signedIn,
 }: {
   threads: MentorThreadSummary[];
   activeMemberId: string | null;
@@ -669,6 +594,8 @@ export function MentorChatPanel({
   sending: boolean;
   canPost: boolean;
   onJoin: () => void;
+  /** Opens the sign-in dialog. Used by the locked composer. */
+  onRequestSignIn: () => void;
   joining: boolean;
   joinError: string;
   viewerId: string | null;
@@ -742,16 +669,15 @@ export function MentorChatPanel({
           </p>
         </div>
       ) : (
-        <div className="tr-composer is-locked">
-          <p className="tr-composer-locked-text">
+        <button type="button" className="tr-composer is-locked" onClick={signedIn ? onJoin : onRequestSignIn} disabled={joining}>
+          <span className="tr-composer-lock" aria-hidden="true"><Lock size={14} /></span>
+          <span className="tr-composer-locked-text">
             {joinError || (signedIn
               ? 'Join this room to write to its leader privately.'
-              : 'Sign in and join this room to write to its leader privately.')}
-          </p>
-          <button type="button" className="tr-composer-send" onClick={onJoin} disabled={joining}>
-            {joining ? 'Joining…' : signedIn ? 'Join room' : 'Sign in'}
-          </button>
-        </div>
+              : 'Sign in or create an account to talk to the leader privately.')}
+          </span>
+          <span className="tr-composer-cta">{joining ? 'Joining…' : signedIn ? 'Join room' : 'Sign in'}</span>
+        </button>
       )}
 
       {loading ? (
@@ -807,7 +733,6 @@ export interface RoomGroupDetails {
   market: string | null;
   provider: string | null;
   environment: string;
-  agentCount: number;
   createdAt: string;
   leader: { id: string; displayName: string };
 }
@@ -820,21 +745,23 @@ export interface RoomGroupMember {
 }
 
 export function GroupDetailsPanel({
-  room, members, memberCount, isMember, onJoin, joining, joinError,
+  room, members, memberCount, isMember, onJoin, onRequestSignIn, joining, joinError, signedIn,
 }: {
   room: RoomGroupDetails | null;
   members: RoomGroupMember[];
   memberCount: number;
   isMember: boolean;
   onJoin: () => void;
+  /** Opens the sign-in dialog. Used by the join button for a visitor. */
+  onRequestSignIn: () => void;
   joining: boolean;
   joinError: string;
+  signedIn: boolean;
 }) {
   if (!room) return <PanelEmpty title="Loading room details…" />;
 
-  const marketLabel = room.market
-    ? `${room.market}${room.provider ? ' · ' + room.provider.toUpperCase() : ''}`
-    : room.agentCount > 0 ? 'Market not set' : 'No market configured';
+  /** The instrument the room is looking at. The leader chooses it. */
+  const marketLabel = room.market || 'No instrument set';
 
   return (
     <div className="tr-details">
@@ -870,10 +797,6 @@ export function GroupDetailsPanel({
           <span className="tr-details-row-value">{marketLabel}</span>
         </div>
         <div className="tr-details-row">
-          <span className="tr-details-row-label">Trading agents</span>
-          <span className="tr-details-row-value">{room.agentCount}</span>
-        </div>
-        <div className="tr-details-row">
           <span className="tr-details-row-label">Created</span>
           <span className="tr-details-row-value">{new Date(room.createdAt).toLocaleDateString()}</span>
         </div>
@@ -896,9 +819,9 @@ export function GroupDetailsPanel({
       )}
 
       {!isMember && (
-        <button type="button" className="tr-chat-run" onClick={onJoin} disabled={joining}>
-          <Users size={13} strokeWidth={2.4} aria-hidden="true" />
-          {joining ? 'Joining…' : 'Join this room'}
+        <button type="button" className="tr-chat-run" onClick={signedIn ? onJoin : onRequestSignIn} disabled={joining}>
+          {signedIn ? <Users size={13} strokeWidth={2.4} aria-hidden="true" /> : <Lock size={13} strokeWidth={2.4} aria-hidden="true" />}
+          {joining ? 'Joining…' : signedIn ? 'Join this room' : 'Sign in to join'}
         </button>
       )}
       {joinError && <p className="tr-panel-error" role="alert">{joinError}</p>}
@@ -1036,4 +959,4 @@ export const TradeRoomSidebar: React.FC<{
   );
 };
 
-export { NewsPanel, ToolsPanel, cx, relativeTime, BIAS_TONE, money };
+export { NewsPanel, MarketPanel, cx, relativeTime, BIAS_TONE, money };

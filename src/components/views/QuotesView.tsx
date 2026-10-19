@@ -334,7 +334,7 @@ export function QuotesView() {
           </p>
           <p className="mx-auto mt-1 max-w-md text-[12px] text-fg-muted">
             {query
-              ? 'SIRGOAT only lists instruments Hyperliquid actually offers. Try a different ticker.'
+              ? 'SIRGOAT only lists instruments the market data feed actually offers. Try a different ticker.'
               : 'The market list could not be loaded. Refresh to try again.'}
           </p>
         </div>

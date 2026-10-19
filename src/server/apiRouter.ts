@@ -3769,7 +3769,7 @@ apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
     const creator = await persistence.profiles.get(team.ownerUserId).catch(() => null);
     return {
       id: team.id, slug: team.publicSlug, name: team.name,
-      description: described ? described.slice(0, 220) : `${members.length} AI traders · ${team.coordinationMode.toLowerCase().replace("_", " ")} coordination`,
+      description: described ? described.slice(0, 220) : "A trading room for sharing market analysis.",
       environment: team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO"),
       marketDataProvider: (team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO")) === "DEMO" ? "biquote" : (team.liveTradingProvider ?? team.deployment?.provider ?? null),
       creatorName: creator?.displayName?.trim() || "Room leader", status: team.status, mode: "TEAM" as const,
@@ -3961,7 +3961,15 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
       liveTradingProvider: team.liveTradingProvider ?? team.deployment?.provider ?? null,
       memberCount: details.length,
       markets: [...new Set(details.flatMap(member => member.markets))],
-      asset: team.deployment?.asset, provider: team.deployment?.provider,
+      /**
+       * THE INSTRUMENT THE ROOM IS LOOKING AT.
+       *
+       * The leader chooses it and everyone in the room sees the same one, so
+       * the room answers with the instrument it will actually chart rather
+       * than leaving the reader to guess.
+       */
+      asset: team.deployment?.asset || "EURUSD",
+      provider: team.deployment?.provider,
       /** Whether this room may place real orders, as chosen when it was created. */
       liveTrading: team.deployment?.liveTrading === true,
       /**
@@ -4133,10 +4141,19 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
   const team = await goatTeamStore.getPublicBySlug(slug);
   if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  /**
+   * A room is a community first: it has a leader, members and a chart. The
+   * instrument on that chart is the LEADER'S choice, stored on the room, and
+   * it is authoritative — a visitor never gets a different chart from the
+   * person leading it.
+   *
+   * A member id is accepted only for rooms that still carry trading agents,
+   * where the agent's own market list is a legacy fallback.
+   */
   const memberId = typeof req.query.memberId === "string" ? req.query.memberId : "";
-  if (!memberId || !team.memberGoatIds.includes(memberId)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "That bot is not part of this team.");
-  const goat = await roomGoatForOwner(memberId, team.ownerUserId);
-  if (!goat) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "That team bot is no longer available.");
+  const goat = memberId && team.memberGoatIds.includes(memberId)
+    ? await roomGoatForOwner(memberId, team.ownerUserId)
+    : null;
   const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
   // Team environment selects the market-data source only. It never enables or disables order execution.
   const environment: "DEMO" | "LIVE" = team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO");
@@ -4144,11 +4161,11 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   const hyperliquidRoom = environment === "LIVE" && selectedLiveProvider === "hyperliquid";
   const fallbackSymbol = hyperliquidRoom ? "BTC" : "EURUSD";
   const deployedRoomAsset = team.deployment?.asset;
-  // The deployment asset is authoritative. It is not required to appear in a
-  // member's legacy market list because the room deployment owns the contract.
-  const symbol = deployedRoomAsset || (requestedSymbol && goat.markets.includes(requestedSymbol)
+  // The room's own instrument is authoritative. It is not required to appear
+  // in an agent's legacy market list, because the room owns the contract.
+  const symbol = deployedRoomAsset || (requestedSymbol && goat?.markets.includes(requestedSymbol)
     ? requestedSymbol
-    : goat.markets[0] || fallbackSymbol);
+    : goat?.markets[0] || fallbackSymbol);
   const timeframe = typeof req.query.timeframe === "string" ? req.query.timeframe : "1h";
   const count = Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120));
   /**
@@ -4179,22 +4196,14 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   };
   try {
     const payload = await roomMarketCached(
-      `${team.id}:${environment}:${selectedLiveProvider ?? "biquote"}:${symbol}:${timeframe}:${count}`,
+      `${team.id}:${symbol}:${timeframe}:${count}`,
       async () => {
-        if (environment === "LIVE") {
-          if (selectedLiveProvider !== "ctrader" && selectedLiveProvider !== "hyperliquid") {
-            throw new Error("Choose cTrader or Hyperliquid before using the Live market-data environment.");
-          }
-          const provider = await marketDataProviderForUser(team.ownerUserId, selectedLiveProvider);
-          const [quotes, candles] = await Promise.all([
-            provider.getQuotes([symbol]),
-            provider.getCandles(symbol, timeframe, count),
-          ]);
-          return {
-            symbol, quotes, candles, provider: provider.name, dataMode: provider.dataMode,
-            requestedCount: count, environment, marketDataProvider: selectedLiveProvider, executionAllowed: false,
-          };
-        }
+        /**
+         * A room's chart is the same for everyone in it, and it comes from the
+         * reference price feed. A member's own broker connection is what they
+         * trade with — it is not the room's price source, and a room that
+         * needed one would be a room you could not walk into.
+         */
         const market = await biQuoteRoomMarket(symbol, timeframe, count);
         return { symbol, ...market, environment, marketDataProvider: "biquote", dataMode: "DEMO_REFERENCE", executionAllowed: false };
       },
@@ -4205,7 +4214,7 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
     return res.json({
       ...payload,
       environment,
-      marketDataProvider: environment === "DEMO" ? "biquote" : selectedLiveProvider,
+      marketDataProvider: "biquote",
       executionAllowed: false,
       indicators: indicatorsFor(candles, quotes[0]?.mid ?? 0),
       /**
@@ -4283,11 +4292,12 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
   const team = await goatTeamStore.getPublicBySlug(slug);
   if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
 
-  const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
-  const market = team.deployment?.asset
-    || members[0]?.markets[0]
-    || (team.deployment?.provider === "ctrader" ? "EURUSD" : "XYZ:GOLD");
-  if (!market) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This room has no market configured, so there is nothing to research.");
+  /**
+   * The headlines behind the instrument the room is looking at. The leader
+   * chooses that instrument, so the news follows it rather than the other way
+   * round.
+   */
+  const market = team.deployment?.asset || "EURUSD";
 
   // Never throws: research failure is reported in-band so the panel can say so.
   const requestedForceRefresh = req.query?.refresh === "1";
@@ -4349,7 +4359,7 @@ apiRouter.get("/team-rooms/:slug/me", optionalAuthMiddleware, handle(async (req,
       description: descriptionVisible ? (team.instructions ?? "") : null,
       visibility: team.visibility ?? "PRIVATE",
       status: team.status,
-      market: team.deployment?.asset ?? null,
+      market: team.deployment?.asset || "EURUSD",
       provider: team.deployment?.provider ?? null,
       environment: team.environment ?? "DEMO",
       agentCount: team.memberGoatIds.length,
@@ -7001,8 +7011,15 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     return fail(res, 400, "INVALID_COORDINATION_MODE", "coordinationMode must be INDEPENDENT, CONSENSUS, or LEAD_REVIEW.");
   }
 
-  const monitoringIntervals = normaliseTeamMonitoringIntervals(req.body?.monitoringIntervals);
-  if (!monitoringIntervals.length) return fail(res, 400, "INVALID_MONITORING_INTERVALS", "Choose at least one monitoring interval.");
+  /**
+   * A ROOM IS CREATED FROM A NAME AND A DESCRIPTION.
+   *
+   * The trading cadence belongs to the room and has a sensible default, so
+   * creating a room never asks a question the person creating it does not
+   * need to answer. It is still stored, because it is the room's setting.
+   */
+  const requestedIntervals = normaliseTeamMonitoringIntervals(req.body?.monitoringIntervals);
+  const monitoringIntervals = requestedIntervals.length ? requestedIntervals : [15];
   const deployment = normaliseTeamDeployment(req.body?.deployment);
   if (req.body?.deployment !== undefined && req.body?.deployment !== null && !deployment) {
     return fail(res, 400, "INVALID_DEPLOYMENT_SETTINGS", "Deployment settings are incomplete. Choose a trading provider and an asset.");
@@ -7029,7 +7046,7 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   }
 
   const now = new Date().toISOString();
-  const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "trading-team";
+  const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "trading-room";
   // A private link is a capability URL: keep a long random suffix and do not
   // expose the team in public discovery. It is not a substitute for execution auth.
   const shareSlug = `${slugBase}-${randomBytes(18).toString("hex")}`;
@@ -7046,8 +7063,19 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     marketDataProvider: "biquote",
     monitoringIntervals,
     ...(leadGoatId ? { leadGoatId } : {}),
-    ...(deployment ? { deployment } : {}),
-    status: "DRAFT",
+    /**
+     * The room's chart instrument. A room is created with one so it has a
+     * chart from the first second; the leader can change it at any time.
+     */
+    ...(deployment
+      ? { deployment }
+      : { deployment: { provider: "ctrader" as const, asset: "EURUSD", risk: {} } }),
+    /**
+     * A new room is live immediately: it has a leader, a description and a
+     * chart, and the person who created it expects to be able to share it.
+     */
+    status: "DEPLOYED",
+    deployedAt: now,
     createdAt: now,
     updatedAt: now,
   };
@@ -7169,6 +7197,19 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
   if (!monitoringIntervals.length) return fail(res, 400, "INVALID_MONITORING_INTERVALS", "Choose at least one monitoring interval.");
 
   /**
+   * THE ROOM'S CHART INSTRUMENT.
+   *
+   * The leader of a room decides what the room looks at. Changing it is a
+   * room setting, not a deployment: it never touches order execution, and a
+   * room with no trading agents still has a chart.
+   */
+  const requestedAsset = typeof req.body?.asset === "string" ? req.body.asset.trim().toUpperCase() : "";
+  if (requestedAsset && !/^[A-Z0-9._-]{2,16}$/.test(requestedAsset)) {
+    return fail(res, 400, "INVALID_ROOM_ASSET", "That is not a valid instrument symbol.");
+  }
+  const asset = requestedAsset || team.deployment?.asset || "";
+
+  /**
    * `save` writes the whole record, so an omitted field is genuinely cleared.
    * Rebuild without the previous value instead of spreading it, otherwise
    * emptying the instructions would silently keep the old text.
@@ -7180,6 +7221,9 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
     ...(instructions ? { instructions } : {}),
     visibility,
     monitoringIntervals,
+    ...(asset
+      ? { deployment: { ...(team.deployment ?? { provider: "ctrader" as const, asset: "", risk: {} }), asset } }
+      : {}),
     updatedAt: new Date().toISOString(),
   });
   await stampTeamInstructions(user.uid, updated.memberGoatIds, instructions);
