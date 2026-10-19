@@ -7,6 +7,8 @@ import {
   createUserWithEmailAndPassword,
   signOut as firebaseSignOut,
   onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence,
   type User,
 } from 'firebase/auth';
 
@@ -176,4 +178,6 @@ export {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   firebaseSignOut,
+  setPersistence,
+  browserLocalPersistence,
 };

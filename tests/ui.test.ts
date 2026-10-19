@@ -81,11 +81,13 @@ describe('product identity', () => {
   });
 
   test('signed-out auth buttons do not depend on Firestore connectivity', () => {
-    const landing = read('src/components/LandingAuth.tsx');
-    expect(landing).not.toContain('isFirebaseConnected');
-    expect(landing).toContain("authMode !== 'firebase'");
-    expect(landing).toContain('isFirebaseConfigured');
-    expect(landing).toContain('loginWithGoogle');
+    // The sign-in surface is the modal a visitor meets when they press a
+    // locked control. It must work from the auth configuration alone.
+    const modal = read('src/components/AuthModal.tsx');
+    expect(modal).not.toContain('isFirebaseConnected');
+    expect(modal).toContain("authMode !== 'firebase'");
+    expect(modal).toContain('isFirebaseConfigured');
+    expect(modal).toContain('loginWithGoogle');
   });
 
   test('Telegram copy uses the new name', () => {

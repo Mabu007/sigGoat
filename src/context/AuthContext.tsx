@@ -9,6 +9,8 @@ import {
   onAuthStateChanged,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  setPersistence,
+  browserLocalPersistence,
   type User,
   doc,
   getDoc,
@@ -69,6 +71,21 @@ interface AuthContextType {
    * problem instead of firing a request that is guaranteed to 401/503.
    */
   getApiAuthHeaders: () => Promise<Record<string, string>>;
+
+  /**
+   * The sign-in / register dialog.
+   *
+   * Browsing a room or the directory does not need an account, but joining a
+   * room, posting in it, or talking to its leader does. The dialog is opened
+   * from wherever the visitor hits that wall — the locked chat composer, the
+   * join button, the header — so there is one sign-in surface in the product
+   * instead of one per screen.
+   */
+  authModalOpen: boolean;
+  authModalMode: 'signin' | 'signup';
+  /** Opens the dialog. `mode` selects which form it starts on. */
+  openAuthModal: (mode?: 'signin' | 'signup') => void;
+  closeAuthModal: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -161,6 +178,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isFirebaseConnected, setIsFirebaseConnected] = useState(false);
 
   /**
+   * The sign-in / register dialog.
+   *
+   * The application is browsable without an account, so this is a MODAL, not
+   * a gate: it appears when a visitor reaches something that needs an
+   * identity (joining a room, posting in it, messaging its leader).
+   */
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signup');
+
+  const openAuthModal = useCallback((mode: 'signin' | 'signup' = 'signup') => {
+    setAuthModalMode(mode);
+    setAuthModalOpen(true);
+  }, []);
+
+  const closeAuthModal = useCallback(() => setAuthModalOpen(false), []);
+
+  /**
    * Resolved once from the public platform status endpoint. Also warms the
    * cache used by resolveApiAuthHeaders so the first API call never races it.
    */
@@ -246,6 +280,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const setConnection = (connected: boolean) => {
       if (mounted) setIsFirebaseConnected(connected);
     };
+
+    /**
+     * STAY SIGNED IN.
+     *
+     * A trader who registers to join a room should not be asked to sign in
+     * again on every visit: the session is kept in the browser (local
+     * persistence) and survives closing the tab, the browser and a restart.
+     * It ends when the trader signs out, and only then.
+     *
+     * This has to be set before the session is restored, which is why it is
+     * done here rather than at sign-in time.
+     */
+    void setPersistence(auth, browserLocalPersistence).catch((error) => {
+      console.warn('[auth] Unable to enable local session persistence:', error);
+    });
 
     /**
      * Firebase Auth is the authoritative source for the current user.
@@ -373,11 +422,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
        */
       setCurrentUser(null);
       setProfile(null);
-
-      // Unreachable in a test environment; harmless there.
-      if (typeof window !== 'undefined' && window.location) {
-        window.location.assign('/login');
-      }
+      setAuthModalOpen(false);
     } catch (error) {
       console.error('Logout error:', error);
       throw error;
@@ -500,6 +545,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         logout,
         updateProfileData,
         getApiAuthHeaders,
+        authModalOpen,
+        authModalMode,
+        openAuthModal,
+        closeAuthModal,
       }}
     >
       {children}

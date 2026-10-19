@@ -111,7 +111,7 @@ export const CTraderSettings: React.FC = () => {
       if (!res.ok) throw new Error(body?.error?.message ?? "Could not disconnect cTrader.");
       setAccounts([]); setSelectedAccountId("");
       window.dispatchEvent(new Event("sirgoat:trading-provider-changed"));
-      setNotice("cTrader disconnected. GOATs pinned to cTrader will not run until you reconnect.");
+      setNotice("cTrader disconnected. Rooms using a cTrader account will need it again before you trade.");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not disconnect cTrader.");
@@ -161,7 +161,7 @@ export const CTraderSettings: React.FC = () => {
                   </option>
                 ))}
               </select>
-              <span className="block text-[10px] text-fg-muted">Live accounts are never selected automatically. Switching the selected account changes where new cTrader GOATs trade; existing GOATs retain their provider, not a frozen account ID.</span>
+              <span className="block text-[10px] text-fg-muted">Live accounts are never selected automatically. This is the account you trade your own ideas with.</span>
             </label>
           ) : (
             <div className="text-xs text-fg-muted">No cTrader accounts were granted. Reconnect and approve account access.</div>

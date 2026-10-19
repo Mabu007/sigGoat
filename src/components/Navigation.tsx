@@ -5,37 +5,24 @@
  * can never drift apart.
  *
  * NAVIGATION MODEL
- *   Trade Rooms · Trades · Settings
+ *   Rooms · Markets · Settings
  *
- *   `GOATs` was removed as a destination. A trading agent is no longer created
- *   on its own screen: members are authored inside the team builder, and a team
- *   of one member is the single-member case. The `goats` hash now redirects to
- *   Trade Rooms so old links land somewhere useful instead of a dead route.
- *
- *   `Overview` was removed earlier: it duplicated data available elsewhere and
- *   rendered little of its own.
- *
- *   `Skills` is likewise not a top-level destination. Skills are authored and
- *   read from inside a team member, which is where they are used; a separate
- *   top-level screen made them look like a peer of the others when they are
- *   really configuration. The route is preserved as a view so existing links
- *   keep working.
+ * SIRGOAT is a social trading product: rooms, markets, and the settings that
+ * connect an account. The destinations that belonged to the previous product
+ * — trade proposals, agent skills, backtests — are gone from the navigation.
+ * Their hashes still resolve, to the room directory, so an old link lands
+ * somewhere real instead of a dead screen.
  *
  * ACTIVE INDICATION uses `aria-current="page"`, not only colour. A
  * colour-only indicator is invisible to anyone who cannot distinguish the
  * accent from the muted foreground.
  */
 
-import { Bot, ListChecks, Settings, type LucideIcon } from 'lucide-react';
+import { CandlestickChart, Settings, Users, type LucideIcon } from 'lucide-react';
 
-/** `goats` is intentionally absent: trading agents are created as teams. */
 export type TabId =
   | 'rooms'
-  | 'trades'
   | 'markets'
-  | 'proposals'
-  | 'skills'
-  | 'backtest'
   | 'settings';
 
 export interface NavigationItem {
@@ -47,8 +34,8 @@ export interface NavigationItem {
 }
 
 export const NAVIGATION_ITEMS: NavigationItem[] = [
-  { id: 'rooms', label: 'Trade Rooms', shortLabel: 'Rooms', icon: Bot },
-  { id: 'trades', label: 'Trades', icon: ListChecks },
+  { id: 'rooms', label: 'Trading Rooms', shortLabel: 'Rooms', icon: Users },
+  { id: 'markets', label: 'Markets', icon: CandlestickChart },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 

@@ -1,99 +1,30 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Check, Moon, Palette as PaletteIcon, Sun, ArrowLeft } from 'lucide-react';
+/**
+ * SETTINGS
+ * ========
+ * Your account, how SIRGOAT looks, and the trading accounts you connect.
+ *
+ * WHAT THIS SCREEN IS NOT
+ *   There is no model picker, no reasoning provider, no autonomy switch and
+ *   no agent keys. SIRGOAT is a social trading product: it connects people to
+ *   rooms, rooms to charts and brokers, and traders to each other. Nothing
+ *   here decides what a machine thinks — that is what the people in a room
+ *   are for.
+ *
+ * The broker connections below are the ones that matter: they are the
+ * account a member trades their own ideas with.
+ */
+
+import React, { useCallback, useEffect, useState } from 'react';
+import { ArrowLeft, Check, LogOut, Moon, Palette as PaletteIcon, Sun, UserRound } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { PropDaoSettings } from './PropDaoSettings';
 import { CTraderSettings } from './CTraderSettings';
-import { ModelPicker } from '../ModelPicker';
-import type { AutonomyMode } from '../../types';
-import {
-  Settings,
-  Send,
-  Key,
-  Shield,
-  LogOut,
-  LogIn,
-  CheckCircle,
-  AlertCircle,
-  Save,
-  Zap,
-  Activity,
-  Bot,
-  Hand,
-  Loader2,
-} from 'lucide-react';
 
-interface KeyStatus {
-  openRouterKeyConfigured: boolean;
-  openRouterKeyInvalid?: boolean;
-  groqKeyConfigured?: boolean;
-  spaceBunnyKeyConfigured?: boolean;
-  spaceBunnyKeyHint?: string;
-  provider?: AiProvider;
-  telegramTokenConfigured: boolean;
-  serverKeyFallback: boolean;
-  /** False when the vault cannot encrypt at all — see the warning below. */
-  encryptionAvailable?: boolean;
-}
-
-/** The `/api/settings/preferences` response shape. */
 interface UserPreferences {
   tradingProvider: 'ctrader' | 'hyperliquid';
   tradingProviderAvailable?: boolean;
   tradingProviderUnavailableReason?: string | null;
-  autonomyMode: AutonomyMode;
-  aiModel: string | null;
-  /** null = not checked, false = checked and no longer offered. */
-  aiModelAvailable: boolean | null;
-  autonomyExecutable: boolean;
-  autonomyBlockedReason: string;
-}
-
-type AiProvider = 'openrouter' | 'groq' | 'spacebunny';
-
-interface TelegramStatusResponse {
-  tokenConfigured: boolean;
-  bot: { id: number; username: string; verifiedAt: string } | null;
-  chatId: string | null;
-  webhookSecretConfigured: boolean;
-  webhook: { ok: boolean; pendingUpdates?: number; lastErrorMessage?: string; detail?: string } | null;
-  connected: boolean;
-}
-
-/**
- * Client-side shape check, mirroring the server. Catches a bad paste before
- * a round trip so the user sees the problem immediately. The server still
- * revalidates — this is convenience, not security.
- */
-const OPENROUTER_KEY_SHAPE = /^sk-(?:or-v\d+-)?[A-Za-z0-9_-]{32,}$/;
-const GROQ_KEY_SHAPE = /^gsk_[A-Za-z0-9_-]{20,}$/;
-const SPACE_BUNNY_KEY_SHAPE = /^sb_live_[A-Za-z0-9_-]{16,}$/;
-const TELEGRAM_TOKEN_SHAPE = /^\d{5,20}:[A-Za-z0-9_-]{30,}$/;
-
-/**
- * Client-side shape check, mirroring the server. Catches a bad paste before a
- * round trip so the user sees the problem immediately. The server still
- * revalidates — this is convenience, not security.
- *
- * The provider matters: an OpenRouter key pasted into the Groq field is a
- * different mistake from a typo, and gets a message that says so.
- */
-function validateProviderKey(raw: string, provider: AiProvider): string | null {
-  const value = raw.trim();
-  if (!value) return null;
-
-  if (provider === 'groq') {
-    if (!GROQ_KEY_SHAPE.test(value)) return 'That does not look like a Groq API key. Expected gsk_… from console.groq.com/keys.';
-    return null;
-  }
-  if (provider === 'spacebunny') {
-    if (!SPACE_BUNNY_KEY_SHAPE.test(value)) return 'That does not look like a Space Bunny API key. Expected sb_live_… from spacebunnymodel.com/get-api-key.';
-    return null;
-  }
-  if (!OPENROUTER_KEY_SHAPE.test(value)) {
-    return 'That does not look like an OpenRouter API key. Expected something like sk-or-v1-… (openrouter.ai/keys → Create new key).';
-  }
-  return null;
 }
 
 export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
@@ -101,46 +32,79 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
   const {
     currentUser,
     profile,
-    loginWithGoogle,
     logout,
     isFirebaseConnected,
     getApiAuthHeaders,
-    authMode,
-    authError,
+    updateProfileData,
   } = useAuth();
 
-  // Keys State. Market data needs no user key; the provider does.
-  const [provider, setProvider] = useState<AiProvider>('openrouter');
-  const [openRouterKey, setOpenRouterKey] = useState('');
-  const [groqKey, setGroqKey] = useState('');
-  const [spaceBunnyKey, setSpaceBunnyKey] = useState('');
-  const [telegramToken, setTelegramToken] = useState('');
-  const [telegramChatId, setTelegramChatId] = useState('');
-  const [telegramStatus, setTelegramStatus] = useState<TelegramStatusResponse | null>(null);
-  const [isConnectingTelegram, setIsConnectingTelegram] = useState(false);
-  const [isDisconnectingTelegram, setIsDisconnectingTelegram] = useState(false);
-
-  // Status & Feedback State
-  const [isSaving, setIsSaving] = useState(false);
-  const [isTestingAi, setIsTestingAi] = useState(false);
-  const [isTestingTelegram, setIsTestingTelegram] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
-  const [serverStatus, setServerStatus] = useState<any>(null);
-
-  // Preferences: autonomy mode + preferred reasoning model.
-  const [preferences, setPreferences] = useState<UserPreferences>({
-    tradingProvider: 'ctrader',
-    autonomyMode: 'PROPOSAL',
-    aiModel: null,
-    aiModelAvailable: null,
-    autonomyExecutable: false,
-    autonomyBlockedReason: '',
-  });
+  const [preferences, setPreferences] = useState<UserPreferences>({ tradingProvider: 'ctrader' });
   const [isSavingPreferences, setIsSavingPreferences] = useState(false);
   const [preferencesError, setPreferencesError] = useState<string | null>(null);
-  const [isSavingAutonomy, setIsSavingAutonomy] = useState(false);
+  const [displayName, setDisplayName] = useState('');
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameNotice, setNameNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDisplayName(profile?.displayName ?? '');
+  }, [profile?.displayName]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const headers = { Accept: 'application/json', ...(await getApiAuthHeaders()) };
+        const response = await fetch('/api/settings/preferences', { headers, cache: 'no-store' });
+        const body = await response.json().catch(() => null);
+        if (!cancelled && response.ok && body) {
+          setPreferences({
+            tradingProvider: body.tradingProvider === 'hyperliquid' ? 'hyperliquid' : 'ctrader',
+            tradingProviderAvailable: body.tradingProviderAvailable,
+            tradingProviderUnavailableReason: body.tradingProviderUnavailableReason ?? null,
+          });
+        }
+      } catch {
+        // The default is the only thing this screen needs when the request
+        // fails: the account connections below work either way.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [getApiAuthHeaders]);
+
+  const savePreferences = useCallback(
+    async (patch: Partial<Pick<UserPreferences, 'tradingProvider'>>) => {
+      setPreferencesError(null);
+      const previous = preferences;
+      setPreferences((prev) => ({ ...prev, ...patch }));
+      try {
+        const res = await fetch('/api/settings/preferences', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
+          body: JSON.stringify(patch),
+        });
+        const body = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(body?.error?.message ?? 'Could not save that preference.');
+        if (body?.tradingProvider) {
+          setPreferences((prev) => ({ ...prev, tradingProvider: body.tradingProvider === 'hyperliquid' ? 'hyperliquid' : 'ctrader' }));
+        }
+      } catch (err) {
+        setPreferences(previous);
+        setPreferencesError(err instanceof Error ? err.message : 'Could not save that preference.');
+      }
+    },
+    [getApiAuthHeaders, preferences],
+  );
+
+  const saveDisplayName = useCallback(async () => {
+    if (!currentUser) return;
+    setNameSaving(true); setNameNotice(null);
+    try {
+      await updateProfileData({ displayName: displayName.trim() });
+      setNameNotice('Saved.');
+    } catch (err) {
+      setNameNotice(err instanceof Error ? err.message : 'Could not save your name.');
+    } finally { setNameSaving(false); }
+  }, [currentUser, displayName, updateProfileData]);
 
   /**
    * Bring the requested section into view.
@@ -159,395 +123,90 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
     return () => window.clearTimeout(timer);
   }, [section]);
 
-  const savePreferences = useCallback(
-    async (patch: Partial<Pick<UserPreferences, 'tradingProvider' | 'autonomyMode' | 'aiModel'>>) => {
-      setPreferencesError(null);
-      const previous = preferences;
-      // Optimistic: the toggle must feel instant. Reverted on failure below.
-      setPreferences((prev) => ({ ...prev, ...patch }));
-      try {
-        const res = await fetch('/api/settings/preferences', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
-          body: JSON.stringify(patch),
-        });
-        const body = await res.json().catch(() => null);
-        if (!res.ok) throw new Error(body?.error?.message ?? 'Could not save that preference.');
-        // Trust the server's normalised copy, not the optimistic guess.
-        setPreferences((prev) => ({ ...prev, ...body }));
-        if (patch.tradingProvider !== undefined) {
-          window.dispatchEvent(new Event('sirgoat:trading-provider-changed'));
-        }
-      } catch (err) {
-        setPreferences(previous);
-        setPreferencesError(err instanceof Error ? err.message : 'Could not save that preference.');
-      }
-    },
-    [getApiAuthHeaders, preferences],
-  );
-
-  const handleModelChange = useCallback(
-    (modelId: string) => {
-      void savePreferences({ aiModel: modelId });
-    },
-    [savePreferences],
-  );
-
-  const handleAutonomyChange = useCallback(
-    (mode: AutonomyMode) => {
-      setIsSavingAutonomy(true);
-      void savePreferences({ autonomyMode: mode }).finally(() => setIsSavingAutonomy(false));
-    },
-    [savePreferences],
-  );
-
-  const loadPreferences = useCallback(async () => {
-    try {
-      const res = await fetch('/api/settings/preferences', {
-        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
-      });
-      if (!res.ok) return;
-      setPreferences((await res.json()) as UserPreferences);
-    } catch (err) {
-      console.warn('Unable to read preferences:', err);
-    }
-  }, [getApiAuthHeaders]);
-
-  const loadKeyStatus = useCallback(async () => {
-    try {
-      const res = await fetch('/api/settings/keys', {
-        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
-      });
-      if (!res.ok) return;
-      const status = (await res.json()) as KeyStatus;
-      setKeyStatus(status);
-      if (status.provider === 'openrouter' || status.provider === 'groq' || status.provider === 'spacebunny') setProvider(status.provider);
-    } catch (err) {
-      console.warn('Unable to read key status:', err);
-    }
-  }, [getApiAuthHeaders]);
-
-  useEffect(() => {
-    fetch('/api/settings/status')
-      .then(res => res.json())
-      .then(data => setServerStatus(data))
-      .catch(console.warn);
-  }, []);
-
-  const loadTelegramStatus = useCallback(async () => {
-    try {
-      const res = await fetch('/api/telegram/status', {
-        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
-      });
-      if (!res.ok) return;
-      setTelegramStatus((await res.json()) as TelegramStatusResponse);
-    } catch (err) {
-      console.warn('Unable to read Telegram status:', err);
-    }
-  }, [getApiAuthHeaders]);
-
-  useEffect(() => {
-    void loadKeyStatus();
-    void loadTelegramStatus();
-    void loadPreferences();
-  }, [loadKeyStatus, loadTelegramStatus, loadPreferences]);
-
-  const platform = serverStatus?.platform;
-  const marketData = serverStatus?.marketData;
-  const reasoningStatus = serverStatus?.reasoning;
-  // Deployment-level Telegram facts (server token, secret required).
-  const telegramPlatform = serverStatus?.telegram;
-
-  /**
-   * "Saved" tracks the SELECTED provider only.
-   *
-   * Reporting a stored OpenRouter key as satisfying a Groq configuration would
-   * tell the user they are set up when every wake is about to fail.
-   */
-  const hasSavedKey =
-    provider === 'groq'
-      ? (keyStatus?.groqKeyConfigured ?? false)
-      : provider === 'spacebunny'
-        ? (keyStatus?.spaceBunnyKeyConfigured ?? false)
-        : (keyStatus?.openRouterKeyConfigured ?? false);
-
-  const handleSaveKeys = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSaving(true);
-    setSaveError(null);
-    setTestResult(null);
-
-    // Catch bad pastes before spending a round trip.
-    const shapeError =
-      validateProviderKey(openRouterKey, 'openrouter') ??
-      validateProviderKey(groqKey, 'groq') ??
-      validateProviderKey(spaceBunnyKey, 'spacebunny') ??
-      (telegramToken.trim() && !TELEGRAM_TOKEN_SHAPE.test(telegramToken.trim())
-        ? 'That does not look like a Telegram bot token. Expected the value from @BotFather, like 123456789:AA…'
-        : null);
-
-    if (shapeError) {
-      setSaveError(shapeError);
-      setIsSaving(false);
-      return;
-    }
-
-    try {
-      const res = await fetch('/api/settings/keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
-        body: JSON.stringify({
-          provider,
-          // Only send fields the user actually filled in; an empty box must
-          // never wipe an existing stored secret.
-          ...(openRouterKey.trim() ? { openRouterKey: openRouterKey.trim() } : {}),
-          ...(groqKey.trim() ? { groqKey: groqKey.trim() } : {}),
-          ...(spaceBunnyKey.trim() ? { spaceBunnyKey: spaceBunnyKey.trim() } : {}),
-          ...(telegramToken.trim() ? { telegramToken: telegramToken.trim() } : {}),
-          ...(telegramChatId.trim() ? { telegramChatId: telegramChatId.trim() } : {}),
-        }),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        setSaveError(body?.error?.message || `Failed to save settings (HTTP ${res.status}).`);
-        return;
-      }
-
-      const body = await res.json().catch(() => null);
-      // Broadcast the account-wide provider change so mounted AI surfaces
-      // (chatbot, GOAT panels and backtest controls) refresh their catalogues.
-      window.dispatchEvent(new CustomEvent('siggoat:ai-provider-changed', { detail: { provider: body?.provider ?? provider } }));
-      setKeyStatus((prev) => ({
-        openRouterKeyConfigured: body?.openRouterKeyConfigured ?? prev?.openRouterKeyConfigured ?? false,
-        groqKeyConfigured: body?.groqKeyConfigured ?? prev?.groqKeyConfigured ?? false,
-        spaceBunnyKeyConfigured: body?.spaceBunnyKeyConfigured ?? prev?.spaceBunnyKeyConfigured ?? false,
-        spaceBunnyKeyHint: body?.spaceBunnyKeyHint ?? prev?.spaceBunnyKeyHint,
-        provider: body?.provider ?? provider,
-        telegramTokenConfigured: Boolean(telegramToken.trim()) || (prev?.telegramTokenConfigured ?? false),
-        serverKeyFallback: prev?.serverKeyFallback ?? false,
-      }));
-
-      // Secrets are never read back; clear the inputs so they cannot leak
-      // into a screenshot or a later shoulder-surf.
-      setOpenRouterKey('');
-      setGroqKey('');
-      setSpaceBunnyKey('');
-      setTelegramToken('');
-      setTestResult({ ok: true, message: 'Saved. Your GOATs will use these credentials on the next reasoning run.' });
-      /**
-       * Reload status after a save so the model picker can immediately load a
-       * catalogue with the NEW key. Without this the picker stays on its
-       * "add a key first" error until a manual page reload, which reads as the
-       * save having not worked.
-       */
-      void loadKeyStatus();
-      void loadPreferences();
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save settings.');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleTestAi = async () => {
-    setIsTestingAi(true);
-    setTestResult(null);
-    setSaveError(null);
-    try {
-      const headers = await getApiAuthHeaders();
-
-      // Persist first when a key is typed but unsaved, so the test exercises
-      // exactly what will be stored.
-      const pendingKey = provider === 'groq' ? groqKey.trim() : provider === 'spacebunny' ? spaceBunnyKey.trim() : openRouterKey.trim();
-
-      // Save the selected provider before probing, even when its key is
-      // already stored, so the test always exercises the selected provider.
-      const saveRes = await fetch('/api/settings/keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({
-          provider,
-          ...(pendingKey ? (provider === 'groq' ? { groqKey: pendingKey } : provider === 'spacebunny' ? { spaceBunnyKey: pendingKey } : { openRouterKey: pendingKey }) : {}),
-        }),
-      });
-      if (!saveRes.ok) {
-        const body = await saveRes.json().catch(() => null);
-        setTestResult({ ok: false, message: body?.error?.message || 'Could not save the provider before testing.' });
-        return;
-      }
-      setOpenRouterKey('');
-      setGroqKey('');
-      setSpaceBunnyKey('');
-      await loadKeyStatus();
-
-      const res = await fetch('/api/ai/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...headers },
-      });
-      const data = await res.json();
-
-      if (data.ok) {
-        setTestResult({
-          ok: true,
-          message: `${data.provider ?? provider} connected — model ${data.model} responded in ${data.latencyMs}ms.`,
-        });
-      } else {
-        setTestResult({ ok: false, message: data.error || `${provider} rejected the key.` });
-      }
-    } catch (err: any) {
-      setTestResult({ ok: false, message: err.message || `Network error reaching ${provider}.` });
-    } finally {
-      setIsTestingAi(false);
-    }
-  };
-
-  /**
-   * CONNECTS THE BOT, rather than merely storing a token.
-   *
-   * Storing a token proves nothing: it has not been checked with Telegram, and
-   * no webhook is registered, so no command and no alert would arrive. This
-   * calls `getMe`, registers the webhook, and optionally verifies the chat, and
-   * only reports success if Telegram itself agreed.
-   */
-  const handleConnectTelegram = async () => {
-    const token = telegramToken.trim();
-
-    if (!token) {
-      setSaveError('Paste the bot token from @BotFather first.');
-      return;
-    }
-    if (!TELEGRAM_TOKEN_SHAPE.test(token)) {
-      setSaveError('That does not look like a Telegram bot token. Expected the value from @BotFather, like 123456789:AA…');
-      return;
-    }
-    if (telegramChatId.trim() && !/^-?\d{1,20}$/.test(telegramChatId.trim())) {
-      setSaveError('Your Telegram Chat ID must be numeric. Message @userinfobot to find it.');
-      return;
-    }
-
-    setIsConnectingTelegram(true);
-    setSaveError(null);
-    setTestResult(null);
-
-    try {
-      const res = await fetch('/api/telegram/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
-        body: JSON.stringify({
-          telegramToken: token,
-          ...(telegramChatId.trim() ? { chatId: telegramChatId.trim() } : {}),
-        }),
-      });
-
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        setSaveError(data?.error?.message || `Could not connect the bot (HTTP ${res.status}).`);
-        return;
-      }
-
-      // The token is never read back, so clear the field immediately.
-      setTelegramToken('');
-      setTelegramChatId('');
-      await Promise.all([loadTelegramStatus(), loadKeyStatus()]);
-
-      setTestResult({
-        ok: true,
-        message: data.chatVerified
-          ? `@${data.bot?.username} is connected and verified. Try /processes in Telegram.`
-          : `@${data.bot?.username} is connected and the webhook is registered. Send /start to your bot to finish.`,
-      });
-    } catch (err: any) {
-      setSaveError(err?.message || 'Network error reaching Telegram.');
-    } finally {
-      setIsConnectingTelegram(false);
-    }
-  };
-
-  const handleDisconnectTelegram = async () => {
-    setIsDisconnectingTelegram(true);
-    setSaveError(null);
-    setTestResult(null);
-
-    try {
-      const res = await fetch('/api/telegram/connect', {
-        method: 'DELETE',
-        headers: { Accept: 'application/json', ...(await getApiAuthHeaders()) },
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        setSaveError(body?.error?.message || `Could not disconnect (HTTP ${res.status}).`);
-        return;
-      }
-      await Promise.all([loadTelegramStatus(), loadKeyStatus()]);
-      setTestResult({ ok: true, message: 'Telegram disconnected. The webhook has been removed.' });
-    } catch (err: any) {
-      setSaveError(err?.message || 'Network error reaching Telegram.');
-    } finally {
-      setIsDisconnectingTelegram(false);
-    }
-  };
-
-  const handleTestTelegram = async () => {
-    if (!telegramChatId) {
-      setTestResult({ ok: false, message: 'Please enter your Telegram Chat ID first.' });
-      return;
-    }
-    setIsTestingTelegram(true);
-    setTestResult(null);
-    try {
-      const res = await fetch('/api/telegram/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) },
-        body: JSON.stringify({
-          chatId: telegramChatId.trim(),
-        }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setTestResult({ ok: true, message: 'Telegram test alert delivered successfully! Check your phone.' });
-      } else {
-        setTestResult({ ok: false, message: data.description || 'Telegram failed. Check your Bot Token and Chat ID.' });
-      }
-    } catch (err: any) {
-      setTestResult({ ok: false, message: err.message || 'Network error reaching Telegram API.' });
-    } finally {
-      setIsTestingTelegram(false);
-    }
-  };
-
   return (
     <div className="space-y-6 pb-20 max-w-3xl mx-auto">
       {/* Title */}
       <div className="flex items-start justify-between gap-4">
         <div>
-        <h1 className="text-lg font-bold text-fg flex items-center gap-2">
-          <Settings className="w-5 h-5 text-accent-text" />
-          <span>Settings</span>
-        </h1>
-        <p className="text-xs text-fg-muted mt-0.5">
-          Account, appearance, model provider, PropDAO connection and Telegram notifications.
-        </p>
+          <h1 className="text-lg font-bold text-fg flex items-center gap-2">
+            <UserRound className="w-5 h-5 text-accent-text" />
+            <span>Settings</span>
+          </h1>
+          <p className="text-xs text-fg-muted mt-0.5">
+            Your account, how SIRGOAT looks, and the trading accounts you connect.
+          </p>
         </div>
         <button type="button" onClick={() => { window.location.hash = '/rooms'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs font-bold text-fg hover:bg-raised">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back to Teams
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to Rooms
         </button>
+      </div>
+
+      {/* ---- ACCOUNT ---- */}
+      <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
+        <div className="flex items-center justify-between border-b border-line pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-accent-soft border border-accent/30 flex items-center justify-center text-accent-text">
+              <UserRound className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-[13px] font-semibold text-fg">Your account</h2>
+              <p className="text-[11px] text-fg-muted">
+                {currentUser?.email ?? 'You are browsing without an account'}
+              </p>
+            </div>
+          </div>
+          <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+            isFirebaseConnected
+              ? 'bg-positive-soft border-positive/40 text-positive'
+              : 'bg-accent/10 border-accent/40 text-accent-text'
+          }`}>
+            {isFirebaseConnected ? 'Synced' : 'Offline / Local'}
+          </span>
+        </div>
+
+        {currentUser ? (
+          <>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              <label className="block flex-1">
+                <span className="mb-1 block text-[11px] font-medium text-fg-muted">Display name</span>
+                <input
+                  value={displayName}
+                  onChange={event => setDisplayName(event.target.value)}
+                  maxLength={80}
+                  placeholder="How you appear in rooms"
+                  className="input w-full"
+                />
+              </label>
+              <button type="button" onClick={() => void saveDisplayName()} disabled={nameSaving} className="btn btn-secondary shrink-0">
+                {nameSaving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+            {nameNotice && <p className="text-[11px] text-fg-muted">{nameNotice}</p>}
+            <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
+              <p className="text-[11px] text-fg-muted">You stay signed in on this device until you sign out.</p>
+              <button type="button" onClick={() => void logout()} className="btn btn-secondary inline-flex items-center gap-2">
+                <LogOut className="h-3.5 w-3.5" /> Log out
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="text-[11px] leading-5 text-fg-muted">
+            You can browse every room without an account. Sign in to join rooms, post in them and talk to their leaders.
+          </p>
+        )}
       </div>
 
       {/* ---- APPEARANCE ---- */}
       <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-accent-soft border border-accent/30 flex items-center justify-center text-accent-text">
-              <PaletteIcon />
-            </div>
-            <div>
-              <h2 className="text-[13px] font-semibold text-fg">Appearance</h2>
-              <p className="text-[11px] text-fg-muted">
-                Both themes are designed individually, not one inverted into the other.
-              </p>
-            </div>
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-accent-soft border border-accent/30 flex items-center justify-center text-accent-text">
+            <PaletteIcon className="w-4 h-4" />
+          </div>
+          <div>
+            <h2 className="text-[13px] font-semibold text-fg">Appearance</h2>
+            <p className="text-[11px] text-fg-muted">
+              Both themes are designed individually, not one inverted into the other.
+            </p>
           </div>
         </div>
 
@@ -561,9 +220,7 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
                 onClick={() => setTheme(option)}
                 aria-pressed={active}
                 className={`flex flex-1 items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-medium transition-colors ${
-                  active
-                    ? 'border-accent bg-accent-soft text-accent-text'
-                    : 'border-line bg-sunken text-fg-muted hover:border-line-strong hover:text-fg'
+                  active ? 'border-accent bg-accent-soft text-accent-text' : 'border-line bg-sunken text-fg-muted hover:border-line-strong hover:text-fg'
                 }`}
               >
                 {option === 'light' ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
@@ -578,13 +235,13 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
       {/* ---- TRADING PROVIDER ---- */}
       <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
         <div>
-          <h2 className="text-[13px] font-semibold text-fg">Trading provider</h2>
-          <p className="text-[11px] text-fg-muted mt-0.5">Choose which venue new GOATs use for market data and order routing. Existing GOATs keep their saved provider.</p>
+          <h2 className="text-[13px] font-semibold text-fg">Your default venue</h2>
+          <p className="text-[11px] text-fg-muted mt-0.5">Which market you look at first when you open a room. You can change it at any time.</p>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Trading provider">
+        <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Default trading venue">
           {([
-            { id: 'ctrader' as const, label: 'cTrader', detail: 'Broker symbols, quotes, candles and cTrader orders.' },
-            { id: 'hyperliquid' as const, label: 'Hyperliquid + PropDAO', detail: 'Hyperliquid market data with the configured PropDAO execution path.' },
+            { id: 'ctrader' as const, label: 'cTrader', detail: 'Broker symbols, quotes, candles and orders.' },
+            { id: 'hyperliquid' as const, label: 'PropDAO', detail: 'Perpetual markets with your prop-firm account.' },
           ]).map((option) => {
             const selected = preferences.tradingProvider === option.id;
             return (
@@ -602,754 +259,12 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
           })}
         </div>
         {preferencesError && <p role="alert" className="text-xs text-red-500">{preferencesError}</p>}
-        {!preferences.tradingProviderAvailable && preferences.tradingProviderUnavailableReason && (
-          <p className="text-xs text-amber-600">{preferences.tradingProviderUnavailableReason}</p>
-        )}
-        <p className="text-[10px] text-fg-muted">A GOAT is pinned to the selected provider at creation. Switching this setting does not migrate existing GOATs. A cTrader GOAT requires a connected account and a valid market on that account.</p>
       </div>
 
       <CTraderSettings />
 
-      {/* ---- PROPDAO (Hyperliquid alternative) ---- */}
+      {/* ---- PROPDAO ---- */}
       <PropDaoSettings />
-
-      {/* AUTONOMY MODE */}
-      <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
-        <div className="border-b border-line pb-3">
-          <h2 className="text-sm font-bold text-fg flex items-center gap-2">
-            <Bot className="w-4 h-4 text-accent-text" />
-            <span>Autonomy Mode</span>
-          </h2>
-          <p className="text-xs text-fg-muted mt-0.5">
-            Choose whether your GOATs ask before they trade.
-          </p>
-        </div>
-
-        <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Autonomy mode">
-          {(
-            [
-              {
-                id: 'PROPOSAL' as const,
-                label: 'Ask me first',
-                icon: Hand,
-                blurb: 'Every setup becomes a proposal. You approve or reject each one.',
-              },
-              {
-                id: 'AUTONOMOUS' as const,
-                label: 'Full autonomy',
-                icon: Bot,
-                blurb: 'The system accepts its own setups and executes them without asking.',
-              },
-            ] as const
-          ).map((option) => {
-            const selected = preferences.autonomyMode === option.id;
-            const Icon = option.icon;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                disabled={isSavingAutonomy}
-                onClick={() => handleAutonomyChange(option.id)}
-                className={`flex items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-colors disabled:opacity-60 ${
-                  selected
-                    ? 'border-accent/60 bg-accent-soft'
-                    : 'border-line bg-sunken hover:border-line-strong'
-                }`}
-              >
-                <Icon
-                  size={15}
-                  aria-hidden="true"
-                  className={`mt-0.5 shrink-0 ${selected ? 'text-accent-text' : 'text-fg-subtle'}`}
-                />
-                <span className="min-w-0">
-                  <span className={`block text-xs font-bold ${selected ? 'text-accent-text' : 'text-fg'}`}>
-                    {option.label}
-                  </span>
-                  <span className="mt-0.5 block text-[10px] leading-relaxed text-fg-muted">
-                    {option.blurb}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        {isSavingAutonomy && (
-          <p className="flex items-center gap-1.5 text-[10px] text-fg-subtle">
-            <Loader2 size={11} className="animate-spin" /> Saving…
-          </p>
-        )}
-
-        {preferences.autonomyMode === 'AUTONOMOUS' && !preferences.autonomyExecutable && (
-          <div className="rounded-xl border border-warning/40 bg-warning-soft p-3">
-            <p className="flex items-start gap-2 text-[11px] font-semibold text-fg">
-              <AlertCircle size={13} className="mt-0.5 shrink-0" />
-              <span>Autonomy is on, but this deployment cannot send orders</span>
-            </p>
-            <p className="mt-1 pl-6 text-[10px] leading-relaxed text-fg-muted">
-              {preferences.autonomyBlockedReason ||
-                'Server-side order execution is disabled on this deployment.'}
-            </p>
-          </div>
-        )}
-
-        <p className="text-[10px] leading-relaxed text-fg-muted">
-          Autonomy changes <strong>who accepts a proposal</strong> — nothing else.
-          Every setup still passes the same signal gate, the same risk validator and
-          the same account drawdown limits, and every decision is recorded so you can
-          review it afterwards.
-        </p>
-
-        {preferencesError && (
-          <p className="rounded-lg border border-negative/40 bg-negative-soft p-2 text-[10px] text-negative">
-            {preferencesError}
-          </p>
-        )}
-      </div>
-
-      {/* 1. SOLE MARKET DATA STATUS (AUTOMATIC - NO USER KEY NEEDED) */}
-      <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
-        <div className="flex items-center justify-between border-b border-line pb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-positive-soft border border-positive/40 flex items-center justify-center text-positive">
-              <Activity className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold text-fg">Market Data Engine</h2>
-              <p className="text-xs text-fg-muted">
-                {marketData?.dataMode === 'PAPER'
-                  ? 'Deterministic simulated feed — prices are generated locally and are NOT live market prices.'
-                  : marketData?.dataMode === 'LIVE'
-                    ? preferences.tradingProvider === 'ctrader' ? 'Live broker feed when your cTrader account is connected.' : 'Live market data feed from Hyperliquid and its supported markets.'
-                    : 'Integrated market data service for Forex, Commodities, and Indices.'}
-              </p>
-            </div>
-          </div>
-          {marketData?.dataMode === 'PAPER' ? (
-            <span className="text-[10px] font-mono px-2 py-0.5 bg-accent/10 text-accent-text border border-accent/40 rounded flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-accent" />
-              PAPER · simulated
-            </span>
-          ) : preferences.tradingProvider === 'ctrader' ? (
-            <span className="text-[10px] font-mono px-2 py-0.5 bg-sunken text-fg-muted border border-line rounded">cTrader selected</span>
-          ) : (
-            <span className="text-[10px] font-mono px-2 py-0.5 bg-positive-soft text-positive border border-positive/30 rounded flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-positive animate-pulse" />
-              Connected
-            </span>
-          )}
-        </div>
-
-        <div className="text-xs text-fg-muted space-y-1.5 bg-sunken/60 p-3.5 rounded-xl border border-line">
-          <div className="flex items-center justify-between">
-            <span className="text-fg-muted">Data Mode:</span>
-            <span className={`font-semibold ${marketData?.dataMode === 'PAPER' ? 'text-accent-text' : 'text-positive'}`}>
-              {preferences.tradingProvider === 'ctrader' ? 'LIVE · cTrader account required' : (marketData?.dataMode ?? 'PAPER')}
-              {marketData?.dataMode === 'PAPER' && ' (not live prices)'}
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-fg-muted">Provider:</span>
-            <span className="text-fg font-mono">{preferences.tradingProvider === 'ctrader' ? 'cTrader (selected)' : (marketData?.provider ?? 'Hyperliquid')}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-fg-muted">Supported Asset Classes:</span>
-            <span className="text-fg text-right">{preferences.tradingProvider === 'ctrader' ? 'Forex, metals, energies, indices (broker account dependent)' : 'Crypto, Forex, Commodities, Indices (venue dependent)'}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-fg-muted">Symbols Available:</span>
-            <span className="font-mono text-accent-text">{preferences.tradingProvider === 'ctrader' ? 'Broker account dependent' : (marketData?.symbolsCount ?? '—')}</span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-fg-muted">Available providers:</span>
-            <span className="text-right text-fg">cTrader · Hyperliquid</span>
-          </div>
-        </div>
-      </div>
-
-      {/* 2. TELEGRAM NOTIFICATIONS & TWO-WAY INTERFACE */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void handleTestTelegram();
-        }}
-        autoComplete="off"
-        className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-4"
-      >
-        <div className="flex items-center justify-between border-b border-line pb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-info-soft border border-info/30 flex items-center justify-center text-info">
-              <Send className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold text-fg">Telegram Real-Time Alerts &amp; Chat</h2>
-              <p className="text-xs text-fg-muted">Receive human-readable signal alerts and chat with your GOAT on Telegram.</p>
-            </div>
-          </div>
-          <span
-            className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
-              telegramStatus?.connected
-                ? 'bg-positive-soft border-positive/40 text-positive'
-                : telegramStatus?.tokenConfigured
-                  ? 'bg-accent/10 border-accent/40 text-accent-text'
-                  : 'bg-sunken border-line-strong text-fg-muted'
-            }`}
-          >
-            {telegramStatus?.connected
-              ? `Connected @${telegramStatus.bot?.username}`
-              : telegramStatus?.tokenConfigured
-                ? 'Token saved, not verified'
-                : 'Not connected'}
-          </span>
-        </div>
-
-        <div className="space-y-3 text-xs">
-          {/**
-           * A stored token is NOT a connected bot.
-           *
-           * The old flow saved the token and reported nothing else, so a user
-           * could believe alerts were arriving when no webhook was ever
-           * registered. This states which of the three states is actually true.
-           */}
-          {telegramStatus && (
-            <div className="rounded-xl border border-line bg-sunken/60 p-3 space-y-1 text-[11px]">
-              {telegramStatus.connected && telegramStatus.webhook?.ok && (
-                <div className="text-positive flex items-center gap-1.5">
-                  <CheckCircle className="w-3.5 h-3.5 shrink-0" />
-                  <span>
-                    Verified with Telegram as <strong>@{telegramStatus.bot?.username}</strong>. Webhook registered.
-                  </span>
-                </div>
-              )}
-
-              {!telegramStatus.connected && telegramStatus.tokenConfigured && (
-                <div className="text-accent-text flex items-start gap-1.5">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                  <span>
-                    A token is stored but the bot is <strong>not</strong> connected, so commands and alerts will not
-                    arrive. Reconnect to verify it with Telegram.
-                    {telegramStatus.webhook && !telegramStatus.webhook.ok && (
-                      <>
-                        {' '}
-                        Telegram reported: {telegramStatus.webhook.detail ?? telegramStatus.webhook.lastErrorMessage}
-                      </>
-                    )}
-                  </span>
-                </div>
-              )}
-
-              {!telegramStatus.webhookSecretConfigured && (
-                <div className="text-negative flex items-start gap-1.5">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                  <span>
-                    This deployment has no Telegram webhook secret configured, so no bot can be connected securely. An
-                    operator must set TELEGRAM_WEBHOOK_SECRET.
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div>
-            <label htmlFor="telegram-token" className="block font-semibold text-fg-muted mb-1">
-              Telegram Bot Token
-            </label>
-            <input
-              id="telegram-token"
-              name="telegram-bot-token"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              value={telegramToken}
-              onChange={e => setTelegramToken(e.target.value)}
-              placeholder={keyStatus?.telegramTokenConfigured ? 'Saved — type a new token to replace it' : 'e.g. 123456789:ABCdefGHIjklmnoPQRstuvWXYZ (from @BotFather)'}
-              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="telegram-chat-id" className="block font-semibold text-fg-muted mb-1">
-              Your Telegram Chat ID
-            </label>
-            <input
-              id="telegram-chat-id"
-              name="telegram-chat-id"
-              type="text"
-              inputMode="numeric"
-              autoComplete="off"
-              value={telegramChatId}
-              onChange={e => setTelegramChatId(e.target.value)}
-              placeholder="e.g. 987654321 (message @userinfobot to see your ID)"
-              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus"
-            />
-          </div>
-
-          {testResult && (
-            <div
-              className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
-                testResult.ok
-                  ? 'bg-positive-soft border-positive/40 text-positive'
-                  : 'bg-negative-soft border-negative/40 text-negative'
-              }`}
-            >
-              {testResult.ok ? (
-                <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              ) : (
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              )}
-              <span>{testResult.message}</span>
-            </div>
-          )}
-
-          {saveError && (
-            <div className="p-3 bg-negative-soft border border-negative/40 text-negative rounded-xl flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{saveError}</span>
-            </div>
-          )}
-
-          {testResult && (
-            <div
-              className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
-                testResult.ok
-                  ? 'bg-positive-soft border-positive/40 text-positive'
-                  : 'bg-negative-soft border-negative/40 text-negative'
-              }`}
-            >
-              {testResult.ok ? (
-                <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              ) : (
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              )}
-              <span>{testResult.message}</span>
-            </div>
-          )}
-
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            {/**
-             * Connect is the action that MAKES it work: it verifies the token
-             * with Telegram and registers the webhook. Send Test only proves the
-             * bot can message one chat, so it is secondary and disabled until
-             * the bot is actually connected.
-             */}
-            <button
-              type="button"
-              onClick={() => void handleConnectTelegram()}
-              disabled={isConnectingTelegram || isDisconnectingTelegram}
-              className="flex items-center gap-1.5 bg-info hover:bg-info text-accent-fg font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
-            >
-              <Shield className="w-3.5 h-3.5" />
-              <span>
-                {isConnectingTelegram
-                  ? 'Connecting…'
-                  : telegramStatus?.tokenConfigured
-                    ? 'Reconnect Bot'
-                    : 'Connect Bot'}
-              </span>
-            </button>
-
-            <button
-              type="submit"
-              disabled={isTestingTelegram || !telegramStatus?.connected}
-              title={
-                telegramStatus?.connected
-                  ? undefined
-                  : 'Connect the bot first — the webhook must be registered before a test means anything.'
-              }
-              className="flex items-center gap-1.5 bg-sunken hover:bg-raised text-fg border border-line font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span>{isTestingTelegram ? 'Sending Test...' : 'Send Test Alert'}</span>
-            </button>
-
-            {telegramStatus?.tokenConfigured && (
-              <button
-                type="button"
-                onClick={() => void handleDisconnectTelegram()}
-                disabled={isConnectingTelegram || isDisconnectingTelegram}
-                className="flex items-center gap-1.5 bg-sunken hover:bg-raised text-negative border border-negative/40 font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>{isDisconnectingTelegram ? 'Disconnecting…' : 'Disconnect'}</span>
-              </button>
-            )}
-          </div>
-
-          {/* Setup Guide */}
-          <div className="bg-sunken/60 border border-line rounded-xl p-3 text-[11px] text-fg-muted space-y-1">
-            <strong className="text-fg-muted block mb-1">Quick Telegram Setup:</strong>
-            <div>1. Open Telegram, message <strong>@BotFather</strong>, send <code>/newbot</code> to get your Bot Token.</div>
-            <div>2. Message <strong>@userinfobot</strong> to get your numerical Chat ID.</div>
-            <div>3. Press &quot;Start&quot; on your new bot, paste both above, then click &quot;Connect Bot&quot;.</div>
-            <div>4. In Telegram send <code>/help</code> to see every command.</div>
-          </div>
-        </div>
-      </form>
-
-      {/* 3. AI MODEL CONFIGURATION */}
-      <form onSubmit={handleSaveKeys} className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-4">
-        <div className="border-b border-line pb-3">
-          <h2 className="text-sm font-bold text-fg flex items-center gap-2">
-            <Key className="w-4 h-4 text-accent-text" />
-            <span>AI Reasoning Engine</span>
-          </h2>
-          <p className="text-xs text-fg-muted mt-0.5">
-            Connect a provider with your own API key, then choose the model your GOATs reason with. OpenRouter uses its live catalogue; Space Bunny provides Space Bunny Alpha.
-          </p>
-        </div>
-
-        <div className="space-y-3.5 text-xs">
-          {/**
-           * Provider choice comes FIRST, because the key field below means
-           * different things depending on it. Choosing Groq and pasting an
-           * OpenRouter key is the single most likely mistake here, so the two
-           * are separated before either key is typed.
-           */}
-          <div>
-            <span className="block font-semibold text-fg-muted mb-1.5">
-              Reasoning provider
-            </span>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {(
-                [
-                  {
-                    id: 'openrouter' as const,
-                    label: 'OpenRouter',
-                    hint: 'Any model in the live catalogue',
-                  },
-                  {
-                    id: 'groq' as const,
-                    label: 'Groq',
-                    hint: 'Fast Llama/Qwen models, own key',
-                  },
-                  { id: 'spacebunny' as const, label: 'Space Bunny', hint: 'Space Bunny Alpha, own key' },
-                ]
-              ).map((option) => {
-                const selected = provider === option.id;
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => setProvider(option.id)}
-                    aria-pressed={selected}
-                    className={`text-left rounded-xl border px-3 py-2 transition-colors cursor-pointer ${
-                      selected
-                        ? 'border-accent/60 bg-accent-soft text-accent-text'
-                        : 'border-line bg-sunken text-fg-muted hover:border-line-strong'
-                    }`}
-                  >
-                    <span className="block text-xs font-bold">{option.label}</span>
-                    <span className="block text-[10px] opacity-80">{option.hint}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {provider === 'openrouter' ? (
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label htmlFor="openrouter-key" className="font-semibold text-fg-muted">
-                AI Model API Key (OpenRouter)
-              </label>
-              {keyStatus?.openRouterKeyInvalid ? (
-                <span className="text-[10px] text-negative flex items-center gap-1 font-mono">
-                  <AlertCircle className="w-3 h-3" /> Stored key is invalid
-                </span>
-              ) : hasSavedKey ? (
-                <span className="text-[10px] text-positive flex items-center gap-1 font-mono">
-                  <CheckCircle className="w-3 h-3" /> Your key is saved
-                </span>
-              ) : reasoningStatus?.serverKeyConfigured ? (
-                <span className="text-[10px] text-info flex items-center gap-1 font-mono">
-                  <Zap className="w-3 h-3" /> Using platform key
-                </span>
-              ) : (
-                <span className="text-[10px] text-accent-text flex items-center gap-1 font-mono">
-                  <AlertCircle className="w-3 h-3" /> Not configured
-                </span>
-              )}
-            </div>
-            <input
-              id="openrouter-key"
-              name="openrouter-api-key"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              value={openRouterKey}
-              onChange={e => setOpenRouterKey(e.target.value)}
-              placeholder={hasSavedKey ? 'Saved — type a new key to replace it' : 'sk-or-v1-...'}
-              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus"
-            />
-            <p className="text-[10px] text-fg-muted mt-1">
-              Stored per-account on the server and used only for your GOATs. Get one at openrouter.ai/keys.
-            </p>
-
-            {keyStatus?.openRouterKeyInvalid && (
-              <p className="mt-2 rounded-lg border border-negative/40 bg-negative-soft p-2 text-[10px] leading-relaxed text-negative">
-                A saved value for this account is not a valid OpenRouter key, so
-                every analysis is failing. Enter a valid key below and save to
-                replace it.
-              </p>
-            )}
-
-            {/**
-             * The vault is the only thing standing between a pasted key and a
-             * plaintext file on disk. Without a master key the save below fails
-             * with a 503, so this is surfaced BEFORE the user pastes anything
-             * rather than as a surprise after.
-             */}
-            {keyStatus && !keyStatus.encryptionAvailable && (
-              <p className="mt-2 rounded-lg border border-warning/40 bg-warning-soft p-2 text-[10px] leading-relaxed text-fg-muted">
-                This server has no <code className="font-mono">CREDENTIAL_ENCRYPTION_KEY</code>,
-                so credentials cannot be saved at all. Set one (32 bytes, base64) in the
-                deployment environment, then reload this page.
-              </p>
-            )}
-
-            {/**
-             * THE MODEL PICKER — the step that was missing.
-             *
-             * Saving a key used to leave the model hardcoded to a slug
-             * OpenRouter no longer serves, so every GOAT created afterwards
-             * failed on its first wake. Picking a model here is now the way a
-             * user states which one they want, and it becomes the default for
-             * every GOAT created afterwards.
-             */}
-            <div className="mt-3 border-t border-line pt-3">
-              <ModelPicker
-                getApiAuthHeaders={getApiAuthHeaders}
-                value={preferences.aiModel}
-                onChange={handleModelChange}
-                disabled={isSavingPreferences}
-                label="Reasoning model"
-                error={preferencesError}
-                reloadKey={`${provider}:${hasSavedKey}`}
-              />
-            </div>
-          </div>
-          ) : provider === 'groq' ? (
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label htmlFor="groq-key" className="font-semibold text-fg-muted">
-                AI Model API Key (Groq)
-              </label>
-              {hasSavedKey ? (
-                <span className="text-[10px] text-positive flex items-center gap-1 font-mono">
-                  <CheckCircle className="w-3 h-3" /> Your key is saved
-                </span>
-              ) : (
-                <span className="text-[10px] text-accent-text flex items-center gap-1 font-mono">
-                  <AlertCircle className="w-3 h-3" /> Not configured
-                </span>
-              )}
-            </div>
-            <input
-              id="groq-key"
-              name="groq-api-key"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              value={groqKey}
-              onChange={e => setGroqKey(e.target.value)}
-              placeholder={hasSavedKey ? 'Saved — type a new key to replace it' : 'gsk_...'}
-              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus"
-            />
-            <p className="text-[10px] text-fg-muted mt-1">
-              Stored per-account on the server and used only for your GOATs. Get one at console.groq.com/keys.
-              Groq is a separate service from OpenRouter: its model names are not interchangeable, and it is not
-              unlimited or always free.
-            </p>
-            <div className="mt-3 border-t border-line pt-3">
-              <ModelPicker getApiAuthHeaders={getApiAuthHeaders} value={preferences.aiModel} onChange={handleModelChange}
-                disabled={isSavingPreferences} label="Reasoning model" error={preferencesError}
-                reloadKey={`${provider}:${hasSavedKey}`} />
-            </div>
-          </div>
-          ) : (
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label htmlFor="spacebunny-key" className="font-semibold text-fg-muted">AI Model API Key (Space Bunny)</label>
-              {hasSavedKey ? (
-                <span className="text-[10px] text-positive flex items-center gap-1 font-mono"><CheckCircle className="w-3 h-3" /> Your key is saved</span>
-              ) : (
-                <span className="text-[10px] text-accent-text flex items-center gap-1 font-mono"><AlertCircle className="w-3 h-3" /> Not configured</span>
-              )}
-            </div>
-            <input id="spacebunny-key" name="spacebunny-api-key" type="password" autoComplete="off" spellCheck={false}
-              value={spaceBunnyKey} onChange={e => setSpaceBunnyKey(e.target.value)}
-              placeholder={hasSavedKey ? 'Saved — type a new key to replace it' : 'sb_live_...'}
-              className="w-full bg-sunken border border-line rounded-xl px-3 py-2 text-fg placeholder-fg-subtle font-mono focus:outline-none focus:border-focus" />
-            <p className="text-[10px] text-fg-muted mt-1">
-              Uses Space Bunny Alpha through its OpenAI-compatible API. Your key is encrypted server-side and never sent back to the browser. Create a key at{' '}
-              <a href="https://spacebunnymodel.com/get-api-key" target="_blank" rel="noreferrer" className="underline text-accent-text">spacebunnymodel.com/get-api-key</a>.
-              The hosted API is prepaid; check Space Bunny's current pricing before use.
-            </p>
-            <div className="mt-3 border-t border-line pt-3">
-              <ModelPicker getApiAuthHeaders={getApiAuthHeaders} value={preferences.aiModel} onChange={handleModelChange}
-                disabled={isSavingPreferences} label="Reasoning model" error={preferencesError}
-                reloadKey={`${provider}:${hasSavedKey}`} />
-            </div>
-          </div>
-          )}
-
-          {saveError && (
-            <div className="p-3 bg-negative-soft border border-negative/40 text-negative rounded-xl flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{saveError}</span>
-            </div>
-          )}
-
-          {testResult && (
-            <div
-              className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
-                testResult.ok
-                  ? 'bg-positive-soft border-positive/40 text-positive'
-                  : 'bg-negative-soft border-negative/40 text-negative'
-              }`}
-            >
-              {testResult.ok ? (
-                <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              ) : (
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              )}
-              <span>{testResult.message}</span>
-            </div>
-          )}
-
-          <div className="pt-2 flex flex-wrap items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={handleTestAi}
-              disabled={isTestingAi || isSaving}
-              className="flex items-center gap-1.5 bg-sunken hover:bg-raised text-fg border border-line font-bold text-xs py-2 px-3.5 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
-            >
-              <Zap className="w-3.5 h-3.5" />
-              <span>{isTestingAi ? 'Testing...' : `Test ${provider} Key`}</span>
-            </button>
-            <button
-              type="submit"
-              disabled={isSaving}
-              className="flex items-center gap-1.5 bg-accent hover:bg-accent text-accent-fg font-bold text-xs py-2 px-4 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>{isSaving ? 'Saving...' : 'Save Configuration'}</span>
-            </button>
-          </div>
-        </div>
-      </form>
-
-      {/* 4. USER PROFILE & PERSISTENCE */}
-      <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-4">
-        {(platform?.authMode === 'dev' || platform?.persistenceMode) && (
-          <div className="text-[10px] font-mono text-fg-subtle flex flex-wrap gap-3">
-            <span>Auth mode: {platform?.authMode ?? '—'}</span>
-            <span>·</span>
-            <span>Persistence: {platform?.persistenceMode ?? '—'}</span>
-            <span>·</span>
-            <span>Active GOAT actors: {platform?.activeActors ?? 0}</span>
-          </div>
-        )}
-        <div className="flex items-center justify-between border-b border-line pb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-positive-soft border border-positive/40 flex items-center justify-center text-positive">
-              <Shield className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold text-fg">Your Account</h2>
-              <p className="text-xs text-fg-muted">Cloud synchronization and preferences for your GOAT definitions, skills, and signals.</p>
-            </div>
-          </div>
-          <span
-            className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
-              isFirebaseConnected
-                ? 'bg-positive-soft border-positive/40 text-positive'
-                : 'bg-accent/10 border-accent/40 text-accent-text'
-            }`}
-          >
-            {isFirebaseConnected ? 'Cloud Synced' : 'Offline / Local'}
-          </span>
-        </div>
-
-        <div className="text-xs space-y-3">
-          {currentUser ? (
-            <div className="space-y-3">
-              <div className="p-3 bg-sunken rounded-xl border border-line space-y-1">
-                <div className="text-fg-muted">
-                  Signed in as: <strong className="text-fg">{profile?.email || currentUser.email || 'Trader'}</strong>
-                </div>
-                <div className="text-fg-muted text-[11px] font-mono truncate">
-                  Account Reference: {currentUser.uid ? currentUser.uid.slice(0, 8) + '...' : 'Local'}
-                </div>
-              </div>
-
-              <button
-                onClick={logout}
-                className="flex items-center gap-1.5 text-xs text-negative hover:text-negative bg-negative-soft border border-negative/40 px-3.5 py-2 rounded-xl transition-colors cursor-pointer"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Sign Out</span>
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <p className="text-fg-muted">
-                You are currently browsing as a local session. Sign in with Google to sync your GOATs across devices.
-              </p>
-              <button
-                onClick={() => {
-                  void loginWithGoogle().catch(() => {
-                    /* Message is surfaced from authError below. */
-                  });
-                }}
-                className="flex items-center gap-2 bg-sunken hover:bg-raised text-fg border border-line font-bold text-xs py-2.5 px-4 rounded-xl transition-colors cursor-pointer"
-              >
-                <LogIn className="w-4 h-4 text-accent-text" />
-                <span>Sign in with Google</span>
-              </button>
-            </div>
-          )}
-
-          {/* Sign-in failures are configuration problems: show the exact fix. */}
-          {authError && (
-            <div className="rounded-xl border border-accent/40 bg-accent/10 p-3">
-              <div className="flex items-start gap-2 text-xs font-bold text-accent-text">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>Sign-in failed</span>
-              </div>
-
-              <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-[11px] leading-relaxed text-accent-text/90">
-                {authError}
-              </pre>
-            </div>
-          )}
-
-          {/* Honest labelling of which auth mode is actually running. */}
-          {authMode === 'dev' && (
-            <div className="rounded-xl border border-accent/30 bg-sunken/60 p-3 text-[11px] text-fg-muted">
-              <strong className="text-accent-text">
-                Local mode (FUNDAGOAT_ALLOW_DEV_AUTH=1).
-              </strong>{' '}
-              Identity is a browser-generated local id, not a real account.
-              Set the Firebase service-account variable and remove the dev flag
-              to enable Google sign-in and cloud sync.
-            </div>
-          )}
-
-          {authMode === 'none' && (
-            <div className="rounded-xl border border-negative/40 bg-negative-soft p-3 text-[11px] text-negative">
-              <strong className="text-negative">
-                No authentication configured.
-              </strong>{' '}
-              {platform?.authNotConfiguredReason ??
-                'The server has no Firebase credentials.'}{' '}
-              Every signed-in request will fail until this is set.
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   );
 };
