@@ -157,6 +157,13 @@ export interface ChatRepository {
   listByUser(userId: string): Promise<Chat[]>;
   get(chatId: string): Promise<Chat | null>;
   getForUser(chatId: string, userId: string): Promise<Chat | null>;
+  /**
+   * Every conversation the user takes part in, newest first.
+   *
+   * Used for the private mentor threads, where the reader is one side of a
+   * two-person conversation rather than the owner of the document.
+   */
+  listByParticipant(userId: string): Promise<Chat[]>;
   create(chat: Chat): Promise<Chat>;
   update(chatId: string, updates: Partial<Chat>): Promise<void>;
   delete(chatId: string): Promise<void>;
@@ -164,6 +171,28 @@ export interface ChatRepository {
 
 export interface MessageRepository {
   listByChat(chatId: string, limit?: number): Promise<ChatMessage[]>;
+  /**
+   * The NEWEST messages of a conversation, oldest first.
+   *
+   * `listByChat` returns the oldest page, which is what an assistant replay
+   * needs. A room conversation instead has to open on the most recent
+   * messages, so it reads the tail without loading the whole history.
+   */
+  listLatest(chatId: string, limit?: number): Promise<ChatMessage[]>;
+  /**
+   * Messages written after a cursor, oldest first.
+   *
+   * This is what keeps a live room cheap: the client asks for what is new
+   * since it last saw a message instead of re-reading the whole conversation.
+   */
+  listSince(chatId: string, since: string, limit?: number): Promise<ChatMessage[]>;
+  /**
+   * The page of messages that comes BEFORE a cursor, oldest first.
+   *
+   * This is what "load older" uses, so opening a long conversation never
+   * reads its whole history.
+   */
+  listBefore(chatId: string, before: string, limit?: number): Promise<ChatMessage[]>;
   create(chatId: string, message: ChatMessage): Promise<ChatMessage>;
   deleteByChat(chatId: string): Promise<void>;
   delete(messageId: string): Promise<void>;
@@ -467,6 +496,11 @@ class MemoryChatRepository implements ChatRepository {
     const chat = this.store.get(chatId);
     return chat && chat.userId === userId ? chat : null;
   }
+  async listByParticipant(userId: string) {
+    return [...this.store.values()]
+      .filter((c) => (c.participantIds ?? []).includes(userId))
+      .sort((a, b) => (b.lastMessageAt ?? b.updatedAt ?? '').localeCompare(a.lastMessageAt ?? a.updatedAt ?? ''));
+  }
   async create(chat: Chat) {
     this.store.set(chat.id, chat);
     return chat;
@@ -488,6 +522,24 @@ class MemoryMessageRepository implements MessageRepository {
       a.createdAt.localeCompare(b.createdAt),
     );
     return msgs.slice(-limit);
+  }
+  async listLatest(chatId: string, limit = 50) {
+    const msgs = [...this.store.values()].filter((m) => m.chatId === chatId).sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+    return msgs.slice(-limit);
+  }
+  async listSince(chatId: string, since: string, limit = 50) {
+    return [...this.store.values()]
+      .filter((m) => m.chatId === chatId && m.createdAt > since)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(0, limit);
+  }
+  async listBefore(chatId: string, before: string, limit = 50) {
+    return [...this.store.values()]
+      .filter((m) => m.chatId === chatId && m.createdAt < before)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(-limit);
   }
   async create(chatId: string, message: ChatMessage) {
     this.store.set(message.id, message);
@@ -835,6 +887,11 @@ class FileChatRepository implements ChatRepository {
     const chat = this.collection()[chatId];
     return chat && chat.userId === userId ? chat : null;
   }
+  async listByParticipant(userId: string) {
+    return Object.values(this.collection())
+      .filter((chat) => (chat.participantIds ?? []).includes(userId))
+      .sort((a, b) => (b.lastMessageAt ?? b.updatedAt ?? '').localeCompare(a.lastMessageAt ?? a.updatedAt ?? ''));
+  }
   async create(chat: Chat) {
     this.collection()[chat.id] = chat;
     this.parent.persist();
@@ -865,6 +922,22 @@ class FileMessageRepository implements MessageRepository {
   async listByChat(chatId: string, limit = 50) {
     const msgs = Object.values(this.collection(chatId)).slice();
     return msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-limit);
+  }
+  async listLatest(chatId: string, limit = 50) {
+    const msgs = Object.values(this.collection(chatId)).slice();
+    return msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-limit);
+  }
+  async listSince(chatId: string, since: string, limit = 50) {
+    return Object.values(this.collection(chatId))
+      .filter((message) => message.createdAt > since)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(0, limit);
+  }
+  async listBefore(chatId: string, before: string, limit = 50) {
+    return Object.values(this.collection(chatId))
+      .filter((message) => message.createdAt < before)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(-limit);
   }
   async create(chatId: string, message: ChatMessage) {
     this.collection(chatId)[message.id] = message;
@@ -1359,6 +1432,14 @@ class FirestoreChatRepository implements ChatRepository {
     const chat = await this.get(chatId);
     return chat && chat.userId === userId ? chat : null;
   }
+  async listByParticipant(userId: string) {
+    // `array-contains` on participantIds uses the automatic single-field
+    // index, so no composite index is required to find a member's threads.
+    const snap = await this.col().where('participantIds', 'array-contains', userId).get();
+    return snap.docs
+      .map((d) => d.data() as Chat)
+      .sort((a, b) => (b.lastMessageAt ?? b.updatedAt ?? '').localeCompare(a.lastMessageAt ?? a.updatedAt ?? ''));
+  }
   async create(chat: Chat) {
     await this.col().doc(chat.id).set(firestoreSafe(chat));
     return chat;
@@ -1383,6 +1464,44 @@ class FirestoreMessageRepository implements MessageRepository {
       .limit(limit)
       .get();
     return snap.docs.map((d) => d.data() as ChatMessage);
+  }
+  async listLatest(chatId: string, limit = 50) {
+    // The newest page of a conversation: descending order, then flipped back
+    // to chronological for display. A single-field orderBy needs no
+    // composite index.
+    const snap = await this.db
+      .collection(CHATS)
+      .doc(chatId)
+      .collection(MESSAGES)
+      .orderBy('createdAt', 'desc')
+      .limit(limit)
+      .get();
+    return snap.docs.map((d) => d.data() as ChatMessage).reverse();
+  }
+  async listSince(chatId: string, since: string, limit = 50) {
+    // A range on `createdAt` ordered by the same field is served by the
+    // automatic single-field index, so an incremental poll costs one small
+    // read instead of the whole conversation.
+    const snap = await this.db
+      .collection(CHATS)
+      .doc(chatId)
+      .collection(MESSAGES)
+      .where('createdAt', '>', since)
+      .orderBy('createdAt', 'asc')
+      .limit(limit)
+      .get();
+    return snap.docs.map((d) => d.data() as ChatMessage);
+  }
+  async listBefore(chatId: string, before: string, limit = 50) {
+    const snap = await this.db
+      .collection(CHATS)
+      .doc(chatId)
+      .collection(MESSAGES)
+      .where('createdAt', '<', before)
+      .orderBy('createdAt', 'desc')
+      .limit(limit)
+      .get();
+    return snap.docs.map((d) => d.data() as ChatMessage).reverse();
   }
   async create(chatId: string, message: ChatMessage) {
     await this.db.collection(CHATS).doc(chatId).collection(MESSAGES).doc(message.id).set(firestoreSafe(message));

@@ -894,24 +894,57 @@ export function normaliseAutonomyMode(value: unknown): AutonomyMode {
   return value === 'AUTONOMOUS' ? 'AUTONOMOUS' : 'PROPOSAL';
 }
 
-/** A session of the application-wide AI assistant. */
+/**
+ * What a chat session IS.
+ *
+ * The application-wide AI assistant is the default and keeps its original
+ * shape. The two room kinds exist because a trading room is now a human-led
+ * community: members talk to each other in the room, and talk to the room
+ * leader privately.
+ */
+export type ChatKind = 'assistant' | 'room' | 'direct';
+
+/** A session of the application-wide AI assistant, or a room conversation. */
 export interface Chat {
   id: string;
+  /**
+   * The owning user. For a room conversation this is the ROOM LEADER, whose
+   * identity is the room's authority; for a direct thread it is the leader as
+   * well. Membership is enforced by the server, never by this field alone.
+   */
   userId: string;
   title: string;
   createdAt: string;
   updatedAt: string;
   lastMessageAt?: string;
+  /** Absent means the original AI assistant session. */
+  kind?: ChatKind;
+  /** The room (team) a room conversation or direct thread belongs to. */
+  roomId?: string;
+  /**
+   * Everyone who may read a DIRECT thread. A room conversation does not use
+   * this: its audience is every member of the room.
+   */
+  participantIds?: string[];
 }
 
 /** A single message inside a chat session. */
 export interface ChatMessage {
   id: string;
   chatId: string;
+  /** The author of the message. */
   userId: string;
   role: 'user' | 'assistant';
   content: string;
   model?: string;
   createdAt: string;
   tokenUsage?: { promptTokens: number; completionTokens: number };
+  /**
+   * Display name of the author, captured when the message was written.
+   *
+   * A room conversation is written by people, and a feed that shows a raw uid
+   * instead of a name is unreadable. The name is a snapshot: it is what the
+   * author was called at the time they posted.
+   */
+  authorName?: string;
 }

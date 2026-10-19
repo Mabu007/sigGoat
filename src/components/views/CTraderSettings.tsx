@@ -121,7 +121,7 @@ export const CTraderSettings: React.FC = () => {
   };
 
   return (
-    <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
+    <section id="ctrader-connection" className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-2.5">
           <div className="w-8 h-8 shrink-0 rounded-lg bg-accent-soft border border-accent/30 flex items-center justify-center text-accent-text">
