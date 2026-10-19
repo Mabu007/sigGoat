@@ -205,55 +205,54 @@ service cloud.firestore {
        // addressed directly; messages live in a subcollection for cheap
        // pagination over long conversations. Both paths are enforced with the
        // same ownership model as the other user collections.
-       match /chats/{chatId} {
-         allow get, list: if isOwner(userId) && isValidId(chatId);
-         allow create: if isOwner(userId) && isValidId(chatId)
+      match /chats/{chatId} {
+        allow get, list: if isOwner(userId) && isValidId(chatId);
+        allow create: if isOwner(userId) && isValidId(chatId)
+                      && incoming().userId == request.auth.uid;
+        allow update: if isOwner(userId) && isValidId(chatId)
+                      && incoming().userId == request.auth.uid;
+        allow delete: if isOwner(userId) && isValidId(chatId);
+
+        match /messages/{messageId} {
+          allow read: if isOwner(userId) && isValidId(messageId);
+          allow create: if isOwner(userId) && isValidId(messageId)
                         && incoming().userId == request.auth.uid;
-         allow update: if isOwner(userId) && isValidId(chatId)
-                        && incoming().userId == request.auth.uid;
-         allow delete: if isOwner(userId) && isValidId(chatId);
+          allow delete: if isOwner(userId) && isValidId(messageId);
+        }
+      }
+    }
 
-         match /messages/{messageId} {
-           allow read: if isOwner(userId) && isValidId(messageId);
-           allow create: if isOwner(userId) && isValidId(messageId)
-                         && incoming().userId == request.auth.uid;
-           allow delete: if isOwner(userId) && isValidId(messageId);
-         }
-       }
-     }
-   }
+    // ------------------------------------------------------------------
+    // ROOM CONVERSATIONS AND MEMBERSHIP
+    // ------------------------------------------------------------------
+    // A trading room is a human-led community, so the server stores three
+    // more kinds of document:
+    //
+    //   roomMembers/{roomId_userId} - who has joined which room
+    //   chats/{chatId}              - a room conversation (kind 'room') or a
+    //                                 private mentor thread (kind 'direct')
+    //   chats/{chatId}/messages/... - the messages of either
+    //
+    // These live at the TOP level, which is where the server writes them, and
+    // every one of them is reached through the server's own authorization
+    // checks (membership for a room, the two participants for a private
+    // thread). The browser never reads them directly, so the client rules
+    // below DENY access outright: a rule that is never exercised cannot be
+    // the thing that keeps a conversation private.
+    match /roomMembers/{memberId} {
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
 
-   // ------------------------------------------------------------------
-   // ROOM CONVERSATIONS AND MEMBERSHIP
-   // ------------------------------------------------------------------
-   // A trading room is a human-led community, so the server stores three
-   // more kinds of document:
-   //
-   //   roomMembers/{roomId_userId} - who has joined which room
-   //   chats/{chatId}              - a room conversation (kind 'room') or a
-   //                                 private mentor thread (kind 'direct')
-   //   chats/{chatId}/messages/... - the messages of either
-   //
-   // These live at the TOP level, which is where the server writes them, and
-   // every one of them is reached through the server's own authorization
-   // checks (membership for a room, the two participants for a private
-   // thread). The browser never reads them directly, so the client rules
-   // below DENY access outright: a rule that is never exercised cannot be
-   // the thing that keeps a conversation private.
-   match /roomMembers/{memberId} {
-     allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
-     allow list: if false;
-     allow create, update, delete: if false;
-   }
+    match /chats/{chatId} {
+      allow get, list: if false;
+      allow create, update, delete: if false;
 
-   match /chats/{chatId} {
-     allow get, list: if false;
-     allow create, update, delete: if false;
-
-     match /messages/{messageId} {
-       allow read: if false;
-       allow create, update, delete: if false;
-     }
-   }
- }
+      match /messages/{messageId} {
+        allow read: if false;
+        allow create, update, delete: if false;
+      }
+    }
+  }
 }
