@@ -4305,6 +4305,74 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
   });
 }));
 
+/**
+ * WHO AM I IN THIS ROOM.
+ *
+ * The room page itself is a public, shared-cache document, so anything that
+ * depends on WHO is asking lives here instead: the caller's role, the room
+ * description they are allowed to read, and the member roster.
+ *
+ * It is registered BEFORE the authenticated routes below, because a visitor
+ * who has never signed in still has to be able to open a public room and be
+ * told, in plain words, that joining it needs an account. Everything it
+ * reveals about a room is either already public on the room page or reserved
+ * for the people in the room.
+ */
+apiRouter.get("/team-rooms/:slug/me", optionalAuthMiddleware, handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+
+  const viewerId = req.user?.uid ?? null;
+  const roster = await roomMemberStore.list(team.id);
+  const isOwner = viewerId != null && viewerId === team.ownerUserId;
+  const isMember = isOwner || (viewerId != null && roster.some(member => member.userId === viewerId));
+  const leaderName = await displayNameFor(team.ownerUserId, "Room leader");
+
+  /**
+   * A public room's description is public — it is already shown on its
+   * directory card. A private room's description is only for the people in
+   * it, so a visitor of a private link sees that there is a description
+   * without being shown it.
+   */
+  const descriptionVisible = team.visibility === "PUBLIC" || isMember;
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    signedIn: Boolean(viewerId),
+    isOwner,
+    isMember,
+    role: isOwner ? "LEADER" : isMember ? "MEMBER" : null,
+    room: {
+      id: team.id,
+      name: team.name,
+      description: descriptionVisible ? (team.instructions ?? "") : null,
+      visibility: team.visibility ?? "PRIVATE",
+      status: team.status,
+      market: team.deployment?.asset ?? null,
+      provider: team.deployment?.provider ?? null,
+      environment: team.environment ?? "DEMO",
+      agentCount: team.memberGoatIds.length,
+      createdAt: team.createdAt,
+      leader: { id: team.ownerUserId, displayName: leaderName },
+    },
+    /** The real number of people in the room. Never a made-up figure. */
+    memberCount: roster.length + 1,
+    /** Names are only for the people in the room. */
+    members: isMember
+      ? [
+          { id: team.ownerUserId, displayName: leaderName, role: "LEADER" as const, joinedAt: team.createdAt },
+          ...roster.map(member => ({
+            id: member.userId,
+            displayName: member.displayName,
+            role: "MEMBER" as const,
+            joinedAt: member.joinedAt,
+          })),
+        ]
+      : [],
+  });
+}));
+
 apiRouter.use(authMiddleware);
 
 /**
@@ -4502,68 +4570,6 @@ async function isRoomMember(team: GoatTeam, userId: string | null): Promise<bool
   if (team.ownerUserId === userId) return true;
   return Boolean(await roomMemberStore.get(team.id, userId));
 }
-
-/**
- * WHO AM I IN THIS ROOM.
- *
- * The room page itself is a public, shared-cache document, so anything that
- * depends on WHO is asking lives here instead: the caller's role, the room
- * description they are allowed to read, and the member roster.
- */
-apiRouter.get("/team-rooms/:slug/me", optionalAuthMiddleware, handle(async (req, res) => {
-  const slug = String(req.params.slug || "");
-  const team = await resolveRoom(slug);
-  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
-
-  const viewerId = req.user?.uid ?? null;
-  const roster = await roomMemberStore.list(team.id);
-  const isOwner = viewerId != null && viewerId === team.ownerUserId;
-  const isMember = isOwner || (viewerId != null && roster.some(member => member.userId === viewerId));
-  const leaderName = await displayNameFor(team.ownerUserId, "Room leader");
-
-  /**
-   * A public room's description is public — it is already shown on its
-   * directory card. A private room's description is only for the people in
-   * it, so a visitor of a private link sees that there is a description
-   * without being shown it.
-   */
-  const descriptionVisible = team.visibility === "PUBLIC" || isMember;
-
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({
-    signedIn: Boolean(viewerId),
-    isOwner,
-    isMember,
-    role: isOwner ? "LEADER" : isMember ? "MEMBER" : null,
-    room: {
-      id: team.id,
-      name: team.name,
-      description: descriptionVisible ? (team.instructions ?? "") : null,
-      visibility: team.visibility ?? "PRIVATE",
-      status: team.status,
-      market: team.deployment?.asset ?? null,
-      provider: team.deployment?.provider ?? null,
-      environment: team.environment ?? "DEMO",
-      agentCount: team.memberGoatIds.length,
-      createdAt: team.createdAt,
-      leader: { id: team.ownerUserId, displayName: leaderName },
-    },
-    /** The real number of people in the room. Never a made-up figure. */
-    memberCount: roster.length + 1,
-    /** Names are only for the people in the room. */
-    members: isMember
-      ? [
-          { id: team.ownerUserId, displayName: leaderName, role: "LEADER" as const, joinedAt: team.createdAt },
-          ...roster.map(member => ({
-            id: member.userId,
-            displayName: member.displayName,
-            role: "MEMBER" as const,
-            joinedAt: member.joinedAt,
-          })),
-        ]
-      : [],
-  });
-}));
 
 /**
  * JOIN A ROOM.
