@@ -24,6 +24,7 @@ import path from "node:path";
 import type { Firestore } from "firebase-admin/firestore";
 import { getFirebaseAdmin } from "../firebaseAdmin";
 import { firestoreSafe } from "../repositories";
+import { assertStoreAvailable, ensureStoreDirectory, resolveStoreMode, type StoreModeDecision } from "../storeFs";
 import type { RoomDrawing } from "../../shared/roomProtocol";
 import { ROOM_MAX_DRAWINGS } from "../../shared/roomProtocol";
 
@@ -44,9 +45,13 @@ const emptyDb = (): ChartDb => ({ charts: {} });
 const safeId = (value: string) =>
   value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 200);
 
+const LABEL = "RoomChartStateStore";
+
 export class RoomChartStateStore {
   private readonly firestore?: Firestore;
   private readonly filePath: string;
+  /** How this store may keep its state. See `resolveStoreMode`. */
+  private decision: StoreModeDecision = { mode: 'memory', fileBacked: false };
   private db: ChartDb = emptyDb();
   private lastWriteAt = new Map<string, number>();
 
@@ -58,21 +63,29 @@ export class RoomChartStateStore {
         process.env.DATA_DIR || path.join(process.cwd(), "data"),
         "room-chart-state.json",
       );
+    this.decision = resolveStoreMode(Boolean(this.firestore), LABEL);
     if (!this.firestore) {
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-      try {
-        if (fs.existsSync(this.filePath)) {
-          this.db = {
-            ...emptyDb(),
-            ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<ChartDb>),
-          };
+      if (this.decision.mode !== 'unavailable') {
+        this.decision = { ...this.decision, fileBacked: ensureStoreDirectory(this.filePath) };
+      }
+      if (this.decision.fileBacked) {
+        try {
+          if (fs.existsSync(this.filePath)) {
+            this.db = {
+              ...emptyDb(),
+              ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<ChartDb>),
+            };
+          }
+        } catch (error) {
+          console.warn("[store] Saved chart state could not be read; starting empty.", error);
         }
-      } catch (error) {
-        throw new Error("ROOM_CHART_STATE_UNREADABLE: saved chart state could not be loaded.", {
-          cause: error,
-        });
       }
     }
+  }
+
+  /** Refuses to operate when this deployment has no durable datastore. */
+  private assertAvailable(): void {
+    assertStoreAvailable(this.decision, LABEL);
   }
 
   private collection() {
@@ -80,6 +93,7 @@ export class RoomChartStateStore {
   }
 
   private persist() {
+    if (!this.decision.fileBacked) return;
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const temp = this.filePath + ".tmp";
     fs.writeFileSync(temp, JSON.stringify(this.db), "utf8");
@@ -87,6 +101,7 @@ export class RoomChartStateStore {
   }
 
   async get(roomId: string): Promise<RoomChartSnapshot | null> {
+    this.assertAvailable();
     const key = safeId(roomId);
     if (this.firestore) {
       const snapshot = await this.collection().doc(key).collection("chartState").doc("current").get();
@@ -107,6 +122,7 @@ export class RoomChartStateStore {
     input: { symbol: string; timeframe: string; drawings: RoomDrawing[] },
     options: { force?: boolean; minIntervalMs?: number } = {},
   ): Promise<boolean> {
+    this.assertAvailable();
     const key = safeId(roomId);
     const minInterval = options.minIntervalMs ?? 30_000;
     const now = Date.now();

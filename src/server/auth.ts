@@ -76,24 +76,6 @@ function getFirebaseVerifier(): TokenVerifier | null {
  * for anyone who has it configured, which looks like a broken app rather than
  * a renamed variable.
  */
-function devAuthAllowed(): boolean {
-  const flag =
-    process.env.FUNDAGOAT_ALLOW_DEV_AUTH ?? process.env.SIGNALGOAT_ALLOW_DEV_AUTH;
-  if (flag !== '1') return false;
-
-  if (isProductionRuntime()) {
-    // Fail closed and say so, rather than trusting the variable in prod.
-    console.error(
-      '[auth] REFUSING dev auth: FUNDAGOAT_ALLOW_DEV_AUTH=1 is set in a ' +
-        'production runtime (VERCEL is set). Unset it there. Dev auth would ' +
-        'accept any caller-supplied identity.',
-    );
-    return false;
-  }
-
-  return true;
-}
-
 /**
  * Production detection.
  *
@@ -105,6 +87,71 @@ export function isProductionRuntime(): boolean {
   // Production builds on Docker/Fly/Render/Railway are production too.
   // Never permit caller-supplied x-dev-user-id identity in those hosts.
   return process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
+}
+
+/**
+ * Has the operator EXPLICITLY asked for dev auth?
+ *
+ * This is the raw, unguarded question. It is deliberately separate from
+ * `devAuthAllowed()`, because the two answer different questions:
+ *
+ *   - "did somebody ask for this?"  -> this function
+ *   - "may this run right now?"      -> `devAuthAllowed()`
+ *
+ * The distinction matters because an operator who set the variable is
+ * entitled to know that it is being honoured, and to be told plainly when
+ * it is being ignored.
+ */
+export function devAuthExplicitlyEnabled(): boolean {
+  const flag =
+    process.env.FUNDAGOAT_ALLOW_DEV_AUTH ?? process.env.SIGNALGOAT_ALLOW_DEV_AUTH;
+  return flag === "1";
+}
+
+/**
+ * Dev auth is opt-in AND must never take priority over real authentication.
+ *
+ * The previous behaviour REFUSED dev auth in any production runtime, which
+ * made the variable a trap: an operator who set it to keep the app running
+ * without Firebase credentials was told it was refused, and then the server
+ * failed to boot for an unrelated reason (persistence could not degrade), so
+ * every endpoint answered with an opaque 500. Setting the variable did
+ * nothing except produce a log line.
+ *
+ * THE RULE NOW
+ * -------------
+ * Dev auth is used ONLY when there is no real authentication to use. If
+ * Firebase Admin is configured, `resolveAuthMode()` returns 'firebase' and
+ * this function is never consulted for the mode. So dev auth can never
+ * DOWNGRADE a correctly configured production deployment — it can only make
+ * a deployment that would otherwise not start at all start in an explicitly
+ * labelled, loudly warned mode.
+ *
+ * It remains dangerous in production: it accepts a caller-supplied identity.
+ * That is why it is refused whenever real auth exists, why it is logged as a
+ * warning at boot, and why it is reported on /api/settings/status.
+ */
+function devAuthAllowed(): boolean {
+  if (!devAuthExplicitlyEnabled()) return false;
+
+  if (getFirebaseVerifier()) {
+    // Real authentication is available. Dev auth is not needed and would be a
+    // downgrade, so it is ignored entirely.
+    return false;
+  }
+
+  if (isProductionRuntime()) {
+    console.warn(
+      '[auth] DEV AUTH IS ENABLED in a production runtime (VERCEL is set). ' +
+        'Callers are identified by a caller-supplied x-dev-user-id header, so ' +
+        'anyone who can reach this server can act as anyone. It is used ONLY ' +
+        'because no Firebase Admin credential is configured. Configure ' +
+        'FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 and unset ' +
+        'FUNDAGOAT_ALLOW_DEV_AUTH to remove it.',
+    );
+  }
+
+  return true;
 }
 
 export function resolveAuthMode(): AuthMode {

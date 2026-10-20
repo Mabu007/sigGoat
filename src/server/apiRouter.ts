@@ -29,7 +29,7 @@ import {
   AutonomyMode,
   normaliseAutonomyMode,
 } from "../types";
-import { authMiddleware, optionalAuthMiddleware, requireUser, resolveAuthMode } from "./auth";
+import { authMiddleware, optionalAuthMiddleware, requireUser, resolveAuthMode, devAuthExplicitlyEnabled } from "./auth";
 import { isTradingProvider, resolveGoatTradingProvider, resolveUserTradingProvider } from "../services/trading-provider/TradingProvider";
 import { getTradingProviderRegistration, isTradingProviderReady } from "../services/trading-provider/TradingProviderRegistry";
 import { buildCTraderAuthorizationUrl, exchangeCTraderAuthorizationCode, resolveValidCTraderToken, verifyCTraderOAuthState, type CTraderAccount } from "../services/ctrader/CTraderOAuthService";
@@ -48,9 +48,11 @@ import {
 } from "./credentialValidation";
 import {
   createPersistence,
+  getPersistenceDegradationReason,
   PersistenceLayer,
   NotFoundError,
 } from "./repositories";
+import { PersistenceUnavailableError } from "./persistenceError";
 import { createGoatWorkflowStore, type GoatWorkflowRun } from "./GoatWorkflowStore";
 import { createGoatTeamStore, type GoatTeam, type GoatTeamCoordinationMode, type TeamDeploymentSettings, type TeamRiskParameters } from "./GoatTeamStore";
 import { createRoomMemberStore } from "./RoomMemberStore";
@@ -1944,6 +1946,20 @@ function handle(fn: (req: Request, res: Response) => Promise<void | Response>) {
         return;
       }
 
+      /**
+       * The datastore is not available. This is a configuration problem, not
+       * a caller mistake and not an internal fault, so it answers 503 with
+       * the REAL reason instead of an opaque 500. The operator can then see
+       * what to fix instead of guessing.
+       */
+      if (err instanceof PersistenceUnavailableError) {
+        console.error(
+          `[api] ${req.method} ${req.originalUrl ?? req.url} — ${err.message}`,
+        );
+        fail(res, 503, "PERSISTENCE_UNAVAILABLE", err.message);
+        return;
+      }
+
       const upstream = err instanceof ApiRequestError;
       fail(
         res,
@@ -2610,6 +2626,22 @@ apiRouter.get("/settings/status", handle(async (_req, res) => {
        */
       authNotConfiguredReason:
         mode === "firebase" ? undefined : getFirebaseAdminFailureReason(),
+      /**
+       * WHY THE DATASTORE IS DEGRADED, WHEN IT IS.
+       *
+       * The operator needs to know that the app is running without a durable
+       * datastore, and why. Without this the only symptom is a 500.
+       */
+      persistenceDegradedReason: getPersistenceDegradationReason(),
+      /**
+       * Whether dev auth is running, and whether it was EXPLICITLY asked
+       * for. It is only ever used when there is no Firebase Admin
+       * credential, so it can never downgrade a working deployment — but in
+       * production it accepts a caller-supplied identity, and the operator
+       * should be able to see that at a glance.
+       */
+      devAuthEnabled: mode === "dev",
+      devAuthExplicitlyEnabled: devAuthExplicitlyEnabled(),
     },
     /**
      * Shared market-state counters. `fetches` far below the number of GOATs

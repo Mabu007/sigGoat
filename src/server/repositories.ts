@@ -20,7 +20,8 @@ import path from 'path';
 import { FundGoat, TradingSkill, TradeSignal, MarketThesis, WakeEvent, UserProfile, Chat, ChatMessage } from '../types';
 import type { DailyMarketRecap } from '../services/daily-rolling/DailyMarketRecap';
 import { getFirebaseAdmin, getFirebaseAdminFailureReason } from './firebaseAdmin';
-import { isProductionRuntime } from './auth';
+import { devAuthExplicitlyEnabled, isProductionRuntime } from './auth';
+import { PersistenceUnavailableError } from './persistenceError';
 import type { Firestore } from 'firebase-admin/firestore';
 
 /* ------------------------------------------------------------------ */
@@ -199,7 +200,7 @@ export interface MessageRepository {
 }
 
 export interface PersistenceLayer {
-  mode: 'firestore' | 'file' | 'memory';
+  mode: 'firestore' | 'file' | 'memory' | 'unavailable';
   goats: GoatRepository;
   skills: SkillRepository;
   signals: SignalRepository;
@@ -223,6 +224,59 @@ export class NotFoundError extends Error {
     super(message);
     this.name = 'NotFoundError';
   }
+}
+
+/**
+ * A repository whose every operation refuses.
+ *
+ * It is a Proxy rather than a hand-written stub so that EVERY repository in
+ * this application is covered without a page of boilerplate, and so that a
+ * module which grabs a repository reference at load time (the credential
+ * vault does) can still be constructed. Only an actual CALL fails.
+ */
+function refusingRepository(reason: string): unknown {
+  return new Proxy(
+    {},
+    {
+      get(_target, property) {
+        // A thenable would be awaited by mistake; a symbol is an internal
+        // slot, not an operation.
+        if (property === 'then' || typeof property === 'symbol') return undefined;
+        return () => {
+          throw new PersistenceUnavailableError(reason);
+        };
+      },
+    },
+  );
+}
+
+/**
+ * A persistence layer that refuses every operation.
+ *
+ * It is deliberately NOT an in-memory layer: an in-memory layer would
+ * accept a write, report success, and lose the data at the end of the
+ * request. Refusing is the honest behaviour.
+ */
+export class UnavailablePersistence implements PersistenceLayer {
+  mode: 'unavailable' = 'unavailable';
+
+  constructor(private readonly reason: string) {}
+
+  private repository(): unknown {
+    return refusingRepository(this.reason);
+  }
+
+  get goats(): GoatRepository { return this.repository() as GoatRepository; }
+  get skills(): SkillRepository { return this.repository() as SkillRepository; }
+  get signals(): SignalRepository { return this.repository() as SignalRepository; }
+  get theses(): ThesisRepository { return this.repository() as ThesisRepository; }
+  get wakeEvents(): WakeEventRepository { return this.repository() as WakeEventRepository; }
+  get profiles(): UserProfileRepository { return this.repository() as UserProfileRepository; }
+  get keys(): KeyStore { return this.repository() as KeyStore; }
+  get recaps(): MarketRecapRepository { return this.repository() as MarketRecapRepository; }
+  get credentials(): CredentialRecordRepository { return this.repository() as CredentialRecordRepository; }
+  get chats(): ChatRepository { return this.repository() as ChatRepository; }
+  get messages(): MessageRepository { return this.repository() as MessageRepository; }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1562,18 +1616,47 @@ function getFirestoreDb(): Firestore | null {
  * signals would silently vanish between invocations — and an in-memory store
  * loses them the moment the instance is reclaimed.
  */
+/**
+ * May this runtime degrade its datastore?
+ *
+ * NO, by default. A production runtime without a working Firebase Admin
+ * credential must not quietly fall back to a file or to memory: the writes
+ * would be accepted and then lost.
+ *
+ * The ONE exception is an explicit dev-auth opt-in. An operator who sets
+ * `FUNDAGOAT_ALLOW_DEV_AUTH=1` has said, in effect, "run me without Firebase
+ * credentials". Honouring that is what makes the variable mean something;
+ * refusing it while the server then refuses to boot leaves the operator with
+ * an app that answers every request with a 500 and no explanation.
+ */
 function mustNotDegrade(): boolean {
+  if (devAuthExplicitlyEnabled()) return false;
   return isProductionRuntime();
 }
+
+/**
+ * Why the datastore is degraded, when it is.
+ *
+ * Reported on /api/settings/status so the operator sees the reason instead
+ * of a stack trace in a log they may not have open.
+ */
+let degradationReason: string | undefined;
+
+export function getPersistenceDegradationReason(): string | undefined {
+  return degradationReason;
+}
+
+export { PersistenceUnavailableError };
 
 export function createPersistence(dataDir?: string): PersistenceLayer {
   const db = getFirestoreDb();
   if (db) {
+    degradationReason = undefined;
     return new FirestorePersistence(db);
   }
 
   /**
-   * FAIL CLOSED IN PRODUCTION.
+   * FAIL CLOSED IN PRODUCTION — BUT NEVER AT THE COST OF NOT BOOTING.
    *
    * The previous chain was Firestore -> file -> memory, unconditionally. In
    * production that meant a missing or invalid service account produced a server
@@ -1581,23 +1664,55 @@ export function createPersistence(dataDir?: string): PersistenceLayer {
    * writes and then lost all of them. A user would create a GOAT, see it
    * succeed, and find it gone.
    *
-   * Production now refuses to degrade: the API layer reports the real cause and
-   * protected routes are unreachable, which is a loud, correct failure instead
-   * of a quiet data loss.
+   * The correction was to refuse to degrade. The mistake was in HOW it
+   * refused: it threw while the module was still loading, so the failure
+   * took down EVERY endpoint — including `/api/settings/status`, the one
+   * route whose entire purpose is to report why the server is unhappy. The
+   * operator saw an opaque 500 on every request and no explanation at all.
+   *
+   * Now the app always boots:
+   *   - with a working Firestore: nothing changes;
+   *   - with an explicit dev-auth opt-in: it degrades to file (or memory on
+   *     a read-only filesystem) and says so loudly;
+   *   - with neither: it degrades to an UNUSABLE persistence layer whose
+   *     every call refuses with a 503 and the real reason, so the failure is
+   *     visible, diagnosable, and impossible to mistake for working.
    */
+  const reason =
+    getFirebaseAdminFailureReason() ??
+    'No Firebase server credentials are configured for this deployment.';
+
   if (mustNotDegrade()) {
-    throw new Error(
-      'Firestore is unavailable and this is a production runtime, so ' +
-        'persistence cannot degrade to file or in-memory storage. ' +
-        (getFirebaseAdminFailureReason() ??
-          'Firebase Admin credentials are missing or could not be loaded.'),
+    degradationReason = reason;
+    console.error(
+      '[persistence] Firestore is unavailable and this is a production runtime, ' +
+        'so persistence cannot degrade to file or in-memory storage. Every ' +
+        'protected route will answer 503 until this is fixed. ' +
+        reason,
+    );
+    return new UnavailablePersistence(
+      'Firestore is unavailable and this deployment may not degrade to a ' +
+        'non-durable datastore. ' +
+        reason,
     );
   }
 
   try {
-    return new FilePersistence(dataDir);
+    const store = new FilePersistence(dataDir);
+    degradationReason = reason;
+    console.warn(
+      '[persistence] Firestore is unavailable; using file persistence. Data is ' +
+        'NOT durable across a redeploy or a cold start. ' +
+        reason,
+    );
+    return store;
   } catch (err) {
-    console.warn('[persistence] File persistence unavailable; using in-memory only.', err);
+    degradationReason = reason;
+    console.warn(
+      '[persistence] File persistence unavailable; using in-memory only. Data is ' +
+        'NOT durable. ' +
+        (err instanceof Error ? err.message : String(err)),
+    );
     return new InMemoryPersistence();
   }
 }
