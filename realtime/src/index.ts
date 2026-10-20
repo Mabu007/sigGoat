@@ -76,6 +76,31 @@ function corsHeaders(origin: string | null, allowed: string[]): Record<string, s
   return headers;
 }
 
+/**
+ * IS THIS SOCKET COMING FROM THE APP?
+ *
+ * The Firebase ID token is the credential, so a socket is already
+ * authenticated. The origin check is defence in depth: it stops a page on
+ * another site from opening a room socket with a token it somehow obtained,
+ * and it costs one comparison.
+ *
+ * A request with NO origin header is allowed: that is a non-browser client
+ * (a test harness, a server), and it still has to present a valid token.
+ */
+function originAllowed(request: Request, allowedOrigins: string[]): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  // A local development server is always allowed.
+  try {
+    const url = new URL(origin);
+    if (url.hostname === "localhost" || url.hostname === "127.0.0.1") return true;
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -144,6 +169,18 @@ async function handleSocketUpgrade(
   url: URL,
   roomId: string,
 ): Promise<Response> {
+  const allowedOrigins = (env.ROOM_API_ORIGIN ?? "")
+    .split(",")
+    .map((value) => value.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+
+  if (!originAllowed(request, allowedOrigins)) {
+    return json(
+      { error: { code: "ORIGIN_NOT_ALLOWED", message: "This socket may only be opened by the app." } },
+      403,
+    );
+  }
+
   const token = url.searchParams.get("token") ?? "";
   if (!token) {
     return json(
