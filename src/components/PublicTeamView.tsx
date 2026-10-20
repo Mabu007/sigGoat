@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Clock, PanelRightClose, PanelRightOpen, Settings, X, Save, Trash2, Users, Globe, LockKeyhole, ChevronDown, Radio, Mic, Square } from 'lucide-react';
+import { ArrowLeft, Clock, PanelRightClose, PanelRightOpen, Settings, X, Save, Trash2, Users, Globe, LockKeyhole, ChevronDown, Radio, Mic, MicOff, Square, SlidersHorizontal, Video } from 'lucide-react';
 import { RoomChartPanel } from './room-chart/RoomChartPanel';
-import RoomVoiceControls from './RoomVoiceControls';
+import { RoomVoiceControlsView } from './RoomVoiceControls';
 import RecordingControls from './RecordingControls';
 import { RoomCoverPicker } from './RoomCoverPicker';
 import {
@@ -114,7 +114,23 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [marketSymbol, setMarketSymbol] = useState('');
   const [dataMode, setDataMode] = useState('');
   const [indicators, setIndicators] = useState<RoomIndicators | null>(null);
-  const [timeframe, setTimeframe] = useState('15m');
+  /**
+   * THE PERSONAL CHART.
+   *
+   * `chartSync` decides whether the room's shared chart or this viewer's own
+   * chart is on screen. These two values are the personal one; they are used
+   * only while sync is OFF, and they are seeded from the shared chart the
+   * moment sync is switched off so the first personal frame is not a jump.
+   */
+  const [chartSync, setChartSync] = useState(true);
+  const [personalSymbol, setPersonalSymbol] = useState('');
+  const [personalTimeframe, setPersonalTimeframe] = useState('15m');
+  /** The collapsible chart tool strip. Closed by default: it must not cost chart height. */
+  const [toolsOpen, setToolsOpen] = useState(false);
+  /** Which header popover is open. Only one at a time. */
+  const [headerPopover, setHeaderPopover] = useState<'voice' | 'record' | null>(null);
+  /** The container of the header popovers, so an outside click can close them. */
+  const headerActionsRef = useRef<HTMLDivElement | null>(null);
   const [panel, setPanel] = useState<RoomPanelId>('chat');
   const [streamVisible, setStreamVisible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -226,6 +242,31 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
 
   useEffect(() => { void loadRoomDetail(); }, [loadRoomDetail]);
 
+  /**
+   * A HEADER POPOVER CLOSES THE WAY POPOVERS CLOSE.
+   *
+   * An outside click or Escape dismisses it. It does NOT change anything
+   * about the voice session or the recording: those are owned by the hooks
+   * in this component, so closing the panel never ends them.
+   */
+  useEffect(() => {
+    if (!headerPopover) return;
+    const onPointer = (event: MouseEvent) => {
+      if (headerActionsRef.current && !headerActionsRef.current.contains(event.target as Node)) {
+        setHeaderPopover(null);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setHeaderPopover(null);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [headerPopover]);
+
   const realtime = useRoomRealtime({
     roomId,
     enabled: Boolean(roomId) && signedIn && realtimeStatus?.realtime.configured === true,
@@ -235,6 +276,68 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
 
   const canManageRoom = Boolean(roomDetail?.canManage ?? data?.team.owner);
   const canDrawRoom = Boolean(roomDetail?.canDraw ?? roomIdentity?.isMember);
+
+  /**
+   * THE SHARED CHART AND THE PERSONAL CHART
+   * ----------------------------------------
+   * `sharedSymbol` / `sharedTimeframe` are what the ROOM is on.
+   * `activeMarket` / `activeTimeframe` are what THIS VIEWER is looking at,
+   * which is the shared pair while Chart Sync is on and the viewer's own
+   * pair while it is off.
+   */
+  const sharedSymbol =
+    (realtime.connected && realtime.symbol) ||
+    roomDetail?.chart.symbol ||
+    data?.team.asset ||
+    '';
+  const sharedTimeframe =
+    (realtime.connected && realtime.timeframe) || roomDetail?.chart.timeframe || '15m';
+
+  const activeMarket = chartSync ? sharedSymbol : (personalSymbol || sharedSymbol);
+  const activeTimeframe = chartSync ? sharedTimeframe : personalTimeframe;
+
+
+  /**
+   * CHART SYNC, AND WHAT IT ACTUALLY MEANS RIGHT NOW.
+   *
+   * The toggle is never allowed to lie. If the realtime coordinator is not
+   * connected — because the Worker is not deployed, because the socket is
+   * reconnecting, or because the member is not signed in — the state says
+   * SYNC UNAVAILABLE, not SYNCED.
+   */
+  const realtimeReady = realtime.connected && realtimeStatus?.realtime.configured === true;
+  const syncState: 'synced' | 'personal' | 'unavailable' = !chartSync
+    ? 'personal'
+    : realtimeReady
+      ? 'synced'
+      : 'unavailable';
+  const syncStateLabel =
+    syncState === 'synced' ? 'SYNCED WITH ROOM'
+      : syncState === 'personal' ? 'PERSONAL VIEW'
+        : 'SYNC UNAVAILABLE';
+  const syncExplanation =
+    syncState === 'synced'
+      ? 'You are following the room’s shared chart. Turn sync off to look at your own instrument and timeframe.'
+      : syncState === 'personal'
+        ? 'You are looking at your own chart. Nothing you change here is shared with the room, and you stay a member.'
+        : realtimeStatus && !realtimeStatus.realtime.configured
+          ? 'Live sync is not configured on this server, so the room’s shared chart is unavailable. You can still use your own chart.'
+          : 'The room’s live connection is not established, so the shared chart cannot be followed right now.';
+
+  /**
+   * SWITCHING SYNC ON AND OFF.
+   *
+   * Turning sync OFF starts from where the shared chart is RIGHT NOW, so
+   * the first personal frame is a continuation rather than a jump. Turning
+   * it back ON returns to the room's chart immediately.
+   */
+  const toggleChartSync = useCallback((next: boolean) => {
+    if (!next) {
+      setPersonalSymbol(sharedSymbol);
+      setPersonalTimeframe(sharedTimeframe);
+    }
+    setChartSync(next);
+  }, [sharedSymbol, sharedTimeframe]);
 
   const voice = useRoomVoice({
     roomId,
@@ -494,19 +597,6 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   /* ------------------------------------------------------------------ */
   /* The chart                                                            */
   /* ------------------------------------------------------------------ */
-
-  /**
-   * THE INSTRUMENT THE ROOM IS LOOKING AT.
-   *
-   * The room has one instrument, and the leader decides which. When the
-   * realtime coordinator is connected its value wins, because that is the
-   * value every other member is actually looking at right now. Until it
-   * connects, the room's own stored instrument is used.
-   */
-  const roomInstrument = roomDetail?.chart.symbol || data?.team.asset || '';
-  const activeMarket = (realtime.connected && realtime.symbol) || roomInstrument;
-  const activeTimeframe =
-    (realtime.connected && realtime.timeframe) || roomDetail?.chart.timeframe || timeframe;
 
   useEffect(() => {
     if (!activeMarket) {
@@ -768,6 +858,14 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   </div></main>;
 
   return <main className={`trade-room-minimal${streamVisible ? '' : ' is-stream-hidden'}`}>
+    {/**
+     * THE NAVIGATION ROW.
+     *
+     * One row: where you came from, whose room this is, the room's clock and
+     * head count, the room-level actions (voice, recording, the live
+     * session) and the chat toggle. Nothing here belongs to the chart, and
+     * nothing here is duplicated below.
+     */}
     <div className="trade-room-topbar">
       <button type="button" className="trade-room-back" onClick={onBack}>
         <ArrowLeft size={14} strokeWidth={2.5} aria-hidden="true" />
@@ -779,7 +877,12 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           <span className="trade-room-live-badge" role="status">
             <Radio size={11} strokeWidth={2.6} aria-hidden="true" />
             Live session
-            {sessionRecording && <span className="trade-room-recording-badge"><span className="trade-room-recording-dot" aria-hidden="true" />Recording</span>}
+          </span>
+        )}
+        {sessionRecording && (
+          <span className="trade-room-rec-badge" role="status">
+            <span className="trade-room-recording-dot" aria-hidden="true" />
+            REC
           </span>
         )}
         {roomDetail?.coverUrl && (
@@ -806,49 +909,8 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           </div>
         )}
       </dl>
-      <button
-        type="button"
-        className="trade-room-stream-toggle"
-        onClick={() => setStreamVisible(visible => !visible)}
-        aria-controls="trade-room-stream"
-        aria-expanded={streamVisible}
-        aria-label={streamVisible ? 'Hide chat stream' : 'Show chat stream'}
-      >
-        <span>{streamVisible ? 'Hide chat' : 'Show chat'}</span>
-        {streamVisible
-          ? <PanelRightClose size={14} strokeWidth={2.5} aria-hidden="true" />
-          : <PanelRightOpen size={14} strokeWidth={2.5} aria-hidden="true" />}
-      </button>
-    </div>
-    <section className="trade-room-stage" aria-label="Market chart">
-      <header className="sg-room-header">
-        <div className="sg-room-instrument">
-          <div className="sg-room-symbol-line">
-            <span className="sg-room-symbol">{activeMarket || 'No instrument yet'}</span>
-            {dataMode && <span className="sg-room-provider">{dataMode.toUpperCase() === 'DEMO_REFERENCE' ? 'REFERENCE' : dataMode.toUpperCase()}</span>}
-          </div>
-          <div className="sg-room-price-row">
-            <span className="sg-room-price">{quoteHasPrice(marketQuote) ? formatPrice(marketQuote!.mid, priceDigits) : '—'}</span>
-          </div>
-          <div className={'sg-room-status' + (quoteStatus === 'live' ? ' is-live' : quoteStatus === 'stale' ? ' is-stale' : ' is-unavailable')}>
-            {quoteStatusText}
-          </div>
-        </div>
-        <div className="sg-room-timeframes" role="group" aria-label="Chart timeframe">
-          {ROOM_CHART_TIMEFRAMES.map(frame => <button
-            type="button"
-            key={frame}
-            onClick={() => {
-              setTimeframe(frame);
-              // A leader's timeframe is the ROOM's timeframe, so it is
-              // broadcast. A member's is only their own view.
-              if (canManageRoom) realtime.setTimeframe(frame);
-            }}
-            aria-pressed={activeTimeframe === frame}
-            className="sg-room-timeframe"
-          >{frame}</button>)}
-        </div>
 
+      <div className="trade-room-topbar-actions" ref={headerActionsRef}>
         {canManageRoom && (
           <div className="sg-room-session-controls" role="group" aria-label="Live session">
             {liveSession ? (
@@ -875,46 +937,220 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           </div>
         )}
 
-        {data.team.owner && (
-          <div className="sg-room-instrument-picker">
-            <label htmlFor="room-instrument" className="sr-only">Instrument on this room's chart</label>
-            <select
-              id="room-instrument"
-              value={activeMarket}
-              disabled={assetsLoading || assetSaving}
-              onChange={event => void changeRoomAsset(event.target.value)}
-              onFocus={() => { if (!assets.length) void loadAssets(); }}
-              className="sg-room-instrument-select"
+        {/**
+         * VOICE.
+         *
+         * The microphone button opens the existing voice controls. It does
+         * NOT join the voice session on the first click: joining asks for
+         * the microphone, and that deserves its own explicit action inside
+         * the panel.
+         *
+         * The hook lives in this component, not in the popover, so closing
+         * the popover never takes the voice session down with it.
+         */}
+        <div className="trade-room-popover-wrap">
+          <button
+            type="button"
+            className={'trade-room-icon-button' + (voice.inVoice ? (voice.muted ? ' is-muted' : ' is-live') : '')}
+            onClick={() => setHeaderPopover(current => (current === 'voice' ? null : 'voice'))}
+            aria-expanded={headerPopover === 'voice'}
+            aria-haspopup="dialog"
+            title={voice.inVoice ? (voice.muted ? 'You are in voice, muted' : 'You are live in voice') : 'Room voice'}
+            aria-label={voice.inVoice ? (voice.muted ? 'Room voice — muted' : 'Room voice — live') : 'Room voice'}
+          >
+            {/**
+             * The icon says whether you are IN voice, and the dot says
+             * whether your microphone is live. A crossed-out microphone for
+             * somebody who never joined would be a lie about their state.
+             */}
+            {voice.inVoice && voice.muted
+              ? <MicOff size={15} strokeWidth={2.2} aria-hidden="true" />
+              : <Mic size={15} strokeWidth={2.2} aria-hidden="true" />}
+            <span className="trade-room-icon-state" data-state={voice.inVoice ? (voice.muted ? 'muted' : 'live') : 'idle'} aria-hidden="true" />
+          </button>
+          {headerPopover === 'voice' && (
+            <div className="trade-room-popover" role="dialog" aria-label="Room voice">
+              <RoomVoiceControlsView
+                voice={voice}
+                currentUid={currentUser?.uid ?? null}
+                canUseVoice={Boolean(roomDetail?.canUseVoice ?? roomIdentity?.isMember)}
+              />
+            </div>
+          )}
+        </div>
+
+        {/**
+         * RECORDING.
+         *
+         * The icon opens the recording panel. It does not start a recording
+         * by itself: starting one opens the browser's own screen-capture
+         * picker, and that has to be a deliberate click on "Record".
+         */}
+        {canManageRoom && (
+          <div className="trade-room-popover-wrap">
+            <button
+              type="button"
+              className={'trade-room-icon-button' + (recorder.recording ? ' is-recording' : '')}
+              onClick={() => setHeaderPopover(current => (current === 'record' ? null : 'record'))}
+              aria-expanded={headerPopover === 'record'}
+              aria-haspopup="dialog"
+              title={recorder.recording ? 'Recording this session' : 'Record this session'}
+              aria-label={recorder.recording ? 'Session recording — recording' : 'Session recording'}
             >
-              {!assets.length && <option value="">{activeMarket || 'Choose an instrument…'}</option>}
-              {assets.map(asset => <option key={asset.symbol} value={asset.symbol}>{asset.symbol} · {asset.name}</option>)}
-            </select>
-            <ChevronDown size={13} strokeWidth={2.2} aria-hidden="true" />
+              {recorder.recording
+                ? <span className="trade-room-recording-dot" aria-hidden="true" />
+                : <Video size={15} strokeWidth={2.2} aria-hidden="true" />}
+            </button>
+            {headerPopover === 'record' && (
+              <div className="trade-room-popover" role="dialog" aria-label="Session recording">
+                <RecordingControls recorder={recorder} canRecord />
+              </div>
+            )}
           </div>
         )}
 
-        {data.team.owner && (
-          <button type="button" className="sg-room-settings-button sg-room-settings-button-public" onClick={() => void openRoomSettings()} aria-label="Room settings" title="Room settings"><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
-        )}
+        <button
+          type="button"
+          className="trade-room-stream-toggle"
+          onClick={() => setStreamVisible(visible => !visible)}
+          aria-controls="trade-room-stream"
+          aria-expanded={streamVisible}
+          aria-label={streamVisible ? 'Hide chat stream' : 'Show chat stream'}
+        >
+          <span>{streamVisible ? 'Hide chat' : 'Show chat'}</span>
+          {streamVisible
+            ? <PanelRightClose size={14} strokeWidth={2.5} aria-hidden="true" />
+            : <PanelRightOpen size={14} strokeWidth={2.5} aria-hidden="true" />}
+        </button>
+      </div>
+    </div>
+    <section className="trade-room-stage" aria-label="Market chart">
+      {/**
+       * THE ASSET AND CONTROL HEADER.
+       *
+       * The asset symbol and the live price live here and ONLY here — the
+       * chart panel used to repeat them, and the timeframe used to exist in
+       * two places. One symbol, one price, one timeframe selector.
+       */}
+      <header className="sg-room-header">
+        <div className="sg-room-instrument">
+          <div className="sg-room-symbol-line">
+            <span className="sg-room-symbol">{activeMarket || 'No instrument yet'}</span>
+            {dataMode && <span className="sg-room-provider">{dataMode.toUpperCase() === 'DEMO_REFERENCE' ? 'REFERENCE' : dataMode.toUpperCase()}</span>}
+            {chartSync && realtime.connected && (
+              <span className="sg-room-shared-tag" title="This chart is the room's shared chart">
+                SHARED
+              </span>
+            )}
+          </div>
+          <div className="sg-room-price-row">
+            <span className="sg-room-price">{quoteHasPrice(marketQuote) ? formatPrice(marketQuote!.mid, priceDigits) : '—'}</span>
+            <span className={'sg-room-quote' + (quoteStatus === 'live' ? ' is-live' : quoteStatus === 'stale' ? ' is-stale' : ' is-unavailable')}>
+              {quoteStatus === 'live' && <span className="sg-room-quote-dot" aria-hidden="true" />}
+              <span className="sr-only">{quoteStatus === 'live' ? 'Live quote. ' : 'Quote status. '}</span>
+              {quoteStatus === 'live' ? 'refreshes every 5 seconds' : quoteStatusText}
+            </span>
+          </div>
+        </div>
+
+        <div className="sg-room-controls">
+          <div className="sg-room-timeframes" role="group" aria-label="Chart timeframe">
+            {ROOM_CHART_TIMEFRAMES.map(frame => <button
+              type="button"
+              key={frame}
+              onClick={() => {
+                if (chartSync) {
+                  // A leader's timeframe is the ROOM's timeframe, so it is
+                  // broadcast. A follower follows it.
+                  if (canManageRoom) realtime.setTimeframe(frame);
+                  return;
+                }
+                // Sync off: this is the viewer's own timeframe and it goes
+                // to nobody else.
+                setPersonalTimeframe(frame);
+              }}
+              disabled={chartSync && !canManageRoom}
+              aria-pressed={activeTimeframe === frame}
+              className="sg-room-timeframe"
+            >{frame}</button>)}
+          </div>
+
+          {/**
+           * CHART SYNC.
+           *
+           * ON  — the viewer follows the room: the leader's asset, the
+           *        leader's timeframe and the room's drawings. The viewer
+           *        cannot change the shared chart.
+           * OFF — the viewer keeps their OWN asset, timeframe and drawings.
+           *        Nothing they do reaches the room, and they stay a member:
+           *        chat and voice are untouched.
+           *
+           * It is a local viewing preference, not a way around the room's
+           * permissions: the shared chart is still guarded by the server.
+           */}
+          <button
+            type="button"
+            className={'sg-room-sync' + (chartSync ? ' is-on' : ' is-off')}
+            onClick={() => toggleChartSync(!chartSync)}
+            aria-pressed={chartSync}
+            title={syncExplanation}
+          >
+            <span className="sg-room-sync-dot" data-state={syncState} aria-hidden="true" />
+            <span className="sg-room-sync-label">Chart Sync</span>
+            <span className="sg-room-sync-state">{syncStateLabel}</span>
+          </button>
+
+          <button
+            type="button"
+            className={'sg-room-tools-button' + (toolsOpen ? ' is-open' : '')}
+            onClick={() => setToolsOpen(open => !open)}
+            aria-expanded={toolsOpen}
+            aria-controls="room-chart-tools"
+            title="Chart tools and indicators"
+          >
+            <SlidersHorizontal size={13} strokeWidth={2.2} aria-hidden="true" />
+            <span>Tools</span>
+          </button>
+
+          {/**
+           * THE ASSET PICKER.
+           *
+           * With sync ON it changes the ROOM's instrument, and only a
+           * leader may do that. With sync OFF it changes the viewer's own
+           * instrument, which anybody may do for themselves.
+           */}
+          {(chartSync ? canManageRoom : signedIn) && (
+            <div className="sg-room-instrument-picker">
+              <label htmlFor="room-instrument" className="sr-only">
+                {chartSync ? 'Instrument on this room’s chart' : 'Instrument on your chart'}
+              </label>
+              <select
+                id="room-instrument"
+                value={activeMarket}
+                disabled={assetsLoading || assetSaving}
+                onChange={event => {
+                  const next = event.target.value;
+                  if (!next) return;
+                  if (chartSync) void changeRoomAsset(next);
+                  else setPersonalSymbol(next);
+                }}
+                onFocus={() => { if (!assets.length) void loadAssets(); }}
+                className="sg-room-instrument-select"
+              >
+                {!assets.length && <option value="">{activeMarket || 'Choose an instrument…'}</option>}
+                {assets.map(asset => <option key={asset.symbol} value={asset.symbol}>{asset.symbol} · {asset.name}</option>)}
+              </select>
+              <ChevronDown size={13} strokeWidth={2.2} aria-hidden="true" />
+            </div>
+          )}
+
+          {data.team.owner && (
+            <button type="button" className="sg-room-settings-button sg-room-settings-button-public" onClick={() => void openRoomSettings()} aria-label="Room settings" title="Room settings"><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
+          )}
+        </div>
       </header>
       {settingsError && <div className="sg-room-environment-notice" role="status">{settingsError}</div>}
       {sessionError && <div className="sg-room-environment-notice" role="alert">{sessionError}</div>}
-      <div className="trade-room-live-controls">
-        <RoomVoiceControls
-          roomId={roomId}
-          displayName={viewerName}
-          canUseVoice={Boolean(roomDetail?.canUseVoice ?? roomIdentity?.isMember)}
-          showParticipants={false}
-        />
-        {canManageRoom && (
-          <RecordingControls recorder={recorder} canRecord />
-        )}
-        {realtimeStatus && !realtimeStatus.realtime.configured && (
-          <span className="trade-room-live-hint">
-            Live sync is not configured on this server, so the chart and drawings are not shared yet.
-          </span>
-        )}
-      </div>
       <div className="trade-room-chart">
         {candles.length && candlesTimeframe === activeTimeframe ? <RoomChartPanel
           candles={candles}
@@ -924,25 +1160,15 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           roomName={data.team.name}
           digits={priceDigits}
           dataMode={dataMode}
-          sharedSymbol={activeMarket}
-          sharedTimeframe={activeTimeframe}
+          chartMode={chartSync ? 'shared' : 'local'}
           canManageChart={canManageRoom}
-          canDraw={canDrawRoom}
-          drawings={realtime.drawings}
-          onDrawingCreate={realtime.createDrawing}
-          onDrawingUpdate={realtime.updateDrawing}
-          onDrawingRemove={realtime.removeDrawing}
-          onDrawingsClear={realtime.clearDrawings}
-          onSharedSymbolChange={symbol => { if (canManageRoom) realtime.setSymbol(symbol); }}
-          onSharedTimeframeChange={frame => { if (canManageRoom) realtime.setTimeframe(frame); }}
-          connectionState={realtime.status === 'open' ? 'open' : realtime.status === 'connecting' ? 'connecting' : realtime.status === 'reconnecting' ? 'reconnecting' : realtime.status === 'error' ? 'error' : 'closed'}
-          connectionLabel={
-            realtime.status === 'open' ? 'Synced with the room'
-              : realtime.status === 'connecting' ? 'Connecting…'
-                : realtime.status === 'reconnecting' ? 'Reconnecting…'
-                  : realtime.status === 'error' ? 'Realtime unavailable'
-                    : 'Not connected'
-          }
+          canDraw={chartSync ? canManageRoom : canDrawRoom}
+          drawings={chartSync ? realtime.drawings : []}
+          onDrawingCreate={chartSync ? realtime.createDrawing : undefined}
+          onDrawingUpdate={chartSync ? realtime.updateDrawing : undefined}
+          onDrawingRemove={chartSync ? realtime.removeDrawing : undefined}
+          onDrawingsClear={chartSync ? realtime.clearDrawings : undefined}
+          toolsOpen={toolsOpen}
           userId={currentUser?.uid}
           userName={viewerName}
         /> : <div className="trade-room-chart-empty"><span>{marketError || (candlesTimeframe !== activeTimeframe ? 'Loading ' + activeTimeframe + ' candles…' : 'Waiting for candle history')}</span></div>}

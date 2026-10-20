@@ -69,6 +69,8 @@ export interface RoomChartToolbarProps {
   onClearAll: () => void;
   /** The latest value of every active indicator. */
   legend: RoomChartLegendEntry[];
+  /** Extra classes for the strip's root element. */
+  className?: string;
 }
 
 const TOOL_BUTTONS: Array<{
@@ -171,6 +173,7 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
   onUndo,
   onClearAll,
   legend,
+  className,
 }) => {
   const [confirmingClear, setConfirmingClear] = useState(false);
   /** The half-typed numbers, kept per field so the cursor is never fought. */
@@ -230,7 +233,7 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
     <div
       role="toolbar"
       aria-label="Chart drawing tools and indicators"
-      className="flex flex-wrap items-center gap-1.5 border-b border-line bg-surface px-2 py-1.5"
+      className={`flex flex-wrap items-center gap-1.5 ${className ?? ''}`}
     >
       {TOOL_BUTTONS.map(entry => {
         const Icon = entry.icon;

@@ -713,6 +713,25 @@
   background: var(--color-accent-soft);
 }
 
+/* The history-window hint. It had NO rule, so it inherited the body text
+   colour and rendered as a bright line across the top of the plot. It is a
+   quiet status, so it is a small muted badge in the corner, out of the way
+   of the candles and the crosshair readout. */
+.sg-pulse-history-hint {
+  position: absolute;
+  z-index: 3;
+  left: 12px;
+  bottom: 26px;
+  padding: 2px 7px;
+  border: 1px solid var(--tr-line-soft);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-surface) 78%, transparent);
+  color: var(--color-fg-subtle);
+  font: 500 9px/1.4 var(--tr-sans);
+  letter-spacing: .01em;
+  pointer-events: none;
+}
+
 /* -------------------------------------------------------------------------
    7. Chart chrome (TradingViewLightweightChart)
    ------------------------------------------------------------------------- */
@@ -747,8 +766,8 @@
   justify-content: center;
   overflow: hidden;
   padding: 24px;
-  color: color-mix(in srgb, var(--color-fg) 4%, transparent);
-  font: 800 clamp(24px, 4.6vw, 64px)/1.1 var(--tr-sans);
+  color: color-mix(in srgb, var(--color-fg) 2.4%, transparent);
+  font: 800 clamp(20px, 3.4vw, 48px)/1.1 var(--tr-sans);
   letter-spacing: .13em;
   text-align: center;
   text-transform: uppercase;
@@ -922,22 +941,41 @@
   }
 
   .trade-room-minimal.is-stream-hidden { grid-template-rows: auto minmax(0, 1fr); }
-  .trade-room-topbar { flex-wrap: wrap; row-gap: 6px; padding: 2px; }
+  /* ONE row: back, the room's name, the figures, the room actions. The
+     name is the identity, so it stays on the bar instead of being pushed
+     onto a row of its own. */
+  .trade-room-topbar { flex-wrap: nowrap; row-gap: 6px; gap: 6px; padding: 2px; }
   .trade-room-back, .trade-room-stream-toggle { min-height: 32px; padding: 0 9px; font-size: 11px; }
+  /* The chat toggle keeps its icon and its accessible name; the word does
+     not fit and does not need to. */
+  .trade-room-stream-toggle > span { display: none; }
+  .trade-room-stream-toggle { padding: 0 8px; }
 
-  /* The room name yields to the stats, and the "trades" word yields to the
-     number: on a phone the figures matter more than their labels. */
-  .trade-room-identity { order: 3; flex: 1 0 100%; padding: 0 2px; }
+  .trade-room-identity { order: 1; flex: 1 1 auto; min-width: 0; padding: 0 2px; }
   .trade-room-identity-name { font-size: 12px; }
-  .trade-room-stats { order: 2; flex: 0 1 auto; margin-left: auto; }
+  .trade-room-stats { order: 2; flex: 0 0 auto; margin-left: 0; }
+  .trade-room-topbar-actions { order: 3; flex: 0 0 auto; margin-left: auto; }
+  .trade-room-stat-clock { display: none; }
   /* The currency marks the balance as money; only the trades word goes. */
-  .trade-room-stat-unit:not(.trade-room-stat-currency) { display: none; }
+  .trade-room-stat-unit:not(.tr-room-stat-currency) { display: none; }
   .trade-room-stat { padding: 4px 7px; }
+  .trade-room-cover-thumb { display: none; }
 
-  .sg-room-header { gap: 8px; padding: 9px 11px; }
+  .sg-room-header { gap: 6px 10px; padding: 6px 9px; }
   .sg-room-price { font-size: 19px; }
-  .sg-room-timeframes { width: 100%; justify-content: space-between; }
-  .sg-room-timeframe { flex: 1; min-width: 0; padding: 0 4px; }
+  /* The timeframe selector stays a compact control group. Stretching it
+     across the width would rebuild the second toolbar the redesign removed. */
+  .sg-room-timeframes { width: auto; }
+  .sg-room-timeframe { min-width: 28px; padding: 0 4px; font-size: 10px; }
+  /* The controls share ONE row with the timeframes. The sync STATE is a
+     word on the desktop and a shape on a phone: the dot is a filled disc
+     when it follows the room, a hollow ring for a personal view and an
+     amber disc when the shared chart is unavailable, so the state is never
+     carried by colour alone. */
+  .sg-room-controls { width: 100%; justify-content: flex-start; gap: 6px; }
+  .sg-room-sync { padding: 0 8px; }
+  .sg-room-sync-state { display: none; }
+  .sg-room-tools-button { padding: 0 8px; }
   .sg-pulse-watermark { white-space: normal; overflow-wrap: anywhere; }
   .sg-pulse-ohlc { top: 7px; left: 23px; gap: 6px; font-size: 9px; }
   .trade-room-stream-item { padding: 12px; }
@@ -968,11 +1006,16 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .sg-room-header { gap: 8px; padding: 8px 12px; }
+  .sg-room-header { gap: 6px 10px; padding: 6px 10px; }
   .sg-room-price { font-size: 19px; }
   .sg-room-status { display: none; }
   .sg-room-timeframes { padding: 2px; }
-  .sg-room-timeframe { min-height: 26px; padding: 0 7px; font-size: 10px; }
+  .sg-room-timeframe { min-height: 26px; padding: 0 6px; font-size: 10px; }
+  /* On a narrow screen the controls wrap under the asset block instead of
+     becoming a second full-width toolbar. */
+  .sg-room-controls { width: 100%; justify-content: flex-start; gap: 6px; }
+  .sg-room-sync-state { display: none; }
+  .sg-room-sync { padding: 0 8px; }
 }
 
 /* A small phone in portrait: the quote-freshness line is the first thing to
@@ -2284,23 +2327,6 @@
   background-size: cover;
 }
 
-/* The strip that holds the voice controls and the recorder. */
-.trade-room-live-controls {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--tr-line);
-  background: var(--color-surface);
-}
-
-.trade-room-live-hint {
-  color: var(--color-fg-subtle);
-  font: 500 10px/1.4 var(--tr-sans);
-}
-
 /* Start / end session. */
 .sg-room-session-controls {
   display: inline-flex;
@@ -2331,4 +2357,254 @@
   border-color: color-mix(in srgb, var(--color-negative) 45%, transparent);
   background: var(--color-negative-soft);
   color: var(--color-negative);
+}
+
+/* ================================================================== */
+/* PREMIUM ROOM HEADER — asset, controls, sync, tools, popovers        */
+/* ================================================================== */
+
+/*
+ * The room header is ONE row of information and ONE row of controls. The
+ * chart is the hero, so every control that used to live in its own strip
+ * has been folded into the header, and the tool strip is collapsible.
+ */
+
+/* --- the header's control cluster ------------------------------------ */
+.sg-room-controls {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The asset block keeps the left; the controls keep the right. */
+.sg-room-header {
+  gap: 10px 14px;
+  padding: 8px 12px;
+}
+
+/* --- shared tag: this is the room's chart, not a personal one -------- */
+.sg-room-shared-tag {
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 38%, transparent);
+  border-radius: 4px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+  font: 800 8px/1 var(--tr-sans);
+  letter-spacing: .12em;
+}
+
+/* --- the live quote, next to the price ------------------------------ */
+.sg-room-price-row {
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.sg-room-quote {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.3 var(--tr-sans);
+  white-space: nowrap;
+}
+
+.sg-room-quote-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-fg-subtle);
+}
+
+.sg-room-quote.is-live { color: var(--color-positive); }
+.sg-room-quote.is-live .sg-room-quote-dot {
+  background: var(--color-positive);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-positive) 18%, transparent);
+}
+.sg-room-quote.is-stale { color: var(--color-warning); }
+.sg-room-quote.is-stale .sg-room-quote-dot { background: var(--color-warning); }
+.sg-room-quote.is-unavailable { color: var(--color-negative); }
+.sg-room-quote.is-unavailable .sg-room-quote-dot { background: var(--color-negative); }
+
+/* --- chart sync ------------------------------------------------------ */
+.sg-room-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--tr-line);
+  border-radius: 8px;
+  background: var(--color-raised);
+  color: var(--color-fg-muted);
+  font: 700 10px/1 var(--tr-sans);
+  cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease, background-color 160ms ease;
+}
+
+.sg-room-sync:hover { color: var(--color-fg); border-color: var(--color-line-strong); }
+.sg-room-sync:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+
+.sg-room-sync-label { white-space: nowrap; }
+
+.sg-room-sync-state {
+  padding-left: 6px;
+  border-left: 1px solid var(--tr-line);
+  color: var(--color-fg-subtle);
+  font: 800 8px/1 var(--tr-sans);
+  letter-spacing: .1em;
+  white-space: nowrap;
+}
+
+.sg-room-sync.is-on { border-color: color-mix(in srgb, var(--color-accent) 40%, transparent); }
+.sg-room-sync.is-on .sg-room-sync-state { color: var(--color-accent-text); }
+
+.sg-room-sync-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-fg-subtle);
+}
+
+.sg-room-sync-dot[data-state='synced'] {
+  background: var(--color-positive);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-positive) 18%, transparent);
+}
+.sg-room-sync-dot[data-state='unavailable'] {
+  background: var(--color-warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-warning) 18%, transparent);
+}
+/* A personal view is a HOLLOW ring, not a filled dot. The shape survives a
+   greyscale screen and a colour-blind reader, so the state is never carried
+   by colour alone. */
+.sg-room-sync-dot[data-state='personal'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--color-fg-subtle);
+}
+
+/* --- the tools button ------------------------------------------------ */
+.sg-room-tools-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--tr-line);
+  border-radius: 8px;
+  background: var(--color-raised);
+  color: var(--color-fg-muted);
+  font: 700 10px/1 var(--tr-sans);
+  cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease, background-color 160ms ease;
+}
+
+.sg-room-tools-button:hover { color: var(--color-fg); border-color: var(--color-line-strong); }
+.sg-room-tools-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.sg-room-tools-button.is-open {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+
+/* --- the collapsible tool strip -------------------------------------- */
+/*
+ * It sits directly beneath the header and only exists while it is open,
+ * so it never permanently consumes chart height.
+ */
+.room-chart-tools-strip {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--tr-line);
+  background: var(--color-surface);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.room-chart-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 8px;
+}
+
+/* --- header icon buttons and their popovers -------------------------- */
+.trade-room-topbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.trade-room-popover-wrap { position: relative; display: inline-flex; }
+
+.trade-room-icon-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--tr-line);
+  border-radius: 8px;
+  background: var(--color-raised);
+  color: var(--color-fg-muted);
+  cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease, background-color 160ms ease;
+}
+
+.trade-room-icon-button:hover { color: var(--color-fg); border-color: var(--color-line-strong); }
+.trade-room-icon-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.trade-room-icon-button.is-live { color: var(--color-positive); border-color: color-mix(in srgb, var(--color-positive) 40%, transparent); }
+.trade-room-icon-button.is-muted { color: var(--color-warning); }
+.trade-room-icon-button.is-recording { color: var(--color-negative); border-color: color-mix(in srgb, var(--color-negative) 45%, transparent); }
+
+.trade-room-icon-state {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-fg-subtle);
+}
+
+.trade-room-icon-state[data-state='live'] { background: var(--color-positive); }
+.trade-room-icon-state[data-state='muted'] { background: var(--color-warning); }
+
+.trade-room-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  width: min(320px, calc(100vw - 24px));
+  padding: 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .38);
+  color: var(--color-fg);
+}
+
+.trade-room-popover:focus-within { outline: none; }
+
+/* --- the recording badge next to the room name ------------------------ */
+.trade-room-rec-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--color-negative) 45%, transparent);
+  border-radius: 5px;
+  background: var(--color-negative-soft);
+  color: var(--color-negative);
+  font: 800 8px/1 var(--tr-sans);
+  letter-spacing: .1em;
 }
