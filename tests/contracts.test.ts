@@ -41,6 +41,32 @@ const VALID_NO_TRADE = {
 };
 
 describe('parseReasoningResult', () => {
+  /**
+   * A MALFORMED PROPOSAL IS DOWNGRADED, NEVER EXECUTED.
+   *
+   * The proposal is the only part of a model result that can become an
+   * order, so a proposal the validator does not accept is replaced with a
+   * NO_TRADE that records WHY it was refused. The result is still returned
+   * — the investigation and the thesis may be perfectly good — but it can
+   * no longer be acted on.
+   *
+   * The INVESTIGATION and the THESIS are different: a malformed one means
+   * the model produced fiction, and a result built on fiction is rejected
+   * whole rather than patched into something that looks authoritative.
+   */
+  function expectRefusedProposal(
+    result: ReturnType<typeof parseReasoningResult>,
+    issueFragment: string,
+  ): void {
+    expect(result.proposal.decision).toBe('NO_TRADE');
+    expect(String(result.proposal.noTradeReason)).toContain(issueFragment);
+    // Nothing that could reach an order survives the downgrade.
+    expect(result.proposal.direction).toBeUndefined();
+    expect(result.proposal.entry).toBeUndefined();
+    expect(result.proposal.stopLoss).toBeUndefined();
+    expect(result.proposal.triggerSequence ?? []).toEqual([]);
+  }
+
   test('accepts a fully valid canonical ACTIONABLE result', () => {
     const result = parseReasoningResult(VALID_ACTIONABLE);
     expect(result.proposal.decision).toBe('ACTIONABLE');
@@ -56,61 +82,63 @@ describe('parseReasoningResult', () => {
     expect(result.proposal.noTradeReason).toContain('insufficient');
   });
 
-  test('rejects overloaded direction (BULLISH) — bias is not direction', () => {
+  test('refuses an overloaded direction (BULLISH) — bias is not direction', () => {
     const bad = {
       ...VALID_ACTIONABLE,
       proposal: { ...VALID_ACTIONABLE.proposal, direction: 'BULLISH' },
     };
-    expect(() => parseReasoningResult(bad)).toThrow(ReasoningValidationError);
+    const result = parseReasoningResult(bad);
+    expectRefusedProposal(result, 'direction');
   });
 
-  test('rejects overloaded orderType (BUY_LIMIT) — order type is LIMIT/STOP/MARKET', () => {
+  test('refuses an overloaded orderType (BUY_LIMIT) — order type is LIMIT/STOP/MARKET', () => {
     const bad = {
       ...VALID_ACTIONABLE,
       proposal: { ...VALID_ACTIONABLE.proposal, orderType: 'BUY_LIMIT' },
     };
-    expect(() => parseReasoningResult(bad)).toThrow(ReasoningValidationError);
+    const result = parseReasoningResult(bad);
+    expectRefusedProposal(result, 'orderType');
   });
 
-  test('rejects ACTIONABLE missing stopLoss', () => {
+  test('refuses an ACTIONABLE proposal that is missing its stopLoss', () => {
     const bad = {
       ...VALID_ACTIONABLE,
       proposal: { ...VALID_ACTIONABLE.proposal, stopLoss: undefined },
     };
-    try {
-      parseReasoningResult(bad);
-      expect.unreachable();
-    } catch (err) {
-      expect(err).toBeInstanceOf(ReasoningValidationError);
-      expect((err as ReasoningValidationError).issues.join()).toContain('stopLoss');
-    }
+    const result = parseReasoningResult(bad);
+    expectRefusedProposal(result, 'stopLoss');
   });
 
-  test('rejects NO_TRADE without noTradeReason', () => {
+  test('refuses a NO_TRADE that does not say why', () => {
     const bad = {
       ...VALID_NO_TRADE,
       proposal: { decision: 'NO_TRADE' },
     };
-    expect(() => parseReasoningResult(bad)).toThrow(/noTradeReason/);
+    const result = parseReasoningResult(bad);
+    expectRefusedProposal(result, 'noTradeReason');
   });
 
-  test('collects MULTIPLE issues in one pass, not fail-fast', () => {
+  test('a malformed THESIS rejects the whole result, not just the proposal', () => {
+    // The thesis is the reasoning. A thesis with an impossible bias and an
+    // impossible confidence is fiction, and a result built on fiction is
+    // refused WHOLE rather than patched into something that looks
+    // authoritative.
     const bad = {
       investigation: { summary: '' },
       thesis: { directionalBias: 'SIDEWAYS', summary: 'x', confidence: 150, trackers: [] },
       proposal: { decision: 'ACTIONABLE' },
       evidence: [],
     };
+    let thrown: unknown;
     try {
       parseReasoningResult(bad);
-      expect.unreachable();
     } catch (err) {
-      const issues = (err as ReasoningValidationError).issues;
-      expect(issues.length).toBeGreaterThan(2);
-      expect(issues.some((i) => i.includes('directionalBias'))).toBe(true);
-      expect(issues.some((i) => i.includes('confidence'))).toBe(true);
-      expect(issues.some((i) => i.includes('proposal'))).toBe(true);
+      thrown = err;
     }
+    expect(thrown).toBeInstanceOf(ReasoningValidationError);
+    const issues = (thrown as ReasoningValidationError).issues.join();
+    expect(issues).toContain('malformed');
+    expect(issues).toContain('thesis');
   });
 
   test('rejects non-object input entirely', () => {
@@ -128,12 +156,13 @@ describe('parseReasoningResult', () => {
     expect(result.proposal.entry).toBe(1.0845);
   });
 
-  test('rejects NaN/Infinity prices', () => {
+  test('refuses NaN/Infinity prices', () => {
     const bad = {
       ...VALID_ACTIONABLE,
       proposal: { ...VALID_ACTIONABLE.proposal, entry: Number.POSITIVE_INFINITY },
     };
-    expect(() => parseReasoningResult(bad)).toThrow(ReasoningValidationError);
+    const result = parseReasoningResult(bad);
+    expectRefusedProposal(result, 'entry');
   });
 
   test('rejects a response missing the thesis section entirely', () => {
@@ -159,23 +188,19 @@ describe('parseReasoningResult', () => {
     }
   });
 
-  test('rejects a malformed proposal with an invalid decision enum', () => {
+  test('refuses a malformed proposal with an invalid decision enum', () => {
     const bad = {
       ...VALID_NO_TRADE,
       proposal: { decision: 'MAYBE', noTradeReason: 'unclear' },
     };
-    try {
-      parseReasoningResult(bad);
-      expect.unreachable();
-    } catch (err) {
-      const issues = (err as ReasoningValidationError).issues;
-      expect(issues.some((i) => i.includes('proposal.decision'))).toBe(true);
-    }
+    const result = parseReasoningResult(bad);
+    expectRefusedProposal(result, 'proposal.decision');
   });
 
-  test('rejects a proposal that is not an object', () => {
+  test('refuses a proposal that is not an object', () => {
     const bad = { ...VALID_NO_TRADE, proposal: 'just a string' };
-    expect(() => parseReasoningResult(bad)).toThrow(ReasoningValidationError);
+    const result = parseReasoningResult(bad);
+    expectRefusedProposal(result, 'proposal');
   });
 });
 
