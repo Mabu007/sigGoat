@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Firestore } from "firebase-admin/firestore";
 import { getFirebaseAdmin } from "./firebaseAdmin";
+import { assertStoreAvailable, ensureStoreDirectory, resolveStoreMode, type StoreModeDecision } from "./storeFs";
 
 /** The leader is the room owner; everyone else is a member. */
 export type RoomMemberRole = "MEMBER";
@@ -49,25 +50,39 @@ const safeId = (value: string) => value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0,
 
 const memberId = (roomId: string, userId: string) => `${safeId(roomId)}_${safeId(userId)}`;
 
+const LABEL = "RoomMemberStore";
+
 export class RoomMemberStore {
   private readonly firestore?: Firestore;
   private readonly filePath: string;
+  /** How this store may keep its state. See `resolveStoreMode`. */
+  private decision: StoreModeDecision = { mode: 'memory', fileBacked: false };
   private db: RoomMemberDb = emptyDb();
 
   constructor(options: { firestore?: Firestore; filePath?: string } = {}) {
     this.firestore = options.firestore;
     this.filePath =
       options.filePath || path.join(process.env.DATA_DIR || path.join(process.cwd(), "data"), "room-members.json");
+    this.decision = resolveStoreMode(Boolean(this.firestore), LABEL);
     if (!this.firestore) {
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-      try {
-        if (fs.existsSync(this.filePath)) {
-          this.db = { ...emptyDb(), ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<RoomMemberDb>) };
+      if (this.decision.mode !== 'unavailable') {
+        this.decision = { ...this.decision, fileBacked: ensureStoreDirectory(this.filePath) };
+      }
+      if (this.decision.fileBacked) {
+        try {
+          if (fs.existsSync(this.filePath)) {
+            this.db = { ...emptyDb(), ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<RoomMemberDb>) };
+          }
+        } catch (error) {
+          console.warn("[store] Saved room memberships could not be read; starting empty.", error);
         }
-      } catch (error) {
-        throw new Error("ROOM_MEMBER_STORE_UNREADABLE: saved room memberships could not be loaded.", { cause: error });
       }
     }
+  }
+
+  /** Refuses to operate when this deployment has no durable datastore. */
+  private assertAvailable(): void {
+    assertStoreAvailable(this.decision, LABEL);
   }
 
   private collection() {
@@ -75,6 +90,7 @@ export class RoomMemberStore {
   }
 
   private persist() {
+    if (!this.decision.fileBacked) return;
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const temp = this.filePath + ".tmp";
     fs.writeFileSync(temp, JSON.stringify(this.db), "utf8");
@@ -86,6 +102,7 @@ export class RoomMemberStore {
    * time and never creates a second row.
    */
   async join(roomId: string, userId: string, displayName: string): Promise<RoomMemberRecord> {
+    this.assertAvailable();
     const id = memberId(roomId, userId);
     const existing = await this.get(roomId, userId);
     const record: RoomMemberRecord = {
@@ -105,6 +122,7 @@ export class RoomMemberStore {
   }
 
   async get(roomId: string, userId: string): Promise<RoomMemberRecord | null> {
+    this.assertAvailable();
     const id = memberId(roomId, userId);
     if (this.firestore) {
       const snapshot = await this.collection().doc(id).get();
@@ -115,6 +133,7 @@ export class RoomMemberStore {
 
   /** Every member of one room, oldest join first. */
   async list(roomId: string): Promise<RoomMemberRecord[]> {
+    this.assertAvailable();
     if (this.firestore) {
       const snapshot = await this.collection().where("roomId", "==", roomId).get();
       return snapshot.docs
@@ -128,6 +147,7 @@ export class RoomMemberStore {
 
   /** Every room the user has joined, oldest join first. */
   async listForUser(userId: string): Promise<RoomMemberRecord[]> {
+    this.assertAvailable();
     if (this.firestore) {
       const snapshot = await this.collection().where("userId", "==", userId).get();
       return snapshot.docs
@@ -149,6 +169,7 @@ export class RoomMemberStore {
    * costs one read.
    */
   async countByRooms(roomIds: string[]): Promise<Record<string, number>> {
+    this.assertAvailable();
     const counts: Record<string, number> = {};
     if (roomIds.length === 0) return counts;
 

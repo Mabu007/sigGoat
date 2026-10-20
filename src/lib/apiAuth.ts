@@ -26,6 +26,13 @@ export interface PlatformStatus {
     authMode?: 'firebase' | 'dev' | 'none';
     persistenceMode?: string;
     activeActors?: number;
+    /** Why auth is not 'firebase', when it is not. */
+    authNotConfiguredReason?: string;
+    /** Why the datastore is degraded, when it is. */
+    persistenceDegradedReason?: string;
+    /** Whether dev auth is running, and whether it was explicitly asked for. */
+    devAuthEnabled?: boolean;
+    devAuthExplicitlyEnabled?: boolean;
   };
   marketData?: { provider?: string; dataMode?: string; symbolsCount?: number };
   reasoning?: { liveCatalogue?: boolean; serverKeyConfigured?: boolean };
@@ -95,7 +102,19 @@ export async function resolveApiAuthHeaders(
     return { Authorization: `Bearer ${firebaseToken}` };
   }
 
+  /**
+   * NAME THE ACTUAL REASON.
+   *
+   * The old message was a generic hint that told the operator to set a
+   * variable which, in production, was refused anyway — so the hint
+   * described something that would not have worked. The server now reports
+   * WHY it cannot authenticate, and the client passes that reason through
+   * instead of guessing.
+   */
+  const reason = status?.platform?.authNotConfiguredReason?.trim();
   throw new Error(
-    'This server has no authentication configured. Set FUNDAGOAT_ALLOW_DEV_AUTH=1 in .env.local (local) or FIREBASE_SERVICE_ACCOUNT_JSON (production), then restart.',
+    reason
+      ? `This server cannot authenticate you: ${reason}`
+      : 'This server has no authentication configured. Set FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 (production) or FUNDAGOAT_ALLOW_DEV_AUTH=1 (local) and restart.',
   );
 }

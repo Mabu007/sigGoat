@@ -5,6 +5,7 @@ import { getFirebaseAdmin } from "./firebaseAdmin";
 import type { TradingProvider } from "../types";
 import type { RoomCategory } from "../types/rooms";
 import { firestoreSafe } from "./repositories";
+import { assertStoreAvailable, ensureStoreDirectory, resolveStoreMode, type StoreModeDecision } from "./storeFs";
 
 export type GoatTeamCoordinationMode = "INDEPENDENT" | "CONSENSUS" | "LEAD_REVIEW";
 export type GoatTeamStatus = "DRAFT" | "DEPLOYED" | "PAUSED" | "PARTIAL";
@@ -130,26 +131,41 @@ interface TeamDb { teams: Record<string, GoatTeam> }
 const emptyDb = (): TeamDb => ({ teams: {} });
 const safeId = (value: string) => value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 240);
 
+const LABEL = "GoatTeamStore";
+
 export class GoatTeamStore {
   private readonly firestore?: Firestore;
   private readonly filePath: string;
+  /** How this store may keep its state. See `resolveStoreMode`. */
+  private decision: StoreModeDecision = { mode: 'memory', fileBacked: false };
   private db: TeamDb = emptyDb();
 
   constructor(options: { firestore?: Firestore; filePath?: string } = {}) {
     this.firestore = options.firestore;
     this.filePath = options.filePath || path.join(process.env.DATA_DIR || path.join(process.cwd(), "data"), "goat-teams.json");
+    this.decision = resolveStoreMode(Boolean(this.firestore), LABEL);
     if (!this.firestore) {
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-      try {
-        if (fs.existsSync(this.filePath)) this.db = { ...emptyDb(), ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<TeamDb>) };
-      } catch (error) {
-        throw new Error("GOAT_TEAM_STORE_UNREADABLE: saved GOAT teams could not be loaded.", { cause: error });
+      if (this.decision.mode !== 'unavailable') {
+        this.decision = { ...this.decision, fileBacked: ensureStoreDirectory(this.filePath) };
+      }
+      if (this.decision.fileBacked) {
+        try {
+          if (fs.existsSync(this.filePath)) this.db = { ...emptyDb(), ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<TeamDb>) };
+        } catch (error) {
+          console.warn("[store] Saved rooms could not be read; starting empty.", error);
+        }
       }
     }
   }
 
+  /** Refuses to operate when this deployment has no durable datastore. */
+  private assertAvailable(): void {
+    assertStoreAvailable(this.decision, LABEL);
+  }
+
   private collection() { return this.firestore!.collection("goatTeams"); }
   private persist() {
+    if (!this.decision.fileBacked) return;
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const temp = this.filePath + ".tmp";
     fs.writeFileSync(temp, JSON.stringify(this.db), "utf8");
@@ -157,6 +173,7 @@ export class GoatTeamStore {
   }
 
   async create(team: GoatTeam): Promise<GoatTeam> {
+    this.assertAvailable();
     const id = safeId(team.id);
     const record = { ...team, id };
     if (this.firestore) {
@@ -175,6 +192,7 @@ export class GoatTeamStore {
   }
 
   async getForUser(id: string, userId: string): Promise<GoatTeam | null> {
+    this.assertAvailable();
     const key = safeId(id);
     if (this.firestore) {
       const snapshot = await this.collection().doc(key).get();
@@ -194,6 +212,7 @@ export class GoatTeamStore {
    * not about the room, and the answer lives in `roomAccess.ts`.
    */
   async getById(id: string): Promise<GoatTeam | null> {
+    this.assertAvailable();
     const key = safeId(id);
     if (this.firestore) {
       const snapshot = await this.collection().doc(key).get();
@@ -204,6 +223,7 @@ export class GoatTeamStore {
 
   /** Reads a room by its share slug, without applying an ownership check. */
   async getBySlug(slug: string): Promise<GoatTeam | null> {
+    this.assertAvailable();
     if (this.firestore) {
       const snapshot = await this.collection().where("publicSlug", "==", slug).limit(1).get();
       if (snapshot.empty) return null;
@@ -213,6 +233,7 @@ export class GoatTeamStore {
   }
 
   async listForUser(userId: string): Promise<GoatTeam[]> {
+    this.assertAvailable();
     if (this.firestore) {
       const snapshot = await this.collection().where("ownerUserId", "==", userId).get();
       return snapshot.docs.map(doc => doc.data() as GoatTeam).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -221,6 +242,7 @@ export class GoatTeamStore {
   }
 
   async listPublic(): Promise<GoatTeam[]> {
+    this.assertAvailable();
     const teams = this.firestore
       ? (await this.collection().where("visibility", "==", "PUBLIC").get()).docs.map(doc => doc.data() as GoatTeam)
       : Object.values(this.db.teams).filter(team => team.visibility === "PUBLIC");
@@ -239,6 +261,7 @@ export class GoatTeamStore {
   }
 
   async save(team: GoatTeam): Promise<GoatTeam> {
+    this.assertAvailable();
     const id = safeId(team.id);
     const record = { ...team, id };
     if (this.firestore) await this.collection().doc(id).set(firestoreSafe(record));
@@ -247,6 +270,7 @@ export class GoatTeamStore {
   }
 
   async deleteForUser(id: string, userId: string): Promise<boolean> {
+    this.assertAvailable();
     const team = await this.getForUser(id, userId);
     if (!team) return false;
     if (this.firestore) await this.collection().doc(safeId(id)).delete();

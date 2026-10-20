@@ -38,6 +38,7 @@ import React, { useState } from 'react';
 import { AlertCircle, LogIn, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { isFirebaseConfigured } from '../lib/firebaseConfig';
+import { peekPlatformStatus } from '../lib/apiAuth';
 
 export interface AuthGateProps {
   children: React.ReactNode;
@@ -83,14 +84,29 @@ const AuthLoadingScreen: React.FC = () => (
 export const AuthUnavailableNotice: React.FC = () => {
   const { authMode, authError } = useAuth();
   const [dismissed, setDismissed] = useState(false);
+  const status = peekPlatformStatus();
   if (dismissed || authMode === 'firebase') return null;
+
+  /**
+   * SAY WHY, IN THE OPERATOR'S OWN TERMS.
+   *
+   * The server reports the exact missing variable, so the banner names it
+   * instead of saying "accounts are unavailable". A generic message sent an
+   * operator looking for a bug in the client when the problem was a missing
+   * environment variable on the host.
+   */
+  const reason = status?.platform?.authNotConfiguredReason?.trim();
+  const persistence = status?.platform?.persistenceDegradedReason?.trim();
+
   return (
     <div role="alert" className="mx-auto flex max-w-3xl items-start gap-2 rounded-xl border border-negative/40 bg-negative-soft p-3 text-[11px] leading-5 text-negative">
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
       <span className="flex-1">
-        {authMode === 'none'
-          ? 'Accounts are unavailable on this deployment: the server cannot verify sessions.'
-          : 'Accounts are unavailable on this deployment.'}
+        {authMode === 'dev'
+          ? 'This deployment is running without Firebase Admin credentials, so every visitor is identified by a local device id. Sign-in, sessions and durable data are not available.'
+          : 'Accounts are unavailable on this deployment: the server cannot verify sessions.'}
+        {reason ? ` (${reason})` : ''}
+        {persistence ? ` Stored data is not durable either: ${persistence}` : ''}
         {authError ? ` ${authError}` : ''}
       </span>
       <button type="button" onClick={() => setDismissed(true)} aria-label="Dismiss" className="shrink-0 rounded p-1 hover:bg-raised">

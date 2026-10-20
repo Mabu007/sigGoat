@@ -57,6 +57,7 @@ import {
   subscribeToRoster,
 } from "./sfu/voiceSessions";
 import { isSfuConfigured, sfuUnavailableReason } from "./sfu/sfuClient";
+import { PersistenceUnavailableError } from "./persistenceError";
 import {
   accessSubject,
   isValidSymbol,
@@ -95,6 +96,16 @@ function handle(
 ): (req: Request, res: Response) => void {
   return (req, res) => {
     fn(req, res).catch((error) => {
+      /**
+       * The datastore is not available. That is a configuration problem, not
+       * a caller mistake, so it answers 503 with the REAL reason — the same
+       * way the legacy router does — instead of an opaque 500.
+       */
+      if (error instanceof PersistenceUnavailableError) {
+        console.error(`[rooms] ${req.method} ${req.originalUrl ?? req.url} — ${error.message}`);
+        fail(res, 503, "PERSISTENCE_UNAVAILABLE", error.message);
+        return;
+      }
       console.error("[rooms] Unhandled route error:", error);
       if (!res.headersSent) {
         fail(res, 500, "INTERNAL_ERROR", "Something went wrong handling that request.");

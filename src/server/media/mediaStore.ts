@@ -22,6 +22,7 @@ import path from "node:path";
 import type { Firestore } from "firebase-admin/firestore";
 import { getFirebaseAdmin } from "../firebaseAdmin";
 import { firestoreSafe } from "../repositories";
+import { assertStoreAvailable, ensureStoreDirectory, resolveStoreMode, type StoreModeDecision } from "../storeFs";
 import type { MediaPurpose, MediaReference } from "../../types/rooms";
 import { createDeliveryUrl } from "./mediaSigner";
 
@@ -42,9 +43,13 @@ const emptyDb = (): MediaDb => ({ avatars: {}, covers: {} });
 const safeId = (value: string) =>
   value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 200);
 
+const LABEL = "MediaStore";
+
 export class MediaStore {
   private readonly firestore?: Firestore;
   private readonly filePath: string;
+  /** How this store may keep its state. See `resolveStoreMode`. */
+  private decision: StoreModeDecision = { mode: 'memory', fileBacked: false };
   private db: MediaDb = emptyDb();
 
   constructor(options: { firestore?: Firestore; filePath?: string } = {}) {
@@ -55,24 +60,33 @@ export class MediaStore {
         process.env.DATA_DIR || path.join(process.cwd(), "data"),
         "room-media.json",
       );
+    this.decision = resolveStoreMode(Boolean(this.firestore), LABEL);
     if (!this.firestore) {
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-      try {
-        if (fs.existsSync(this.filePath)) {
-          this.db = {
-            ...emptyDb(),
-            ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<MediaDb>),
-          };
+      if (this.decision.mode !== 'unavailable') {
+        this.decision = { ...this.decision, fileBacked: ensureStoreDirectory(this.filePath) };
+      }
+      if (this.decision.fileBacked) {
+        try {
+          if (fs.existsSync(this.filePath)) {
+            this.db = {
+              ...emptyDb(),
+              ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<MediaDb>),
+            };
+          }
+        } catch (error) {
+          console.warn("[store] Saved media references could not be read; starting empty.", error);
         }
-      } catch (error) {
-        throw new Error("MEDIA_STORE_UNREADABLE: saved media references could not be loaded.", {
-          cause: error,
-        });
       }
     }
   }
 
+  /** Refuses to operate when this deployment has no durable datastore. */
+  private assertAvailable(): void {
+    assertStoreAvailable(this.decision, LABEL);
+  }
+
   private persist() {
+    if (!this.decision.fileBacked) return;
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const temp = this.filePath + ".tmp";
     fs.writeFileSync(temp, JSON.stringify(this.db), "utf8");
@@ -82,6 +96,7 @@ export class MediaStore {
   // -- avatars ------------------------------------------------------------
 
   async getAvatar(uid: string): Promise<StoredMedia | null> {
+    this.assertAvailable();
     if (this.firestore) {
       const snapshot = await this.firestore.collection("users").doc(uid).get();
       if (!snapshot.exists) return null;
@@ -92,6 +107,7 @@ export class MediaStore {
   }
 
   async setAvatar(uid: string, media: StoredMedia): Promise<void> {
+    this.assertAvailable();
     if (this.firestore) {
       await this.firestore
         .collection("users")
@@ -107,6 +123,7 @@ export class MediaStore {
   }
 
   async clearAvatar(uid: string): Promise<void> {
+    this.assertAvailable();
     if (this.firestore) {
       await this.firestore
         .collection("users")
@@ -121,6 +138,7 @@ export class MediaStore {
   // -- room covers -------------------------------------------------------
 
   async getCover(roomId: string): Promise<StoredMedia | null> {
+    this.assertAvailable();
     const key = safeId(roomId);
     if (this.firestore) {
       const snapshot = await this.firestore.collection("goatTeams").doc(key).get();
@@ -132,6 +150,7 @@ export class MediaStore {
   }
 
   async setCover(roomId: string, media: StoredMedia): Promise<void> {
+    this.assertAvailable();
     const key = safeId(roomId);
     if (this.firestore) {
       await this.firestore
@@ -145,6 +164,7 @@ export class MediaStore {
   }
 
   async clearCover(roomId: string): Promise<void> {
+    this.assertAvailable();
     const key = safeId(roomId);
     if (this.firestore) {
       await this.firestore

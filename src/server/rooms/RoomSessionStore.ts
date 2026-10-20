@@ -27,6 +27,7 @@ import { randomBytes } from "node:crypto";
 import type { Firestore } from "firebase-admin/firestore";
 import { getFirebaseAdmin } from "../firebaseAdmin";
 import { firestoreSafe } from "../repositories";
+import { assertStoreAvailable, ensureStoreDirectory, resolveStoreMode, type StoreModeDecision } from "../storeFs";
 
 export type RoomSessionStatus = "starting" | "live" | "ending" | "ended";
 
@@ -63,9 +64,13 @@ const emptyDb = (): SessionDb => ({ sessions: {}, active: {} });
 const safeId = (value: string) =>
   value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 200);
 
+const LABEL = "RoomSessionStore";
+
 export class RoomSessionStore {
   private readonly firestore?: Firestore;
   private readonly filePath: string;
+  /** How this store may keep its state. See `resolveStoreMode`. */
+  private decision: StoreModeDecision = { mode: 'memory', fileBacked: false };
   private db: SessionDb = emptyDb();
 
   constructor(options: { firestore?: Firestore; filePath?: string } = {}) {
@@ -76,21 +81,29 @@ export class RoomSessionStore {
         process.env.DATA_DIR || path.join(process.cwd(), "data"),
         "room-sessions.json",
       );
+    this.decision = resolveStoreMode(Boolean(this.firestore), LABEL);
     if (!this.firestore) {
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-      try {
-        if (fs.existsSync(this.filePath)) {
-          this.db = {
-            ...emptyDb(),
-            ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<SessionDb>),
-          };
+      if (this.decision.mode !== 'unavailable') {
+        this.decision = { ...this.decision, fileBacked: ensureStoreDirectory(this.filePath) };
+      }
+      if (this.decision.fileBacked) {
+        try {
+          if (fs.existsSync(this.filePath)) {
+            this.db = {
+              ...emptyDb(),
+              ...(JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<SessionDb>),
+            };
+          }
+        } catch (error) {
+          console.warn("[store] Saved room sessions could not be read; starting empty.", error);
         }
-      } catch (error) {
-        throw new Error("ROOM_SESSION_STORE_UNREADABLE: saved room sessions could not be loaded.", {
-          cause: error,
-        });
       }
     }
+  }
+
+  /** Refuses to operate when this deployment has no durable datastore. */
+  private assertAvailable(): void {
+    assertStoreAvailable(this.decision, LABEL);
   }
 
   private collection() {
@@ -102,6 +115,7 @@ export class RoomSessionStore {
   }
 
   private persist() {
+    if (!this.decision.fileBacked) return;
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const temp = this.filePath + ".tmp";
     fs.writeFileSync(temp, JSON.stringify(this.db), "utf8");
@@ -116,6 +130,7 @@ export class RoomSessionStore {
    * cannot both win. The loser gets `ROOM_SESSION_ALREADY_ACTIVE`.
    */
   async start(input: StartSessionInput): Promise<RoomSessionRecord> {
+    this.assertAvailable();
     const roomId = safeId(input.roomId);
     const id = `s_${Date.now().toString(36)}_${randomBytes(4).toString("hex")}`;
     const record: RoomSessionRecord = {
@@ -168,6 +183,7 @@ export class RoomSessionStore {
   }
 
   async end(roomId: string, sessionId?: string): Promise<RoomSessionRecord | null> {
+    this.assertAvailable();
     const safeRoomId = safeId(roomId);
     const endedAt = new Date().toISOString();
 
@@ -204,6 +220,7 @@ export class RoomSessionStore {
 
   /** The session that is running right now, if any. */
   async getActive(roomId: string): Promise<RoomSessionRecord | null> {
+    this.assertAvailable();
     const safeRoomId = safeId(roomId);
     if (this.firestore) {
       const roomSnapshot = await this.collection().doc(safeRoomId).get();
@@ -224,6 +241,7 @@ export class RoomSessionStore {
 
   /** Recent sessions for a room, newest first. */
   async list(roomId: string, limit = 20): Promise<RoomSessionRecord[]> {
+    this.assertAvailable();
     if (this.firestore) {
       const snapshot = await this.sessionsCollection(roomId)
         .orderBy("startedAt", "desc")
