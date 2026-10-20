@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Firestore } from "firebase-admin/firestore";
 import { getFirebaseAdmin } from "./firebaseAdmin";
+import { ensureStoreDirectory } from "./storeFs";
 
 export type GoatWorkflowStatus =
   | "RUNNING"
@@ -89,6 +90,8 @@ function isTerminal(status: GoatWorkflowStatus): boolean {
 export class GoatWorkflowStore {
   private readonly firestore?: Firestore;
   private readonly filePath: string;
+  /** False when the filesystem could not be used, so the store is in memory. */
+  private fileBacked = true;
   private db: WorkflowDb = emptyDb();
   private readonly now: () => string;
 
@@ -99,14 +102,25 @@ export class GoatWorkflowStore {
     this.now = options.now || (() => new Date().toISOString());
 
     if (!this.firestore) {
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-      try {
-        if (fs.existsSync(this.filePath)) {
-          const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<WorkflowDb>;
-          this.db = { ...emptyDb(), ...parsed };
+      /**
+       * THE DIRECTORY IS CREATED DEFENSIVELY.
+       *
+       * On a serverless host the working directory is READ ONLY, so
+       * `mkdirSync` throws EACCES. This code runs while the module is still
+       * loading, so the throw took down EVERY route on the server with an
+       * opaque platform error — including the status endpoint that would
+       * have explained it. The store runs in memory instead, and says so.
+       */
+      this.fileBacked = ensureStoreDirectory(this.filePath);
+      if (this.fileBacked) {
+        try {
+          if (fs.existsSync(this.filePath)) {
+            const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<WorkflowDb>;
+            this.db = { ...emptyDb(), ...parsed };
+          }
+        } catch (error) {
+          console.warn("[store] Saved workflow state could not be read; starting empty.", error);
         }
-      } catch (error) {
-        throw new Error("GOAT_WORKFLOW_STORE_UNREADABLE: durable workflow state could not be loaded.", { cause: error });
       }
     }
   }
@@ -116,8 +130,15 @@ export class GoatWorkflowStore {
   private executionsCollection() { return this.firestore!.collection("goatExecutionIntents"); }
 
   private persist(): void {
+    if (!this.fileBacked) return;
     const dir = path.dirname(this.filePath);
-    fs.mkdirSync(dir, { recursive: true });
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch {
+      // The directory is not writable; the store keeps its state in memory.
+      this.fileBacked = false;
+      return;
+    }
     const temp = this.filePath + ".tmp";
     fs.writeFileSync(temp, JSON.stringify(this.db), "utf8");
     fs.renameSync(temp, this.filePath);
