@@ -26,7 +26,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Candle, MarketQuote } from '../../types';
-import { ALLOWED_TIMEFRAMES, type RoomDrawing } from '../../shared/roomProtocol';
+import type { RoomDrawing } from '../../shared/roomProtocol';
 import { TradingViewLightweightChart, type RoomChartApi } from '../TradingViewLightweightChart';
 import { RoomChartCanvas } from './RoomChartCanvas';
 import { RoomChartToolbar, type RoomChartLegendEntry } from './RoomChartToolbar';
@@ -44,31 +44,38 @@ import {
 export interface RoomChartPanelProps {
   candles: Candle[];
   activeQuote: MarketQuote | null;
+  /** The EFFECTIVE timeframe. The parent decides it: shared or personal. */
   timeframe: string;
+  /** The EFFECTIVE symbol. The parent decides it: shared or personal. */
   symbol: string;
   digits?: number;
   roomName?: string;
   dataMode?: string;
-  /** Shared symbol from the room coordinator. When it differs from `symbol`, the panel shows the shared value. */
-  sharedSymbol?: string;
-  sharedTimeframe?: string;
-  /** True when this user may change the shared chart (leader). */
+  /**
+   * 'shared' follows the room's chart. 'local' is this viewer's PRIVATE
+   * chart: their own symbol, their own timeframe and their own drawings,
+   * none of which reach the room.
+   */
+  chartMode?: 'shared' | 'local';
+  /** True when this user may change the ROOM's shared chart. */
   canManageChart?: boolean;
-  /** True when this user may draw. */
+  /** True when this user may draw. In 'shared' mode that means the room. */
   canDraw?: boolean;
-  /** The shared drawings, from the room coordinator. */
+  /** The room's shared drawings. Ignored in 'local' mode. */
   drawings?: RoomDrawing[];
   /** Called once per COMMITTED change only. Never per pointer move. */
   onDrawingCreate?: (drawing: RoomDrawing) => void;
   onDrawingUpdate?: (drawing: RoomDrawing) => void;
   onDrawingRemove?: (id: string) => void;
   onDrawingsClear?: () => void;
-  /** Called when a leader changes the shared symbol/timeframe. */
-  onSharedSymbolChange?: (symbol: string) => void;
-  onSharedTimeframeChange?: (timeframe: string) => void;
-  /** A short status line, e.g. "Synced" / "Reconnecting" / "Offline". */
-  connectionLabel?: string;
-  connectionState?: 'open' | 'connecting' | 'reconnecting' | 'closed' | 'error';
+  /**
+   * Whether the collapsible tool strip is open.
+   *
+   * The strip does not permanently consume chart height: it is closed by
+   * default and the button that opens it lives in the room header, above
+   * this component.
+   */
+  toolsOpen?: boolean;
   /** The author id stored on a drawing this participant creates. */
   userId?: string;
   /** The author name stored on a drawing this participant creates. */
@@ -80,21 +87,10 @@ export interface RoomChartPanelProps {
   className?: string;
 }
 
-/** The symbol pattern the room coordinator accepts. */
-const SYMBOL_PATTERN = /^[A-Za-z0-9._-]{1,24}$/;
-
 type HistoryEntry =
   | { type: 'create'; drawing: RoomDrawing }
   | { type: 'remove'; drawing: RoomDrawing }
   | { type: 'update'; before: RoomDrawing; after: RoomDrawing };
-
-const CONNECTION_TONE: Record<string, string> = {
-  open: 'badge-positive',
-  connecting: 'badge-info',
-  reconnecting: 'badge-warning',
-  closed: 'badge-neutral',
-  error: 'badge-negative',
-};
 
 export const RoomChartPanel: React.FC<RoomChartPanelProps> = ({
   candles,
@@ -104,8 +100,7 @@ export const RoomChartPanel: React.FC<RoomChartPanelProps> = ({
   digits = 5,
   roomName,
   dataMode,
-  sharedSymbol,
-  sharedTimeframe,
+  chartMode = 'shared',
   canManageChart = false,
   canDraw = true,
   drawings = [],
@@ -113,10 +108,7 @@ export const RoomChartPanel: React.FC<RoomChartPanelProps> = ({
   onDrawingUpdate,
   onDrawingRemove,
   onDrawingsClear,
-  onSharedSymbolChange,
-  onSharedTimeframeChange,
-  connectionLabel,
-  connectionState = 'open',
+  toolsOpen = false,
   userId = '',
   userName,
   drawingColor = DEFAULT_ROOM_DRAWING_COLOR,
@@ -128,24 +120,27 @@ export const RoomChartPanel: React.FC<RoomChartPanelProps> = ({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [indicatorConfigs, setIndicatorConfigs] = useState<RoomIndicatorConfig[]>([]);
   const [showVolume, setShowVolume] = useState(true);
-  const [symbolDraft, setSymbolDraft] = useState<string>('');
   const historyRef = useRef<HistoryEntry[]>([]);
   const [historyLength, setHistoryLength] = useState(0);
   /**
-   * The drawings this participant has committed but the room coordinator has
-   * not echoed back yet. A drawing is drawn the instant it is committed; the
+   * This participant's committed drawings that the room coordinator has not
+   * echoed back yet. A drawing is drawn the instant it is committed; the
    * server's copy replaces the local one when it arrives.
    */
   const [localPatches, setLocalPatches] = useState<Record<string, RoomDrawing | null>>({});
+  /**
+   * THIS VIEWER'S PRIVATE DRAWINGS.
+   *
+   * They exist only while the chart is in 'local' mode. They are never sent
+   * to the room, and they never appear to anybody else. Switching back to
+   * the shared chart leaves them alone, so a viewer can flip back and forth
+   * without losing their own work.
+   */
+  const [privateDrawings, setPrivateDrawings] = useState<RoomDrawing[]>([]);
 
-  const effectiveSymbol = sharedSymbol && sharedSymbol.trim() ? sharedSymbol.trim() : symbol;
-  const effectiveTimeframe = sharedTimeframe && sharedTimeframe.trim() ? sharedTimeframe.trim() : timeframe;
-  const symbolIsShared = !!sharedSymbol && sharedSymbol !== symbol;
-  const timeframeIsShared = !!sharedTimeframe && sharedTimeframe !== timeframe;
-
-  useEffect(() => {
-    setSymbolDraft(effectiveSymbol);
-  }, [effectiveSymbol]);
+  const isLocal = chartMode === 'local';
+  const effectiveSymbol = symbol;
+  const effectiveTimeframe = timeframe;
 
   /** The bar times, so a drawing always lands on a real bar. */
   const barTimes = useMemo(() => {
@@ -167,16 +162,20 @@ export const RoomChartPanel: React.FC<RoomChartPanelProps> = ({
    * The shared drawings with this participant's own pending changes folded
    * in. A committed drawing appears immediately and is replaced by the
    * coordinator's copy when that copy arrives.
+   *
+   * In 'local' mode the room's drawings are not shown at all: the viewer's
+   * private chart is their own.
    */
   const effectiveDrawings = useMemo(() => {
+    if (isLocal) return privateDrawings;
     const merged = new Map<string, RoomDrawing>();
     for (const drawing of drawings) merged.set(drawing.id, drawing);
     for (const [id, patch] of Object.entries(localPatches)) {
       if (patch === null) merged.delete(id);
-      else merged.set(id, patch);
+      else merged.set(patch.id, patch);
     }
     return [...merged.values()];
-  }, [drawings, localPatches]);
+  }, [drawings, localPatches, isLocal, privateDrawings]);
 
   /** Drops a local patch once the coordinator's state has caught up. */
   useEffect(() => {
@@ -229,41 +228,75 @@ export const RoomChartPanel: React.FC<RoomChartPanelProps> = ({
     setHistoryLength(historyRef.current.length);
   }, []);
 
+  /**
+   * A COMMITTED DRAWING.
+   *
+   * In 'local' mode the drawing stays on this viewer's screen and NOTHING
+   * is sent to the room. In 'shared' mode it is a room change: it is sent
+   * to the coordinator and echoed to everyone.
+   */
   const handleCreate = useCallback((drawing: RoomDrawing) => {
     pushHistory({ type: 'create', drawing });
+    if (isLocal) {
+      setPrivateDrawings(current => [...current.filter(item => item.id !== drawing.id), drawing]);
+      return;
+    }
     setLocalPatches(current => ({ ...current, [drawing.id]: drawing }));
     onDrawingCreate?.(drawing);
-  }, [onDrawingCreate, pushHistory]);
+  }, [isLocal, onDrawingCreate, pushHistory]);
 
   const handleUpdate = useCallback((drawing: RoomDrawing) => {
     const before = effectiveDrawings.find(item => item.id === drawing.id) ?? drawing;
     pushHistory({ type: 'update', before, after: drawing });
+    if (isLocal) {
+      setPrivateDrawings(current => current.map(item => (item.id === drawing.id ? drawing : item)));
+      return;
+    }
     setLocalPatches(current => ({ ...current, [drawing.id]: drawing }));
     onDrawingUpdate?.(drawing);
-  }, [effectiveDrawings, onDrawingUpdate, pushHistory]);
+  }, [effectiveDrawings, isLocal, onDrawingUpdate, pushHistory]);
 
   const handleRemove = useCallback((id: string) => {
     const removed = effectiveDrawings.find(item => item.id === id);
     if (removed) pushHistory({ type: 'remove', drawing: removed });
-    setLocalPatches(current => ({ ...current, [id]: null }));
     setSelectedId(current => (current === id ? null : current));
+    if (isLocal) {
+      setPrivateDrawings(current => current.filter(item => item.id !== id));
+      return;
+    }
+    setLocalPatches(current => ({ ...current, [id]: null }));
     onDrawingRemove?.(id);
-  }, [effectiveDrawings, onDrawingRemove, pushHistory]);
+  }, [effectiveDrawings, isLocal, onDrawingRemove, pushHistory]);
 
   const handleUndo = useCallback(() => {
     const entry = historyRef.current.pop();
     setHistoryLength(historyRef.current.length);
     if (!entry) return;
+    if (isLocal) {
+      if (entry.type === 'create') {
+        setPrivateDrawings(current => current.filter(item => item.id !== entry.drawing.id));
+      } else if (entry.type === 'remove') {
+        setPrivateDrawings(current => [...current, entry.drawing]);
+      } else {
+        setPrivateDrawings(current => current.map(item => (item.id === entry.before.id ? entry.before : item)));
+      }
+      return;
+    }
     if (entry.type === 'create') onDrawingRemove?.(entry.drawing.id);
     else if (entry.type === 'remove') onDrawingCreate?.(entry.drawing);
     else onDrawingUpdate?.(entry.before);
-  }, [onDrawingCreate, onDrawingRemove, onDrawingUpdate]);
+  }, [isLocal, onDrawingCreate, onDrawingRemove, onDrawingUpdate]);
 
   const handleClearAll = useCallback(() => {
+    if (isLocal) {
+      setPrivateDrawings([]);
+      setSelectedId(null);
+      return;
+    }
     // The local copies go too: "clear all" means all, here and on the server.
     setLocalPatches({});
     onDrawingsClear?.();
-  }, [onDrawingsClear]);
+  }, [isLocal, onDrawingsClear]);
 
   const selectedDrawing = useMemo(
     () => effectiveDrawings.find(item => item.id === selectedId) ?? null,
@@ -276,111 +309,42 @@ export const RoomChartPanel: React.FC<RoomChartPanelProps> = ({
    */
   const canRemoveSelected = !!selectedDrawing && selectedDrawing.createdBy === userId;
 
-  const commitSymbol = useCallback(() => {
-    const next = symbolDraft.trim();
-    if (!SYMBOL_PATTERN.test(next)) {
-      setSymbolDraft(effectiveSymbol);
-      return;
-    }
-    if (next === effectiveSymbol) return;
-    onSharedSymbolChange?.(next);
-  }, [symbolDraft, effectiveSymbol, onSharedSymbolChange]);
-
   return (
     <div className={`flex h-full min-h-0 flex-col ${className ?? ''}`}>
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-2 py-1.5 text-[11px]">
-        {canManageChart ? (
-          <label className="flex items-center gap-1.5">
-            <span className="font-semibold uppercase tracking-wide text-fg-subtle">Symbol</span>
-            <input
-              className="input h-7 w-28 px-2 text-[11px]"
-              value={symbolDraft}
-              aria-label="Shared chart symbol"
-              title="Shared chart symbol"
-              spellCheck={false}
-              onChange={event => setSymbolDraft(event.target.value)}
-              onBlur={commitSymbol}
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  commitSymbol();
-                }
-              }}
-            />
-          </label>
-        ) : (
-          <span className="font-semibold uppercase tracking-wide text-fg-subtle">
-            {effectiveSymbol}
-          </span>
-        )}
-
-        <div className="flex items-center gap-1" role="group" aria-label="Chart timeframe">
-          {ALLOWED_TIMEFRAMES.map(option => {
-            const active = option === effectiveTimeframe;
-            return (
-              <button
-                key={option}
-                type="button"
-                title={`${option} timeframe`}
-                aria-label={`${option} timeframe`}
-                aria-pressed={active}
-                disabled={!canManageChart}
-                onClick={() => {
-                  if (option === effectiveTimeframe) return;
-                  onSharedTimeframeChange?.(option);
-                }}
-                className={`h-6 min-w-8 rounded px-1.5 text-[11px] font-semibold transition-colors ${
-                  active
-                    ? 'bg-accent-soft text-accent-text'
-                    : 'text-fg-muted hover:bg-raised hover:text-fg'
-                } disabled:cursor-not-allowed disabled:opacity-60`}
-              >
-                {option}
-              </button>
-            );
-          })}
+      {/**
+       * THE TOOL STRIP.
+       *
+       * It is collapsible and CLOSED by default, so it never permanently
+       * consumes chart height. The button that opens it lives in the room
+       * header, one row above this component — a chart that has to scroll
+       * to find its own tools is not a hero.
+       */}
+      {toolsOpen && (
+        <div className="room-chart-tools-strip" role="group" aria-label="Chart tools">
+          <RoomChartToolbar
+            tool={tool}
+            onToolChange={setTool}
+            canDraw={canDraw}
+            canManageChart={canManageChart}
+            indicators={indicatorConfigs}
+            onIndicatorsChange={setIndicatorConfigs}
+            showVolume={showVolume}
+            onShowVolumeChange={setShowVolume}
+            hasVolume={hasVolume}
+            drawingCount={effectiveDrawings.length}
+            selectedId={selectedId}
+            canRemoveSelected={canRemoveSelected}
+            onRemoveSelected={() => {
+              if (selectedId) handleRemove(selectedId);
+            }}
+            canUndo={historyLength > 0}
+            onUndo={handleUndo}
+            onClearAll={handleClearAll}
+            legend={legend}
+            className="room-chart-tools"
+          />
         </div>
-
-        {symbolIsShared || timeframeIsShared ? (
-          <span className="badge badge-info" title="This chart is shared by the room">
-            Shared chart · {effectiveSymbol} {effectiveTimeframe}
-          </span>
-        ) : null}
-
-        {!canDraw ? (
-          <span className="badge badge-neutral" role="status">
-            Read-only · you can watch but not draw
-          </span>
-        ) : null}
-
-        {connectionLabel ? (
-          <span className={`badge ${CONNECTION_TONE[connectionState] ?? 'badge-neutral'}`} role="status">
-            {connectionLabel}
-          </span>
-        ) : null}
-      </div>
-
-      <RoomChartToolbar
-        tool={tool}
-        onToolChange={setTool}
-        canDraw={canDraw}
-        canManageChart={canManageChart}
-        indicators={indicatorConfigs}
-        onIndicatorsChange={setIndicatorConfigs}
-        showVolume={showVolume}
-        onShowVolumeChange={setShowVolume}
-        hasVolume={hasVolume}
-        drawingCount={effectiveDrawings.length}
-        selectedId={selectedId}
-        canRemoveSelected={canRemoveSelected}
-        onRemoveSelected={() => {
-          if (selectedId) handleRemove(selectedId);
-        }}
-        canUndo={historyLength > 0}
-        onUndo={handleUndo}
-        onClearAll={handleClearAll}
-        legend={legend}
-      />
+      )}
 
       <div className="relative min-h-0 flex-1">
         <TradingViewLightweightChart
