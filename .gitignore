@@ -49,3 +49,7 @@ codebase.txt
 # Wrangler's local cache (compiled bundles, account metadata). It is a build
 # artefact, and the account metadata it holds is not source.
 .wrangler/
+
+# Scratch scripts used during an audit. They are not part of the product and
+# they can contain throwaway credentials handling.
+scripts/tmp/
