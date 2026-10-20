@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Clock, PanelRightClose, PanelRightOpen, Settings, X, Save, Trash2, Users, Globe, LockKeyhole, ChevronDown, Radio, Mic, MicOff, Square, SlidersHorizontal, Video } from 'lucide-react';
+import { ArrowLeft, Clock, PanelRightClose, PanelRightOpen, Settings, X, Save, Trash2, Users, Globe, LockKeyhole, ChevronDown, Radio, Mic, MicOff, Square, SlidersHorizontal, Video, Wifi } from 'lucide-react';
 import { RoomChartPanel } from './room-chart/RoomChartPanel';
 import { RoomVoiceControlsView } from './RoomVoiceControls';
 import RecordingControls from './RecordingControls';
 import { RoomCoverPicker } from './RoomCoverPicker';
+import { RoomMembersModal } from './RoomMembersModal';
 import {
   ConnectBrokerPanel, GroupDetailsPanel, MarketPanel, MentorChatPanel, NewsPanel, RoomChatPanel, TradeRoomSidebar,
   type BrokerConnectionState, type MentorThreadSummary, type RoomChatMessage, type RoomGroupDetails, type RoomGroupMember,
@@ -45,8 +46,15 @@ type RoomIdentity = {
   members: RoomGroupMember[];
 };
 
-/** One page of the room conversation. */
-type RoomChatPage = { messages: RoomChatMessage[]; hasMore: boolean };
+/** One page of the room conversation, with the reader's unread state. */
+type RoomChatPage = {
+  messages: RoomChatMessage[];
+  hasMore: boolean;
+  /** The messages the reader has not seen. */
+  unreadCount: number;
+  /** The reader's read cursor, when they have one. */
+  lastReadMessageId: string | null;
+};
 
 /** The private line between a member and the room's leader. */
 type MentorChatPayload = {
@@ -147,6 +155,22 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
   const [identityError, setIdentityError] = useState('');
   const [joining, setJoining] = useState(false);
   const [chatMessages, setChatMessages] = useState<RoomChatMessage[]>([]);
+  /** Whether older history exists behind the newest page. */
+  const [chatHasMore, setChatHasMore] = useState(false);
+  /** The unread count the chat tab badge shows. The panel owns it. */
+  const [chatUnread, setChatUnread] = useState(0);
+  /** Whether the roster dialog is open. */
+  const [membersOpen, setMembersOpen] = useState(false);
+  /**
+   * WHO IS IN THE ROOM RIGHT NOW.
+   *
+   * The count comes from the server, which asks the room's Durable Object.
+   * It is null when the server cannot establish it, and the UI says so
+   * rather than inventing a number.
+   */
+  const [onlineCount, setOnlineCount] = useState<number | null>(null);
+  /** Whether the room's leader has a live connection. */
+  const [mentorOnline, setMentorOnline] = useState<boolean | null>(null);
   const [chatError, setChatError] = useState('');
   const [chatSending, setChatSending] = useState(false);
   const [mentorThreads, setMentorThreads] = useState<MentorThreadSummary[]>([]);
@@ -447,12 +471,20 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     setChatMessages(next);
   }, []);
 
+  /**
+   * THE ROOM CONVERSATION.
+   *
+   * The room-id route is used rather than the legacy slug route because it
+   * also answers with the two things a messaging panel needs: how many
+   * messages are UNREAD, and where this reader's cursor is. The panel owns
+   * the cursor and the unread count from there.
+   */
   const loadChat = useCallback(async (incremental: boolean) => {
-    if (!roomIdentity?.isMember) return;
+    if (!roomIdentity?.isMember || !roomId) return;
     try {
       const cursor = incremental ? chatCursor.current : null;
       const query = cursor ? '?since=' + encodeURIComponent(cursor) : '';
-      const result = await read<RoomChatPage>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/chat' + query, {
+      const result = await read<RoomChatPage>(await fetch('/api/rooms/' + encodeURIComponent(roomId) + '/chat' + query, {
         headers: { Accept: 'application/json', ...(await optionalAuthHeaders()) }, cache: 'no-store',
       }));
       const previous = chatMessagesRef.current;
@@ -461,11 +493,15 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         : result.messages;
       applyChatMessages(merged);
       chatCursor.current = merged.length ? merged[merged.length - 1].createdAt : null;
+      if (!incremental) {
+        setChatHasMore(Boolean(result.hasMore));
+        setChatUnread(result.unreadCount ?? 0);
+      }
       setChatError('');
     } catch (err) {
       setChatError(err instanceof Error ? err.message : 'The room conversation is unavailable.');
     }
-  }, [slug, roomIdentity?.isMember, optionalAuthHeaders, applyChatMessages]);
+  }, [roomId, roomIdentity?.isMember, optionalAuthHeaders, applyChatMessages]);
 
   useEffect(() => {
     if (panel !== 'chat' || !roomIdentity?.isMember) return;
@@ -475,12 +511,45 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     return () => window.clearInterval(timer);
   }, [panel, roomIdentity?.isMember, loadChat]);
 
+  /**
+   * THE ROOM'S PRESENCE.
+   *
+   * Polled from the server, which owns the truth (the Durable Object knows
+   * who is connected). The client never counts its own sockets and never
+   * invents an online state.
+   */
+  useEffect(() => {
+    if (!roomId) return;
+    let cancelled = false;
+    const loadPresence = async () => {
+      try {
+        const result = await read<{ onlineCount: number | null; mentorOnline: boolean | null }>(
+          await fetch('/api/rooms/' + encodeURIComponent(roomId) + '/presence', {
+            headers: { Accept: 'application/json', ...(await optionalAuthHeaders()) },
+            cache: 'no-store',
+          }),
+        );
+        if (cancelled) return;
+        setOnlineCount(result.onlineCount ?? null);
+        setMentorOnline(result.mentorOnline ?? null);
+      } catch {
+        /* The presence is a nicety: a failure leaves the last known state. */
+      }
+    };
+    void loadPresence();
+    const timer = window.setInterval(() => void loadPresence(), 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [roomId, optionalAuthHeaders]);
+
   const sendChatMessage = useCallback(async (content: string) => {
     setChatSending(true); setChatError('');
     try {
       const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json' });
       for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
-      const result = await read<{ message: RoomChatMessage }>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/chat', {
+      const result = await read<{ message: RoomChatMessage }>(await fetch('/api/rooms/' + encodeURIComponent(roomId) + '/chat', {
         method: 'POST', headers, body: JSON.stringify({ content }),
       }));
       const previous = chatMessagesRef.current;
@@ -491,7 +560,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     } catch (err) {
       setChatError(err instanceof Error ? err.message : 'Your message could not be posted.');
     } finally { setChatSending(false); }
-  }, [slug, getApiAuthHeaders, applyChatMessages]);
+  }, [roomId, getApiAuthHeaders, applyChatMessages]);
 
   /**
    * The private line to the room's leader. A member reads their own thread;
@@ -835,7 +904,20 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
     const timer = window.setInterval(() => setClock(new Date()), 1000);
     return () => window.clearInterval(timer);
   }, []);
-  const roomClock = useMemo(() => clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }), [clock]);
+  /**
+   * THE ROOM CLOCK.
+   *
+   * The time is UTC, and it is labelled as such. A trading room is a
+   * global room: "20:05" is ambiguous in a way that "20:05 UTC" is not,
+   * and two members comparing clocks should be comparing the same clock.
+   *
+   * The interval only writes the clock, so the header does not re-render
+   * every second.
+   */
+  const roomClock = useMemo(
+    () => clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC' }),
+    [clock],
+  );
 
   const priceDigits = marketSymbol.toUpperCase().includes('BTC') ? 2 : marketSymbol.toUpperCase().includes('ETH') ? 2 : 5;
   const quoteStatus = !quoteHasPrice(marketQuote)
@@ -873,6 +955,26 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
       </button>
       <div className="trade-room-identity">
         <span className="trade-room-identity-name">{data.team.name}</span>
+        {/**
+         * THE MENTOR'S AVAILABILITY.
+         *
+         * It is a NETWORK fact, not a session fact: the leader is online
+         * when they hold a live connection, whether or not anybody has
+         * started a session. A member can open the room and read the
+         * conversation either way, so this is information, never a gate.
+         */}
+        {mentorOnline !== null && (
+          <span
+            className={'trade-room-mentor ' + (mentorOnline ? 'is-online' : 'is-offline')}
+            title={
+              mentorOnline
+                ? 'The room leader is online.'
+                : 'The room leader is offline. You can still read and post in the room.'
+            }
+          >
+            {mentorOnline ? 'Mentor online' : 'Mentor offline'}
+          </span>
+        )}
         {liveSession && (
           <span className="trade-room-live-badge" role="status">
             <Radio size={11} strokeWidth={2.6} aria-hidden="true" />
@@ -893,21 +995,50 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           />
         )}
       </div>
+      {/**
+       * THE ROOM'S FIGURES.
+       *
+       * Three numbers, each measuring exactly one thing:
+       *   MEMBERS  how many people have joined the room
+       *   ONLINE   how many of them hold a live connection right now
+       *   CLOCK    the room's UTC time
+       *
+       * The old "connected now" figure duplicated the online count, so it
+       * is gone. The online count is null when the server cannot establish
+       * it, and it is shown as "—" rather than as zero: nobody being here
+       * and not knowing are different facts.
+       */}
       <dl className="trade-room-stats">
         <div className="trade-room-stat trade-room-stat-clock">
-          <dt><Clock size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Room clock</span></dt>
-          <dd className="trade-room-stat-value">{roomClock}</dd>
+          <dt><Clock size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Room clock (UTC)</span></dt>
+          <dd className="trade-room-stat-value">
+            {roomClock}
+            <span className="trade-room-stat-unit">UTC</span>
+          </dd>
         </div>
-        <div className="trade-room-stat">
+        <button
+          type="button"
+          className="trade-room-stat trade-room-stat-button"
+          onClick={() => setMembersOpen(true)}
+          aria-haspopup="dialog"
+          title="Who is in this room"
+        >
           <dt><Users size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Members</span></dt>
           <dd className="trade-room-stat-value">{roomIdentity?.memberCount ?? 1}<span className="trade-room-stat-unit">members</span></dd>
-        </div>
-        {realtime.participants.length > 0 && (
-          <div className="trade-room-stat">
-            <dt><Mic size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Connected now</span></dt>
-            <dd className="trade-room-stat-value">{realtime.participants.length}<span className="trade-room-stat-unit">online</span></dd>
-          </div>
-        )}
+        </button>
+        <button
+          type="button"
+          className="trade-room-stat trade-room-stat-button"
+          onClick={() => setMembersOpen(true)}
+          aria-haspopup="dialog"
+          title="Who is online in this room"
+        >
+          <dt><Wifi size={12} strokeWidth={2.2} aria-hidden="true" /><span className="sr-only">Online now</span></dt>
+          <dd className="trade-room-stat-value">
+            {onlineCount === null ? '—' : onlineCount}
+            <span className="trade-room-stat-unit">online</span>
+          </dd>
+        </button>
       </dl>
 
       <div className="trade-room-topbar-actions" ref={headerActionsRef}>
@@ -1169,6 +1300,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           onDrawingRemove={chartSync ? realtime.removeDrawing : undefined}
           onDrawingsClear={chartSync ? realtime.clearDrawings : undefined}
           toolsOpen={toolsOpen}
+          roomId={data.team.id}
           userId={currentUser?.uid}
           userName={viewerName}
         /> : <div className="trade-room-chart-empty"><span>{marketError || (candlesTimeframe !== activeTimeframe ? 'Loading ' + activeTimeframe + ' candles…' : 'Waiting for candle history')}</span></div>}
@@ -1182,7 +1314,12 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         statusTitle={quoteStatusText}
         badges={{
           news: news?.headlines.length ?? 0,
-          messages: chatMessages.length,
+          /**
+           * The UNREAD count, not the number of loaded messages. The badge
+           * used to show every message the panel had ever held, so it grew
+           * with the conversation and never went away.
+           */
+          messages: chatUnread,
         }}
       />
       <div className="trade-room-stream-list">
@@ -1196,6 +1333,10 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
           participantCount={roomIdentity?.memberCount ?? 0}
           signedIn={signedIn}
           joinError={chatError || identityError}
+          roomId={roomId}
+          hasMore={chatHasMore}
+          initialUnreadCount={chatUnread}
+          onUnreadCountChange={setChatUnread}
         />}
 
         {panel === 'news' && <NewsPanel news={news} loading={newsLoading} onRefresh={() => void loadNews(true)} />}
@@ -1244,6 +1385,14 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         />}
       </div>
     </aside>
+    {membersOpen && (
+      <RoomMembersModal
+        roomId={roomId}
+        canViewRoster={Boolean(roomIdentity?.isMember)}
+        viewerId={currentUser?.uid ?? null}
+        onClose={() => setMembersOpen(false)}
+      />
+    )}
     {settingsOpen && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !settingsSaving) setSettingsOpen(false); }}>
       <section className="tr-room-settings" role="dialog" aria-modal="true" aria-labelledby="tr-room-settings-title">
         <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">ROOM CONTROL</p><h2 id="tr-room-settings-title">Settings</h2><p>Your room, its description, who can see it and what it looks at.</p></div><button type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>

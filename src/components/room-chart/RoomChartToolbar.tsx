@@ -16,18 +16,26 @@
  *    "clear all" needs `canManageChart`.
  * 4. "Clear all" asks first, with an inline confirmation. A destructive
  *    action that fires on the first click is a bug report waiting to happen.
+ * 5. The strip is ONE row of small icon buttons. A chart that has to scroll
+ *    to find its own tools is not a hero, so the tools are icons and every
+ *    one of them says what it is in its tooltip.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Eraser,
+  Maximize2,
   Minus,
   MousePointer2,
   MoveVertical,
+  Redo2,
+  Rows2,
+  Ruler,
   Slash,
   Square,
   Trash2,
   TrendingUp,
+  Type,
   Undo2,
 } from 'lucide-react';
 import type { RoomIndicatorConfig, RoomIndicatorKind } from './roomIndicators';
@@ -66,6 +74,18 @@ export interface RoomChartToolbarProps {
   /** True when there is a local action to undo. */
   canUndo: boolean;
   onUndo: () => void;
+  /** True when there is an action to redo. */
+  canRedo: boolean;
+  onRedo: () => void;
+  /** Fits the visible data back into the window. */
+  onResetZoom: () => void;
+  /**
+   * True when the chart is this viewer's PRIVATE chart.
+   *
+   * The clear-all button then clears the viewer's own drawings, which
+   * needs no permission from anybody, and it says so.
+   */
+  localMode?: boolean;
   onClearAll: () => void;
   /** The latest value of every active indicator. */
   legend: RoomChartLegendEntry[];
@@ -73,17 +93,43 @@ export interface RoomChartToolbarProps {
   className?: string;
 }
 
+type ToolIcon = React.ComponentType<{ size?: number | string; strokeWidth?: number; 'aria-hidden'?: boolean }>;
+
 const TOOL_BUTTONS: Array<{
   tool: RoomChartTool;
   label: string;
-  icon: React.ComponentType<{ size?: number | string; strokeWidth?: number; 'aria-hidden'?: boolean }>;
+  title: string;
+  icon: ToolIcon;
 }> = [
-  { tool: 'cursor', label: 'Select and move drawings', icon: MousePointer2 },
-  { tool: 'trendline', label: 'Trend line', icon: TrendingUp },
-  { tool: 'ray', label: 'Ray', icon: Slash },
-  { tool: 'hline', label: 'Horizontal line', icon: Minus },
-  { tool: 'vline', label: 'Vertical line', icon: MoveVertical },
-  { tool: 'rect', label: 'Rectangle', icon: Square },
+  {
+    tool: 'cursor',
+    label: 'Select and move drawings',
+    title: 'Select and move drawings. Drag the chart to pan, scroll to zoom (V)',
+    icon: MousePointer2,
+  },
+  { tool: 'trendline', label: 'Trend line', title: 'Trend line (T)', icon: TrendingUp },
+  { tool: 'ray', label: 'Ray', title: 'Ray — a trend line that runs to the right edge (L)', icon: Slash },
+  { tool: 'hline', label: 'Horizontal line', title: 'Horizontal line (H)', icon: Minus },
+  { tool: 'vline', label: 'Vertical line', title: 'Vertical line (Y)', icon: MoveVertical },
+  { tool: 'rect', label: 'Rectangle', title: 'Rectangle (R)', icon: Square },
+  {
+    tool: 'measure',
+    label: 'Measure',
+    title: 'Measure — a local ruler, never sent to the room (M)',
+    icon: Ruler,
+  },
+  {
+    tool: 'text',
+    label: 'Text annotation',
+    title: 'Text annotation — click a price and type (X)',
+    icon: Type,
+  },
+  {
+    tool: 'channel',
+    label: 'Channel',
+    title: 'Channel — two parallel trend lines, undone together (C)',
+    icon: Rows2,
+  },
 ];
 
 const INDICATOR_BUTTONS: Array<{ kind: RoomIndicatorKind; label: string; title: string }> = [
@@ -171,6 +217,10 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
   onRemoveSelected,
   canUndo,
   onUndo,
+  canRedo,
+  onRedo,
+  onResetZoom,
+  localMode = false,
   onClearAll,
   legend,
   className,
@@ -243,7 +293,7 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
           <button
             key={entry.tool}
             type="button"
-            title={entry.label}
+            title={entry.title}
             aria-label={entry.label}
             aria-pressed={active}
             disabled={disabled}
@@ -259,7 +309,7 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
 
       <button
         type="button"
-        title="Undo your last drawing action"
+        title="Undo your last drawing action (Ctrl+Z)"
         aria-label="Undo your last drawing action"
         disabled={!canUndo}
         onClick={onUndo}
@@ -270,7 +320,18 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
 
       <button
         type="button"
-        title={selectedId ? 'Remove the selected drawing' : 'Select a drawing to remove it'}
+        title="Redo the action you undid (Ctrl+Shift+Z)"
+        aria-label="Redo the action you undid"
+        disabled={!canRedo}
+        onClick={onRedo}
+        className={ICON_BUTTON}
+      >
+        <Redo2 size={16} strokeWidth={2} aria-hidden />
+      </button>
+
+      <button
+        type="button"
+        title={selectedId ? 'Remove the selected drawing (Delete)' : 'Select a drawing to remove it'}
         aria-label="Remove the selected drawing"
         disabled={!selectedId || !canRemoveSelected}
         onClick={onRemoveSelected}
@@ -282,10 +343,10 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
       <div className="relative" ref={clearRef}>
         <button
           type="button"
-          title="Clear every drawing in the room"
-          aria-label="Clear every drawing in the room"
+          title={localMode ? 'Clear your drawings' : 'Clear every drawing in the room'}
+          aria-label={localMode ? 'Clear your drawings' : 'Clear every drawing in the room'}
           aria-expanded={confirmingClear}
-          disabled={!canManageChart || drawingCount === 0}
+          disabled={(localMode ? false : !canManageChart) || drawingCount === 0}
           onClick={() => setConfirmingClear(value => !value)}
           className={ICON_BUTTON}
         >
@@ -301,12 +362,15 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
             />
             <div
               role="alertdialog"
-              aria-label="Clear every drawing in the room?"
+              aria-label={localMode ? 'Clear your drawings?' : 'Clear every drawing in the room?'}
               className="absolute right-0 top-9 z-30 w-56 rounded-lg border border-line-strong bg-raised p-3 shadow-lg"
             >
               <p className="text-xs font-semibold text-fg">Clear every drawing?</p>
               <p className="mt-1 text-[11px] text-fg-muted">
-                This removes all {drawingCount} drawing{drawingCount === 1 ? '' : 's'} for everyone in the room.
+                {localMode
+                  ? `This removes all ${drawingCount} of your drawing${drawingCount === 1 ? '' : 's'}.`
+                  : `This removes all ${drawingCount} drawing${drawingCount === 1 ? '' : 's'} for everyone in the room.`}
+                {' '}It can be undone.
               </p>
               <div className="mt-3 flex justify-end gap-2">
                 <button
@@ -320,8 +384,8 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
                 </button>
                 <button
                   type="button"
-                  title="Clear every drawing in the room"
-                  aria-label="Confirm clearing every drawing in the room"
+                  title={localMode ? 'Clear your drawings' : 'Clear every drawing in the room'}
+                  aria-label={localMode ? 'Confirm clearing your drawings' : 'Confirm clearing every drawing in the room'}
                   className="btn btn-danger h-7 px-2 text-[11px]"
                   onClick={() => {
                     setConfirmingClear(false);
@@ -335,6 +399,16 @@ export const RoomChartToolbar: React.FC<RoomChartToolbarProps> = ({
           </>
         ) : null}
       </div>
+
+      <button
+        type="button"
+        title="Reset the zoom — fit the visible data back into the window"
+        aria-label="Reset the zoom"
+        onClick={onResetZoom}
+        className={ICON_BUTTON}
+      >
+        <Maximize2 size={16} strokeWidth={2} aria-hidden />
+      </button>
 
       <span className="mx-1 h-5 w-px bg-line" aria-hidden="true" />
 

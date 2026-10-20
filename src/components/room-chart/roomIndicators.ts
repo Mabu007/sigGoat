@@ -30,9 +30,27 @@
  * that existed AT that bar. Because the SDK implementations are continuous
  * (Wilder's RSI and the EMA recursion are seeded from the FIRST bars of the
  * slice and never re-seeded), evaluating a growing slice yields exactly the
- * value that a single streaming implementation would have produced — and the
- * last point of every series equals the value the tracker engine computes
- * for the same window.
+ * value that a single streaming implementation would have produced.
+ *
+ * ONE DELIBERATE DEVIATION: THE MACD SIGNAL
+ * -----------------------------------------
+ * For every indicator EXCEPT the MACD signal line, the last point of the
+ * chart's series is the value the tracker engine computes for the same
+ * window.
+ *
+ * The signal line is the exception, and the deviation is on purpose:
+ *
+ *   - the tracker engine's `calculateMACD` derives its signal as
+ *     `macd * 0.9` — a constant multiple of the MACD value, not an
+ *     exponential average of the MACD series,
+ *   - the chart computes a real EMA of the MACD series, which is what a
+ *     MACD signal line actually is.
+ *
+ * The chart keeps the real EMA. A signal line that is 90% of the MACD line
+ * is not a signal line, it is a slightly lower copy of it, and the MACD
+ * histogram built on top of it would be meaningless. The two numbers
+ * therefore do NOT agree, and the difference is written down here rather
+ * than left for somebody to discover.
  *
  * The cost is O(n^2) over the slice length. At the ~500 bars a room chart
  * holds that is a few milliseconds, and the result is memoised on the candle
@@ -196,8 +214,11 @@ function asCandle(time: number, value: number): RoomIndicatorCandle {
 }
 
 /**
- * The EMA of a plain number series, computed with the SDK's own EMA so the
- * signal line is the same maths the rest of the product uses.
+ * The EMA of a plain number series, computed with the SDK's own EMA.
+ *
+ * It is NOT the same number as the tracker engine's MACD signal, which is
+ * `macd * 0.9` — see the note about that deviation at the top of this
+ * file.
  */
 function emaOfSeries(values: RoomIndicatorPoint[], period: number): RoomIndicatorPoint[] {
   const out: RoomIndicatorPoint[] = [];
@@ -275,6 +296,9 @@ function evaluateMacd(candles: readonly RoomIndicatorCandle[], config: RoomIndic
    * The signal line is the EMA of the MACD line, evaluated with the SDK's
    * EMA so it is a real exponential average rather than a constant
    * multiple of the MACD value.
+   *
+   * The tracker engine's own signal is `macd * 0.9`, so the two do not
+   * agree. That is deliberate: see the note at the top of this file.
    */
   const signalPoints = emaOfSeries(macdPoints, signalPeriod);
   const signalByTime = new Map(signalPoints.map(point => [point.time, point.value]));

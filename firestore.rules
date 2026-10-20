@@ -238,10 +238,21 @@ service cloud.firestore {
         allow delete: if isOwner(userId) && isValidId(signalId);
       }
 
-       match /backtests/{backtestId} {
-         allow get, list: if isOwner(userId);
-         allow create: if isOwner(userId) && isValidId(backtestId) && isValidBacktest(incoming());
-         allow delete: if isOwner(userId) && isValidId(backtestId);
+      match /backtests/{backtestId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidBacktest(incoming());
+        allow delete: if isOwner(userId);
+       }
+
+       // Where this member has read up to, per room.
+       //
+       // The cursor is written by the SERVER, from the messages the member
+       // actually saw. If the browser could write it, a client could clear
+       // another user's unread state, and a user could claim to have read a
+       // conversation they never opened.
+       match /readCursors/{roomId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
        }
 
        // ------------------------------------------------------------------
@@ -330,6 +341,16 @@ service cloud.firestore {
         allow read: if isRoomMember(roomId);
         allow create, update: if isRoomMember(roomId) && request.auth.uid == uid;
         allow delete: if request.auth.uid == uid;
+      }
+
+      // Who holds a live connection right now.
+      //
+      // The Durable Object reports this and the server records it, so the
+      // browser never writes it: a client that could write its own
+      // presence would be able to make itself look online.
+      match /presence/{docId} {
+        allow read: if isRoomMember(roomId);
+        allow write: if false;
       }
     }
 

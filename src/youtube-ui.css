@@ -434,3 +434,76 @@
    Whichever file loaded last won, which is how the chart ended up
    rendered at zero height. One owner, one set of rules.
    ================================================================== */
+
+/* --------------------------------------------------------------------------
+   ROOM CARD — the cover is the card
+   --------------------------------------------------------------------------
+   The thumbnail carries the cover image and at most two small facts: whether
+   a session is running, and how many members are online right now. The
+   market label, the visibility label and the category label used to be
+   repeated here AND below the image.
+   -------------------------------------------------------------------------- */
+
+.yt-thumb-live {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--color-negative);
+  color: var(--color-fg-inverse);
+  font: 800 9px/1 var(--font-sans, system-ui, sans-serif);
+  letter-spacing: .09em;
+}
+
+.yt-thumb-online {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--color-line) 70%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--color-fg-muted);
+  font: 700 9px/1 var(--font-sans, system-ui, sans-serif);
+  letter-spacing: .04em;
+}
+
+.yt-thumb-online-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-positive);
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--color-positive) 20%, transparent);
+}
+
+.yt-thumb-online-unknown { color: var(--color-fg-subtle); }
+
+.yt-room-mentor-line { color: var(--color-positive); font-weight: 650; }
+.yt-room-mentor-line.is-offline { color: var(--color-fg-subtle); font-weight: 500; }
+
+.yt-room-open {
+  margin-left: auto;
+  padding: 3px 9px;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  background: var(--color-raised);
+  color: var(--color-fg-muted);
+  font: 700 9px/1 var(--font-sans, system-ui, sans-serif);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.yt-room-card:hover .yt-room-open {
+  border-color: var(--color-accent);
+  color: var(--color-accent-text);
+}

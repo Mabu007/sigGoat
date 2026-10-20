@@ -4,6 +4,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { BrandMark } from './Navigation';
 import { UserAvatar } from './UserAvatar';
 import { useAuth } from '../context/AuthContext';
+import { useProfilePictureSnapshot } from '../hooks/useProfilePicture';
 
 interface HeaderProps {
   displayName?: string | null;
@@ -17,38 +18,22 @@ interface HeaderProps {
 
 export function Header({ displayName, email, onOpenSettings, onCreateRoom, onRefresh, refreshing = false, lastUpdatedMs }: HeaderProps) {
   const [search, setSearch] = useState('');
-  const { currentUser, authMode, openAuthModal, logout, getApiAuthHeaders } = useAuth();
+  const { currentUser, authMode, openAuthModal, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  /**
+   * THE PROFILE PICTURE.
+   *
+   * It comes from the shared profile-picture store, so a picture saved in
+   * Settings appears here without a reload. The header used to keep its own
+   * copy, fetched separately, which is why the two could disagree.
+   */
+  const { url: avatarUrl } = useProfilePictureSnapshot();
 
   const signedIn = Boolean(currentUser) || authMode === 'dev';
   const initials = (displayName ?? email ?? '?').trim().charAt(0).toUpperCase();
 
-  /**
-   * The signed-in member's picture.
-   *
-   * It is fetched from the server rather than read straight out of
-   * Firestore, because the stored value is an R2 object KEY and the
-   * browser needs a signed DELIVERY url. The request is made once, and only
-   * while somebody is actually signed in.
-   */
-  useEffect(() => {
-    if (!signedIn) { setAvatarUrl(null); return; }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const headers = new Headers({ Accept: 'application/json' });
-        for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
-        const response = await fetch('/api/profile', { headers, cache: 'no-store' });
-        const body = await response.json().catch(() => ({}));
-        if (!cancelled && response.ok) setAvatarUrl(body.avatarUrl ?? null);
-      } catch {
-        // No avatar is a perfectly good outcome: the initials stand in.
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [signedIn, getApiAuthHeaders]);
+
 
   const submitSearch = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();

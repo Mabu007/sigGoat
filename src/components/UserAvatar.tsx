@@ -35,6 +35,13 @@ export interface UserAvatarProps {
   initials?: string | null;
   /** True when the name is already rendered nearby, so the avatar is decoration. */
   decorative?: boolean;
+  /**
+   * True when this picture is uploaded but NOT saved yet.
+   *
+   * A dashed ring says "this is not the picture yet" without a word, which
+   * matters where the row has room for a caption and other places do not.
+   */
+  pending?: boolean;
 }
 
 /**
@@ -85,6 +92,7 @@ export function UserAvatar({
   className,
   initials,
   decorative = false,
+  pending = false,
 }: UserAvatarProps) {
   const [broken, setBroken] = useState(false);
 
@@ -104,6 +112,18 @@ export function UserAvatar({
   const dimension = { width: size, height: size };
   const fontSize = Math.max(10, Math.round(size * 0.38));
 
+  /**
+   * The dashed ring of an unsaved picture. It is drawn with an outline so it
+   * never changes the size of the avatar.
+   */
+  const frameStyle = pending
+    ? {
+        ...dimension,
+        outline: '2px dashed var(--color-accent-text)',
+        outlineOffset: '2px',
+      }
+    : dimension;
+
   const shared = [
     'inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full border border-line',
     className ?? '',
@@ -113,7 +133,7 @@ export function UserAvatar({
 
   if (showImage) {
     return (
-      <span className={shared} style={dimension}>
+      <span className={shared} style={frameStyle}>
         <img
           src={url as string}
           alt={decorative ? '' : label}
@@ -135,7 +155,7 @@ export function UserAvatar({
   return (
     <span
       className={`${shared} ${palette}`}
-      style={dimension}
+      style={frameStyle}
       role={decorative ? undefined : 'img'}
       aria-label={decorative ? undefined : label || 'User'}
       aria-hidden={decorative ? 'true' : undefined}

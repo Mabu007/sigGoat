@@ -48,7 +48,6 @@ import {
 } from "./credentialValidation";
 import { ALLOWED_TIMEFRAMES } from "../shared/roomProtocol";
 import {
-  createPersistence,
   getPersistenceDegradationReason,
   PersistenceLayer,
   NotFoundError,
@@ -185,8 +184,21 @@ function keepBackgroundTaskAlive(task: Promise<unknown>): void {
 /* Wiring                                                              */
 /* ------------------------------------------------------------------ */
 
-const persistence: PersistenceLayer = createPersistence();
+/**
+ * The datastore is shared with the room API, so it lives in its own module:
+ * a second instance would hold a second copy of the state.
+ */
+import { persistence } from "./persistence";
+import { createMediaStore, toMediaReference } from "./media/mediaStore";
 export const appPersistence = persistence;
+
+/**
+ * The image store, used to resolve a member's PROFILE PICTURE.
+ *
+ * The stored value is an R2 object key and the url that is handed to the
+ * browser EXPIRES, so it is regenerated on every read.
+ */
+const roomMediaStore = createMediaStore();
 const goatWorkflowStore = createGoatWorkflowStore();
 const goatTeamStore = createGoatTeamStore();
 const roomMemberStore = createRoomMemberStore();
@@ -4433,17 +4445,49 @@ apiRouter.get("/team-rooms/:slug/me", optionalAuthMiddleware, handle(async (req,
     },
     /** The real number of people in the room. Never a made-up figure. */
     memberCount: roster.length + 1,
-    /** Names are only for the people in the room. */
+    /**
+     * Names are only for the people in the room.
+     *
+     * Each member also carries their PROFILE PICTURE, so the roster shows
+     * the person rather than their initials. The picture is a signed
+     * delivery url that is regenerated on every read, and the lookups are
+     * cached for the life of this request so a full roster does not become
+     * one Firestore read per member.
+     */
     members: isMember
-      ? [
-          { id: team.ownerUserId, displayName: leaderName, role: "LEADER" as const, joinedAt: team.createdAt },
-          ...roster.map(member => ({
-            id: member.userId,
-            displayName: member.displayName,
-            role: "MEMBER" as const,
-            joinedAt: member.joinedAt,
-          })),
-        ]
+      ? await (async () => {
+          const pictures = new Map<string, string | null>();
+          const avatarFor = async (uid: string) => {
+            if (pictures.has(uid)) return pictures.get(uid) ?? null;
+            let url: string | null = null;
+            try {
+              const stored = await roomMediaStore.getAvatar(uid);
+              url = stored ? toMediaReference(stored, "avatar")?.url ?? null : null;
+            } catch {
+              url = null;
+            }
+            pictures.set(uid, url);
+            return url;
+          };
+          return [
+            {
+              id: team.ownerUserId,
+              displayName: leaderName,
+              role: "LEADER" as const,
+              joinedAt: team.createdAt,
+              avatarUrl: await avatarFor(team.ownerUserId),
+            },
+            ...await Promise.all(
+              roster.map(async member => ({
+                id: member.userId,
+                displayName: member.displayName,
+                role: "MEMBER" as const,
+                joinedAt: member.joinedAt,
+                avatarUrl: await avatarFor(member.userId),
+              })),
+            ),
+          ];
+        })()
       : [],
   });
 }));

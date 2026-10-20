@@ -1,0 +1,54 @@
+/* ==========================================================================
+   ROOM CHART
+   ==========================================================================
+   The parts of the room chart that need their own styles.
+
+   The chart itself, the drawing overlay and the tool strip are styled by
+   the components they belong to; the only thing that needs a rule of its
+   own is the inline text-annotation prompt, because it floats over the
+   chart and has to stay readable on both the light and the dark canvas.
+
+   The tokens are the ones the theme already defines, so the prompt follows
+   the theme without a second set of colours.
+   ========================================================================== */
+
+/* --- the inline text annotation prompt --------------------------------- */
+/*
+ * It sits in the top-left corner of the chart, out of the way of the
+ * candles, and it is a form rather than a floating div so the keyboard
+ * works the way a keyboard user expects: type, Enter to commit, Escape to
+ * throw it away.
+ */
+.room-chart-text-prompt {
+  position: absolute;
+  z-index: 6;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: calc(100% - 20px);
+  padding: 6px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 8px;
+  background: var(--color-raised);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--color-sunken) 55%, transparent);
+}
+
+.room-chart-text-prompt .input {
+  min-width: 180px;
+  background: var(--color-surface);
+}
+
+@media (max-width: 640px) {
+  .room-chart-text-prompt {
+    left: 6px;
+    right: 6px;
+    width: auto;
+  }
+
+  .room-chart-text-prompt .input {
+    min-width: 0;
+  }
+}

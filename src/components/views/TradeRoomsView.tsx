@@ -85,6 +85,13 @@ interface RoomView {
   voiceEnabled: boolean;
   coverUrl: string | null;
   live: boolean;
+  /**
+   * How many members hold a live connection right now. Null means the
+   * server could not establish it, which is NOT the same as zero.
+   */
+  onlineCount: number | null;
+  /** Whether the room's leader has a live connection. */
+  mentorOnline: boolean | null;
   role: RoomRole;
   canManage: boolean;
   canChat: boolean;
@@ -158,6 +165,8 @@ function toRoomView(raw: any): RoomView {
     voiceEnabled: raw?.voiceEnabled !== false,
     coverUrl: typeof raw?.coverUrl === 'string' && raw.coverUrl.length > 0 ? raw.coverUrl : null,
     live: raw?.live === true,
+    onlineCount: typeof raw?.onlineCount === 'number' ? raw.onlineCount : null,
+    mentorOnline: typeof raw?.mentorOnline === 'boolean' ? raw.mentorOnline : null,
     role: (raw?.role ?? 'GUEST') as RoomRole,
     canManage: raw?.canManage === true,
     canChat: raw?.canChat === true,
@@ -619,13 +628,19 @@ export function TradeRoomsView({
                           </div>
                         )}
 
-                        <div className="yt-thumb-topline">
-                          <span className="yt-thumb-market">{marketLabel}</span>
-                          <span className="yt-thumb-mode">{isPrivate ? 'PRIVATE' : 'OPEN'}</span>
-                        </div>
-
+                        {/**
+                         * THE COVER IS THE CARD.
+                         *
+                         * The thumbnail carries the cover image and at most
+                         * two small facts: whether a session is running,
+                         * and how many members are online right now. The
+                         * market label, the visibility label and the
+                         * category label used to be repeated here AND
+                         * below the image, which is noise over the one
+                         * thing the card is for.
+                         */}
                         {room.live ? (
-                          <span className="absolute bottom-2 left-2 z-[2] inline-flex items-center gap-1 rounded-md bg-negative px-1.5 py-0.5 text-[10px] font-bold tracking-[0.08em] text-fg-inverse">
+                          <span className="yt-thumb-live">
                             <Radio size={10} aria-hidden="true" /> LIVE
                           </span>
                         ) : null}
@@ -633,18 +648,30 @@ export function TradeRoomsView({
                         <span className="yt-thumb-play" aria-hidden="true">
                           <ArrowUpRight size={21} />
                         </span>
-                        <span className="yt-thumb-duration">{categoryLabel.toUpperCase()}</span>
+                        <span className="yt-thumb-online">
+                          {room.onlineCount === null ? (
+                            <span className="yt-thumb-online-unknown">online &mdash;</span>
+                          ) : (
+                            <>
+                              <span className="yt-thumb-online-dot" aria-hidden="true" />
+                              {room.onlineCount} online
+                            </>
+                          )}
+                        </span>
                       </div>
 
                       <div className="yt-room-meta">
-                        <div className="yt-room-avatar" aria-hidden="true">
-                          <Users size={18} />
-                        </div>
                         <div className="min-w-0 flex-1">
                           <h3 className="yt-room-title">{room.name}</h3>
                           <p className="yt-room-creator">
-                            {room.creatorName || 'Room leader'} <span aria-hidden="true">·</span> {room.memberCount}{' '}
-                            {room.memberCount === 1 ? 'member' : 'members'}
+                            {room.creatorName || 'Room leader'}
+                            <span aria-hidden="true"> · </span>
+                            {room.memberCount} {room.memberCount === 1 ? 'member' : 'members'}
+                            {room.mentorOnline === true ? (
+                              <span className="yt-room-mentor-line"> · mentor online</span>
+                            ) : room.mentorOnline === false ? (
+                              <span className="yt-room-mentor-line is-offline"> · mentor offline</span>
+                            ) : null}
                           </p>
                           <p className="yt-room-description">{room.description || 'A room for sharing market analysis.'}</p>
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -654,14 +681,17 @@ export function TradeRoomsView({
                                 <LockKeyhole size={10} aria-hidden="true" /> Private
                               </span>
                             ) : null}
-                            {room.live ? (
-                              <span className="badge badge-negative">
-                                <Radio size={10} aria-hidden="true" /> LIVE
-                              </span>
-                            ) : null}
                             {room.markets?.length ? (
                               <span className="badge badge-neutral">{room.markets.slice(0, 2).join(' · ')}</span>
                             ) : null}
+                            {/**
+                             * ONE ACTION.
+                             *
+                             * The whole card opens the room, and the
+                             * affordance says so once, in words, instead of
+                             * a second label competing with the title.
+                             */}
+                            <span className="yt-room-open">Open</span>
                           </div>
                         </div>
                       </div>
