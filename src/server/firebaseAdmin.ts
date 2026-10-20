@@ -3,17 +3,37 @@
  * ===============================
  * firebase-admin only permits one initializeApp() per (projectId, appId) pair;
  * both the auth middleware and the persistence layer need it, so init is
- * centralized here. Loaded lazily via require() because firebase-admin is a
- * server-only dependency (never bundled into the client).
+ * centralized here.
+ *
+ * WHY THE IMPORTS ARE STATIC
+ * --------------------------
+ * This module used to load the SDK with a dynamic `createRequire(...)`. That
+ * works locally, and it fails SILENTLY on Vercel:
+ *
+ *   Vercel traces a function's dependencies to decide what to upload. A
+ *   static `import` is traced; a dynamic `require` computed at runtime is
+ *   not. So `firebase-admin` was left out of the deployment entirely, and
+ *   the deployed API answered every request with
+ *
+ *     Cannot find module 'firebase-admin'
+ *     Require stack: - /var/task/.api-build/index.mjs
+ *
+ *   which surfaced as an opaque FUNCTION_INVOCATION_FAILED on every route.
+ *   Express was in the deployment because it is statically imported, which
+ *   is why the server booted at all.
+ *
+ * The SDK is still INITIALIZED lazily — nothing is constructed until the
+ * first call — so the lazy behaviour that mattered is preserved. Only the
+ * module resolution became static, which is what the deploy needs.
+ *
+ * This module is server-only. The client bundle never imports it, so
+ * firebase-admin is never shipped to a browser.
  */
 
-import { createRequire } from 'module';
-import type { App } from 'firebase-admin/app';
-import type { Firestore } from 'firebase-admin/firestore';
-import type { Auth } from 'firebase-admin/auth';
-
-// firebase-admin ships CJS; createRequire keeps it loadable from ESM too.
-const nodeRequire = createRequire(import.meta.url);
+import { cert, initializeApp, type App } from 'firebase-admin/app';
+import fs from 'fs';
+import { getFirestore, type Firestore } from 'firebase-admin/firestore';
+import { getAuth, type Auth } from 'firebase-admin/auth';
 
 export interface FirebaseAdminBundle {
   app: App;
@@ -70,10 +90,6 @@ export function getFirebaseAdmin(): FirebaseAdminBundle | null {
   lastFailureReason = undefined;
 
   try {
-    const admin = nodeRequire('firebase-admin') as typeof import('firebase-admin');
-    const appModule = nodeRequire('firebase-admin/app') as typeof import('firebase-admin/app');
-    const fs = nodeRequire('fs') as typeof import('fs');
-
     const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
     const serviceAccount = parseServiceAccountJson();
 
@@ -81,14 +97,14 @@ export function getFirebaseAdmin(): FirebaseAdminBundle | null {
     let projectConfigured = false;
 
     if (serviceAccount) {
-      credential = appModule.cert(JSON.parse(serviceAccount.json));
+      credential = cert(JSON.parse(serviceAccount.json));
       projectConfigured = true;
     } else {
       const credentialsPath =
         process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
 
       if (credentialsPath && fs.existsSync(credentialsPath)) {
-        credential = appModule.cert(
+        credential = cert(
           JSON.parse(fs.readFileSync(credentialsPath, 'utf8')),
         );
         projectConfigured = true;
@@ -112,12 +128,12 @@ export function getFirebaseAdmin(): FirebaseAdminBundle | null {
         ? (JSON.parse(serviceAccount.json).project_id as string | undefined)
         : undefined);
 
-    const app = admin.initializeApp({
+    const app = initializeApp({
       projectId: resolvedProjectId,
       credential,
     });
-    const firestore = (nodeRequire('firebase-admin/firestore') as typeof import('firebase-admin/firestore')).getFirestore(app);
-    const auth = (nodeRequire('firebase-admin/auth') as typeof import('firebase-admin/auth')).getAuth(app);
+    const firestore = getFirestore(app);
+    const auth = getAuth(app);
 
     bundle = { app, firestore, auth };
     console.log(
