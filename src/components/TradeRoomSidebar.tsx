@@ -27,12 +27,15 @@
  * that has no messages says so, a news feed that failed says why.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  CandlestickChart, ChevronLeft, ExternalLink, Link2, Lock, MessageCircle,
+  ArrowDown, CandlestickChart, ChevronLeft, ExternalLink, Link2, Lock, MessageCircle,
   MessagesSquare, Newspaper, Users, X, RefreshCw, Send,
   CheckCircle2, AlertCircle,
 } from 'lucide-react';
+import { UserAvatar } from './UserAvatar';
+import { useAuth } from '../context/AuthContext';
+import './chat.css';
 
 /* -------------------------------------------------------------------------
    Shared contracts. Kept local and structural: the room payload is the only
@@ -277,6 +280,25 @@ function localMessageTime(value: string): string {
    where the market gets discussed, so it carries names and timestamps and
    nothing else.
 
+   IT IS A MESSAGING APP, NOT A FEED
+   ---------------------------------
+   The panel is a flex column that fills the slot it is given: a fixed status
+   strip, a conversation that scrolls, and a composer PINNED to the bottom so
+   it never scrolls out of reach. The room's other panels still scroll in the
+   outer container; this one does not need it.
+
+   Three behaviours make it feel like a messenger rather than a log:
+
+   1. A new message scrolls the reader down ONLY when they are already at
+      the bottom. A reader looking at older messages is left where they are,
+      and a "N new messages" pill offers the jump they declined.
+   2. Loading older history PREPENDS to the list, so the content under the
+      reader's eyes must not move. The scroll offset is measured before the
+      prepend and restored after it.
+   3. Unread is a COUNT, not a total. It starts at the server's number, grows
+      when a message arrives that the reader has not seen, and empties when
+      the reader has actually seen the messages.
+
    A visitor can read the conversation without an account. Posting needs one,
    so the composer is locked for them and opens the sign-in dialog when they
    press it.
@@ -287,16 +309,98 @@ export interface RoomChatMessage {
   id: string;
   authorId: string;
   authorName: string;
+  /** The author's picture, when the server has one. */
+  authorAvatarUrl?: string | null;
   content: string;
   createdAt: string;
+  /** The author's role in the room — 'LEADER' or 'MEMBER'. */
+  role?: string;
 }
 
-export function RoomChatPanel({
-  messages, onSend, sending, canPost, onRequestSignIn, viewerId, participantCount, signedIn, joinError,
-}: {
+/** One page of room history. */
+export interface RoomChatPage {
   messages: RoomChatMessage[];
-  onSend: (content: string) => void;
+  hasMore: boolean;
+}
+
+/** How close to the bottom still counts as "the reader is at the latest message". */
+const CHAT_NEAR_BOTTOM_PX = 80;
+/** How many older messages one page of history holds. */
+const CHAT_HISTORY_PAGE = 40;
+/** Only an explicit http(s) URL is ever turned into a link. */
+const CHAT_LINK_PATTERN = /https?:\/\/[^\s<>()]+/gi;
+
+/**
+ * Whether a URL may be turned into an anchor.
+ *
+ * A chat message is text written by whoever is in the room, so the markup in
+ * it is never interpreted. A link is only a link when it is http or https:
+ * `javascript:` and `data:` never become clickable.
+ */
+function isSafeChatLink(href: string): boolean {
+  try {
+    const url = new URL(href);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A message body.
+ *
+ * The content is rendered as TEXT. The only thing that is not text is an
+ * http(s) URL, which becomes an anchor that opens in a new tab and cannot
+ * reach back into this page.
+ */
+function ChatMessageBody({ content }: { content: string }) {
+  const parts = React.useMemo(() => {
+    const pieces: { link: boolean; value: string }[] = [];
+    let cursor = 0;
+    for (const match of content.matchAll(CHAT_LINK_PATTERN)) {
+      const index = match.index ?? 0;
+      const raw = match[0];
+      if (index > cursor) pieces.push({ link: false, value: content.slice(cursor, index) });
+      /* A sentence's full stop belongs to the sentence, not to the link. */
+      const bare = raw.replace(/[.,;:!?)\]}'"]+$/, '');
+      const tail = raw.slice(bare.length);
+      if (isSafeChatLink(bare)) pieces.push({ link: true, value: bare });
+      else pieces.push({ link: false, value: bare });
+      if (tail) pieces.push({ link: false, value: tail });
+      cursor = index + raw.length;
+    }
+    if (cursor < content.length) pieces.push({ link: false, value: content.slice(cursor) });
+    return pieces;
+  }, [content]);
+
+  return (
+    <p className="tr-chat-row-body">
+      {parts.map((part, index) => part.link
+        ? (
+          <a key={index} href={part.value} target="_blank" rel="noopener noreferrer noreferrer">
+            {part.value}
+          </a>
+        )
+        : <React.Fragment key={index}>{part.value}</React.Fragment>)}
+    </p>
+  );
+}
+
+/** The public surface of the room chat panel. */
+export interface RoomChatPanelProps {
+  /** The messages the room holds right now, oldest first. */
+  messages: RoomChatMessage[];
+  /**
+   * Posts a message.
+   *
+   * Return a promise to keep the draft until the server has accepted the
+   * message: resolve `false` (or reject) and the draft stays where it is,
+   * resolve anything else and the composer clears itself.
+   */
+  onSend: (content: string) => void | Promise<boolean | void>;
+  /** True while a post is in flight. */
   sending: boolean;
+  /** True when this viewer may post in the room. */
   canPost: boolean;
   /** Opens the sign-in dialog. Used by the locked composer. */
   onRequestSignIn: () => void;
@@ -304,88 +408,522 @@ export function RoomChatPanel({
   participantCount: number;
   signedIn: boolean;
   joinError: string;
-}) {
+
+  /* ---- optional: everything the panel can do on its own ---- */
+
+  /** The room's id. Lets the panel load history and record reads by itself. */
+  roomId?: string | null;
+  /** Whether older history exists behind the newest page. */
+  hasMore?: boolean;
+  /** The server's unread count. Used as the starting value. */
+  initialUnreadCount?: number;
+  /** The server's read cursor, when it has one. */
+  lastReadMessageId?: string | null;
+  /** Called with the unread count whenever it changes. The tab badge uses it. */
+  onUnreadCountChange?: (count: number) => void;
+  /** Loads a page of older history. Defaults to the panel's own request. */
+  onLoadOlder?: (before: string) => Promise<RoomChatPage>;
+  /** Records that a message has been read. Defaults to the panel's own request. */
+  onMarkRead?: (messageId: string) => void | Promise<void>;
+}
+
+/**
+ * THE PANEL, SCOPED TO ONE ROOM.
+ *
+ * The conversation, the unread count and the read cursor belong to a room.
+ * Changing rooms must not carry them over, so the state lives in a component
+ * that is keyed by the room: a new room is a new component, with nothing
+ * inherited from the last one.
+ */
+export function RoomChatPanel(props: RoomChatPanelProps) {
+  return <RoomChatConversation key={props.roomId ?? 'room'} {...props} />;
+}
+
+function RoomChatConversation({
+  messages, onSend, sending, canPost, onRequestSignIn, viewerId, participantCount, signedIn, joinError,
+  roomId = null, hasMore = false, initialUnreadCount = 0, lastReadMessageId = null,
+  onUnreadCountChange, onLoadOlder, onMarkRead,
+}: RoomChatPanelProps) {
+  const { getApiAuthHeaders } = useAuth();
+
   const [draft, setDraft] = useState('');
+  const [sendingLocal, setSendingLocal] = useState(false);
+  const [sendError, setSendError] = useState('');
+  /** Older history the panel has paged in, oldest first. */
+  const [olderMessages, setOlderMessages] = useState<RoomChatMessage[]>([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState('');
+  /** Whether older history still exists. */
+  const [moreAvailable, setMoreAvailable] = useState(hasMore);
+  /** Messages that arrived while the reader was away from the bottom. */
+  const [pendingNew, setPendingNew] = useState(0);
+  /** The unread count the tab badge shows. */
+  const [unreadCount, setUnreadCount] = useState(() => Math.max(0, initialUnreadCount || 0));
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  /** True when the reader is at (or within a few pixels of) the bottom. */
+  const atBottomRef = useRef(true);
+  /** True when the panel is actually on screen. */
+  const visibleRef = useRef(true);
+  /** The last message this reader has been shown. */
+  const readCursorRef = useRef<string | null>(lastReadMessageId);
+  /** Every message id the panel has already accounted for. */
+  const seenIdsRef = useRef<Set<string>>(new Set());
+  /** The scroll geometry captured before an older page is prepended. */
+  const restoreRef = useRef<{ height: number; top: number } | null>(null);
+  const loadingOlderRef = useRef(false);
+  const busyRef = useRef(false);
+  /** The list as it is on screen, for callbacks that run outside a render. */
+  const mergedRef = useRef<RoomChatMessage[]>([]);
+  const moreRef = useRef(hasMore);
+  const unreadCallbackRef = useRef(onUnreadCountChange);
+
+  const busy = sending || sendingLocal;
+
+  /** The request headers this browser signs its room calls with. */
+  const authHeaders = React.useCallback(async (): Promise<Record<string, string>> => {
+    try {
+      return await getApiAuthHeaders();
+    } catch {
+      return {};
+    }
+  }, [getApiAuthHeaders]);
+
+  /* ---------------------------------------------------------------------
+     THE LIST
+     The parent owns the newest page and everything appended to it; the panel
+     owns the older history it has paged in. The two are merged into one
+     ascending list, and a message is never shown twice.
+     --------------------------------------------------------------------- */
+  const merged = React.useMemo(() => {
+    const seen = new Set<string>();
+    const list: RoomChatMessage[] = [];
+    for (const message of olderMessages) {
+      if (seen.has(message.id)) continue;
+      seen.add(message.id);
+      list.push(message);
+    }
+    for (const message of messages) {
+      if (seen.has(message.id)) continue;
+      seen.add(message.id);
+      list.push(message);
+    }
+    list.sort((left, right) => {
+      const a = Date.parse(left.createdAt);
+      const b = Date.parse(right.createdAt);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+      return a - b;
+    });
+    return list;
+  }, [olderMessages, messages]);
+
+  const isOwnMessage = React.useCallback(
+    (message: RoomChatMessage) => viewerId != null && message.authorId === viewerId,
+    [viewerId],
+  );
+
+  /* ---------------------------------------------------------------------
+     SCROLLING
+     --------------------------------------------------------------------- */
+  const isNearBottom = React.useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return true;
+    return element.scrollHeight - element.scrollTop - element.clientHeight <= CHAT_NEAR_BOTTOM_PX;
+  }, []);
+
+  const scrollToBottom = React.useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const element = scrollRef.current;
+    if (!element) return;
+    element.scrollTo({ top: element.scrollHeight, behavior });
+  }, []);
+
+  /* ---------------------------------------------------------------------
+     READ RECEIPTS
+     The cursor only ever moves forward, and only for a message that is on
+     screen and that the reader is actually looking at.
+     --------------------------------------------------------------------- */
+  const reportRead = React.useCallback(async (messageId: string) => {
+    try {
+      if (onMarkRead) {
+        await onMarkRead(messageId);
+        return;
+      }
+      if (!roomId) return;
+      const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json' });
+      for (const [key, value] of Object.entries(await authHeaders())) headers.set(key, value);
+      await fetch(`/api/rooms/${encodeURIComponent(roomId)}/chat/read`, {
+        method: 'POST', headers, body: JSON.stringify({ messageId }), cache: 'no-store',
+      });
+    } catch {
+      /* A read receipt is a courtesy to the server. Failing it must never
+         break the panel, and the local unread count has already been reset. */
+    }
+  }, [onMarkRead, roomId, authHeaders]);
+
+  const markReadIfViewed = React.useCallback(() => {
+    if (!visibleRef.current) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    const element = scrollRef.current;
+    if (!element) return;
+    if (element.scrollHeight - element.scrollTop - element.clientHeight > CHAT_NEAR_BOTTOM_PX) return;
+    const list = mergedRef.current;
+    const last = list[list.length - 1];
+    if (!last) return;
+    if (readCursorRef.current === last.id) return;
+    readCursorRef.current = last.id;
+    setUnreadCount(0);
+    setPendingNew(0);
+    void reportRead(last.id);
+  }, [reportRead]);
+
+  /* ---------------------------------------------------------------------
+     OLDER HISTORY
+     The reader asks for the page before the oldest message on screen. The
+     page is PREPENDED, so the scroll position is captured first and restored
+     after the DOM has grown: the messages the reader was looking at must not
+     move.
+     --------------------------------------------------------------------- */
+  const fetchOlderPage = React.useCallback(async (before: string): Promise<RoomChatPage> => {
+    if (onLoadOlder) return onLoadOlder(before);
+    if (!roomId) return { messages: [], hasMore: false };
+    const headers = new Headers({ Accept: 'application/json' });
+    for (const [key, value] of Object.entries(await authHeaders())) headers.set(key, value);
+    const response = await fetch(
+      `/api/rooms/${encodeURIComponent(roomId)}/chat?before=${encodeURIComponent(before)}&limit=${CHAT_HISTORY_PAGE}`,
+      { headers, cache: 'no-store' },
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body?.error?.message || body?.message || `Request failed (${response.status})`);
+    }
+    const page = body as { messages?: RoomChatMessage[]; hasMore?: boolean };
+    return {
+      messages: Array.isArray(page.messages) ? page.messages : [],
+      hasMore: Boolean(page.hasMore),
+    };
+  }, [onLoadOlder, roomId, authHeaders]);
+
+  const loadOlder = React.useCallback(async () => {
+    if (loadingOlderRef.current) return;
+    const list = mergedRef.current;
+    const oldest = list[0];
+    if (!oldest) return;
+    const element = scrollRef.current;
+    const previousHeight = element?.scrollHeight ?? 0;
+    const previousTop = element?.scrollTop ?? 0;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    setOlderError('');
+    try {
+      const page = await fetchOlderPage(oldest.createdAt);
+      if (page.messages.length) {
+        /* Remember where the reader was: the content above the fold must not
+           move when the page above it arrives. */
+        restoreRef.current = { height: previousHeight, top: previousTop };
+        /* Older messages are history, not news: they are never unread. */
+        const seen = new Set(seenIdsRef.current);
+        for (const message of page.messages) seen.add(message.id);
+        seenIdsRef.current = seen;
+        setOlderMessages(previous => {
+          const known = new Set(previous.map(message => message.id));
+          const next = [...previous];
+          for (const message of page.messages) {
+            if (known.has(message.id)) continue;
+            known.add(message.id);
+            next.push(message);
+          }
+          return next;
+        });
+        setMoreAvailable(page.hasMore);
+        moreRef.current = page.hasMore;
+      } else {
+        setMoreAvailable(false);
+        moreRef.current = false;
+      }
+    } catch (err) {
+      setOlderError(err instanceof Error ? err.message : 'Earlier messages could not be loaded.');
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
+  }, [fetchOlderPage]);
+
+  /* ---------------------------------------------------------------------
+     EFFECTS
+     --------------------------------------------------------------------- */
+
+  /* The server's unread count is the STARTING value. It is adopted again
+     only while the panel still believes nothing is unread, so a later poll
+     can never drag the count backwards. */
+  useEffect(() => {
+    const seed = Math.max(0, initialUnreadCount || 0);
+    setUnreadCount(current => (current === 0 ? seed : current));
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [initialUnreadCount]);
+
+  /* The parent decides whether older history exists behind the newest page. */
+  useEffect(() => {
+    setMoreAvailable(hasMore);
+    moreRef.current = hasMore;
+  }, [hasMore]);
+
+  /* The badge is told about every change. */
+  useEffect(() => { unreadCallbackRef.current = onUnreadCountChange; });
+  useEffect(() => { unreadCallbackRef.current?.(unreadCount); }, [unreadCount]);
+
+  /* A panel that is off screen does not mark anything as read. */
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(entries => {
+      visibleRef.current = entries.some(entry => entry.isIntersecting);
+    }, { threshold: 0.01 });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  /* Restore the scroll position after an older page has been prepended. This
+     runs before the browser paints, so the reader never sees the list jump. */
+  useLayoutEffect(() => {
+    const restore = restoreRef.current;
+    if (!restore) return;
+    restoreRef.current = null;
+    const element = scrollRef.current;
+    if (!element) return;
+    const delta = element.scrollHeight - restore.height;
+    element.scrollTop = restore.top + delta;
+    atBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight <= CHAT_NEAR_BOTTOM_PX;
+  }, [olderMessages]);
+
+  /* NEW MESSAGES.
+     The list is watched for ids the panel has not seen. The first page the
+     server sends is the history, not news: it is not counted as unread and
+     the reader is placed at the bottom. After that, a message scrolls the
+     reader down only if they were already there. */
+  useLayoutEffect(() => {
+    mergedRef.current = merged;
+    const seen = seenIdsRef.current;
+    const fresh = merged.filter(message => !seen.has(message.id));
+    if (seen.size === 0) {
+      for (const message of merged) seen.add(message.id);
+      if (!merged.length) return;
+      scrollToBottom('auto');
+      atBottomRef.current = true;
+      markReadIfViewed();
+      return;
+    }
+    if (!fresh.length) return;
+    for (const message of fresh) seen.add(message.id);
+    const fromOthers = fresh.filter(message => !isOwnMessage(message));
+    if (atBottomRef.current) {
+      scrollToBottom('smooth');
+      markReadIfViewed();
+      return;
+    }
+    if (!fromOthers.length) return;
+    setPendingNew(count => count + fromOthers.length);
+    setUnreadCount(count => count + fromOthers.length);
+  }, [merged, isOwnMessage, scrollToBottom, markReadIfViewed]);
+
+  /* ---------------------------------------------------------------------
+     SCROLLING BY HAND
+     --------------------------------------------------------------------- */
+  const handleScroll = React.useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const near = element.scrollHeight - element.scrollTop - element.clientHeight <= CHAT_NEAR_BOTTOM_PX;
+    atBottomRef.current = near;
+    if (near) {
+      /* The reader has caught up: what is on screen has been seen. */
+      markReadIfViewed();
+      return;
+    }
+    const overflows = element.scrollHeight - element.clientHeight > 60;
+    if (overflows && element.scrollTop <= 24 && moreRef.current && !loadingOlderRef.current) {
+      void loadOlder();
+    }
+  }, [markReadIfViewed, loadOlder]);
+
+  const jumpToLatest = React.useCallback(() => {
+    atBottomRef.current = true;
+    setPendingNew(0);
+    scrollToBottom('smooth');
+    /* The smooth scroll reports itself through the scroll handler; when the
+       conversation is short enough not to scroll at all, it is read here. */
+    window.setTimeout(() => markReadIfViewed(), 260);
+  }, [scrollToBottom, markReadIfViewed]);
+
+  /* ---------------------------------------------------------------------
+     POSTING
+     --------------------------------------------------------------------- */
+  const sendDraft = React.useCallback(async () => {
+    const content = draft.trim();
+    if (!content || busyRef.current) return;
+    busyRef.current = true;
+    setSendingLocal(true);
+    setSendError('');
+    try {
+      const outcome = onSend(content);
+      const promise = outcome as unknown as Promise<boolean | void> | undefined;
+      if (promise && typeof promise.then === 'function') {
+        const settled = await promise;
+        if (settled === false) {
+          setSendError('Your message could not be sent.');
+          return;
+        }
+      }
+      /* Only a message the server accepted clears the draft. */
+      setDraft('');
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Your message could not be sent.');
+    } finally {
+      busyRef.current = false;
+      setSendingLocal(false);
+    }
+  }, [draft, onSend]);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || sending) return;
-    onSend(content);
-    setDraft('');
+    void sendDraft();
   };
 
+  const onComposerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    const form = event.currentTarget.form;
+    if (form && typeof form.requestSubmit === 'function') form.requestSubmit();
+    else void sendDraft();
+  };
+
+  const errorText = sendError || (canPost ? joinError : '');
+
   return (
-    <>
+    <div className="tr-chat-panel">
       <div className="tr-chat-status" aria-live="polite">
-        <span className="tr-chat-status-left"><span className="tr-chat-live-dot is-working" /><span>ROOM CHAT</span></span>
+        <span className="tr-chat-status-left">
+          <span className="tr-chat-live-dot is-working" />
+          <span>ROOM CHAT</span>
+          {unreadCount > 0 && <span className="tr-chat-unread">{unreadCount} unread</span>}
+        </span>
         <span className="tr-chat-status-right">
           {participantCount > 0 ? `${participantCount} in the room` : 'Be the first to join'}
         </span>
       </div>
 
-      {canPost ? (
-        <form className="tr-composer" onSubmit={submit}>
-          <textarea
-            className="tr-composer-input"
-            value={draft}
-            onChange={event => setDraft(event.target.value)}
-            maxLength={2000}
-            rows={2}
-            placeholder="Share what the market is doing, or ask the room…"
-            aria-label="Message the room"
-          />
-          <div className="tr-composer-foot">
-            <span className="tr-composer-count">{draft.trim().length}/2000</span>
-            <button type="submit" className="tr-composer-send" disabled={sending || !draft.trim()}>
-              <Send size={12} strokeWidth={2.4} aria-hidden="true" />
-              {sending ? 'Sending…' : 'Send'}
+      <div className="tr-chat-scroll" ref={scrollRef} onScroll={handleScroll} tabIndex={0}>
+        {moreAvailable && (
+          <div className="tr-chat-older-bar">
+            <button
+              type="button"
+              className="tr-chat-older"
+              onClick={() => void loadOlder()}
+              disabled={loadingOlder}
+            >
+              {loadingOlder ? 'Loading earlier messages…' : 'Load earlier messages'}
             </button>
           </div>
-        </form>
-      ) : (
-        <button type="button" className="tr-composer is-locked" onClick={onRequestSignIn}>
-          <span className="tr-composer-lock" aria-hidden="true"><Lock size={14} /></span>
-          <span className="tr-composer-locked-text">
-            {joinError || (signedIn
-              ? 'Join this room to post in its conversation.'
-              : 'Sign in or create an account to post in this room.')}
-          </span>
-          <span className="tr-composer-cta">{signedIn ? 'Join room' : 'Sign in'}</span>
-        </button>
-      )}
+        )}
+        {olderError && <p className="tr-panel-error" role="alert">{olderError}</p>}
 
-      {messages.length === 0 ? (
-        <PanelEmpty
-          title="No messages yet"
-          hint="Start the conversation — share an idea, ask a question, or post what you are watching."
-        />
-      ) : (
-        <div className="tr-chat">
-          {messages.map(message => {
-            const own = viewerId != null && message.authorId === viewerId;
-            return (
-              <article
-                key={message.id}
-                className={'tr-chat-msg is-static' + (own ? ' is-self' : '')}
+        {merged.length === 0 ? (
+          <PanelEmpty
+            title="No messages yet"
+            hint="Start the conversation — share an idea, ask a question, or post what you are watching."
+          />
+        ) : (
+          <div
+            className="tr-chat-list"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+            aria-label="Room messages"
+          >
+            {merged.map(message => {
+              const own = isOwnMessage(message);
+              return (
+                <article
+                  key={message.id}
+                  className={'tr-chat-row' + (own ? ' is-self' : '')}
+                >
+                  <div className="tr-chat-row-head">
+                    <UserAvatar
+                      name={message.authorName}
+                      url={message.authorAvatarUrl ?? null}
+                      size={20}
+                      decorative
+                    />
+                    <span className="tr-chat-row-author">{own ? 'You' : message.authorName}</span>
+                    {message.role === 'LEADER' && <span className="tr-chat-row-role">Leader</span>}
+                    <time
+                      className="tr-chat-row-time"
+                      dateTime={message.createdAt}
+                      title={new Date(message.createdAt).toLocaleString()}
+                    >
+                      {localMessageTime(message.createdAt)}
+                    </time>
+                  </div>
+                  <ChatMessageBody content={message.content} />
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="tr-chat-foot">
+        {pendingNew > 0 && (
+          <button
+            type="button"
+            className="tr-chat-jump"
+            onClick={jumpToLatest}
+            aria-label={`Jump to the latest messages — ${pendingNew} new`}
+          >
+            <ArrowDown size={12} strokeWidth={2.4} aria-hidden="true" />
+            {pendingNew} new {pendingNew === 1 ? 'message' : 'messages'}
+          </button>
+        )}
+
+        {canPost ? (
+          <form className="tr-composer" onSubmit={submit}>
+            <label className="tr-sr-only" htmlFor="tr-room-chat-composer">Message the room</label>
+            <textarea
+              id="tr-room-chat-composer"
+              className="tr-composer-input"
+              value={draft}
+              onChange={event => setDraft(event.target.value)}
+              onKeyDown={onComposerKeyDown}
+              maxLength={2000}
+              rows={2}
+              placeholder="Share what the market is doing, or ask the room…"
+            />
+            <div className="tr-composer-foot">
+              <span className="tr-composer-count">{draft.trim().length}/2000</span>
+              <button
+                type="submit"
+                className="tr-composer-send"
+                disabled={busy || !draft.trim()}
+                aria-label="Send message to the room"
               >
-                <div className="tr-chat-msg-head">
-                  <span className="tr-agent-avatar" aria-hidden="true">
-                    {message.authorName.slice(0, 2).toUpperCase()}
-                  </span>
-                  <span className="tr-agent-name">{message.authorName}</span>
-                  <time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>
-                    <span className="tr-chat-clock">{localMessageTime(message.createdAt)}</span>
-                    <span className="tr-chat-relative">{relativeTime(message.createdAt)}</span>
-                  </time>
-                </div>
-                <p className="tr-chat-summary is-body">{message.content}</p>
-              </article>
-            );
-          })}
-        </div>
-      )}
-    </>
+                <Send size={12} strokeWidth={2.4} aria-hidden="true" />
+                {busy ? 'Sending…' : 'Send'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <button type="button" className="tr-composer is-locked" onClick={onRequestSignIn}>
+            <span className="tr-composer-lock" aria-hidden="true"><Lock size={14} /></span>
+            <span className="tr-composer-locked-text">
+              {joinError || (signedIn
+                ? 'Join this room to post in its conversation.'
+                : 'Sign in or create an account to post in this room.')}
+            </span>
+            <span className="tr-composer-cta">{signedIn ? 'Join room' : 'Sign in'}</span>
+          </button>
+        )}
+
+        {errorText && <p className="tr-panel-error" role="alert">{errorText}</p>}
+      </div>
+    </div>
   );
 }
 
@@ -696,9 +1234,13 @@ export function MentorChatPanel({
             return (
               <article key={message.id} className={'tr-chat-msg is-static' + (own ? ' is-self' : '')}>
                 <div className="tr-chat-msg-head">
-                  <span className="tr-agent-avatar" aria-hidden="true">
-                    {message.authorName.slice(0, 2).toUpperCase()}
-                  </span>
+                  <UserAvatar
+                    name={message.authorName}
+                    url={message.authorAvatarUrl}
+                    size={25}
+                    decorative
+                    className="tr-agent-avatar"
+                  />
                   <span className="tr-agent-name">{message.authorName}</span>
                   <span className="tr-chat-kind is-private">Private</span>
                   <time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>
@@ -742,6 +1284,8 @@ export interface RoomGroupMember {
   displayName: string;
   role: 'LEADER' | 'MEMBER';
   joinedAt: string;
+  /** The member's profile picture, as a signed delivery url. */
+  avatarUrl?: string | null;
 }
 
 export function GroupDetailsPanel({
@@ -808,7 +1352,13 @@ export function GroupDetailsPanel({
           <div className="tr-details-roster">
             {members.map(member => (
               <div className="tr-details-member" key={member.id}>
-                <span className="tr-agent-avatar" aria-hidden="true">{member.displayName.slice(0, 2).toUpperCase()}</span>
+                <UserAvatar
+                  name={member.displayName}
+                  url={member.avatarUrl}
+                  size={25}
+                  decorative
+                  className="tr-agent-avatar"
+                />
                 <span className="tr-details-member-name">{member.displayName}</span>
                 <span className="tr-chat-kind">{member.role === 'LEADER' ? 'Leader' : 'Member'}</span>
                 <span className="tr-details-member-since">{relativeTime(member.joinedAt)}</span>
@@ -921,6 +1471,12 @@ export const TradeRoomSidebar: React.FC<{
   /** Quote freshness — describes the panel content, so it lives in its header. */
   status: 'live' | 'stale' | 'unavailable';
   statusTitle: string;
+  /**
+   * The counts on the tabs.
+   *
+   * `messages` is the UNREAD count of the room chat, not the number of
+   * messages the panel happens to have loaded.
+   */
   badges: SidebarTabBadge;
 }> = ({ panel, onPanelChange, status, statusTitle, badges }) => {
   const active = ROOM_PANELS.find(entry => entry.id === panel) ?? ROOM_PANELS[0];
@@ -945,8 +1501,8 @@ export const TradeRoomSidebar: React.FC<{
               role="tab"
               className="tr-panel-tab"
               aria-selected={entry.id === panel}
-              aria-label={entry.label}
-              title={entry.label}
+              aria-label={badge > 0 ? `${entry.label} (${badge})` : entry.label}
+              title={badge > 0 ? `${entry.label} — ${badge}` : entry.label}
               onClick={() => onPanelChange(entry.id)}
             >
               <Icon size={15} strokeWidth={2} />

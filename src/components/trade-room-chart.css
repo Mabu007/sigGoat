@@ -2608,3 +2608,55 @@
   font: 800 8px/1 var(--tr-sans);
   letter-spacing: .1em;
 }
+
+/* ================================================================== */
+/* ROOM FIGURES AND THE ROSTER                                         */
+/* ================================================================== */
+
+/*
+ * The members and online figures are BUTTONS: they open the roster.
+ * A number the reader cannot act on is just decoration.
+ */
+.trade-room-stat-button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.trade-room-stat-button:hover {
+  border-color: var(--tr-line);
+  background: var(--color-raised);
+}
+
+.trade-room-stat-button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.trade-room-stat-button .trade-room-stat-value { color: var(--color-fg); }
+
+/* The mentor's availability. A network fact, never a gate. */
+.trade-room-mentor {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--tr-line);
+  border-radius: 999px;
+  font: 700 9px/1 var(--tr-sans);
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+
+.trade-room-mentor.is-online {
+  border-color: color-mix(in srgb, var(--color-positive) 42%, transparent);
+  background: color-mix(in srgb, var(--color-positive) 12%, transparent);
+  color: var(--color-positive);
+}
+
+.trade-room-mentor.is-offline {
+  border-color: var(--tr-line);
+  background: var(--color-raised);
+  color: var(--color-fg-subtle);
+}

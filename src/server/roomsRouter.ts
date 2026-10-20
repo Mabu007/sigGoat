@@ -34,6 +34,10 @@ import {
 } from "./rooms/roomAccess";
 import { createRoomSessionStore } from "./rooms/RoomSessionStore";
 import { createRoomChartStateStore } from "./rooms/RoomChartStateStore";
+import { createRoomPresenceStore, type PresenceMember } from "./rooms/roomPresenceStore";
+import { createRoomReadCursorStore } from "./rooms/roomReadCursorStore";
+import { persistence } from "./persistence";
+import type { ChatMessage } from "../types";
 import { createMediaStore, toMediaReference } from "./media/mediaStore";
 import {
   buildMediaKey,
@@ -84,6 +88,39 @@ const sessionStore = createRoomSessionStore();
 const chartStateStore = createRoomChartStateStore();
 const mediaStore = createMediaStore();
 const voiceStore = createVoiceRosterStore();
+const presenceStore = createRoomPresenceStore();
+const readCursorStore = createRoomReadCursorStore();
+
+/** The conversation of one room. The id is shared with the legacy API. */
+const roomConversationId = (roomId: string) => `room_${roomId}`;
+
+/** How many messages one page of a conversation may carry. */
+const ROOM_MESSAGE_PAGE_LIMIT = 30;
+const ROOM_MESSAGE_MAX_LENGTH = 2000;
+
+/**
+ * The avatar of one member, as a signed delivery url.
+ *
+ * The stored value is an R2 object key and the url EXPIRES, so it is
+ * regenerated on every read. The lookups are cached for the life of one
+ * request: a page of fifty messages must not make fifty Firestore reads.
+ */
+function avatarLookup(): (uid: string) => Promise<string | null> {
+  const cache = new Map<string, string | null>();
+  return async (uid: string) => {
+    const cached = cache.get(uid);
+    if (cached !== undefined) return cached;
+    let url: string | null = null;
+    try {
+      const stored = await mediaStore.getAvatar(uid);
+      url = stored ? toMediaReference(stored, "avatar")?.url ?? null : null;
+    } catch {
+      url = null;
+    }
+    cache.set(uid, url);
+    return url;
+  };
+}
 
 const MAX_DIRECTORY_ROOMS = 60;
 
@@ -140,6 +177,13 @@ function roomView(
     coverUrl?: string | null;
     creatorName?: string;
     live?: boolean;
+    /**
+     * How many members hold a live connection right now. Null means the
+     * server could not establish it, which is NOT the same as zero.
+     */
+    onlineCount?: number | null;
+    /** Whether the room's leader has a live connection. */
+    mentorOnline?: boolean | null;
   } = {},
 ) {
   const settings = roomSettingsOf(team);
@@ -159,6 +203,8 @@ function roomView(
     voiceEnabled: settings.voiceEnabled,
     coverUrl: extras.coverUrl ?? null,
     live: extras.live ?? false,
+    onlineCount: extras.onlineCount ?? null,
+    mentorOnline: extras.mentorOnline ?? null,
     role: access.role,
     canManage: access.canManage,
     canChat: access.canChat,
@@ -275,14 +321,28 @@ roomsRouter.get("/rooms", handle(async (req, res) => {
 
   const page = filtered.slice(0, limit);
   const memberCounts = await memberStore.countByRooms(page.map((item) => item.team.id));
+  /**
+   * HOW MANY OF EACH ROOM'S MEMBERS ARE ONLINE.
+   *
+   * The counts come from the room coordinators, which are the only place
+   * that knows who holds a live connection. A room whose presence cannot be
+   * established reports null, and the card says so rather than showing a
+   * number it does not have.
+   */
+  const presence = await presenceStore
+    .getMany(page.map((item) => item.team.id))
+    .catch(() => ({}) as Record<string, { onlineCount: number; mentorOnline: boolean }>);
   const rooms = await Promise.all(
     page.map(async ({ team }) => {
       const cover = await mediaStore.getCover(team.id);
+      const roomPresence = presence[team.id];
       return roomView(team, GUEST_ACCESS, {
         memberCount: memberCounts[team.id] ?? 0,
         coverUrl: toMediaReference(cover, "room-cover")?.url ?? null,
         creatorName: await creatorNameOf(team),
         live: Boolean(team.activeSessionId),
+        onlineCount: roomPresence ? roomPresence.onlineCount : null,
+        mentorOnline: roomPresence ? roomPresence.mentorOnline : null,
       });
     }),
   );
@@ -381,6 +441,103 @@ roomsRouter.post("/rooms", authMiddleware, handle(async (req, res) => {
     room: roomView(team, access, { memberCount: 1, creatorName: user.email ?? "Room leader" }),
     shareUrl: `/team/${shareSlug}`,
     discoverable: visibility === "PUBLIC",
+  });
+}));
+
+/**
+ * WHO IS IN THE ROOM RIGHT NOW.
+ *
+ * The counts come from the room's Durable Object, which is the only place
+ * that knows who holds a live connection. A count that cannot be
+ * established is reported as null, NOT as zero: "0 online" and "we do not
+ * know" are different facts, and only one of them is a lie.
+ */
+roomsRouter.get("/rooms/:roomId/presence", optionalAuthMiddleware, handle(async (req, res) => {
+  const team = await resolveTeam(req.params.roomId);
+  if (!team) {
+    return fail(res, 404, "ROOM_NOT_FOUND", "That room does not exist.");
+  }
+  const presence = await presenceStore.get(team.id).catch(() => null);
+  const isMember = req.user?.uid
+    ? await resolveRoomAccess(team, req.user.uid).then((access) => access.isMember)
+    : false;
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    /**
+     * Null means UNKNOWN: the room has no live coordinator, or its last
+     * snapshot is too old to trust. The UI shows a neutral state.
+     */
+    onlineCount: presence ? presence.onlineCount : null,
+    mentorOnline: presence ? presence.mentorOnline : null,
+    updatedAt: presence?.updatedAt ?? null,
+    /**
+     * The identities behind the count are only for members: a private room's
+     * roster must not be enumerable by a visitor.
+     */
+    members: isMember
+      ? (presence?.members ?? []).map((member) => ({
+          uid: member.uid,
+          name: member.name,
+          role: member.role,
+        }))
+      : [],
+  });
+}));
+
+/**
+ * THE ROOM'S REGISTERED MEMBERS.
+ *
+ * A member of the room may see who else belongs to it, with each person's
+ * presence. A visitor may not: enumerating a private room's membership is
+ * not something a link-holder may do.
+ */
+roomsRouter.get("/rooms/:roomId/members", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await resolveTeam(req.params.roomId);
+  if (!team) {
+    return fail(res, 404, "ROOM_NOT_FOUND", "That room does not exist.");
+  }
+  const access = await resolveRoomAccess(team, user.uid);
+  if (!access.isMember) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room to see who is in it.");
+  }
+
+  const presence = await presenceStore.get(team.id).catch(() => null);
+  const onlineUids = new Set((presence?.members ?? []).map((member) => member.uid));
+  const avatarFor = avatarLookup();
+
+  const registered = await memberStore.list(team.id).catch(() => []);
+  const leaderName = await creatorNameOf(team);
+  const roster = [
+    {
+      uid: team.ownerUserId,
+      name: leaderName,
+      role: "OWNER" as const,
+      joinedAt: null as string | null,
+    },
+    ...registered
+      .filter((member) => member.userId !== team.ownerUserId)
+      .map((member) => ({
+        uid: member.userId,
+        name: member.displayName,
+        role: "MEMBER" as const,
+        joinedAt: member.joinedAt,
+      })),
+  ];
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    members: await Promise.all(
+      roster.map(async (member) => ({
+        ...member,
+        online: onlineUids.has(member.uid),
+        avatarUrl: await avatarFor(member.uid),
+      })),
+    ),
+    onlineCount: presence ? presence.onlineCount : null,
+    mentorOnline: presence ? presence.mentorOnline : null,
+    totalMembers: roster.length,
   });
 }));
 
@@ -656,6 +813,204 @@ roomsRouter.post("/rooms/:roomId/join", authMiddleware, handle(async (req, res) 
       coverUrl: toMediaReference(cover, "room-cover")?.url ?? null,
     }),
   });
+}));
+
+// ---------------------------------------------------------------------------
+// The room conversation
+// ---------------------------------------------------------------------------
+
+/**
+ * The room conversation.
+ *
+ * The same messages the legacy route serves, plus the two things a
+ * messaging panel needs and a legacy feed never had: how many messages
+ * are UNREAD, and where the reader's cursor is.
+ */
+roomsRouter.get("/rooms/:roomId/chat", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await resolveTeam(req.params.roomId);
+  if (!team) {
+    return fail(res, 404, "ROOM_NOT_FOUND", "That room does not exist.");
+  }
+  const access = await resolveRoomAccess(team, user.uid);
+  if (!access.isMember) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room to read its conversation.");
+  }
+
+  const chatId = roomConversationId(team.id);
+  const limit = Math.min(
+    100,
+    Math.max(1, Number.parseInt(String(req.query.limit || ROOM_MESSAGE_PAGE_LIMIT), 10) || ROOM_MESSAGE_PAGE_LIMIT),
+  );
+  const since = typeof req.query.since === "string" ? req.query.since : "";
+  const before = typeof req.query.before === "string" ? req.query.before : "";
+
+  const messages = since
+    ? await persistence.messages.listSince(chatId, since, limit)
+    : before
+      ? await persistence.messages.listBefore(chatId, before, limit)
+      : await persistence.messages.listLatest(chatId, limit);
+
+  let hasMore = false;
+  if (!since) {
+    const oldest = messages[0]?.createdAt;
+    hasMore = oldest
+      ? (await persistence.messages.listBefore(chatId, oldest, 1)).length > 0
+      : false;
+  }
+
+  /**
+   * THE UNREAD COUNT.
+   *
+   * The messages newer than the reader's cursor, minus the reader's own:
+   * a person never has unread messages of their own making. The count is
+   * capped so a very long backlog cannot turn into an unbounded read.
+   */
+  const cursor = await readCursorStore.get(user.uid, team.id).catch(() => null);
+  let unreadCount = 0;
+  if (cursor?.lastReadAt) {
+    const newer = await persistence.messages
+      .listSince(chatId, cursor.lastReadAt, 500)
+      .catch(() => [] as ChatMessage[]);
+    unreadCount = newer.filter((message) => message.userId !== user.uid).length;
+  } else {
+    /**
+     * No cursor at all: the reader has never read this room, so everything
+     * that is not their own is unread.
+     */
+    const all = await persistence.messages
+      .listLatest(chatId, 500)
+      .catch(() => [] as ChatMessage[]);
+    unreadCount = all.filter((message) => message.userId !== user.uid).length;
+  }
+
+  const avatarFor = avatarLookup();
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    messages: await Promise.all(
+      messages.map(async (message) => ({
+        id: message.id,
+        authorId: message.userId,
+        authorName: message.authorName ?? "Member",
+        authorAvatarUrl: await avatarFor(message.userId),
+        content: message.content,
+        createdAt: message.createdAt,
+        role: message.role,
+      })),
+    ),
+    hasMore,
+    unreadCount,
+    lastReadMessageId: cursor?.lastReadMessageId ?? null,
+  });
+}));
+
+/** Posts a message in the room conversation. */
+roomsRouter.post("/rooms/:roomId/chat", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await resolveTeam(req.params.roomId);
+  if (!team) {
+    return fail(res, 404, "ROOM_NOT_FOUND", "That room does not exist.");
+  }
+  const access = await resolveRoomAccess(team, user.uid);
+  if (!access.isMember) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room before posting in its conversation.");
+  }
+
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+  if (!content) {
+    return fail(res, 400, "EMPTY_MESSAGE", "Write something before posting.");
+  }
+  if (content.length > ROOM_MESSAGE_MAX_LENGTH) {
+    return fail(res, 400, "MESSAGE_TOO_LENGTH", `Messages must be ${ROOM_MESSAGE_MAX_LENGTH} characters or fewer.`);
+  }
+
+  const chatId = roomConversationId(team.id);
+  const now = new Date().toISOString();
+  const existing = await persistence.chats.get(chatId);
+  if (!existing) {
+    await persistence.chats.create({
+      id: chatId,
+      userId: team.ownerUserId,
+      title: team.name,
+      kind: "room",
+      roomId: team.id,
+      createdAt: now,
+      updatedAt: now,
+      lastMessageAt: now,
+    });
+  }
+
+  const message: ChatMessage = {
+    id: `msg_${Date.now()}_${randomBytes(6).toString("hex")}`,
+    chatId,
+    userId: user.uid,
+    role: "user",
+    content,
+    authorName: (await creatorNameOf(team)) || "Member",
+    createdAt: now,
+  };
+  await persistence.messages.create(chatId, message);
+  await persistence.chats.update(chatId, { updatedAt: now, lastMessageAt: now });
+
+  const avatarFor = avatarLookup();
+  res.status(201).json({
+    message: {
+      id: message.id,
+      authorId: message.userId,
+      authorName: message.authorName ?? "Member",
+      authorAvatarUrl: await avatarFor(message.userId),
+      content: message.content,
+      createdAt: message.createdAt,
+      role: message.role,
+    },
+  });
+}));
+
+/**
+ * RECORDS THAT THE READER HAS SEEN A MESSAGE.
+ *
+ * The message must belong to THIS room's conversation: a cursor that
+ * pointed at somebody else's conversation would let a reader claim to have
+ * read a room they never opened.
+ */
+roomsRouter.post("/rooms/:roomId/chat/read", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await resolveTeam(req.params.roomId);
+  if (!team) {
+    return fail(res, 404, "ROOM_NOT_FOUND", "That room does not exist.");
+  }
+  const access = await resolveRoomAccess(team, user.uid);
+  if (!access.isMember) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room to read its conversation.");
+  }
+
+  const messageId = typeof req.body?.messageId === "string" ? req.body.messageId.trim() : "";
+  if (!messageId) {
+    return fail(res, 400, "INVALID_MESSAGE", "No message was supplied.");
+  }
+
+  const chatId = roomConversationId(team.id);
+  const page = await persistence.messages.listLatest(chatId, 200);
+  let message = page.find((entry) => entry.id === messageId);
+  if (!message) {
+    // The message may be older than the newest page. That is not an error.
+    const older = await persistence.messages.listBefore(
+      chatId,
+      page[0]?.createdAt ?? "",
+      100,
+    );
+    message = older.find((entry) => entry.id === messageId);
+  }
+  if (!message) {
+    return fail(res, 404, "MESSAGE_NOT_FOUND", "That message is not part of this room's conversation.");
+  }
+
+  await readCursorStore.set(user.uid, team.id, {
+    messageId: message.id,
+    createdAt: message.createdAt,
+  });
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ ok: true, unreadCount: 0 });
 }));
 
 // ---------------------------------------------------------------------------
@@ -1329,6 +1684,38 @@ roomsRouter.post("/internal/rooms/session", handle(async (req, res) => {
     drawings,
   });
   res.json({ ok: true, written });
+}));
+
+/**
+ * THE ROOM COORDINATOR REPORTS WHO IS CONNECTED.
+ *
+ * The Durable Object is the only place that knows who holds a live
+ * connection, so it is the one that reports it. The request is signed with
+ * the shared secret, so nobody else can put a member into a room's presence
+ * list.
+ *
+ * The snapshot is keyed by AUTHENTICATED identity, not by socket: the
+ * store counts one person once, however many tabs they have open.
+ */
+roomsRouter.post("/internal/rooms/presence", handle(async (req, res) => {
+  const body = (req.body ?? {}) as { roomId?: unknown; members?: unknown };
+  const roomId = String(body.roomId ?? "");
+  const signature = req.header("x-tradingvibes-service") ?? null;
+  if (!roomId) {
+    return fail(res, 400, "INVALID_REQUEST", "roomId is required.");
+  }
+  if (!verifyServiceRequest("room-presence", roomSubject(roomId), signature)) {
+    return fail(res, 401, "INVALID_SERVICE_SIGNATURE", "Service signature rejected.");
+  }
+
+  const members: PresenceMember[] = Array.isArray(body.members)
+    ? (body.members as PresenceMember[])
+        .filter((entry) => typeof entry?.uid === "string" && entry.uid.length > 0)
+        .slice(0, 200)
+    : [];
+
+  const presence = await presenceStore.set(roomId, members).catch(() => null);
+  res.json({ ok: true, onlineCount: presence?.onlineCount ?? 0 });
 }));
 
 /** The Worker asks the API to broadcast a voice roster change. */

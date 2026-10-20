@@ -119,6 +119,16 @@ const DEFAULT_STATE: PersistedRoomState = {
 /** How often a changed room state is written to Firestore. */
 const SNAPSHOT_INTERVAL_MS = 30_000;
 
+/**
+ * HOW SOON A PRESENCE CHANGE IS REPORTED.
+ *
+ * Presence is a "best effort, current" signal, so it is pushed on a short
+ * delay rather than on every event: a member opening three tabs should not
+ * produce three reports. The delay is short enough that the count feels
+ * live and long enough that a busy room does not write constantly.
+ */
+const PRESENCE_PUSH_DELAY_MS = 2_500;
+
 export class RoomCoordinator implements DurableObject {
   private readonly state: DurableObjectState;
   private readonly env: RoomCoordinatorEnv;
@@ -127,6 +137,8 @@ export class RoomCoordinator implements DurableObject {
   private connections = new Map<string, ConnectionRecord>();
   private stateLoaded = false;
   private snapshotAlarmScheduled = false;
+  /** The pending presence report, if one is scheduled. */
+  private presenceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(state: DurableObjectState, env: RoomCoordinatorEnv) {
     this.state = state;
@@ -240,6 +252,7 @@ export class RoomCoordinator implements DurableObject {
       await this.state.storage.delete(connectionKey(id));
     }
     this.broadcastPresence();
+    this.schedulePresencePush();
   }
 
   async webSocketError(socket: WebSocket, _error: unknown): Promise<void> {
@@ -249,6 +262,7 @@ export class RoomCoordinator implements DurableObject {
       await this.state.storage.delete(connectionKey(id));
     }
     this.broadcastPresence();
+    this.schedulePresencePush();
   }
 
   // -- lifecycle ---------------------------------------------------------
@@ -409,11 +423,62 @@ export class RoomCoordinator implements DurableObject {
       self: participant,
     });
     this.broadcastPresence();
+    this.schedulePresencePush();
 
     return new Response(null, {
       status: 101,
       webSocket: client,
     } as ResponseInit & { webSocket: WebSocket });
+  }
+
+  /**
+   * REPORTS WHO IS CONNECTED TO THE API.
+   *
+   * The Durable Object is the only place that knows who holds a live
+   * connection, so it is the one that says so. The API stores the snapshot
+   * and serves the counts; a stale snapshot is reported as unknown rather
+   * than as a number.
+   *
+   * The report is keyed by AUTHENTICATED identity: the same person with
+   * three tabs is one person, and the API counts them once.
+   */
+  private schedulePresencePush(): void {
+    if (this.presenceTimer) return;
+    this.presenceTimer = setTimeout(() => {
+      this.presenceTimer = null;
+      void this.pushPresence();
+    }, PRESENCE_PUSH_DELAY_MS);
+  }
+
+  private async pushPresence(): Promise<void> {
+    const origin = (this.env.ROOM_API_ORIGIN ?? "").split(",")[0]?.trim().replace(/\/+$/, "");
+    if (!origin) return;
+    const members = [...this.connections.values()].map((connection) => ({
+      uid: connection.participant.uid,
+      name: connection.participant.name,
+      role: connection.participant.role,
+      connectedAt: connection.participant.joinedAt,
+    }));
+    const signature = await signServiceRequest(
+      "room-presence",
+      this.roomId,
+      this.env.ROOM_REALTIME_SECRET,
+    );
+    try {
+      await fetch(`${origin}/api/internal/rooms/presence`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tradingvibes-service": signature,
+        },
+        body: JSON.stringify({ roomId: this.roomId, members }),
+      });
+    } catch (error) {
+      console.warn(
+        "[room] The presence report failed:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   /**
