@@ -53,3 +53,7 @@ codebase.txt
 # Scratch scripts used during an audit. They are not part of the product and
 # they can contain throwaway credentials handling.
 scripts/tmp/
+
+# Wrangler's generated runtime type file. It is regenerated with
+# `wrangler types` and is not source.
+worker-configuration.d.ts

@@ -33,15 +33,37 @@ interface DurableObjectStub<T = unknown> {
 interface DurableObjectState {
   readonly id: DurableObjectId;
   readonly storage: DurableObjectStorage;
+  /**
+   * Runs an async setup step while incoming events are held back.
+   *
+   * Used to rebuild the live sockets and the persisted state before the
+   * first event is delivered.
+   */
+  blockConcurrencyWhile<T>(fn: () => Promise<T>): void;
   acceptWebSocket(socket: WebSocket, tags?: string[]): void;
   getWebSockets(tag?: string): WebSocket[];
-  setAlarm(scheduledTime: number): Promise<void>;
-  getAlarm(): Promise<number | null>;
-  deleteAlarm(): Promise<void>;
+  /**
+   * The tags attached to a socket.
+   *
+   * The tag is how a socket is identified after the object has been evicted:
+   * `acceptWebSocket(socket, [id])` attaches it and `getTags(socket)` reads
+   * it back, even in a woken-up instance.
+   */
+  getTags(socket: WebSocket): string[];
 }
 
 interface DurableObjectStorage {
   get<T = unknown>(key: string): Promise<T | undefined>;
+  /**
+   * The alarm clock.
+   *
+   * It lives on the STORAGE, not on the state object: `state.setAlarm` is
+   * not a function in the runtime, and calling it throws inside the
+   * handler that scheduled the snapshot.
+   */
+  setAlarm(scheduledTime: number): Promise<void>;
+  getAlarm(): Promise<number | null>;
+  deleteAlarm(): Promise<void>;
   put<T = unknown>(key: string, value: T): Promise<void>;
   delete(key: string): Promise<boolean>;
   list<T = unknown>(options?: { prefix?: string; limit?: number }): Promise<Map<string, T>>;
