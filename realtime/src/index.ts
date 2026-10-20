@@ -26,10 +26,8 @@
 
 import { RoomCoordinator } from "./roomCoordinator";
 import { handleMediaRequest } from "./media";
-import { verifyFirebaseIdToken } from "./firebaseToken";
-import { verifyServiceSignature, signServiceRequest } from "./signing";
+import { verifyServiceSignature } from "./signing";
 import {
-  accessSubject,
   roomSubject,
   ROOM_PROTOCOL_VERSION,
   type RoomRealtimeState,
@@ -159,9 +157,18 @@ export default {
 /**
  * Opens the room socket.
  *
- * The token is verified HERE, at the edge, before the Durable Object is
- * asked for anything. An unauthenticated or expired token never reaches the
- * room, and the Durable Object never has to trust a uid it was handed.
+ * THE REQUEST IS FORWARDED UNCHANGED.
+ *
+ * A Durable Object only sees a WebSocket upgrade if the request that
+ * reaches it IS the upgrade request. Rebuilding it — `new Request(request,
+ * { headers })`, which is how a header would normally be added — drops the
+ * upgrade, and the client gets "non-101 status code" with no error anywhere.
+ * So the access decision is NOT smuggled through a header: the Durable
+ * Object makes it itself, and the Worker only checks the origin and routes.
+ *
+ * The Durable Object verifies the Firebase token and asks the API whether
+ * the caller may be in the room, so the authorization decision is made in
+ * ONE place, by the component that owns the room.
  */
 async function handleSocketUpgrade(
   request: Request,
@@ -181,96 +188,8 @@ async function handleSocketUpgrade(
     );
   }
 
-  const token = url.searchParams.get("token") ?? "";
-  if (!token) {
-    return json(
-      { error: { code: "UNAUTHENTICATED", message: "A sign-in token is required." } },
-      401,
-    );
-  }
-
-  const identity = await verifyFirebaseIdToken(token, env.FIREBASE_PROJECT_ID);
-  if (!identity) {
-    return json(
-      { error: { code: "INVALID_TOKEN", message: "The sign-in token is invalid or expired." } },
-      401,
-    );
-  }
-
-  /**
-   * The room's own authorization is decided by the API, which owns the
-   * membership data. The Worker asks once per connection and then trusts the
-   * answer for the lifetime of that connection.
-   */
-  const access = await requestRoomAccess(env, roomId, identity.uid);
-  if (!access?.allowed) {
-    return json(
-      { error: { code: "ROOM_FORBIDDEN", message: "You do not have access to this room." } },
-      403,
-    );
-  }
-
-  /**
-   * The access decision travels WITH the upgrade request, so the Durable
-   * Object never has to ask the API again and never has to trust a uid that
-   * a client chose. It receives the answer, not the question.
-   */
-  const headers = new Headers(request.headers);
-  headers.set(
-    "x-room-access",
-    JSON.stringify({
-      uid: identity.uid,
-      name: identity.name || identity.email || "Member",
-      role: access.role,
-      canChat: access.canChat,
-      canDraw: access.canDraw,
-      canManage: access.canManage,
-      canRunSession: access.canRunSession,
-      canUseVoice: access.canUseVoice,
-      symbol: access.symbol,
-      timeframe: access.timeframe,
-    }),
-  );
-
   const stub = env.ROOM_COORDINATOR.get(env.ROOM_COORDINATOR.idFromName(roomId));
-  return stub.fetch(new Request(request, { headers }));
-}
-
-/** Asks the API whether a user may be in a room. */
-async function requestRoomAccess(
-  env: Env,
-  roomId: string,
-  uid: string,
-): Promise<{
-  allowed: boolean;
-  role: string;
-  canChat: boolean;
-  canDraw: boolean;
-  canUseVoice: boolean;
-  canManage: boolean;
-  canRunSession: boolean;
-  name?: string;
-  symbol?: string;
-  timeframe?: string;
-  voiceEnabled?: boolean;
-} | null> {
-  const origin = (env.ROOM_API_ORIGIN ?? "").split(",")[0]?.trim().replace(/\/+$/, "");
-  if (!origin) return null;
-  const signature = await signServiceRequest(
-    "room-access",
-    accessSubject(roomId, uid),
-    env.ROOM_REALTIME_SECRET,
-  );
-  try {
-    const response = await fetch(
-      `${origin}/api/internal/rooms/access?roomId=${encodeURIComponent(roomId)}&uid=${encodeURIComponent(uid)}`,
-      { headers: { "x-tradingvibes-service": signature } },
-    );
-    if (!response.ok) return null;
-    return (await response.json()) as Awaited<ReturnType<typeof requestRoomAccess>>;
-  } catch {
-    return null;
-  }
+  return stub.fetch(request);
 }
 
 /**

@@ -31,6 +31,7 @@
  */
 
 import {
+  accessSubject,
   isFrameWithinLimit,
   parseClientMessage,
   ROOM_MAX_DRAWINGS,
@@ -45,10 +46,13 @@ import {
   type VoiceParticipant,
 } from "../../src/shared/roomProtocol";
 import { signServiceRequest } from "./signing";
+import { verifyFirebaseIdToken } from "./firebaseToken";
 
 export interface RoomCoordinatorEnv {
   ROOM_API_ORIGIN: string;
   ROOM_REALTIME_SECRET: string;
+  /** The Firebase project the ID tokens belong to. */
+  FIREBASE_PROJECT_ID: string;
 }
 
 interface ConnectionRecord {
@@ -62,6 +66,29 @@ interface ConnectionRecord {
   canRunSession: boolean;
   canUseVoice: boolean;
 }
+
+/**
+ * What is persisted about a live connection.
+ *
+ * The Durable Object can be evicted between two messages, and when it wakes
+ * up the socket is still there but the in-memory record is not. The record
+ * is written to the object's storage, so the connection can be rebuilt.
+ */
+interface ConnectionMetadata {
+  id: string;
+  uid: string;
+  name: string;
+  role: string;
+  joinedAt: number;
+  canChat: boolean;
+  canDraw: boolean;
+  canManage: boolean;
+  canRunSession: boolean;
+  canUseVoice: boolean;
+}
+
+/** The storage key a connection record is written under. */
+const connectionKey = (id: string) => `conn:${id}`;
 
 interface PersistedRoomState {
   symbol: string;
@@ -104,6 +131,124 @@ export class RoomCoordinator implements DurableObject {
   constructor(state: DurableObjectState, env: RoomCoordinatorEnv) {
     this.state = state;
     this.env = env;
+
+    /**
+     * REBUILD THE LIVE SOCKETS AFTER A RESTART.
+     *
+     * The runtime hibernates a Durable Object that has open WebSockets, and
+     * the in-memory event listeners do not survive it. The socket and its
+     * metadata do. Without this, a room that was evicted mid-session would
+     * accept new connections and silently drop every message from the
+     * existing ones.
+     */
+    this.state.blockConcurrencyWhile(async () => {
+      await this.ensureStateLoaded();
+      await this.rebuildConnections();
+    });
+  }
+
+  /**
+   * REBUILD THE CONNECTIONS AFTER A RESTART.
+   *
+   * The socket is identified by its TAG: `acceptWebSocket(socket, [id])`
+   * attaches the connection id to the socket, and `getTags(socket)` reads it
+   * back — even after the object has been evicted and woken up. The
+   * connection's permissions live in the object's storage.
+   */
+  private async rebuildConnections(): Promise<void> {
+    const stored = await this.state.storage.list<ConnectionMetadata>({ prefix: "conn:" });
+    for (const [key, metadata] of stored) {
+      if (!metadata?.id) {
+        await this.state.storage.delete(key);
+        continue;
+      }
+      const sockets = this.state.getWebSockets(metadata.id);
+      const socket = sockets[0];
+      if (!socket) {
+        // The socket is gone; the record is stale.
+        await this.state.storage.delete(key);
+        continue;
+      }
+      this.rememberSocket(metadata, socket);
+    }
+  }
+
+  /** Registers a socket and its connection record, and persists it. */
+  private rememberSocket(metadata: ConnectionMetadata, socket: WebSocket): void {
+    const participant: RoomParticipant = {
+      id: metadata.id,
+      uid: metadata.uid,
+      name: metadata.name,
+      role: metadata.role as RoomRole,
+      muted: true,
+      speaking: false,
+      joinedAt: metadata.joinedAt,
+    };
+    this.connections.set(metadata.id, {
+      id: metadata.id,
+      participant,
+      socket,
+      canChat: metadata.canChat,
+      canDraw: metadata.canDraw,
+      canManage: metadata.canManage,
+      canRunSession: metadata.canRunSession,
+      canUseVoice: metadata.canUseVoice,
+    });
+  }
+
+  /**
+   * The connection id of a socket.
+   *
+   * The tag is the source of truth: it is attached to the socket by the
+   * runtime and survives the object being evicted.
+   */
+  private connectionIdFor(socket: WebSocket): string | null {
+    const tags = this.state.getTags(socket);
+    return tags[0] ?? null;
+  }
+
+  /** The connection record of a socket, from memory or from storage. */
+  private async connectionFor(socket: WebSocket): Promise<ConnectionRecord | null> {
+    const id = this.connectionIdFor(socket);
+    if (!id) return null;
+    const known = this.connections.get(id);
+    if (known) return known;
+    const metadata = await this.state.storage.get<ConnectionMetadata>(connectionKey(id));
+    if (!metadata) return null;
+    this.rememberSocket(metadata, socket);
+    return this.connections.get(id) ?? null;
+  }
+
+  // -- the hibernation handlers ------------------------------------------
+  //
+  // These are called by the runtime when a socket this object accepted
+  // produces an event. They are the ONLY way a message reaches a Durable
+  // Object that has been evicted, which is why they exist instead of
+  // `addEventListener('message')`.
+
+  async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const connection = await this.connectionFor(socket);
+    if (!connection) return;
+    const raw = typeof message === "string" ? message : new TextDecoder().decode(message);
+    await this.handleMessage(connection.id, raw);
+  }
+
+  async webSocketClose(socket: WebSocket, _code: number, _reason: string): Promise<void> {
+    const id = this.connectionIdFor(socket);
+    if (id) {
+      this.connections.delete(id);
+      await this.state.storage.delete(connectionKey(id));
+    }
+    this.broadcastPresence();
+  }
+
+  async webSocketError(socket: WebSocket, _error: unknown): Promise<void> {
+    const id = this.connectionIdFor(socket);
+    if (id) {
+      this.connections.delete(id);
+      await this.state.storage.delete(connectionKey(id));
+    }
+    this.broadcastPresence();
   }
 
   // -- lifecycle ---------------------------------------------------------
@@ -164,9 +309,50 @@ export class RoomCoordinator implements DurableObject {
   private async handleUpgrade(request: Request): Promise<Response> {
     await this.ensureStateLoaded();
 
-    const access = this.readAccess(request);
-    if (!access) {
-      return new Response("Missing room access", { status: 401 });
+    /**
+     * WHO IS CALLING?
+     *
+     * The Durable Object makes this decision itself, in ONE place, because
+     * it is the component that owns the room. The Worker cannot hand the
+     * decision over: rebuilding the request to add a header would drop the
+     * WebSocket upgrade, and the client would fail with a non-101 status and
+     * no explanation.
+     *
+     * So the token is verified here, at the edge, and the room's
+     * authorization is asked of the API — which owns the membership data.
+     */
+    const url = new URL(request.url);
+    const token = url.searchParams.get("token") ?? "";
+    if (!token) {
+      return new Response(
+        JSON.stringify({
+          error: { code: "UNAUTHENTICATED", message: "A sign-in token is required." },
+        }),
+        { status: 401, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    const identity = await verifyFirebaseIdToken(
+      token,
+      this.env.FIREBASE_PROJECT_ID,
+    );
+    if (!identity) {
+      return new Response(
+        JSON.stringify({
+          error: { code: "INVALID_TOKEN", message: "The sign-in token is invalid or expired." },
+        }),
+        { status: 401, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    const access = await this.requestRoomAccess(identity.uid);
+    if (!access?.allowed) {
+      return new Response(
+        JSON.stringify({
+          error: { code: "ROOM_FORBIDDEN", message: "You do not have access to this room." },
+        }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      );
     }
 
     const pair = new WebSocketPair();
@@ -176,8 +362,8 @@ export class RoomCoordinator implements DurableObject {
     const id = crypto.randomUUID();
     const participant: RoomParticipant = {
       id,
-      uid: access.uid,
-      name: access.name.slice(0, 60) || "Member",
+      uid: identity.uid,
+      name: (identity.name || identity.email || "Member").slice(0, 60),
       role: access.role as RoomRole,
       muted: true,
       speaking: false,
@@ -197,29 +383,24 @@ export class RoomCoordinator implements DurableObject {
       await this.persistState();
     }
 
-    this.state.acceptWebSocket(server);
-    this.connections.set(id, {
+    const metadata: ConnectionMetadata = {
       id,
-      participant,
-      socket: server,
+      uid: identity.uid,
+      name: participant.name,
+      role: access.role,
+      joinedAt: participant.joinedAt,
       canChat: access.canChat,
       canDraw: access.canDraw,
       canManage: access.canManage,
       canRunSession: access.canRunSession,
       canUseVoice: access.canUseVoice,
-    });
-
-    server.addEventListener("message", (event) => {
-      void this.handleMessage(id, event.data as string);
-    });
-    server.addEventListener("close", () => {
-      this.connections.delete(id);
-      this.broadcastPresence();
-    });
-    server.addEventListener("error", () => {
-      this.connections.delete(id);
-      this.broadcastPresence();
-    });
+    };
+    // The connection id is attached to the SOCKET as a tag, so it can be
+    // recovered after the object is evicted. The record itself lives in the
+    // object's storage.
+    this.state.acceptWebSocket(server, [id]);
+    await this.state.storage.put(connectionKey(id), metadata);
+    this.rememberSocket(metadata, server);
 
     this.send(server, {
       v: ROOM_PROTOCOL_VERSION,
@@ -235,35 +416,40 @@ export class RoomCoordinator implements DurableObject {
     } as ResponseInit & { webSocket: WebSocket });
   }
 
-  private readAccess(request: Request): {
-    uid: string;
-    name: string;
+  /**
+   * Asks the API whether a user may be in this room.
+   *
+   * The API owns the membership data and the role rules, so it answers.
+   * The request is signed with the shared secret, so an unauthenticated
+   * caller cannot ask the question on someone else's behalf.
+   */
+  private async requestRoomAccess(uid: string): Promise<{
+    allowed: boolean;
     role: string;
     canChat: boolean;
     canDraw: boolean;
+    canUseVoice: boolean;
     canManage: boolean;
     canRunSession: boolean;
-    canUseVoice: boolean;
+    name?: string;
     symbol?: string;
     timeframe?: string;
-  } | null {
-    const raw = request.headers.get("x-room-access");
-    if (!raw) return null;
+    voiceEnabled?: boolean;
+  } | null> {
+    const origin = (this.env.ROOM_API_ORIGIN ?? "").split(",")[0]?.trim().replace(/\/+$/, "");
+    if (!origin) return null;
+    const signature = await signServiceRequest(
+      "room-access",
+      accessSubject(this.roomId, uid),
+      this.env.ROOM_REALTIME_SECRET,
+    );
     try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (typeof parsed.uid !== "string" || !parsed.uid) return null;
-      return {
-        uid: parsed.uid,
-        name: typeof parsed.name === "string" ? parsed.name : "Member",
-        role: typeof parsed.role === "string" ? parsed.role : "GUEST",
-        canChat: parsed.canChat === true,
-        canDraw: parsed.canDraw === true,
-        canManage: parsed.canManage === true,
-        canRunSession: parsed.canRunSession === true,
-        canUseVoice: parsed.canUseVoice === true,
-        symbol: typeof parsed.symbol === "string" ? parsed.symbol : undefined,
-        timeframe: typeof parsed.timeframe === "string" ? parsed.timeframe : undefined,
-      };
+      const response = await fetch(
+        `${origin}/api/internal/rooms/access?roomId=${encodeURIComponent(this.roomId)}&uid=${encodeURIComponent(uid)}`,
+        { headers: { "x-tradingvibes-service": signature } },
+      );
+      if (!response.ok) return null;
+      return (await response.json()) as Awaited<ReturnType<typeof this.requestRoomAccess>>;
     } catch {
       return null;
     }
@@ -566,7 +752,7 @@ export class RoomCoordinator implements DurableObject {
   private scheduleSnapshot(): void {
     if (this.snapshotAlarmScheduled) return;
     this.snapshotAlarmScheduled = true;
-    this.state.setAlarm(Date.now() + SNAPSHOT_INTERVAL_MS);
+    this.state.storage.setAlarm(Date.now() + SNAPSHOT_INTERVAL_MS);
   }
 
   private async pushSnapshot(): Promise<void> {
