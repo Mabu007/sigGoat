@@ -74,5 +74,23 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install dependencies
+        run: npm ci --include=dev --no-audit --no-fund
       - name: Validate Cloudflare Worker bundle
         run: npx --yes wrangler@4 deploy --dry-run
+
+  realtime-worker-bundle:
+    name: Cloudflare realtime Worker bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate the realtime Worker bundle
+        # The realtime Worker has its own wrangler.toml: a Durable Object
+        # binding, an R2 binding and its own migrations.
+        run: npx --yes wrangler@4 deploy --dry-run --config realtime/wrangler.toml

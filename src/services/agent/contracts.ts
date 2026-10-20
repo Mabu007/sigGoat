@@ -3,7 +3,7 @@
  * =============================
  *
  * This is the single runtime boundary between untrusted LLM output and
- * SIRGOAT business logic.
+ * TradingVibes business logic.
  *
  * Pipeline:
  *

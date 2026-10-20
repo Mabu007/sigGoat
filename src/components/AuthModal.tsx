@@ -3,7 +3,7 @@
  * =========================
  * The one place a person becomes a member.
  *
- * SIRGOAT is browsable: the room directory and any room's market, chat
+ * TradingVibes is browsable: the room directory and any room's market, chat
  * history and leader are open to anyone. An account is needed only for the
  * things that need an identity — joining a room, posting in it, and talking
  * to its leader.
@@ -92,6 +92,7 @@ export const AuthModal: React.FC = () => {
               <ShieldCheck size={19} aria-hidden="true" />
             </span>
             <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-accent-text">TradingVibes</p>
               <h2 id="auth-modal-title" className="text-base font-bold text-fg">
                 {authModalMode === 'signin' ? 'Welcome back' : 'Create your account'}
               </h2>

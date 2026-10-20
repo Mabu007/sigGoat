@@ -2222,3 +2222,113 @@
 .tr-room-coming-soon p:not(.tr-room-settings-eyebrow) { margin:0; color:var(--color-fg-muted); font:400 12px/1.65 var(--tr-sans); }
 .tr-room-coming-close { position:absolute; top:13px; right:13px; display:grid; place-items:center; width:30px; height:30px; border:1px solid var(--color-line); border-radius:8px; background:var(--color-raised); color:var(--color-fg-muted); cursor:pointer; }
 @media(max-width:600px) { .tr-room-preference-row { align-items:flex-start; flex-direction:column; } .tr-room-preference-toggle { width:100%; } .tr-room-buy-card { align-items:flex-start; flex-wrap:wrap; } .tr-room-buy-copy { flex-basis:calc(100% - 56px); } .tr-room-buy-card > button { width:100%; } }
+
+/* ================================================================== */
+/* LIVE ROOM — session badge, voice, recording, cover                  */
+/* ================================================================== */
+
+/* The live-session badge. It only appears while a session is genuinely
+   running, which is what distinguishes "this room exists" from "this room
+   is live right now". */
+.trade-room-live-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-negative) 45%, transparent);
+  border-radius: 999px;
+  background: var(--color-negative-soft);
+  color: var(--color-negative);
+  font: 700 9px/1 var(--tr-sans);
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.trade-room-recording-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, var(--color-negative) 35%, transparent);
+  color: var(--color-negative);
+}
+
+.trade-room-recording-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-negative);
+  animation: trade-room-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes trade-room-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trade-room-recording-dot { animation: none; }
+}
+
+/* The room cover, shown small in the room's identity block. */
+.trade-room-cover-thumb {
+  width: 30px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: 1px solid var(--tr-line);
+  border-radius: 5px;
+  background-color: var(--color-raised);
+  background-position: center;
+  background-size: cover;
+}
+
+/* The strip that holds the voice controls and the recorder. */
+.trade-room-live-controls {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--tr-line);
+  background: var(--color-surface);
+}
+
+.trade-room-live-hint {
+  color: var(--color-fg-subtle);
+  font: 500 10px/1.4 var(--tr-sans);
+}
+
+/* Start / end session. */
+.sg-room-session-controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.sg-room-session-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--tr-line);
+  border-radius: 8px;
+  background: var(--color-raised);
+  color: var(--color-fg-muted);
+  font: 650 10px/1 var(--tr-sans);
+  cursor: pointer;
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.sg-room-session-button:hover:not(:disabled) { color: var(--color-fg); background: var(--color-surface); }
+.sg-room-session-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.sg-room-session-button:disabled { opacity: .5; cursor: not-allowed; }
+
+.sg-room-session-button.is-live {
+  border-color: color-mix(in srgb, var(--color-negative) 45%, transparent);
+  background: var(--color-negative-soft);
+  color: var(--color-negative);
+}

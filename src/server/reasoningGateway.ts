@@ -218,7 +218,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
           : new OpenRouterClient({
             apiKey: key,
             headers: {
-              'X-Title': 'SIRGOAT',
+              'X-Title': 'TradingVibes',
               'HTTP-Referer': 'https://sirgoat.app',
             },
           });

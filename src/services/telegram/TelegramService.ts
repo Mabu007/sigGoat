@@ -188,7 +188,7 @@ export class TelegramService {
         `Market: \`${signal.market}\`\n` +
         `Decision: *NO TRADE*\n\n` +
         `*Reason:* ${signal.rationale.slice(0, 800)}\n\n` +
-        `_SIRGOAT: manual analysis only — no order has been placed._`
+        `_TradingVibes: manual analysis only — no order has been placed._`
       );
     }
 
@@ -221,7 +221,7 @@ export class TelegramService {
       `*Confirmation Required:*\n${signal.confirmationRequired.slice(0, 300)}\n\n` +
       `*Why this setup exists:*\n${signal.rationale.slice(0, 600)}\n\n` +
       `_Analyst: ${goatName}_\n` +
-      `_Manual execution only on your own broker — SIRGOAT never places orders._`
+      `_Manual execution only on your own broker — TradingVibes never places orders._`
     );
   }
 
@@ -267,8 +267,8 @@ export class TelegramService {
     }
 
     const text =
-      `🐐 *SIRGOAT Connected!*\n\n` +
-      `Your Telegram is now linked to your AI SIRGOAT.\n\n` +
+      `🐐 *TradingVibes Connected!*\n\n` +
+      `Your Telegram is now linked to your AI TradingVibes.\n\n` +
       `You'll receive clearly-labelled conditional trade ideas and market review summaries.\n` +
       `Signals are informational — execution is always manual, on your own broker.\n\n` +
       `Run /help to see the available commands.\n\n` +
@@ -321,7 +321,7 @@ export class TelegramService {
    */
   formatHelpMessage(): string {
     return [
-      "🐐 *SIRGOAT commands*",
+      "🐐 *TradingVibes commands*",
       "",
       "/create <goal> <market> [timeframe]",
       "   Create a monitoring process. Example:",
@@ -345,7 +345,7 @@ export class TelegramService {
       "/status",
       "   Current state of your default process.",
       "",
-      "_SIRGOAT produces analysis and alerts only. It never places an order._",
+      "_TradingVibes produces analysis and alerts only. It never places an order._",
     ].join("\n");
   }
 
@@ -413,9 +413,9 @@ export class TelegramService {
    */
   formatUnlinkedMessage(): string {
     return (
-      "🐐 Welcome to SIRGOAT!\n\n" +
-      "This chat is not linked to a SIRGOAT account yet.\n" +
-      "Open the SIRGOAT app, connect your bot token and chat id in Settings, then create a process.\n\n" +
+      "🐐 Welcome to TradingVibes!\n\n" +
+      "This chat is not linked to a TradingVibes account yet.\n" +
+      "Open the TradingVibes app, connect your bot token and chat id in Settings, then create a process.\n\n" +
       "Run /help once you are connected."
     );
   }
@@ -636,7 +636,7 @@ export class TelegramService {
     if (command.kind === "connect") {
       await this.sendMessage(
         chatId,
-        "Bot connection is managed from the SIRGOAT app under Settings → Telegram, where your token is stored securely.",
+        "Bot connection is managed from the TradingVibes app under Settings → Telegram, where your token is stored securely.",
         sendToken,
       );
       return { handled: true, command: "/connect" };

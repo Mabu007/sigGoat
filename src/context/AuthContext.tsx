@@ -157,8 +157,8 @@ function describeAuthError(error: unknown): Error {
 
 const buildFallbackProfile = (user: User): UserProfile => ({
   id: user.uid,
-  email: user.email || `${user.uid.slice(0, 8)}@sirgoat.internal`,
-  displayName: user.displayName || 'SIRGOAT Trader',
+  email: user.email || `${user.uid.slice(0, 8)}@tradingvibes.internal`,
+  displayName: user.displayName || 'TradingVibes Trader',
   telegramNotificationsEnabled: true,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),

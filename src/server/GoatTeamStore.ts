@@ -3,6 +3,8 @@ import path from "node:path";
 import type { Firestore } from "firebase-admin/firestore";
 import { getFirebaseAdmin } from "./firebaseAdmin";
 import type { TradingProvider } from "../types";
+import type { RoomCategory } from "../types/rooms";
+import { firestoreSafe } from "./repositories";
 
 export type GoatTeamCoordinationMode = "INDEPENDENT" | "CONSENSUS" | "LEAD_REVIEW";
 export type GoatTeamStatus = "DRAFT" | "DEPLOYED" | "PAUSED" | "PARTIAL";
@@ -85,6 +87,40 @@ export interface GoatTeam {
   status: GoatTeamStatus;
   /** Deployment settings captured by the deployment modal. */
   deployment?: TeamDeploymentSettings;
+  /**
+   * TradingVibes room settings.
+   *
+   * Every field is optional with a documented default, so a room created
+   * before these existed keeps working unchanged.
+   */
+  settings?: {
+    /** Free-text market tags used by the directory filters. */
+    markets?: string[];
+    /** The market category this room belongs to. */
+    category?: RoomCategory;
+    /** Default shared chart instrument for the room. */
+    chart?: { symbol?: string; timeframe?: string };
+    /** Whether members may draw on the shared chart. Defaults to true. */
+    allowDrawings?: boolean;
+    /** Whether the room may open a voice session. Defaults to true. */
+    voiceEnabled?: boolean;
+    /** Maximum number of members. Defaults to 100. */
+    maxMembers?: number;
+  };
+  /**
+   * Uids the owner has granted LEADER rights to.
+   *
+   * The owner is always a leader; this list only ever adds.
+   */
+  leaders?: string[];
+  /**
+   * The id of the session that is running right now, if any.
+   *
+   * Written by the session store. Kept on the room document because
+   * "is a session live?" is asked on every room read and must not cost a
+   * subcollection query.
+   */
+  activeSessionId?: string;
   createdAt: string;
   updatedAt: string;
   deployedAt?: string;
@@ -128,7 +164,7 @@ export class GoatTeamStore {
       await this.firestore.runTransaction(async tx => {
         const existing = await tx.get(ref);
         if (existing.exists) throw new Error("GOAT_TEAM_ALREADY_EXISTS");
-        tx.create(ref, record);
+        tx.create(ref, firestoreSafe(record));
       });
       return record;
     }
@@ -148,6 +184,32 @@ export class GoatTeamStore {
     }
     const team = this.db.teams[key];
     return team?.ownerUserId === userId ? team : null;
+  }
+
+  /**
+   * Reads a room WITHOUT applying an ownership check.
+   *
+   * The caller is responsible for the authorization decision. This exists
+   * because "can this viewer see this room?" is a question about the VIEWER,
+   * not about the room, and the answer lives in `roomAccess.ts`.
+   */
+  async getById(id: string): Promise<GoatTeam | null> {
+    const key = safeId(id);
+    if (this.firestore) {
+      const snapshot = await this.collection().doc(key).get();
+      return snapshot.exists ? (snapshot.data() as GoatTeam) : null;
+    }
+    return this.db.teams[key] ?? null;
+  }
+
+  /** Reads a room by its share slug, without applying an ownership check. */
+  async getBySlug(slug: string): Promise<GoatTeam | null> {
+    if (this.firestore) {
+      const snapshot = await this.collection().where("publicSlug", "==", slug).limit(1).get();
+      if (snapshot.empty) return null;
+      return snapshot.docs[0].data() as GoatTeam;
+    }
+    return Object.values(this.db.teams).find((team) => team.publicSlug === slug) ?? null;
   }
 
   async listForUser(userId: string): Promise<GoatTeam[]> {
@@ -179,7 +241,7 @@ export class GoatTeamStore {
   async save(team: GoatTeam): Promise<GoatTeam> {
     const id = safeId(team.id);
     const record = { ...team, id };
-    if (this.firestore) await this.collection().doc(id).set(record);
+    if (this.firestore) await this.collection().doc(id).set(firestoreSafe(record));
     else { this.db.teams[id] = record; this.persist(); }
     return record;
   }
@@ -194,5 +256,11 @@ export class GoatTeamStore {
 }
 
 export function createGoatTeamStore(): GoatTeamStore {
-  return new GoatTeamStore({ firestore: getFirebaseAdmin()?.firestore });
+  const existing = sharedStores.get("default");
+  if (existing) return existing;
+  const store = new GoatTeamStore({ firestore: getFirebaseAdmin()?.firestore });
+  sharedStores.set("default", store);
+  return store;
 }
+
+const sharedStores = new Map<string, GoatTeamStore>();

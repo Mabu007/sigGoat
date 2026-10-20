@@ -1,7 +1,7 @@
 /**
  * PROPDAO EXECUTION POLICY
  * ========================
- * The single decision point for whether SIRGOAT may place an order.
+ * The single decision point for whether TradingVibes may place an order.
  *
  * READ THIS BEFORE ENABLING ANYTHING
  *
@@ -14,7 +14,7 @@
  *
  *   Those two statements are compatible for a trader automating their own
  *   account. They are NOT obviously compatible for a THIRD PARTY operating a
- *   paid service on a customer's behalf, which is what SIRGOAT is. Nothing
+ *   paid service on a customer's behalf, which is what TradingVibes is. Nothing
  *   on propdao.finance grants that permission: there is no affiliate program,
  *   no delegated/OAuth access, no read-only key, and no clause permitting
  *   third-party commercial integration.
@@ -126,7 +126,7 @@ export function evaluateExecution(
       allowed: false,
       code: 'EXECUTION_DISABLED',
       message:
-        'Order placement is switched off for this deployment. SIRGOAT can analyse markets and prepare proposals, ' +
+        'Order placement is switched off for this deployment. TradingVibes can analyse markets and prepare proposals, ' +
         'but it will not place trades until PropDAO confirms in writing that a third-party commercial integration ' +
         `is permitted. ${TERMS_CONTEXT}`,
     };
@@ -217,7 +217,7 @@ export function executionPolicyStatus(env: NodeJS.ProcessEnv = process.env): {
     termsReference: executionTermsReference(env),
     summary: enabled && authorised
       ? 'Order execution is enabled.'
-      : 'Order execution is disabled. SIRGOAT analyses markets and prepares proposals, but does not place trades.',
+      : 'Order execution is disabled. TradingVibes analyses markets and prepares proposals, but does not place trades.',
     termsSummary: enabled && authorised
       ? `Authorised via ${executionTermsReference(env) ?? 'an unset terms reference — record this.'}`
       : TERMS_CONTEXT,

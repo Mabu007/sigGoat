@@ -1,5 +1,5 @@
 /**
- * The four market categories SIRGOAT presents.
+ * The four market categories TradingVibes presents.
  *
  * `currencies` and `crypto` are separate on purpose. A conventional
  * "forex" bucket only makes sense if the provider actually lists FX pairs;
@@ -17,7 +17,7 @@ export type MarketCategory =
   /** @deprecated Use 'currencies'. Retained so pre-existing records and tests compile. */
   | 'forex';
 
-/** The four categories SIRGOAT presents; `forex` is a legacy input alias. */
+/** The four categories TradingVibes presents; `forex` is a legacy input alias. */
 export type CanonicalMarketCategory = Exclude<MarketCategory, 'forex'>;
 
 /** `forex` -> `currencies`. Idempotent; unknown values pass through. */

@@ -1,5 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <rect width="24" height="24" rx="5" fill="#10b981"/>
-  <path d="M4 17.5 9 11l3.5 3.5L20 6" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="20" cy="6" r="2.5" fill="white"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="TradingVibes">
+  <!--
+    TRADINGVIBES MARK
+
+    Three rising candles on a plate. It reads as a market at a glance, and it
+    survives being scaled down to 16px, where fine detail stops working.
+
+    The plate and the candles carry a light and a dark variant through
+    `prefers-color-scheme`, because a favicon is painted on a browser chrome
+    background the page cannot control.
+  -->
+  <style>
+    .plate { fill: #f7efe0; stroke: #c9a558; }
+    .candle { fill: #98702c; }
+    .wick { stroke: #98702c; }
+    @media (prefers-color-scheme: dark) {
+      .plate { fill: #171b24; stroke: #d0ad65; }
+      .candle { fill: #d0ad65; }
+      .wick { stroke: #d0ad65; }
+    }
+  </style>
+  <rect class="plate" x="1.25" y="1.25" width="29.5" height="29.5" rx="8.5" stroke-width="1.5" />
+  <g class="wick" stroke-width="1.75" stroke-linecap="round" fill="none">
+    <path d="M10.5 13.5V26" />
+    <path d="M16 8.5V23" />
+    <path d="M21.5 6V20.5" />
+  </g>
+  <g class="candle">
+    <rect x="8.25" y="17" width="4.5" height="6.5" rx="1.25" />
+    <rect x="13.75" y="12" width="4.5" height="8" rx="1.25" />
+    <rect x="19.25" y="8.5" width="4.5" height="9.5" rx="1.25" />
+  </g>
 </svg>

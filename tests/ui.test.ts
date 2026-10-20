@@ -39,10 +39,10 @@ const VIEW_FILES = fs
 /* ------------------------------------------------------------------ */
 
 describe('product identity', () => {
-  test('the document title and metadata are SIRGOAT', () => {
+  test('the document title and metadata are TradingVibes', () => {
     const html = read('index.html');
-    expect(html).toContain('<title>SIRGOAT');
-    expect(html).not.toContain('SignalGOAT');
+    expect(html).toContain('<title>TradingVibes');
+    expect(html).not.toContain('SIRGOAT');
   });
 
   test('no source file renders the retired product name', () => {
@@ -55,7 +55,7 @@ describe('product identity', () => {
         } else if (/\.(ts|tsx)$/.test(entry.name)) {
           // This file necessarily contains the string it searches for.
           if (relative.endsWith('ui.test.ts')) continue;
-          if (/\bSignalGOAT\b/.test(read(relative))) offenders.push(relative);
+          if (/\bSIRGOAT\b|\bSignalGOAT\b/.test(read(relative))) offenders.push(relative);
         }
       }
     };
@@ -64,19 +64,20 @@ describe('product identity', () => {
     expect(offenders).toEqual([]);
   });
 
-  test('the wordmark renders SIRGOAT', () => {
+  test('the wordmark renders TradingVibes', () => {
     const navigation = read('src/components/Navigation.tsx');
-    expect(navigation).toContain('SIR');
-    expect(navigation).toContain('GOAT');
+    expect(navigation).toContain('TRADING');
+    expect(navigation).toContain('VIBES');
   });
 
-  test('the supplied logo is used in the app and favicon with rounded corners', () => {
+  test('the brand mark is a local asset, not a remote image', () => {
     const navigation = read('src/components/Navigation.tsx');
     const html = read('index.html');
-    expect(navigation).toContain('sirgoat_fmuhqm.jpg');
-    expect(navigation).toContain('rounded-xl object-cover');
+    // A remote logo means the brand depends on somebody else's host being up.
+    expect(navigation).not.toContain('res.cloudinary.com');
+    expect(html).not.toContain('res.cloudinary.com');
     expect(html).toContain('rel="icon"');
-    expect(html).toContain('sirgoat_fmuhqm.jpg');
+    expect(html).toContain('/favicon.svg');
     expect(html).toContain('apple-touch-icon');
   });
 
@@ -92,8 +93,8 @@ describe('product identity', () => {
 
   test('Telegram copy uses the new name', () => {
     const telegram = read('src/services/telegram/TelegramService.ts');
-    expect(telegram).toContain('SIRGOAT');
-    expect(telegram).not.toContain('SignalGOAT');
+    expect(telegram).toContain('TradingVibes');
+    expect(telegram).not.toContain('SIRGOAT');
   });
 });
 
@@ -167,7 +168,7 @@ describe('theme system', () => {
 
     // The script must appear in <head> and BEFORE the module script, or the
     // first paint uses the wrong theme.
-    const scriptIndex = html.indexOf("localStorage.getItem('sirgoat.theme')");
+    const scriptIndex = html.indexOf("'tradingvibes.theme'");
     const moduleIndex = html.indexOf('type="module"');
 
     expect(scriptIndex).toBeGreaterThan(-1);
@@ -187,7 +188,7 @@ describe('theme system', () => {
     // than a fixed-length window or a mid-script offset: the script's length
     // changes whenever a comment is added, and either of those approaches
     // silently stops testing anything.
-    const open = html.lastIndexOf('<script>', html.indexOf("sirgoat.theme"));
+    const open = html.lastIndexOf('<script>', html.indexOf("'tradingvibes.theme'"));
     const close = html.indexOf('</script>', open);
     expect(open).toBeGreaterThan(-1);
     expect(close).toBeGreaterThan(open);
@@ -197,9 +198,10 @@ describe('theme system', () => {
     // would abort the rest of the inline script and leave the theme unpainted.
     expect(script).toContain('try');
     expect(script).toContain('catch');
-    // And the pre-rename key is still honoured, so a rename cannot cause a
+    // And the pre-rename keys are still honoured, so a rename cannot cause a
     // light-mode flash for a user who had chosen dark.
-    expect(script).toContain("localStorage.getItem('fundagoat.theme')");
+    expect(script).toContain("'sirgoat.theme'");
+    expect(script).toContain("'fundagoat.theme'");
   });
 
   test('the theme provider is mounted ABOVE auth and data providers', () => {

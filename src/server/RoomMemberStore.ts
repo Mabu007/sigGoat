@@ -125,8 +125,69 @@ export class RoomMemberStore {
       .filter((member) => member.roomId === roomId)
       .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt));
   }
+
+  /** Every room the user has joined, oldest join first. */
+  async listForUser(userId: string): Promise<RoomMemberRecord[]> {
+    if (this.firestore) {
+      const snapshot = await this.collection().where("userId", "==", userId).get();
+      return snapshot.docs
+        .map((doc) => doc.data() as RoomMemberRecord)
+        .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt));
+    }
+    return Object.values(this.db.members)
+      .filter((member) => member.userId === userId)
+      .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt));
+  }
+
+  /**
+   * Member counts for many rooms at once.
+   *
+   * The directory needs a member count per card. One query per room would
+   * turn a single directory load into dozens of reads, which is exactly the
+   * read amplification that exhausts a Firestore quota. Firestore's `in`
+   * query accepts up to 30 values, so the rooms are chunked and each chunk
+   * costs one read.
+   */
+  async countByRooms(roomIds: string[]): Promise<Record<string, number>> {
+    const counts: Record<string, number> = {};
+    if (roomIds.length === 0) return counts;
+
+    if (this.firestore) {
+      const unique = [...new Set(roomIds)].slice(0, 300);
+      for (let index = 0; index < unique.length; index += 30) {
+        const chunk = unique.slice(index, index + 30);
+        const snapshot = await this.collection().where("roomId", "in", chunk).get();
+        for (const doc of snapshot.docs) {
+          const record = doc.data() as RoomMemberRecord;
+          counts[record.roomId] = (counts[record.roomId] ?? 0) + 1;
+        }
+      }
+      return counts;
+    }
+
+    for (const roomId of roomIds) {
+      counts[roomId] = Object.values(this.db.members).filter(
+        (member) => member.roomId === roomId,
+      ).length;
+    }
+    return counts;
+  }
 }
 
 export function createRoomMemberStore(): RoomMemberStore {
-  return new RoomMemberStore({ firestore: getFirebaseAdmin()?.firestore });
+  /**
+   * One instance per process.
+   *
+   * The file-backed mode keeps its state IN MEMORY and writes it to disk, so
+   * two instances would each hold a different copy and diverge the moment
+   * one of them wrote. Firestore has no such problem, but sharing the
+   * instance is simpler and costs nothing.
+   */
+  const existing = sharedStores.get("default");
+  if (existing) return existing;
+  const store = new RoomMemberStore({ firestore: getFirebaseAdmin()?.firestore });
+  sharedStores.set("default", store);
+  return store;
 }
+
+const sharedStores = new Map<string, RoomMemberStore>();

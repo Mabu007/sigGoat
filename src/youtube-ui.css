@@ -1,4 +1,4 @@
-/* SIRGOAT Trading Hub — YouTube-inspired navigation and discovery layout */
+/* TradingVibes Trading Hub — YouTube-inspired navigation and discovery layout */
 .yt-header { background: color-mix(in srgb, var(--color-surface) 94%, transparent); backdrop-filter: blur(18px); }
 .yt-header-inner { max-width: none !important; }
 .yt-search { height: 42px; border: 1px solid var(--color-line-strong); border-radius: 999px; overflow: hidden; background: var(--color-raised); transition: border-color .18s, box-shadow .18s; }

@@ -1,11 +1,32 @@
-# SIRGOAT
+# TRADINGVIBES
 
-SIRGOAT is an AI-assisted trading workspace built around individual market
-research agents ("GOATs"). Saved GOATs are pinned to a trading provider: cTrader GOATs use cTrader market
-data and cTrader execution; legacy and explicitly Hyperliquid GOATs keep
-Hyperliquid market data and the existing PropDAO execution path. The workspace
-also provides provider-backed AI reasoning, deterministic setup/risk checks,
-historical backtesting, trade proposals, and account views.
+TradingVibes is a **social trading platform**. People create trading rooms,
+invite friends, look at the same chart at the same time, talk live by voice,
+and record what happened.
+
+The rooms are the product. A room exists whether or not anyone is in it, a
+membership says who may read it, and a live session is a bounded episode with
+a start and an end. Those three things are kept apart on purpose.
+
+| Capability | Where it lives |
+|---|---|
+| Identity and sessions | Firebase Authentication |
+| Rooms, membership, settings, chat, sessions | Firestore (through the API) |
+| Shared chart, drawings, presence, live state | A Cloudflare Durable Object, one per room |
+| Room voice | Cloudflare Realtime SFU (the API server holds the secret) |
+| Avatars and room covers | Cloudflare R2, private bucket, signed delivery |
+| Session recording | The browser (screen capture + mixed audio), downloaded locally |
+
+The realtime layer is a **separate Cloudflare deployment** from the web app.
+See [docs/CLOUDFLARE_REALTIME_WORKER.md](docs/CLOUDFLARE_REALTIME_WORKER.md)
+for its setup, and [docs/CLOUDFLARE_WORKER_SCHEDULER.md](docs/CLOUDFLARE_WORKER_SCHEDULER.md)
+for the older cron scheduler.
+
+The underlying research engine is unchanged: individual market research agents
+("GOATs") pinned to a trading provider, provider-backed AI reasoning,
+deterministic setup/risk checks, historical backtesting, trade proposals and
+account views all still work, and the existing broker connections are
+untouched.
 
 **Important:** PropDAO order execution is disabled by default and remains
 fail-closed unless the server has both execution flags enabled and a recorded

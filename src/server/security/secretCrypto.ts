@@ -2,7 +2,7 @@
  * SECRET ENCRYPTION AT REST
  * =========================
  * One authenticated-encryption primitive for EVERY user-supplied credential
- * in SIRGOAT — OpenRouter keys, Groq keys, PropDAO API keys and Telegram bot
+ * in TradingVibes — OpenRouter keys, Groq keys, PropDAO API keys and Telegram bot
  * tokens all flow through here. There is deliberately no per-provider
  * encryption scheme: a second scheme is a second thing to get wrong.
  *

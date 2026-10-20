@@ -15,7 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function logStartup(mode: string): void {
   console.log('');
-  console.log('  SIRGOAT starting up');
+  console.log('  TradingVibes starting up');
   console.log(`  Persistence mode: ${appPersistence.mode}`);
   console.log(`  Auth mode: see GET /api/settings/status`);
   const marketProvider =
@@ -97,6 +97,6 @@ async function listen(app: ReturnType<typeof createApp>, port: number) {
 }
 
 startServer().catch((err) => {
-  console.error('Failed to start SIRGOAT server:', err);
+  console.error('Failed to start TradingVibes server:', err);
   process.exit(1);
 });

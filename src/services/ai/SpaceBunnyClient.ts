@@ -2,7 +2,7 @@
  * SPACE BUNNY HOSTED API ADAPTER
  * =============================
  * Space Bunny exposes an OpenAI-compatible chat-completions endpoint. This
- * adapter normalises it into the same validated SIRGOAT reasoning contract as
+ * adapter normalises it into the same validated TradingVibes reasoning contract as
  * the OpenRouter and Groq adapters. The API key is supplied server-side only.
  */
 import {
@@ -174,7 +174,7 @@ export class SpaceBunnyClient {
         {
           role: 'user',
           content:
-            'Your previous reply was valid JSON but failed SIRGOAT runtime validation. ' +
+            'Your previous reply was valid JSON but failed TradingVibes runtime validation. ' +
             'Fix every issue and return the complete corrected JSON object ONLY. ' +
             'The investigation, thesis and proposal fields must be JSON objects; evidence must be an array. ' +
             'Validation issues: ' + validationError.issues.join('; '),
@@ -192,7 +192,7 @@ export class SpaceBunnyClient {
       } catch (repairError) {
         if (repairError instanceof ReasoningValidationError) {
           throw new ApiRequestError(
-            'Space Bunny response still fails SIRGOAT validation: ' + repairError.issues.join('; '),
+            'Space Bunny response still fails TradingVibes validation: ' + repairError.issues.join('; '),
             { code: 'INVALID_REASONING_SCHEMA', retryable: true },
           );
         }
@@ -214,9 +214,9 @@ export class SpaceBunnyClient {
     const started = Date.now();
     try {
       const response = await this.complete(SPACE_BUNNY_MODEL, [
-        { role: 'user', content: 'Return exactly this text and nothing else: SIRGOAT_SPACE_BUNNY_CONNECTION_OK' },
+        { role: 'user', content: 'Return exactly this text and nothing else: TradingVibes_SPACE_BUNNY_CONNECTION_OK' },
       ], 128, PROBE_TIMEOUT_MS, false);
-      const ok = response.includes('SIRGOAT_SPACE_BUNNY_CONNECTION_OK');
+      const ok = response.includes('TradingVibes_SPACE_BUNNY_CONNECTION_OK');
       return { ok, model: SPACE_BUNNY_MODEL, latencyMs: Date.now() - started, error: ok ? undefined : 'Model responded but did not return the expected confirmation.' };
     } catch (error) {
       return { ok: false, latencyMs: Date.now() - started, error: error instanceof Error ? error.message : 'Unknown Space Bunny error.' };

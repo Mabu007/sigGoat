@@ -1,7 +1,7 @@
 /**
  * HYPERLIQUID MARKET CATALOG
  * ==========================
- * Translates Hyperliquid's live instrument metadata into SIRGOAT's internal
+ * Translates Hyperliquid's live instrument metadata into TradingVibes's internal
  * market model, and decides which markets are tracked by default.
  *
  * THE CENTRAL CONSTRAINT

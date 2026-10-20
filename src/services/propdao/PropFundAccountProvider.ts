@@ -1,7 +1,7 @@
 /**
  * PROPDAO PROVIDER ADAPTER
  * ========================
- * Isolates every PropDAO-specific concern from the rest of SIRGOAT.
+ * Isolates every PropDAO-specific concern from the rest of TradingVibes.
  *
  * THE STABLE INTERNAL INTERFACE
  *   The agent and the API layer talk to `PropFundAccountProvider` and the
