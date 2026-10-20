@@ -94,10 +94,22 @@ export class RoomChartStateStore {
 
   private persist() {
     if (!this.decision.fileBacked) return;
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    const temp = this.filePath + ".tmp";
-    fs.writeFileSync(temp, JSON.stringify(this.db), "utf8");
-    fs.renameSync(temp, this.filePath);
+    try {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      const temp = this.filePath + ".tmp";
+      fs.writeFileSync(temp, JSON.stringify(this.db), "utf8");
+      fs.renameSync(temp, this.filePath);
+    } catch (error) {
+      /**
+       * A failed write must not fail the REQUEST.
+       *
+       * The store keeps its state in memory either way, so a filesystem that
+       * turned read-only mid-flight degrades the store rather than breaking
+       * the call that happened to trigger the write.
+       */
+      this.decision = { ...this.decision, fileBacked: false };
+      console.warn('[store] Could not persist to disk; continuing in memory.', error);
+    }
   }
 
   async get(roomId: string): Promise<RoomChartSnapshot | null> {
