@@ -1,18 +1,20 @@
 # TRADINGVIBES REALTIME WORKER
 # ============================
-# The live-room runtime: WebSocket endpoints, one Durable Object per room,
-# and the R2 bucket that holds avatars and room covers.
+# The live-room runtime. It is a **separate Cloudflare deployment** from the
+# web application, and the two have to be pointed at each other by hand.
+#
+# WHAT IT OWNS
+#   - one Durable Object per room, holding that room's shared chart state,
+#     the drawings, the presence list and the live session state
+#   - the WebSocket endpoint the browser opens
+#   - the R2 bucket that holds avatars and room covers
 #
 # DEPLOYING
-# ---------
-#   1. Create the bucket once:
-#        wrangler r2 bucket create tradingvibes-media
-#   2. Put the shared secret in BOTH places (the API server and this
-#      Worker). It signs upload tickets, delivery links and the
-#      service-to-service calls between the two:
-#        wrangler secret put ROOM_REALTIME_SECRET
-#   3. Deploy:
-#        wrangler deploy
+#   1. The bucket must exist:      wrangler r2 bucket create tradingvibes
+#   2. The shared secret:          wrangler secret put ROOM_REALTIME_SECRET
+#      (the SAME value must be set on the API server as
+#       ROOM_REALTIME_SECRET)
+#   3. Deploy:                     wrangler deploy
 #
 # The API server needs the resulting workers.dev url in ROOM_REALTIME_URL,
 # and this Worker needs the API's base url in ROOM_API_ORIGIN. Neither
@@ -34,14 +36,15 @@ tag = "v1"
 new_sqlite_classes = ["RoomCoordinator"]
 
 # The image bucket. Private by default: images are served through the
-# signed delivery route on this Worker.
+# signed delivery route on this Worker, or through the configured public
+# R2 domain on the API side.
 [[r2_buckets]]
 binding = "IMAGES"
-bucket_name = "tradingvibes-media"
+bucket_name = "tradingvibes"
 
 [vars]
 # The API server's base url, used for room authorization and for the
 # throttled durable snapshot. Comma separated to allow more than one.
-ROOM_API_ORIGIN = "https://tradingvibes-api.vercel.app"
+ROOM_API_ORIGIN = "https://sig-goat.vercel.app"
 # The Firebase project id. The ID token's audience must match it.
-FIREBASE_PROJECT_ID = ""
+FIREBASE_PROJECT_ID = "sirgoat-b10b5"

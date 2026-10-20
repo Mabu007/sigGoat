@@ -46,6 +46,7 @@ import {
   normalisePropDaoKey,
   normaliseTelegramToken,
 } from "./credentialValidation";
+import { ALLOWED_TIMEFRAMES } from "../shared/roomProtocol";
 import {
   createPersistence,
   getPersistenceDegradationReason,
@@ -3760,7 +3761,23 @@ apiRouter.get("/robots/:slug/market", handle(async (req, res) => {
   const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
   const symbol = requestedSymbol && goat.markets.includes(requestedSymbol) ? requestedSymbol : goat.markets[0];
   if (!symbol) return fail(res, 404, "ROOM_MARKET_UNAVAILABLE", "This room has no configured market.");
-  const timeframe = typeof req.query.timeframe === "string" ? req.query.timeframe : "1h";
+  /**
+   * THE TIMEFRAME IS VALIDATED, NOT TAKEN ON TRUST.
+   *
+   * This route is PUBLIC and it is polled every few seconds by every
+   * open room. An arbitrary timeframe string was accepted verbatim, which
+   * meant an unauthenticated caller could mint an unbounded number of cache
+   * keys (the key contains the timeframe) and, with every miss, an
+   * upstream provider request. The cache was bounded, so the memory was
+   * safe, but the provider traffic was not: one caller could spend the
+   * upstream quota that every real room shares.
+   *
+   * The supported set is small and already defined in one place.
+   */
+  const requestedTimeframe = typeof req.query.timeframe === "string" ? req.query.timeframe : "1h";
+  const timeframe = (ALLOWED_TIMEFRAMES as readonly string[]).includes(requestedTimeframe)
+    ? requestedTimeframe
+    : "1h";
   const count = Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120));
   try {
     if (resolveGoatTradingProvider(goat) === "hyperliquid") {
@@ -4198,7 +4215,23 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   const symbol = deployedRoomAsset || (requestedSymbol && goat?.markets.includes(requestedSymbol)
     ? requestedSymbol
     : goat?.markets[0] || fallbackSymbol);
-  const timeframe = typeof req.query.timeframe === "string" ? req.query.timeframe : "1h";
+  /**
+   * THE TIMEFRAME IS VALIDATED, NOT TAKEN ON TRUST.
+   *
+   * This route is PUBLIC and it is polled every few seconds by every
+   * open room. An arbitrary timeframe string was accepted verbatim, which
+   * meant an unauthenticated caller could mint an unbounded number of cache
+   * keys (the key contains the timeframe) and, with every miss, an
+   * upstream provider request. The cache was bounded, so the memory was
+   * safe, but the provider traffic was not: one caller could spend the
+   * upstream quota that every real room shares.
+   *
+   * The supported set is small and already defined in one place.
+   */
+  const requestedTimeframe = typeof req.query.timeframe === "string" ? req.query.timeframe : "1h";
+  const timeframe = (ALLOWED_TIMEFRAMES as readonly string[]).includes(requestedTimeframe)
+    ? requestedTimeframe
+    : "1h";
   const count = Math.min(500, Math.max(1, Number.parseInt(String(req.query.count || "120"), 10) || 120));
   /**
    * The room's Memory panel reads the agent's working context: the exact
