@@ -67,7 +67,7 @@ export const GROQ_MODELS = [
   {
     id: 'llama-3.3-70b-versatile',
     name: 'Llama 3.3 70B Versatile',
-    description: 'General purpose. The default Groq model for SIRGOAT.',
+    description: 'General purpose. The default Groq model for TradingVibes.',
   },
   {
     id: 'llama-3.1-8b-instant',
@@ -405,7 +405,7 @@ export class GroqClient {
           {
             role: 'user' as const,
             content:
-              'Your previous reply was valid JSON but failed SIRGOAT runtime validation. ' +
+              'Your previous reply was valid JSON but failed TradingVibes runtime validation. ' +
               'Fix every issue and return the complete corrected JSON object ONLY. ' +
               'The top-level investigation, thesis and proposal fields must be JSON objects; ' +
               'evidence must be an array. Validation issues: ' + validationError.issues.join('; '),
@@ -426,7 +426,7 @@ export class GroqClient {
       } catch (repairError) {
         if (repairError instanceof ReasoningValidationError) {
           throw new ApiRequestError(
-            `${model} response still fails SIRGOAT validation: ${repairError.issues.join('; ')}`,
+            `${model} response still fails TradingVibes validation: ${repairError.issues.join('; ')}`,
             { code: 'INVALID_REASONING_SCHEMA', retryable: true },
           );
         }
@@ -475,7 +475,7 @@ export class GroqClient {
    * Real end-to-end probe.
    *
    * Asks for the contract's minimal shape rather than a free-text string, so a
-   * pass proves the model can actually produce what SIRGOAT needs.
+   * pass proves the model can actually produce what TradingVibes needs.
    */
   async testConnection(model?: string): Promise<{
     ok: boolean;

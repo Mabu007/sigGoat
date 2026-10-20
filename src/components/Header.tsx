@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { LogIn, LogOut, Plus, RefreshCw, Search, Settings, UserRound } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { BrandMark } from './Navigation';
+import { UserAvatar } from './UserAvatar';
 import { useAuth } from '../context/AuthContext';
 
 interface HeaderProps {
@@ -16,16 +17,42 @@ interface HeaderProps {
 
 export function Header({ displayName, email, onOpenSettings, onCreateRoom, onRefresh, refreshing = false, lastUpdatedMs }: HeaderProps) {
   const [search, setSearch] = useState('');
-  const { currentUser, authMode, openAuthModal, logout } = useAuth();
+  const { currentUser, authMode, openAuthModal, logout, getApiAuthHeaders } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
   const signedIn = Boolean(currentUser) || authMode === 'dev';
   const initials = (displayName ?? email ?? '?').trim().charAt(0).toUpperCase();
 
+  /**
+   * The signed-in member's picture.
+   *
+   * It is fetched from the server rather than read straight out of
+   * Firestore, because the stored value is an R2 object KEY and the
+   * browser needs a signed DELIVERY url. The request is made once, and only
+   * while somebody is actually signed in.
+   */
+  useEffect(() => {
+    if (!signedIn) { setAvatarUrl(null); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const headers = new Headers({ Accept: 'application/json' });
+        for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+        const response = await fetch('/api/profile', { headers, cache: 'no-store' });
+        const body = await response.json().catch(() => ({}));
+        if (!cancelled && response.ok) setAvatarUrl(body.avatarUrl ?? null);
+      } catch {
+        // No avatar is a perfectly good outcome: the initials stand in.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [signedIn, getApiAuthHeaders]);
+
   const submitSearch = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    window.dispatchEvent(new CustomEvent('sirgoat-directory-search', { detail: search.trim() }));
+    window.dispatchEvent(new CustomEvent('tradingvibes-directory-search', { detail: search.trim() }));
     if (window.location.hash !== '#/rooms') window.location.hash = '/rooms';
   };
 
@@ -50,15 +77,15 @@ export function Header({ displayName, email, onOpenSettings, onCreateRoom, onRef
   return (
     <header className="premium-header yt-header sticky top-0 z-30 border-b border-line">
       <div className="yt-header-inner flex h-[68px] w-full items-center gap-4 px-4 sm:px-6">
-        <button type="button" onClick={() => { window.location.hash = '/rooms'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} aria-label="SIRGOAT home — Rooms" title="Back to Rooms" className="flex shrink-0 items-center gap-3 rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+        <button type="button" onClick={() => { window.location.hash = '/rooms'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} aria-label="TradingVibes home — Rooms" title="Back to Rooms" className="flex shrink-0 items-center gap-3 rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
           <BrandMark compact />
-          <span className="hidden text-[15px] font-extrabold tracking-tight text-fg sm:inline">SIR<span className="text-accent-text">GOAT</span></span>
+          <span className="hidden text-[15px] font-extrabold tracking-tight text-fg sm:inline">TRADING<span className="text-accent-text">VIBES</span></span>
         </button>
 
         <form onSubmit={submitSearch} className="yt-search mx-auto flex w-full max-w-[620px] items-center">
           <Search size={18} className="ml-4 shrink-0 text-fg-subtle" aria-hidden="true" />
           <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search trading rooms and their leaders..." aria-label="Search trading rooms" className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-fg outline-none placeholder:text-fg-subtle" />
-          {search && <button type="button" onClick={() => { setSearch(''); window.dispatchEvent(new CustomEvent('sirgoat-directory-search', { detail: '' })); }} aria-label="Clear search" className="px-2 text-fg-subtle hover:text-fg">×</button>}
+          {search && <button type="button" onClick={() => { setSearch(''); window.dispatchEvent(new CustomEvent('tradingvibes-directory-search', { detail: '' })); }} aria-label="Clear search" className="px-2 text-fg-subtle hover:text-fg">×</button>}
           <button type="submit" aria-label="Search" className="yt-search-button flex h-10 w-14 shrink-0 items-center justify-center"><Search size={18} /></button>
         </form>
 
@@ -77,7 +104,7 @@ export function Header({ displayName, email, onOpenSettings, onCreateRoom, onRef
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
               >
-                {initials}
+                <UserAvatar name={displayName ?? email} url={avatarUrl} initials={initials} size={36} />
               </button>
               {menuOpen && (
                 <div role="menu" className="absolute right-0 top-11 z-40 w-60 overflow-hidden rounded-xl border border-line bg-surface text-fg shadow-2xl">

@@ -248,7 +248,7 @@ export class CTraderTradeExecutionService {
           orderId: outcome.orderId,
           quantityUnits: intent.qty,
           protocolVolumeCents: outcome.requestedVolumeCents,
-          message: "cTrader accepted the order, but SIRGOAT could not verify its persisted protective stop and target. Do not submit it again. Inspect order " + outcome.orderId + " in cTrader immediately.",
+          message: "cTrader accepted the order, but TradingVibes could not verify its persisted protective stop and target. Do not submit it again. Inspect order " + outcome.orderId + " in cTrader immediately.",
           protectionVerified: false,
         };
       }
@@ -339,7 +339,7 @@ export class CTraderTradeExecutionService {
         protectionVerified: true,
       };
     } catch {
-      return { status: "unknown", accepted: false, message: "cTrader order status is unknown because the response was not confirmed. Check cTrader orders before retrying; SIRGOAT did not automatically resubmit." };
+      return { status: "unknown", accepted: false, message: "cTrader order status is unknown because the response was not confirmed. Check cTrader orders before retrying; TradingVibes did not automatically resubmit." };
     }
   }
 }

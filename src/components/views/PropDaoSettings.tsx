@@ -91,7 +91,7 @@ export function PropDaoSettings() {
         setEphemeralVaultKey(Boolean(body.ephemeralVaultKey));
       }
     } catch {
-      setMessage({ tone: 'error', text: 'Could not reach the SIRGOAT API.' });
+      setMessage({ tone: 'error', text: 'Could not reach the TradingVibes API.' });
     }
   }, [getApiAuthHeaders]);
 
@@ -125,7 +125,7 @@ export function PropDaoSettings() {
       setMessage({ tone: 'ok', text: 'Key saved. Verifying against PropDAO…' });
       await load();
     } catch {
-      setMessage({ tone: 'error', text: 'Could not reach the SIRGOAT API.' });
+      setMessage({ tone: 'error', text: 'Could not reach the TradingVibes API.' });
     } finally {
       setSaving(false);
     }
@@ -296,7 +296,7 @@ export function PropDaoSettings() {
               app.propdao.finance
               <ExternalLink size={10} aria-hidden="true" />
             </a>{' '}
-            → Avatar → Settings → Developers. It is shown only once. SIRGOAT stores it encrypted with
+            → Avatar → Settings → Developers. It is shown only once. TradingVibes stores it encrypted with
             AES-256-GCM and never returns it to the browser.
           </p>
         </div>

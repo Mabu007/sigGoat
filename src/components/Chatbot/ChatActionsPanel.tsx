@@ -134,7 +134,7 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
     return post("/api/chat/actions/market-research", { query: query.trim() });
   }, "Market research returned");
 
-  const createProposal = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/research", { reason: "Market review requested from SIRGOAT chat" }), "GOAT review completed");
+  const createProposal = () => run(() => post("/api/chat/actions/goats/" + encodeURIComponent(goatId) + "/research", { reason: "Market review requested from TradingVibes chat" }), "GOAT review completed");
 
   const runBacktest = () => run(() => post("/api/backtest/run", {
     goatId, market: backtestMarket || undefined, period: backtestPeriod,
@@ -174,7 +174,7 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
 
   const decideSignal = (signal: any, decision: "ACCEPTED" | "REJECTED") => run(async () => {
     if (!goatId || !signal?.id) throw new Error("Choose a GOAT proposal first.");
-    const payload = await post("/api/goats/" + encodeURIComponent(goatId) + "/signals/" + encodeURIComponent(signal.id) + "/decision", { decision, note: "Decision made in SIRGOAT chat" });
+    const payload = await post("/api/goats/" + encodeURIComponent(goatId) + "/signals/" + encodeURIComponent(signal.id) + "/decision", { decision, note: "Decision made in TradingVibes chat" });
     await refreshContext();
     return { action: { type: "proposal_decision", title: decision === "ACCEPTED" ? "Proposal accepted" : "Proposal rejected", status: decision.toLowerCase(), signal: payload.signal, execution: payload.execution, message: decision === "ACCEPTED" ? "The acceptance is persisted. It is not proof an order was placed; use the separate risk-checked order flow if execution is available." : "The rejection is persisted." } };
   }, decision === "ACCEPTED" ? "Proposal accepted" : "Proposal rejected");
@@ -231,11 +231,11 @@ export function ChatActionsPanel({ getAuthHeaders, onClose, onResult, initialMod
   ];
 
   return (
-    <section className="absolute inset-x-2 bottom-2 z-30 flex max-h-[78%] flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl sm:inset-x-4" aria-label="SIRGOAT action tools">
+    <section className="absolute inset-x-2 bottom-2 z-30 flex max-h-[78%] flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl sm:inset-x-4" aria-label="TradingVibes action tools">
       <header className="flex items-center justify-between gap-2 border-b border-line px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent/10 text-accent-text"><ShieldCheck size={15} /></span>
-          <div className="min-w-0"><h3 className="text-xs font-semibold text-fg">SIRGOAT action centre</h3><p className="text-[10px] text-fg-subtle">Authenticated tools · server-side checks</p></div>
+          <div className="min-w-0"><h3 className="text-xs font-semibold text-fg">TradingVibes action centre</h3><p className="text-[10px] text-fg-subtle">Authenticated tools · server-side checks</p></div>
         </div>
         <button type="button" onClick={onClose} className="rounded-md p-1.5 text-fg-subtle hover:bg-raised" aria-label="Close action centre"><X size={15} /></button>
       </header>

@@ -13,7 +13,7 @@ describe('Space Bunny hosted API adapter', () => {
         requestInit = init;
         return new Response(JSON.stringify({
           model: SPACE_BUNNY_MODEL,
-          choices: [{ message: { content: 'SIRGOAT_SPACE_BUNNY_CONNECTION_OK' } }],
+          choices: [{ message: { content: 'TradingVibes_SPACE_BUNNY_CONNECTION_OK' } }],
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       },
     });

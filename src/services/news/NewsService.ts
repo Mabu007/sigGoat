@@ -229,7 +229,7 @@ export class NewsService {
           signal: controller.signal,
           headers: {
             // Some RSS endpoints reject requests without a UA.
-            'User-Agent': 'SIRGOAT/1.0 (+market research)',
+            'User-Agent': 'TradingVibes/1.0 (+market research)',
             Accept: 'application/rss+xml, application/xml, text/xml',
           },
         });

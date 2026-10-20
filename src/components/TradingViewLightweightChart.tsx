@@ -5,13 +5,22 @@ import {
   ColorType,
   CandlestickSeries,
   HistogramSeries,
+  LineSeries,
   type IChartApi,
   type ISeriesApi,
+  type ITimeScaleApi,
+  type LineWidth,
   type Time,
   type SeriesMarker,
 } from 'lightweight-charts';
 import type { Candle, MarketQuote } from '../types';
 import { useTheme } from '../context/ThemeContext';
+import {
+  computeRoomIndicators,
+  normalizeRoomCandles,
+  type RoomIndicatorConfig,
+  type RoomIndicatorOutput,
+} from './room-chart/roomIndicators';
 
 type AgentChartEvent = {
   id: string;
@@ -21,7 +30,22 @@ type AgentChartEvent = {
   label: string;
 };
 
-interface ChartProps {
+/**
+ * The chart handles a parent may need in order to draw on top of, or beside,
+ * the candle series.
+ *
+ * `candleSeries` is the anchor for every price conversion, and `timeScale`
+ * for every time conversion, so a parent that draws an overlay MUST use
+ * these two rather than its own maths — the chart owns the mapping between
+ * a price and a pixel.
+ */
+export interface RoomChartApi {
+  chart: IChartApi;
+  candleSeries: ISeriesApi<'Candlestick'>;
+  timeScale: () => ITimeScaleApi<Time>;
+}
+
+export interface ChartProps {
   candles: Candle[];
   activeQuote: MarketQuote | null;
   timeframe: string;
@@ -30,7 +54,33 @@ interface ChartProps {
   roomName?: string;
   agentEvents?: AgentChartEvent[];
   dataMode?: string;
+  /** Draw the volume histogram. Defaults to true. */
+  showVolume?: boolean;
+  /**
+   * Indicators to draw on the chart.
+   *
+   * The chart renders them itself so it can remove the series again when an
+   * indicator is switched off or the chart is rebuilt — a parent that added
+   * its own series would have to clean them up too, and the usual result is
+   * a chart with three copies of the same moving average.
+   */
+  indicators?: RoomIndicatorConfig[];
+  /**
+   * Called with the live chart handles once the chart exists. Called again
+   * with fresh handles whenever the chart is rebuilt (symbol, precision or
+   * theme change); the previous handles are dead by then.
+   */
+  onChartReady?: (api: RoomChartApi) => void;
+  /**
+   * Rendered as an absolutely positioned layer over the chart canvas.
+   *
+   * The layer does NOT receive pointer events unless it asks for them, so
+   * the chart keeps its own pan and zoom.
+   */
+  overlay?: React.ReactNode;
 }
+
+export type TradingViewLightweightChartProps = ChartProps;
 
 function readChartPalette() {
   const style = getComputedStyle(document.documentElement);
@@ -78,8 +128,20 @@ function isFreshQuote(quote: MarketQuote | null) {
   return true;
 }
 
+/** One indicator's live series, plus the pane it lives in. */
+interface IndicatorRuntime {
+  /** The chart the series belong to. Used to detect a rebuilt chart. */
+  chart: IChartApi;
+  output: RoomIndicatorOutput;
+  lines: Array<{ id: string; series: ISeriesApi<'Line'> }>;
+  histogram?: ISeriesApi<'Histogram'>;
+  /** Set only for indicators that own a pane. */
+  paneIndex?: number;
+}
+
 export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   candles, activeQuote, timeframe, symbol, digits = 5, roomName, agentEvents = [], dataMode = '',
+  showVolume = true, indicators, onChartReady, overlay,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
@@ -96,6 +158,15 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   const shouldFitRef = useRef(true);
   const userInteractedRef = useRef(false);
   const [crosshairBar, setCrosshairBar] = useState<{ open: number; high: number; low: number; close: number } | null>(null);
+
+  /**
+   * Callbacks and flags the chart reads inside effects that must NOT be
+   * re-created when a parent passes a new inline function. A parent that
+   * renders `onChartReady={(api) => ...}` inline would otherwise rebuild
+   * the whole chart on every render.
+   */
+  const onChartReadyRef = useRef(onChartReady);
+  onChartReadyRef.current = onChartReady;
 
   /**
    * How much of the fetched history is on screen.
@@ -116,6 +187,24 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
   const visibleCandles = useMemo(
     () => (candles.length > revealed ? candles.slice(-revealed) : candles),
     [candles, revealed],
+  );
+
+  /**
+   * The indicator request, flattened to a stable string.
+   *
+   * The indicator lifecycle is keyed on this rather than on the array
+   * identity, because a parent that builds the array inline would otherwise
+   * tear the series down and rebuild them on every single render.
+   */
+  const indicatorKey = useMemo(() => JSON.stringify(indicators ?? []), [indicators]);
+  const indicatorConfigs = useMemo<RoomIndicatorConfig[]>(
+    () => (indicators ?? []),
+    [indicatorKey],
+  );
+  const indicatorCandles = useMemo(() => normalizeRoomCandles(visibleCandles), [visibleCandles]);
+  const indicatorOutputs = useMemo(
+    () => computeRoomIndicators(indicatorCandles, indicatorConfigs),
+    [indicatorCandles, indicatorConfigs],
   );
 
   useEffect(() => {
@@ -182,6 +271,12 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
     markerPluginRef.current = createSeriesMarkers(candleSeries, []);
+
+    onChartReadyRef.current?.({
+      chart,
+      candleSeries,
+      timeScale: () => chart.timeScale(),
+    });
 
     const onRangeChange = () => {
       const range = chart.timeScale().getVisibleLogicalRange();
@@ -342,9 +437,154 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
     });
   }, [activeQuote, timeframe, dataMode, symbol, palette]);
 
+  /**
+   * The volume histogram can be switched off, and is switched off by
+   * itself when the provider supplied no volume at all: a histogram of
+   * zeros is a lie about a market that does not report volume.
+   */
+  const hasVolumeData = useMemo(
+    () => indicatorCandles.some(candle => candle.volume > 0),
+    [indicatorCandles],
+  );
+  useEffect(() => {
+    const volumeSeries = volumeSeriesRef.current;
+    if (!volumeSeries) return;
+    volumeSeries.applyOptions({ visible: showVolume && hasVolumeData });
+  }, [showVolume, hasVolumeData, symbol, digits, palette]);
+
+  /* ---------------------------------------------------------------- */
+  /* Indicator series lifecycle                                       */
+  /* ---------------------------------------------------------------- */
+
+  const indicatorRuntimeRef = useRef<Map<string, IndicatorRuntime>>(new Map());
+  /**
+   * The evaluated indicators, always the current ones. The lifecycle effect
+   * below reads them through this ref on purpose: it must NOT re-run when
+   * only the candles change, or every tick would throw the series away and
+   * build them again.
+   */
+  const indicatorOutputsRef = useRef(indicatorOutputs);
+  indicatorOutputsRef.current = indicatorOutputs;
+
+  /**
+   * Creates the indicator series and the panes they live in.
+   *
+   * The teardown is the important half. Every series this effect created is
+   * removed again when the configuration changes or the chart is rebuilt,
+   * so toggling an indicator off leaves nothing behind — no orphan scale,
+   * no second copy of the same moving average.
+   */
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    const previous = [...indicatorRuntimeRef.current.values()];
+    indicatorRuntimeRef.current = new Map();
+
+    for (const runtime of previous) {
+      /**
+       * A runtime from a DIFFERENT chart is already gone: that chart was
+       * removed wholesale, and removing its series again would throw.
+       */
+      if (runtime.chart !== chart) continue;
+      try {
+        for (const line of runtime.lines) chart.removeSeries(line.series);
+        if (runtime.histogram) chart.removeSeries(runtime.histogram);
+      } catch {
+        // The chart may have been torn down between the check and the call.
+      }
+    }
+    /**
+     * The panes are NOT removed by hand: the chart removes a pane by itself
+     * as soon as its last series is gone, and removing one by index would
+     * shift the indices of the panes after it — the wrong pane would be
+     * dropped.
+     */
+
+    const runtime = new Map<string, IndicatorRuntime>();
+    for (const output of indicatorOutputsRef.current) {
+      let paneIndex = 0;
+      if (output.ownPane) {
+        const pane = chart.addPane();
+        pane.setStretchFactor(0.3);
+        paneIndex = pane.paneIndex();
+      }
+      const lines = output.lines.map(line => ({
+        id: line.id,
+        series: chart.addSeries(LineSeries, {
+          color: line.color,
+          lineWidth: Math.min(4, Math.max(1, Math.round(line.width))) as LineWidth,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+          priceScaleId: 'right',
+        }, paneIndex),
+      }));
+      const histogram = output.histogram
+        ? chart.addSeries(HistogramSeries, {
+          priceFormat: { type: 'price', precision: digits, minMove: 1 / Math.pow(10, digits) },
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceScaleId: 'right',
+        }, paneIndex)
+        : undefined;
+
+      /**
+       * The pane's own price scale is used for the indicator, so the RSI
+       * and the MACD are never stretched over the price scale of the
+       * candles.
+       *
+       * Nothing is applied to that scale on purpose: in this library the
+       * 'right' scale of a pane shares its options with the chart-wide
+       * right scale, so setting a fixed range or custom margins here would
+       * silently stop the MAIN price scale from auto-scaling, which is a
+       * far worse bug than an axis that reads 30..70 instead of 0..100.
+       * The latest value is in the legend instead.
+       */
+      runtime.set(output.key, {
+        chart,
+        output,
+        lines,
+        histogram,
+        paneIndex: output.ownPane ? paneIndex : undefined,
+      });
+    }
+    indicatorRuntimeRef.current = runtime;
+  }, [symbol, digits, palette, indicatorKey]);
+
+  /**
+   * Feeds the indicator series.
+   *
+   * Kept apart from the creation effect so a new candle only updates the
+   * data instead of throwing the series away and building them again.
+   */
+  useEffect(() => {
+    const runtime = indicatorRuntimeRef.current;
+    if (runtime.size === 0) return;
+    for (const output of indicatorOutputs) {
+      const entry = runtime.get(output.key);
+      if (!entry) continue;
+      for (const line of output.lines) {
+        const target = entry.lines.find(candidate => candidate.id === line.id);
+        if (!target) continue;
+        target.series.setData(line.data.map(point => ({
+          time: point.time as Time,
+          value: point.value,
+        })));
+      }
+      if (output.histogram && entry.histogram) {
+        entry.histogram.setData(output.histogram.data.map(point => ({
+          time: point.time as Time,
+          value: point.value,
+          color: point.color,
+        })));
+      }
+    }
+  }, [symbol, digits, palette, indicatorKey, indicatorOutputs]);
+
   return (
     <div className="sg-pulse-chart" data-theme={theme}>
-      <div className="sg-pulse-watermark" aria-hidden="true">{roomName || 'SIRGOAT'}</div>
+      <div className="sg-pulse-watermark" aria-hidden="true">{roomName || 'TradingVibes'}</div>
       {crosshairBar && <div className="sg-pulse-ohlc" aria-label="Selected candle OHLC">
         <span>O <b>{crosshairBar.open.toLocaleString(undefined, { maximumFractionDigits: digits })}</b></span>
         <span>H <b>{crosshairBar.high.toLocaleString(undefined, { maximumFractionDigits: digits })}</b></span>
@@ -352,6 +592,11 @@ export const TradingViewLightweightChart: React.FC<ChartProps> = ({
         <span>C <b>{crosshairBar.close.toLocaleString(undefined, { maximumFractionDigits: digits })}</b></span>
       </div>}
       <div ref={containerRef} className="sg-pulse-canvas" aria-label={symbol + ' ' + timeframe + ' candlestick chart'} />
+      {overlay ? (
+        <div className="pointer-events-none absolute inset-0 z-[2]">
+          {overlay}
+        </div>
+      ) : null}
       {candles.length > revealed && (
         <div className="sg-pulse-history-hint" role="status">
           {revealed} of {candles.length} {timeframe} bars · scroll back for more

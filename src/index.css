@@ -90,6 +90,17 @@
   --color-accent-soft: #f5eddc; /* tinted backgrounds */
   --color-accent-fg: #ffffff;
 
+  /**
+   * The accent tone used for TEXT.
+   *
+   * It has to live in `@theme`, not only in `@layer base`, or Tailwind never
+   * generates the `text-accent-text` utility and every label that uses it
+   * silently falls back to the inherited colour. The dark override below
+   * still wins, because plain `@theme` compiles to `var(--color-accent-text)`
+   * rather than to a literal hex.
+   */
+  --color-accent-text: #846020;
+
   --color-positive: #087f5b;    /* emerald-700 */
   --color-positive-soft: #d9f4e8;
   --color-negative: #bd3d50;    /* rose-700 */
@@ -143,11 +154,9 @@
 
 /* Accent used for TEXT on a light background must differ from the fill
    colour, or a light-mode accent label fails contrast on `canvas`.
-   Declared per theme rather than reused. */
+   The light value is registered in `@theme` above (so the utility exists);
+   the dark value overrides it here, per theme. */
 @layer base {
-  :root {
-    --color-accent-text: #846020;
-  }
   :root[data-theme='dark'] {
     --color-accent-text: #e4c47e;
   }
@@ -435,7 +444,7 @@
 }
 
 /* =====================================================================
-   SIRGOAT SIGNATURE FINISH
+   TradingVibes SIGNATURE FINISH
    Visual-only polish: the existing component tree, interactions and data
    contracts remain unchanged. Restrained navy, champagne and soft neutrals.
    ===================================================================== */

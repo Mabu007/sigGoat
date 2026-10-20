@@ -440,12 +440,12 @@ export class CTraderOpenApiClient {
           return message.payloadType === RESPONSE_ERROR && (!message.clientMsgId || message.clientMsgId === clientMsgId);
         }, () => socket.send(JSON.stringify({
           clientMsgId, payloadType: NEW_ORDER_REQ,
-          payload: { ctidTraderAccountId: this.accountId, symbolId: input.symbol.symbolId, orderType: input.orderType === "LIMIT" ? 2 : 1, tradeSide: input.side === "BUY" ? 1 : 2, volume: requestedVolumeCents, ...(input.limitPrice !== undefined ? { limitPrice: input.limitPrice } : {}), ...(input.stopLoss !== undefined ? { stopLoss: input.stopLoss } : {}), ...(input.takeProfit !== undefined ? { takeProfit: input.takeProfit } : {}), clientOrderId, label: "SIRGOAT", comment: "Submitted by SIRGOAT" },
+          payload: { ctidTraderAccountId: this.accountId, symbolId: input.symbol.symbolId, orderType: input.orderType === "LIMIT" ? 2 : 1, tradeSide: input.side === "BUY" ? 1 : 2, volume: requestedVolumeCents, ...(input.limitPrice !== undefined ? { limitPrice: input.limitPrice } : {}), ...(input.stopLoss !== undefined ? { stopLoss: input.stopLoss } : {}), ...(input.takeProfit !== undefined ? { takeProfit: input.takeProfit } : {}), clientOrderId, label: "TradingVibes", comment: "Submitted by TradingVibes" },
         })));
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown cTrader response failure.";
         if (/cTrader Open API error \d+:/i.test(message)) return { status: "rejected", accepted: false, requestedVolumeCents, message: "cTrader rejected the order: " + message };
-        return { status: "unknown", accepted: false, requestedVolumeCents, message: "cTrader order status is unknown. Check cTrader orders for client order ID " + clientOrderId + " before retrying; SIRGOAT did not automatically resubmit." };
+        return { status: "unknown", accepted: false, requestedVolumeCents, message: "cTrader order status is unknown. Check cTrader orders for client order ID " + clientOrderId + " before retrying; TradingVibes did not automatically resubmit." };
       }
       const executionType = number(payload.executionType);
       const order = payload.order && typeof payload.order === "object" ? payload.order as Record<string, unknown> : {};

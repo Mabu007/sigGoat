@@ -1,5 +1,5 @@
 /**
- * SIRGOAT API ROUTER
+ * TradingVibes API ROUTER
  * ======================
  * Every protected route: authMiddleware -> ownership check -> handler.
  * Identity comes from the verified token, never from the request body.
@@ -273,7 +273,7 @@ function defaultProfileForUser(userId: string): UserProfile {
   return {
     id: userId,
     email: `${userId}@sirgoat.internal`,
-    displayName: "SIRGOAT Trader",
+    displayName: "TradingVibes Trader",
     telegramNotificationsEnabled: true,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -989,7 +989,7 @@ function subscribeToMarkets(goat: FundGoat): void {
   }
   // The serverless cron dispatcher checks trackers directly from Firestore due times;
   // it must not start process-local market ingestion loops.
-  if (process.env.SIRGOAT_SCHEDULER_ONLY === "true") return;
+  if (process.env.TradingVibes_SCHEDULER_ONLY === "true") return;
 
   /**
    * A PAUSED GOAT IS UNSUBSCRIBED.
@@ -3069,7 +3069,7 @@ async function createProcessFromTelegram(
   if (!owner) {
     return {
       ok: false,
-      message: "This chat is not linked to a SIRGOAT account.",
+      message: "This chat is not linked to a TradingVibes account.",
     };
   }
 
@@ -3630,7 +3630,7 @@ function timingSafeStringEqual(a: string, b: string): boolean {
  * EXPLORE: system-owned GOAT templates.
  *
  * PUBLIC. Deliberately unauthenticated: a template is static content with no
- * user data, and letting an unauthenticated visitor see what SIRGOAT can do
+ * user data, and letting an unauthenticated visitor see what TradingVibes can do
  * is the point of the section. Nothing here reveals a user id, a credential or
  * a live GOAT.
  *
@@ -5028,7 +5028,7 @@ apiRouter.get(
     }
     let appBase: string;
     try {
-      appBase = process.env.SIRGOAT_APP_URL?.trim() || new URL(process.env.CTRADER_REDIRECT_URI as string).origin;
+      appBase = process.env.TradingVibes_APP_URL?.trim() || new URL(process.env.CTRADER_REDIRECT_URI as string).origin;
     } catch {
       return fail(res, 503, "CTRADER_NOT_CONFIGURED", "Set a valid CTRADER_REDIRECT_URI before connecting cTrader.");
     }
@@ -5343,7 +5343,7 @@ apiRouter.post(
           res,
           409,
           "CHAT_ID_IN_USE",
-          "That Telegram chat is already linked to another SIRGOAT account. " +
+          "That Telegram chat is already linked to another TradingVibes account. " +
             "Unlink it there first, or use a different chat.",
         );
       }
@@ -5351,7 +5351,7 @@ apiRouter.post(
       const profile = (await persistence.profiles.get(user.uid)) ?? {
         id: user.uid,
         email: user.email ?? `${user.uid}@sirgoat.internal`,
-        displayName: "SIRGOAT Trader",
+        displayName: "TradingVibes Trader",
         telegramNotificationsEnabled: true,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -5483,7 +5483,7 @@ apiRouter.post(
     const profile: UserProfile = existing ?? {
       id: user.uid,
       email: user.email ?? `${user.uid}@sirgoat.internal`,
-      displayName: "SIRGOAT Trader",
+      displayName: "TradingVibes Trader",
       telegramNotificationsEnabled: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -6073,7 +6073,7 @@ apiRouter.post(
       const profile = (await persistence.profiles.get(user.uid)) ?? {
         id: user.uid,
         email: user.email ?? `${user.uid}@sirgoat.internal`,
-        displayName: "SIRGOAT Trader",
+        displayName: "TradingVibes Trader",
         telegramNotificationsEnabled: true,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -6085,7 +6085,7 @@ apiRouter.post(
           res,
           409,
           "CHAT_ID_IN_USE",
-          "That Telegram chat is already linked to another SIRGOAT account.",
+          "That Telegram chat is already linked to another TradingVibes account.",
         );
       }
 
@@ -8353,7 +8353,7 @@ async function fetchChatNews(query: string): Promise<Array<{ title: string; sour
     const url = "https://news.google.com/rss/search?q=" +
       encodeURIComponent(query) + "&hl=en-US&gl=US&ceid=US:en";
     const response = await fetch(url, {
-      headers: { "User-Agent": "SIRGOAT/1.0 (market research)" },
+      headers: { "User-Agent": "TradingVibes/1.0 (market research)" },
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) return [];
@@ -8561,7 +8561,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
   if (includeUserState) {
   if (goats.length) {
     sections.push(
-      "USER'S SIRGOAT STATE (only this authenticated user's records; proposals are existing saved signals, not new recommendations):\n" +
+      "USER'S TradingVibes STATE (only this authenticated user's records; proposals are existing saved signals, not new recommendations):\n" +
       JSON.stringify({
         totalGoats: goats.length,
         goats: goats.slice(0, 12).map((goat) => ({
@@ -8573,7 +8573,7 @@ async function buildChatResearchContext(userId: string, userMessage: string): Pr
       }).slice(0, 16000),
     );
   } else {
-    sections.push("USER'S SIRGOAT STATE: no GOATs were returned for this account, or the state store was unavailable. Do not invent any.");
+    sections.push("USER'S TradingVibes STATE: no GOATs were returned for this account, or the state store was unavailable. Do not invent any.");
   }
   }
 
@@ -8761,8 +8761,8 @@ const CHAT_SYSTEM_PROMPT =
   "DEFAULT ANSWER SHAPE: Lead with the answer or your actual take in plain language. Usually use 1-3 short paragraphs. Do not automatically produce a report with numbered sections, tables, 'bottom line', 'gaps and caveats', or generic disclaimers. Use headings, bullets, and tables only when they make a complex research answer easier to scan or the user asks for detail. Do not repeat the user's question. Ask one focused follow-up only when a genuinely important detail is missing. " +
   "DEPTH CONTROL: Casual chat gets a casual, short reply. 'What do you think about EUR?' gets a concise view plus the key evidence and level/condition that would change the view. 'Research', 'analyse in detail', 'compare', 'backtest', or multi-part requests warrant a deeper evidence-led answer. For trading analysis, be decisive about what the evidence suggests while separating observation from inference and uncertainty; do not hide behind generic financial disclaimers. " +
   "SESSION CONTINUITY: Treat this as one ongoing conversation. Resolve follow-ups such as 'it', 'that', 'again', 'the chart', and timeframe changes from the most recent relevant asset discussed in this session, unless the user names a different asset. Never make the user repeat an asset or timeframe already established. PROPDAO ACCOUNT GROUNDING IS MANDATORY: If LIVE PROPDAO ACCOUNT CONTEXT appears in this turn, use it to answer questions about their PropDAO balance, equity, drawdown room, challenge rules, positions, orders, closed trades, markets, and challenge catalogue. Do not claim you lack access when the requested data is present. Distinguish null/missing fields from zero, mention the fetched timestamp when useful, and never invent account values. Hyperliquid is the research feed and PropDAO is the execution venue; do not assume their symbols or price scales are interchangeable. Auto-trading may only use an exact PropDAO instrument match and must pass the server-side risk gate. MARKET-DATA GROUNDING IS MANDATORY: Before answering any question about an asset, inspect ON-DEMAND HYPERLIQUID RESEARCH RESULTS in this turn. If a matching result contains a quote, you HAVE that quote and must discuss it directly; never say you lack access to live market data in that case. Start with the actual returned price/mid, 24h change, and quote timestamp when available. Distinguish LIVE from PAPER using the returned dataMode. If candles are present, use them for trend/technical analysis. If the requested asset is not listed, say that exact asset was not found on Hyperliquid, then name the closest actually-listed relevant instrument from the supplied market universe and offer to analyse it; never pretend an unsupported instrument is available. If discovery or quote retrieval failed, describe that specific failure—not a general lack of market access. Never invent a price or silently substitute a different asset. " +
-  "TRADING UNIVERSE — HARD RULE: SIRGOAT trades and researches instruments listed on Hyperliquid only, especially the XYZ HIP-3 markets such as xyz:EUR, xyz:GBP, xyz:JPY, xyz:GOLD, xyz:SILVER, xyz:CL and listed indices. Never frame a question as if the user is trading external spot FX, a broker feed, EUR/USD, EUR/GBP, or another outside venue. Do not offer to fetch data from another source. When the user names a conventional pair or a vague currency/asset that does not exactly identify a supported Hyperliquid symbol, do not guess and do not fetch a loosely matched symbol: ask one short confirmation question using the venue's actual symbol. Example: 'Do you mean Hyperliquid's xyz:JPY market?' for USD/JPY; 'Do you mean xyz:EUR?' for 'the euro'. For a pair without a clear equivalent, ask whether they mean one of the actual listed instruments, e.g. xyz:EUR or xyz:GBP. Never present xyz:JPY as a spot EUR/JPY or claim the listed instrument is identical to spot FX. If the user confirms a symbol that was just suggested by you, treat that as confirmation, resolve the exact symbol, fetch its current Hyperliquid quote and candles, and answer the original question without asking again. A confirmation like 'yes', 'yeah', 'that one', or 'do that' only confirms the immediately preceding instrument clarification; do not apply it to unrelated questions. " +
-  "DATA AND RESEARCH: Use the backend's on-demand Hyperliquid instrument discovery, live quote retrieval, historical OHLCV candles, relevant news context, and authenticated SIRGOAT state. Search/fetch every confirmed asset the user asks about; use historical data when relevant; inspect saved GOAT configuration, skills, theses, activity, and proposals for GOAT questions. A greeting does not need market research. Never pretend to have fetched data that is absent. Never fabricate a listing, price, funding, open interest, volume, candle, news item, source, or timestamp. State LIVE versus PAPER accurately, and mention a data gap only when it materially affects the answer. " +
+  "TRADING UNIVERSE — HARD RULE: TradingVibes trades and researches instruments listed on Hyperliquid only, especially the XYZ HIP-3 markets such as xyz:EUR, xyz:GBP, xyz:JPY, xyz:GOLD, xyz:SILVER, xyz:CL and listed indices. Never frame a question as if the user is trading external spot FX, a broker feed, EUR/USD, EUR/GBP, or another outside venue. Do not offer to fetch data from another source. When the user names a conventional pair or a vague currency/asset that does not exactly identify a supported Hyperliquid symbol, do not guess and do not fetch a loosely matched symbol: ask one short confirmation question using the venue's actual symbol. Example: 'Do you mean Hyperliquid's xyz:JPY market?' for USD/JPY; 'Do you mean xyz:EUR?' for 'the euro'. For a pair without a clear equivalent, ask whether they mean one of the actual listed instruments, e.g. xyz:EUR or xyz:GBP. Never present xyz:JPY as a spot EUR/JPY or claim the listed instrument is identical to spot FX. If the user confirms a symbol that was just suggested by you, treat that as confirmation, resolve the exact symbol, fetch its current Hyperliquid quote and candles, and answer the original question without asking again. A confirmation like 'yes', 'yeah', 'that one', or 'do that' only confirms the immediately preceding instrument clarification; do not apply it to unrelated questions. " +
+  "DATA AND RESEARCH: Use the backend's on-demand Hyperliquid instrument discovery, live quote retrieval, historical OHLCV candles, relevant news context, and authenticated TradingVibes state. Search/fetch every confirmed asset the user asks about; use historical data when relevant; inspect saved GOAT configuration, skills, theses, activity, and proposals for GOAT questions. A greeting does not need market research. Never pretend to have fetched data that is absent. Never fabricate a listing, price, funding, open interest, volume, candle, news item, source, or timestamp. State LIVE versus PAPER accurately, and mention a data gap only when it materially affects the answer. " +
   "When researching, plan what evidence is needed, inspect retrieved data, identify material gaps, use available follow-up research, then synthesize a clear view. For complex trading questions, include the strongest bullish and bearish case, important confirmation/invalidation conditions, and risk only where relevant. Never expose another user's data or credentials. ACTION ORCHESTRATION: When the user asks to create a GOAT, deploy a GOAT, generate a trade proposal, or submit an order, the chat interface opens the matching structured action card. Treat that card and the authenticated server action endpoints as the only route for state changes. Never claim an action completed until the endpoint returns a completed result. GOAT creation saves a draft; deployment requires a separate explicit confirmation. Order submission requires a separate explicit confirmation, a fresh server-side deterministic risk check, an owned PropDAO account, and the provider execution policy to allow it. If execution is disabled or unauthorised, say so plainly and do not suggest that an order was placed. Never execute trades or alter GOAT settings based only on model text.";
 
 /** Resolve only the credential belonging to the user's selected provider. */
@@ -8815,7 +8815,7 @@ async function sendToModel(
   provider: AiProvider = "openrouter",
 ): Promise<{ content: string; model: string; usage?: unknown }> {
   if (provider === "openrouter") {
-    const client = new OpenRouterClient({ apiKey: key, headers: { "X-Title": "SIRGOAT" } });
+    const client = new OpenRouterClient({ apiKey: key, headers: { "X-Title": "TradingVibes" } });
     return client.complete({ model, messages, temperature: 0.3, maxTokens: 2000, responseFormat: false });
   }
   const baseUrl = provider === "groq" ? "https://api.groq.com/openai/v1" : "https://spacebunnymodel.com/api/v1";
@@ -8859,7 +8859,7 @@ async function runChatResearchLoop(
     researchProvider = await marketDataProviderForUser(userId, tradingProvider);
   } catch { /* provider unavailable: this pass must not fall back to another venue */ }
   const plannerPrompt = [
-    "You are the research planner inside SIRGOAT. Inspect the user question and the evidence already fetched.",
+    "You are the research planner inside TradingVibes. Inspect the user question and the evidence already fetched.",
     "Return ONLY one JSON object with this schema:",
     '{"additionalMarketQueries":["BTC"],"additionalNewsQueries":["topic"],"timeframe":"1h","candleCount":120,"reason":"brief"}',
     "Only request evidence that is actually missing and useful. Never ask to place trades or modify application state.",
@@ -8954,7 +8954,7 @@ async function runChatResearchLoop(
 }
 
 /**
- * Explicit, authenticated market-research tool for SIRGOAT chat.
+ * Explicit, authenticated market-research tool for TradingVibes chat.
  *
  * The chat model may explain the returned evidence, but it does not get to
  * invent quotes or trigger state changes. This endpoint reuses the same
@@ -8995,7 +8995,7 @@ apiRouter.post("/chat/actions/market-research", authMiddleware, async (req, res)
 });
 
 /**
- * Discover the server-side tools SIRGOAT can safely orchestrate. Existing
+ * Discover the server-side tools TradingVibes can safely orchestrate. Existing
  * resource routes remain the source of truth for creation, deployment,
  * proposal decisions and execution policy; this route never advertises a
  * capability as executable unless the deployment policy confirms it.
@@ -9521,7 +9521,7 @@ apiRouter.post("/chat/stream", authMiddleware, async (req, res) => {
       headers: {
         Authorization: "Bearer " + key,
         "Content-Type": "application/json",
-        ...(provider === "openrouter" ? { "X-Title": "SIRGOAT" } : {}),
+        ...(provider === "openrouter" ? { "X-Title": "TradingVibes" } : {}),
       },
       body: JSON.stringify({
         model: chatRequestModel, messages: modelMessages,

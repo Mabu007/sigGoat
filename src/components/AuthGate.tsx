@@ -15,11 +15,11 @@
  *
  * BROWSE FIRST, REGISTER WHEN IT MATTERS
  *
- * SIRGOAT is a social trading product. A person who has never signed in can
- * open the room directory, walk into any room, read the conversation, watch
- * the chart and see who leads it. An account is only needed for the things
- * that need an identity: joining a room, posting in it, and talking to its
- * leader privately. Those ask for it through the sign-in dialog, not by
+ * TradingVibes is a social trading product. A person who has never signed in
+ * can open the room directory, walk into any room, read the conversation,
+ * watch the chart and see who leads it. An account is only needed for the
+ * things that need an identity: joining a room, posting in it, and talking to
+ * its leader privately. Those ask for it through the sign-in dialog, not by
  * hiding the whole product behind a wall.
  *
  * So this gate no longer decides WHO sees the app — it only decides whether
@@ -71,7 +71,7 @@ const AuthLoadingScreen: React.FC = () => (
   >
     <div className="flex flex-col items-center gap-3 text-center">
       <ShieldCheck className="w-8 h-8 text-accent-text animate-pulse" />
-      <p className="text-sm text-fg-muted">Opening SIRGOAT…</p>
+      <p className="text-sm text-fg-muted">Opening TradingVibes…</p>
       <p className="text-xs text-fg-subtle max-w-xs">
         Restoring your session, if you have one.
       </p>

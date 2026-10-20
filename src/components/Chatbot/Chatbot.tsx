@@ -1233,7 +1233,7 @@ export function Chatbot() {
 
             <h2 className="truncate text-[13px] font-semibold tracking-tight text-fg">
 
-              SIRGOAT
+              TradingVibes
 
             </h2>
 
@@ -1245,7 +1245,7 @@ export function Chatbot() {
               onClick={() => setShowActions((value) => !value)}
               className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${showActions ? "border-accent bg-accent/10 text-accent-text" : "border-line text-fg-muted hover:bg-raised hover:text-fg"}`}
               aria-expanded={showActions}
-              aria-label="Open SIRGOAT action centre"
+              aria-label="Open TradingVibes action centre"
             >
               <ShieldCheck size={13} aria-hidden="true" /> Actions
             </button>
@@ -1498,7 +1498,7 @@ export function Chatbot() {
                     onChange={(event) => void chooseChatModel(event.target.value)}
                     disabled={modelSaving || chatModels.length === 0}
                     className="min-w-0 w-full rounded-lg border border-line bg-surface px-2 py-2 text-[11px] text-fg outline-none focus:border-focus disabled:opacity-60"
-                    aria-label="Choose SIRGOAT reasoning model"
+                    aria-label="Choose TradingVibes reasoning model"
                   >
                     {chatModels.length === 0 && <option value="">Model configured in Settings</option>}
                     {chatModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}{model.id.endsWith(':free') ? ' · FREE' : ''}</option>)}
@@ -1621,7 +1621,7 @@ export function Chatbot() {
                   <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-800 pb-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
                     <span className="flex items-center gap-1.5">
                       <Loader2 size={12} className="animate-spin" aria-hidden="true" />
-                      SIRGOAT / AGENT TRACE
+                      TradingVibes / AGENT TRACE
                     </span>
                     <span className="text-slate-500">LIVE</span>
                   </div>

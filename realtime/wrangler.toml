@@ -1,0 +1,47 @@
+# TRADINGVIBES REALTIME WORKER
+# ============================
+# The live-room runtime: WebSocket endpoints, one Durable Object per room,
+# and the R2 bucket that holds avatars and room covers.
+#
+# DEPLOYING
+# ---------
+#   1. Create the bucket once:
+#        wrangler r2 bucket create tradingvibes-media
+#   2. Put the shared secret in BOTH places (the API server and this
+#      Worker). It signs upload tickets, delivery links and the
+#      service-to-service calls between the two:
+#        wrangler secret put ROOM_REALTIME_SECRET
+#   3. Deploy:
+#        wrangler deploy
+#
+# The API server needs the resulting workers.dev url in ROOM_REALTIME_URL,
+# and this Worker needs the API's base url in ROOM_API_ORIGIN. Neither
+# environment variable configures the other automatically: they are two
+# separate deployments that have to be pointed at each other.
+
+name = "tradingvibes-realtime"
+main = "src/index.ts"
+compatibility_date = "2026-10-14"
+workers_dev = true
+
+# One Durable Object instance per room, addressed by the room id.
+[[durable_objects.bindings]]
+name = "ROOM_COORDINATOR"
+class_name = "RoomCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomCoordinator"]
+
+# The image bucket. Private by default: images are served through the
+# signed delivery route on this Worker.
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "tradingvibes-media"
+
+[vars]
+# The API server's base url, used for room authorization and for the
+# throttled durable snapshot. Comma separated to allow more than one.
+ROOM_API_ORIGIN = "https://tradingvibes-api.vercel.app"
+# The Firebase project id. The ID token's audience must match it.
+FIREBASE_PROJECT_ID = ""

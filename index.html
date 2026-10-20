@@ -3,21 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SIRGOAT - Social Trading Rooms</title>
-    <link rel="icon" type="image/png" sizes="128x128" href="https://res.cloudinary.com/dlguuk8lt/image/upload/c_fill,w_128,h_128,r_24,b_transparent,f_png/v1792056929/sirgoat_fmuhqm.jpg" />
-    <link rel="apple-touch-icon" href="https://res.cloudinary.com/dlguuk8lt/image/upload/c_fill,w_180,h_180,r_32,b_transparent,f_png/v1792056929/sirgoat_fmuhqm.jpg" />
+    <title>TradingVibes - Social Trading Rooms</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
     <meta
       name="description"
-      content="Social trading rooms: join a room, watch the market its leader is on, and talk about the trade in real time. Connect your own broker account and share your analysis."
+      content="TradingVibes is a home for social trading rooms: join a room, watch the market its leader is on, and talk about the trade in real time."
     />
     <meta name="theme-color" content="#0a0c11" />
-    <meta property="og:title" content="SIRGOAT - Social Trading Rooms" />
+    <meta property="og:title" content="TradingVibes - Social Trading Rooms" />
     <meta
       property="og:description"
-      content="Social trading rooms: watch the market with your room leader, talk about the trade live, and connect your own broker account."
+      content="TradingVibes social trading rooms: watch the market with your room leader, talk about the trade live, and connect your own broker account."
     />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="https://res.cloudinary.com/dlguuk8lt/image/upload/v1792056929/sirgoat_fmuhqm.jpg" />
+    <meta property="og:image" content="/favicon.svg" />
     <meta name="twitter:card" content="summary_large_image" />
 
     <!--
@@ -37,16 +37,49 @@
       (function () {
         try {
           /*
-           * The pre-rename key is read as a fallback. Without it a returning
-           * user who had chosen dark gets a LIGHT flash before the bundle
-           * loads — the one moment the pre-paint script exists to prevent,
+           * THEME KEYS, AND THE RENAME.
+           *
+           * `tradingvibes.theme` is the key the product writes now. The
+           * pre-rename keys are still READ as fallbacks: without them a
+           * returning user who had chosen dark gets a LIGHT flash before
+           * the bundle loads — the one moment this script exists to prevent,
            * reintroduced by a rename.
+           *
+           * Both sets of keys can exist at once, and only the most recent
+           * write may win. `tradingvibes.theme.sync` remembers which legacy
+           * value was seen last, so a legacy write that happened AFTER the
+           * rename is detected and adopted. Without that check a theme
+           * switch would silently revert on the next reload.
            */
-          var stored =
-            localStorage.getItem('sirgoat.theme') ||
-            localStorage.getItem('fundagoat.theme');
+          var NEW_KEY = 'tradingvibes.theme';
+          var SYNC_KEY = 'tradingvibes.theme.sync';
+          var LEGACY_KEYS = ['sirgoat.theme', 'fundagoat.theme'];
+
+          function valid(value) {
+            return value === 'light' || value === 'dark' ? value : null;
+          }
+
+          var current = valid(localStorage.getItem(NEW_KEY));
+          var legacy = null;
+          for (var index = 0; index < LEGACY_KEYS.length; index += 1) {
+            var found = valid(localStorage.getItem(LEGACY_KEYS[index]));
+            if (found) { legacy = found; break; }
+          }
+          var lastSeen = localStorage.getItem(SYNC_KEY);
+
+          var theme;
+          if (current && legacy && legacy !== lastSeen) {
+            /* The legacy key changed after the last sync: it is the newer write. */
+            theme = legacy;
+          } else {
+            theme = current || legacy;
+          }
+
           /* Dark is the product default. An explicit saved choice always wins. */
-          var theme = stored === 'light' || stored === 'dark' ? stored : 'dark';
+          if (theme !== 'light' && theme !== 'dark') theme = 'dark';
+
+          localStorage.setItem(NEW_KEY, theme);
+          localStorage.setItem(SYNC_KEY, legacy || theme);
           document.documentElement.setAttribute('data-theme', theme);
         } catch (error) {
           /* Private mode, or storage disabled. The markup default stands. */

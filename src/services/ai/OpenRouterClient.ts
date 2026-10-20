@@ -1068,7 +1068,7 @@ export function buildReasoningUserPrompt(
 
 export function buildReasoningSystemPrompt(): string {
   return `
-You are the reasoning engine for SIRGOAT.
+You are the reasoning engine for TradingVibes.
 
 You analyze the supplied state of an existing GOAT and return a disciplined,
 conditional market assessment.
@@ -1342,7 +1342,7 @@ export function buildChatSystemPrompt(
   context: GoatReasoningContext,
 ): string {
   return `
-You are the assistant interface for an existing SIRGOAT GOAT.
+You are the assistant interface for an existing TradingVibes GOAT.
 
 You explain the supplied GOAT state.
 
@@ -2602,7 +2602,7 @@ export class OpenRouterClient {
                 'user' as const,
 
               content: options.repairIssues?.length
-                ? 'Your previous reply was valid JSON but failed SIRGOAT runtime validation. ' +
+                ? 'Your previous reply was valid JSON but failed TradingVibes runtime validation. ' +
                   'Fix every issue below and return the complete corrected JSON object ONLY. ' +
                   'Do not omit required objects or replace objects with strings. Validation issues: ' +
                   options.repairIssues.join('; ') +
@@ -2744,7 +2744,7 @@ export class OpenRouterClient {
     } catch (validationError) {
       if (!(validationError instanceof ReasoningValidationError)) throw validationError;
 
-      // Valid JSON is not necessarily a valid SIRGOAT contract. Repair that
+      // Valid JSON is not necessarily a valid TradingVibes contract. Repair that
       // distinct failure mode instead of permanently wedging the GOAT.
       const repaired = await attemptWithinBudget({
         repairOf: last.content,
@@ -2761,7 +2761,7 @@ export class OpenRouterClient {
       } catch (repairError) {
         if (repairError instanceof ReasoningValidationError) {
           throw new ApiRequestError(
-            'The model response still fails SIRGOAT validation after one repair: ' +
+            'The model response still fails TradingVibes validation after one repair: ' +
               repairError.issues.join('; '),
             { code: 'INVALID_REASONING_SCHEMA', retryable: true },
           );
