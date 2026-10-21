@@ -67,7 +67,6 @@ function hashSection(): string {
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
   const [settingsSection, setSettingsSection] = useState<string>(hashSection);
-  const [createRobotRequested, setCreateRobotRequested] = useState(false);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
@@ -97,14 +96,13 @@ const MainApp: React.FC = () => {
           displayName={profile?.displayName ?? null}
           email={currentUser?.email ?? null}
           onOpenSettings={() => navigate('settings')}
-          onCreateRoom={() => { navigate('rooms'); setCreateRobotRequested(true); }}
           onRefresh={() => void refreshQuotes()}
           lastUpdatedMs={lastUpdatedMs}
         />
 
         <main className="w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {activeTab === 'rooms' && <TradingRobotsView createRequested={createRobotRequested} onCreateHandled={() => setCreateRobotRequested(false)} />}
+            {activeTab === 'rooms' && <TradingRobotsView />}
             {activeTab === 'markets' && <QuotesView />}
             {activeTab === 'settings' && <SettingsView section={settingsSection} />}
           </React.Suspense>
