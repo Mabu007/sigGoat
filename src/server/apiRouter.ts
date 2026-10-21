@@ -84,7 +84,7 @@ import {
   tradableMarkets,
 } from "../services/market-data/hyperliquid/MarketCatalog";
 import { paperProvider, PaperMarketDataProvider, PAPER_DATA_MODE } from "../services/market-data/PaperMarketDataProvider";
-import { validateStrategyDefinition } from '../services/strategy/schema';
+import { draftStrategy } from '../services/strategy/aiDrafting';
 import { CTRADER_CATALOG, CTRADER_REFERENCE_PRICES, CTRADER_SYMBOLS } from "../services/market-data/ctrader/CTraderSymbolCatalog";
 import {
   MarketDataProvider,
@@ -4496,31 +4496,44 @@ apiRouter.get("/team-rooms/:slug/me", optionalAuthMiddleware, handle(async (req,
 apiRouter.use(authMiddleware);
 
 /**
- * Natural-language strategy drafting. The model only produces the same
- * declarative JSON consumed by the manual builder; it never produces code.
+ * NATURAL-LANGUAGE STRATEGY DRAFTING
+ *
+ * The model interprets the request and produces a DRAFT, not an executable
+ * strategy. A draft may be incomplete, and the endpoint says so: it returns
+ * the draft, the fields that still need a decision, the ambiguities, the
+ * unsupported requests and the assumptions the model made. The builder opens
+ * the same manual editor for both a hand written and a drafted strategy.
+ *
+ * The model never produces trading code. Its answer is parsed with a strict
+ * schema, and only the declarative condition tree this repository evaluates
+ * can ever be executed.
  */
 apiRouter.post('/robot-marketplace/ai-draft', handle(async (req, res) => {
   const user = requireUser(req);
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
-  if (prompt.length < 10 || prompt.length > 4000) return fail(res, 400, 'INVALID_STRATEGY_PROMPT', 'Describe the strategy in 10-4000 characters.');
-  if (!(await reasoningGateway.hasKeyFor(user.uid))) return fail(res, 503, 'AI_NOT_CONFIGURED', 'Connect an AI provider in Settings. Manual robot creation remains available.');
-  const model = await reasoningGateway.pickAnyModel(user.uid);
-  if (!model) return fail(res, 503, 'AI_MODEL_UNAVAILABLE', 'No usable model is available for the configured provider.');
-  const request = `Convert the user's strategy into JSON only. Do not add trading logic the user did not request. If a request cannot be represented, return {"unsupported":"plain explanation"}.\n\nSupported schema:\n${JSON.stringify({ schemaVersion: 1, strategyId: 'draft_strategy', versionId: 'draft_version', version: 1, name: '2-80 chars', description: 'string', market: { provider: 'hyperliquid', instrument: 'provider symbol', timeframe: '1m|5m|15m|30m|1h|4h|1d' }, indicators: [{ id: 'stable id', type: 'SMA|EMA|RSI|ATR', period: 'integer 2-500' }], entry: { direction: 'LONG|SHORT', condition: { type: 'comparison', left: { kind: 'indicator', indicatorId: 'id' }, operator: 'GT|GTE|LT|LTE|EQ|CROSS_ABOVE|CROSS_BELOW', right: { kind: 'constant', value: 50 } } }, exit: { condition: { type: 'comparison', left: { kind: 'price', field: 'close' }, operator: 'LT', right: { kind: 'indicator', indicatorId: 'id' } } }, risk: { sizing: { mode: 'PERCENT_RISK', percent: 1 }, stopLossPercent: 1, takeProfitPercent: 2, maxExposurePercent: 25, maxConcurrentPositions: 1, maxTradesPerDay: 10, cooldownCandles: 0 }, execution: { mode: 'PAPER', startingBalance: 10000, feeRate: 0.00045, slippageBps: 2 }, visibility: 'PUBLIC|PRIVATE', validationStatus: 'VALID', createdAt: new Date().toISOString() })}\nConditions may be nested as {"type":"all|any","conditions":[...]}, or {"type":"not","condition":...}. Only Hyperliquid can currently be backtested in the robot workspace.\n\nUser request:\n${prompt}`;
-  const answer = await reasoningGateway.answerGoatQuestion(request, {
-    userId: user.uid, goatId: 'strategy-drafter', goatName: 'Strategy Drafter', goatGoal: 'Translate strategies into validated declarative JSON without inventing logic.', market: 'UNSELECTED', skills: [], activeThesis: null, dataSource: 'LIVE',
-  }, model);
-  let parsed: unknown;
-  try {
-    const start = answer.indexOf('{'); const end = answer.lastIndexOf('}');
-    if (start < 0 || end <= start) throw new Error('No JSON object returned.');
-    parsed = JSON.parse(answer.slice(start, end + 1));
-  } catch { return fail(res, 422, 'AI_STRATEGY_INVALID', 'The AI response was not valid JSON. Revise the prompt or regenerate.'); }
-  if (parsed && typeof parsed === 'object' && 'unsupported' in parsed) return fail(res, 422, 'UNSUPPORTED_STRATEGY', String((parsed as { unsupported?: unknown }).unsupported ?? 'That strategy uses unsupported logic.'));
-  const draft = { ...(parsed as Record<string, unknown>), schemaVersion: 1, strategyId: 'draft_strategy', versionId: 'draft_version', version: 1, validationStatus: 'VALID', createdAt: new Date().toISOString() };
-  const validation = validateStrategyDefinition(draft);
-  if (!validation.success || !validation.definition) return fail(res, 422, 'AI_STRATEGY_INVALID', validation.errors.join(' '));
-  res.json({ definition: validation.definition, model, provider: await reasoningGateway.providerFor(user.uid) });
+  const outcome = await draftStrategy({
+    prompt,
+    hasProvider: () => reasoningGateway.hasKeyFor(user.uid),
+    pickModel: () => reasoningGateway.pickAnyModel(user.uid),
+    provider: () => reasoningGateway.providerFor(user.uid),
+    askModel: (request, model) => reasoningGateway.answerGoatQuestion(request, {
+      userId: user.uid, goatId: 'strategy-drafter', goatName: 'Strategy Drafter', goatGoal: 'Translate a trading request into a structured, editable strategy draft without inventing logic.', market: 'UNSELECTED', skills: [], activeThesis: null, dataSource: 'LIVE',
+    }, model),
+  });
+  if (outcome.status === 'invalid_prompt') return fail(res, 400, 'INVALID_STRATEGY_PROMPT', outcome.message);
+  if (outcome.status === 'provider_unavailable' || outcome.status === 'model_unavailable') {
+    const code = outcome.status === 'provider_unavailable' ? 'AI_NOT_CONFIGURED' : 'AI_MODEL_UNAVAILABLE';
+    res.status(503).json({ error: { code, message: outcome.message }, prompt: outcome.prompt });
+    return;
+  }
+  res.json({
+    draft: outcome.draft,
+    gaps: outcome.gaps,
+    warnings: outcome.warnings,
+    source: outcome.draft.source,
+    model: outcome.model,
+    provider: outcome.provider,
+  });
 }));
 
 /**
