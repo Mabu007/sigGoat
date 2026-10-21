@@ -85,8 +85,9 @@ export type AiDraftOperand = z.infer<typeof aiDraftOperandSchema>;
 const draftComparisonSchema = z.object({
   type: z.literal('comparison'),
   left: aiDraftOperandSchema,
-  operator: z.enum(['GT', 'GTE', 'LT', 'LTE', 'EQ', 'CROSS_ABOVE', 'CROSS_BELOW']),
+  operator: z.enum(['GT', 'GTE', 'LT', 'LTE', 'EQ', 'NE', 'CROSS_ABOVE', 'CROSS_BELOW', 'INCREASING', 'DECREASING', 'BETWEEN', 'OUTSIDE', 'CHANGE_PCT_GT', 'CHANGE_PCT_LT']),
   right: aiDraftOperandSchema,
+  rangeTo: aiDraftOperandSchema.optional(),
 }).strict();
 
 const draftPriceActionSchema = z.object({
@@ -108,13 +109,13 @@ export const aiDraftConditionSchema: z.ZodType<AiDraftCondition> = z.lazy(() =>
   z.discriminatedUnion('type', [
     draftComparisonSchema,
     draftPriceActionSchema,
-    z.object({ type: z.literal('all'), conditions: z.array(aiDraftConditionSchema).min(1).max(20) }).strict(),
-    z.object({ type: z.literal('any'), conditions: z.array(aiDraftConditionSchema).min(1).max(20) }).strict(),
+    z.object({ type: z.literal('all'), conditions: z.array(aiDraftConditionSchema).min(1).max(1000) }).strict(),
+    z.object({ type: z.literal('any'), conditions: z.array(aiDraftConditionSchema).min(1).max(1000) }).strict(),
     z.object({ type: z.literal('not'), condition: aiDraftConditionSchema }).strict(),
     z.object({
       type: z.literal('sequence'),
-      steps: z.array(aiDraftConditionSchema).min(2).max(8),
-      maxGapCandles: z.number().int().min(1).max(200).nullable().default(null),
+      steps: z.array(aiDraftConditionSchema).min(2).max(100),
+      maxGapCandles: z.number().int().min(1).max(5000).nullable().default(null),
     }).strict(),
   ]),
 ) as unknown as z.ZodType<AiDraftCondition>;
@@ -246,7 +247,7 @@ export function buildAiDraftPrompt(prompt: string): string {
     '',
     'CONDITION SHAPE',
     JSON.stringify({
-      comparison: { type: 'comparison', left: { kind: 'price', field: 'close' }, operator: 'GT|GTE|LT|LTE|EQ|CROSS_ABOVE|CROSS_BELOW', right: { kind: 'indicator', indicator: 'ref', output: 'output or null' } },
+      comparison: { type: 'comparison', left: { kind: 'price', field: 'close' }, operator: 'GT|GTE|LT|LTE|EQ|NE|CROSS_ABOVE|CROSS_BELOW|INCREASING|DECREASING|BETWEEN|OUTSIDE|CHANGE_PCT_GT|CHANGE_PCT_LT', right: { kind: 'indicator', indicator: 'ref', output: 'output or null' }, rangeTo: 'optional second boundary for BETWEEN and OUTSIDE' },
       indicatorOperand: { kind: 'indicator', indicator: 'ref of an indicator in the indicators array', output: 'output name or null' },
       priceOperand: { kind: 'price', field: 'open|high|low|close|volume' },
       constantOperand: { kind: 'constant', value: 0 },
@@ -571,11 +572,12 @@ export function convertDraftCondition(
   if (condition.type === 'comparison') {
     const left = convertOperand(condition.left, ids);
     const right = convertOperand(condition.right, ids);
-    if (!left || !right) {
+    const rangeTo = condition.rangeTo ? convertOperand(condition.rangeTo, ids) : undefined;
+    if (!left || !right || (condition.rangeTo && !rangeTo)) {
       errors.push('A condition points at an indicator the draft never declared.');
       return null;
     }
-    return { type: 'comparison', left, operator: condition.operator, right };
+    return { type: 'comparison', left, operator: condition.operator, right, ...(rangeTo ? { rangeTo } : {}) };
   }
   if (condition.type === 'price_action') {
     const resolved = resolveDraftPriceActionParams(condition.params ?? {});
@@ -648,7 +650,7 @@ export function draftToDefinition(
 
   const instrument = (draft.market.instrument ?? defaults.instrument ?? '').trim().toUpperCase();
   const timeframe = draft.market.timeframe ?? defaults.timeframe ?? null;
-  const direction = draft.direction ?? defaults.direction ?? 'LONG';
+  const direction = draft.direction ?? defaults.direction ?? null;
   const sizingMode = draft.risk.sizingMode ?? defaults.sizingMode ?? null;
   const sizingValue = draft.risk.sizingValue ?? defaults.sizingValue ?? null;
   const stopLoss = draft.risk.stopLossPercent ?? defaults.stopLossPercent ?? null;
@@ -656,6 +658,7 @@ export function draftToDefinition(
 
   if (!instrument) errors.push('The market is still missing.');
   if (!timeframe) errors.push('The timeframe is still missing.');
+  if (!direction) errors.push('The trade direction is still missing.');
   if (!entry) errors.push('The entry rule is still missing.');
   if (!sizingMode || sizingValue === null) errors.push('The position sizing is still missing.');
   if (stopLoss === null) errors.push('The stop loss is still missing.');
@@ -664,7 +667,7 @@ export function draftToDefinition(
   if (errors.length) return { errors, gaps };
 
   const definition: StrategyDefinition = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     strategyId: options.strategyId,
     versionId: options.versionId,
     version: 1,
@@ -672,7 +675,8 @@ export function draftToDefinition(
     description: (draft.description ?? defaults.description ?? '').slice(0, 2000),
     market: { provider: draft.market.provider, instrument, timeframe: timeframe as StrategyDefinition['market']['timeframe'] },
     indicators,
-    entry: { direction, condition: entry! },
+    entry: { direction: direction as 'LONG' | 'SHORT', condition: entry! },
+    then: { action: direction === 'LONG' ? 'BUY' : 'SELL' },
     exit: exit ? { condition: exit } : {},
     risk: {
       sizing: sizingMode === 'PERCENT_RISK'

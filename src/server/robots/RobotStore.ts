@@ -6,6 +6,7 @@ import type { StrategyDefinition } from '../../services/strategy/schema';
 import { getFirebaseAdmin } from '../firebaseAdmin';
 import { firestoreSafe } from '../repositories';
 import { assertStoreAvailable, ensureStoreDirectory, resolveStoreMode, type StoreModeDecision } from '../storeFs';
+import { STARTER_ROBOTS, starterRobot } from './starterRobots';
 
 export interface RobotRecord {
   id: string;
@@ -144,9 +145,9 @@ export class RobotStore {
       const byId = await this.firestore.collection('robots').doc(safeId(idOrSlug)).get();
       if (byId.exists) return byId.data() as RobotRecord;
       const bySlug = await this.firestore.collection('robots').where('slug', '==', idOrSlug).limit(1).get();
-      return bySlug.empty ? null : bySlug.docs[0].data() as RobotRecord;
+      return bySlug.empty ? (starterRobot(idOrSlug)?.robot ?? null) : bySlug.docs[0].data() as RobotRecord;
     }
-    return this.db.robots[safeId(idOrSlug)] ?? Object.values(this.db.robots).find(robot => robot.slug === idOrSlug) ?? null;
+    return this.db.robots[safeId(idOrSlug)] ?? Object.values(this.db.robots).find(robot => robot.slug === idOrSlug) ?? starterRobot(idOrSlug)?.robot ?? null;
   }
 
   async listPublic(limit = 60): Promise<RobotRecord[]> {
@@ -154,7 +155,9 @@ export class RobotStore {
     const robots = this.firestore
       ? (await this.firestore.collection('robots').where('visibility', '==', 'PUBLIC').limit(limit).get()).docs.map(doc => doc.data() as RobotRecord)
       : Object.values(this.db.robots).filter(robot => robot.visibility === 'PUBLIC');
-    return robots.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
+    const ids = new Set(robots.map(robot => robot.id));
+    const complete = [...robots, ...STARTER_ROBOTS.map(item => item.robot).filter(robot => !ids.has(robot.id))];
+    return complete.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
   }
 
   async listForOwner(ownerUserId: string): Promise<RobotRecord[]> {
@@ -166,6 +169,8 @@ export class RobotStore {
   }
 
   async definition(robot: RobotRecord): Promise<StrategyDefinition | null> {
+    const builtIn = starterRobot(robot.id);
+    if (builtIn) return builtIn.definition;
     if (this.firestore) {
       const snapshot = await this.firestore.collection('robots').doc(robot.id).collection('versions').doc(safeId(robot.currentVersionId)).get();
       return snapshot.exists ? snapshot.data() as StrategyDefinition : null;

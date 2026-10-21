@@ -46,9 +46,12 @@ export interface OperandDraft {
 export interface ComparisonDraft {
   id: string;
   kind: 'comparison';
+  configured: boolean;
   left: OperandDraft;
   operator: Operator;
   right: OperandDraft;
+  rangeTo?: OperandDraft;
+  tolerance?: number;
   negate: boolean;
 }
 
@@ -130,6 +133,7 @@ export const newOperand = (kind: OperandKind = 'indicator', indicatorId = ''): O
 export const newComparison = (indicatorId = ''): ComparisonDraft => ({
   id: uid(),
   kind: 'comparison',
+  configured: false,
   left: { ...newOperand('indicator', indicatorId), output: '' },
   operator: 'CROSS_ABOVE',
   right: { ...newOperand('constant'), value: 0 },
@@ -160,6 +164,13 @@ export const newSequence = (): SequenceDraft => ({
   negate: false,
 });
 
+/** Duplicates a draft subtree with fresh UI keys while preserving references. */
+export function duplicateConditionDraft(condition: ConditionDraft): ConditionDraft {
+  if (condition.kind === 'group') return { ...condition, id: uid(), conditions: condition.conditions.map(duplicateConditionDraft) };
+  if (condition.kind === 'sequence') return { ...condition, id: uid(), steps: condition.steps.map(duplicateConditionDraft) };
+  return { ...condition, id: uid(), ...(condition.kind === 'comparison' ? { left: { ...condition.left }, right: { ...condition.right }, ...(condition.rangeTo ? { rangeTo: { ...condition.rangeTo } } : {}) } : {}) };
+}
+
 /** The operand of a draft, resolved against the indicator list. */
 export function operandFromDraft(draft: OperandDraft): StrategyOperand {
   if (draft.kind === 'constant') return { kind: 'constant', value: Number.isFinite(draft.value) ? draft.value : 0 };
@@ -184,6 +195,8 @@ export function conditionFromDraft(draft: ConditionDraft): StrategyCondition | n
       left: operandFromDraft(draft.left),
       operator: draft.operator,
       right: operandFromDraft(draft.right),
+      ...(draft.rangeTo ? { rangeTo: operandFromDraft(draft.rangeTo) } : {}),
+      ...(draft.tolerance !== undefined ? { tolerance: draft.tolerance } : {}),
     };
   } else if (draft.kind === 'price_action') {
     condition = { type: 'price_action', pattern: draft.pattern, params: draft.params };
@@ -200,6 +213,33 @@ export function conditionFromDraft(draft: ConditionDraft): StrategyCondition | n
   }
   if (!condition) return null;
   return draft.negate ? { type: 'not', condition } : condition;
+}
+
+/** User-created placeholder rows must be deliberately configured before deployment. */
+export function conditionDraftErrors(conditions: readonly ConditionDraft[]): string[] {
+  const errors: string[] = [];
+  let count = 0;
+  const visit = (condition: ConditionDraft, depth: number) => {
+    count += 1;
+    if (depth > 64) { errors.push('Condition nesting may not exceed 64 levels.'); return; }
+    if (condition.kind === 'comparison') {
+      if (!condition.configured) errors.push('Finish configuring each comparison row before deployment.');
+      if (['BETWEEN', 'OUTSIDE'].includes(condition.operator) && !condition.rangeTo) errors.push('Choose both bounds for each range condition.');
+      return;
+    }
+    if (condition.kind === 'group') {
+      if (!condition.conditions.length) errors.push('Remove or add a condition to each empty group.');
+      condition.conditions.forEach(child => visit(child, depth + 1));
+      return;
+    }
+    if (condition.kind === 'sequence') {
+      if (condition.steps.length < 2) errors.push('A FOLLOWED BY sequence needs at least two events.');
+      condition.steps.forEach(child => visit(child, depth + 1));
+    }
+  };
+  conditions.forEach(condition => visit(condition, 1));
+  if (count > 2000) errors.push('A strategy may contain at most 2,000 condition nodes.');
+  return [...new Set(errors)];
 }
 
 /** The conditions of a list, joined with AND or OR. */
@@ -230,9 +270,12 @@ export function draftFromCondition(condition: StrategyCondition, indicators: rea
     return {
       id: uid(),
       kind: 'comparison',
+      configured: true,
       left: operandFromStrategy(condition.left, indicators),
       operator: condition.operator,
       right: operandFromStrategy(condition.right, indicators),
+      ...(condition.rangeTo ? { rangeTo: operandFromStrategy(condition.rangeTo, indicators) } : {}),
+      ...(condition.tolerance !== undefined ? { tolerance: condition.tolerance } : {}),
       negate: false,
     };
   }
@@ -292,9 +335,11 @@ export function draftFromAiCondition(
     return {
       id: uid(),
       kind: 'comparison',
+      configured: true,
       left: aiOperandToDraft(condition.left, byRef),
       operator: condition.operator,
       right: aiOperandToDraft(condition.right, byRef),
+      ...(condition.rangeTo ? { rangeTo: aiOperandToDraft(condition.rangeTo, byRef) } : {}),
       negate: false,
     };
   }

@@ -25,8 +25,9 @@ import {
  * its type and its period.
  */
 
-export const STRATEGY_SCHEMA_VERSION = 2 as const;
+export const STRATEGY_SCHEMA_VERSION = 3 as const;
 export const LEGACY_STRATEGY_SCHEMA_VERSION = 1 as const;
+export const PREVIOUS_STRATEGY_SCHEMA_VERSION = 2 as const;
 
 /* ------------------------------------------------------------------ */
 /* Operands                                                            */
@@ -50,13 +51,15 @@ export type StrategyOperand =
   | { kind: 'indicator'; indicatorId: string; output?: string }
   | { kind: 'constant'; value: number };
 
-export type StrategyOperator = 'GT' | 'GTE' | 'LT' | 'LTE' | 'EQ' | 'CROSS_ABOVE' | 'CROSS_BELOW';
+export type StrategyOperator = 'GT' | 'GTE' | 'LT' | 'LTE' | 'EQ' | 'NE' | 'CROSS_ABOVE' | 'CROSS_BELOW' | 'INCREASING' | 'DECREASING' | 'BETWEEN' | 'OUTSIDE' | 'CHANGE_PCT_GT' | 'CHANGE_PCT_LT';
 
 export interface StrategyComparisonCondition {
   type: 'comparison';
   left: StrategyOperand;
   operator: StrategyOperator;
   right: StrategyOperand;
+  rangeTo?: StrategyOperand;
+  tolerance?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -144,8 +147,10 @@ export interface StrategyPriceActionCondition {
 const comparisonSchema = z.object({
   type: z.literal('comparison'),
   left: operandSchema,
-  operator: z.enum(['GT', 'GTE', 'LT', 'LTE', 'EQ', 'CROSS_ABOVE', 'CROSS_BELOW']),
+  operator: z.enum(['GT', 'GTE', 'LT', 'LTE', 'EQ', 'NE', 'CROSS_ABOVE', 'CROSS_BELOW', 'INCREASING', 'DECREASING', 'BETWEEN', 'OUTSIDE', 'CHANGE_PCT_GT', 'CHANGE_PCT_LT']),
   right: operandSchema,
+  rangeTo: operandSchema.optional(),
+  tolerance: finite.nonnegative().optional(),
 }).strict();
 
 export type StrategyCondition =
@@ -164,13 +169,13 @@ export const conditionSchema = z.lazy(() =>
       pattern: z.enum(PRICE_ACTION_PATTERNS),
       params: priceActionParamsSchema,
     }).strict(),
-    z.object({ type: z.literal('all'), conditions: z.array(conditionSchema).min(1).max(20) }).strict(),
-    z.object({ type: z.literal('any'), conditions: z.array(conditionSchema).min(1).max(20) }).strict(),
+    z.object({ type: z.literal('all'), conditions: z.array(conditionSchema).min(1).max(1000) }).strict(),
+    z.object({ type: z.literal('any'), conditions: z.array(conditionSchema).min(1).max(1000) }).strict(),
     z.object({ type: z.literal('not'), condition: conditionSchema }).strict(),
     z.object({
       type: z.literal('sequence'),
-      steps: z.array(conditionSchema).min(2).max(8),
-      maxGapCandles: z.number().int().min(1).max(200),
+      steps: z.array(conditionSchema).min(2).max(100),
+      maxGapCandles: z.number().int().min(1).max(5000),
     }).strict(),
   ]),
 ) as unknown as z.ZodType<StrategyCondition>;
@@ -222,6 +227,7 @@ export const strategyDefinitionSchema = z.object({
   }).strict(),
   indicators: z.array(indicatorSchema).max(40),
   entry: z.object({ direction: z.enum(['LONG', 'SHORT']), condition: conditionSchema }).strict(),
+  then: z.object({ action: z.enum(['BUY', 'SELL', 'CLOSE_POSITION', 'NO_TRADE', 'ALERT_ONLY']) }).strict().optional(),
   exit: z.object({ condition: conditionSchema.optional() }).strict().default({}),
   risk: z.object({
     sizing: z.discriminatedUnion('mode', [
@@ -249,7 +255,7 @@ export const strategyDefinitionSchema = z.object({
   createdAt: z.string().datetime(),
 }).strict();
 
-export type StrategyDefinition = z.infer<typeof strategyDefinitionSchema>;
+export type StrategyDefinition = Omit<z.infer<typeof strategyDefinitionSchema>, 'schemaVersion'> & { schemaVersion: 2 | 3 };
 
 export interface StrategyValidationResult {
   success: boolean;
@@ -258,10 +264,13 @@ export interface StrategyValidationResult {
 }
 
 function visitCondition(condition: StrategyCondition, visit: (operand: StrategyOperand) => void, depth = 1): number {
-  if (depth > 8) throw new Error('Condition nesting may not exceed 8 levels.');
+  if (depth > 64) throw new Error('Condition nesting may not exceed 64 levels.');
   if (condition.type === 'comparison') {
     visit(condition.left);
     visit(condition.right);
+    if (condition.rangeTo) visit(condition.rangeTo);
+    if (['BETWEEN', 'OUTSIDE'].includes(condition.operator) && !condition.rangeTo) throw new Error(`${condition.operator} needs both a lower and upper value.`);
+    if (!['BETWEEN', 'OUTSIDE'].includes(condition.operator) && condition.rangeTo) throw new Error('A range end is only valid for BETWEEN or OUTSIDE.');
     if ((condition.operator === 'CROSS_ABOVE' || condition.operator === 'CROSS_BELOW')
       && condition.left.kind === 'constant' && condition.right.kind === 'constant') {
       throw new Error('A crossover needs at least one changing price or indicator value.');
@@ -286,6 +295,11 @@ export function resolveOperandOutput(indicator: StrategyIndicator, operand: Stra
 
 /** Shape and reference validation shared by API input, persisted versions and runtime. */
 export function validateStrategyDefinition(input: unknown): StrategyValidationResult {
+  const incomingVersion = input && typeof input === 'object' ? (input as { schemaVersion?: unknown }).schemaVersion : undefined;
+  if (incomingVersion === LEGACY_STRATEGY_SCHEMA_VERSION || incomingVersion === PREVIOUS_STRATEGY_SCHEMA_VERSION) {
+    try { return validateStrategyDefinition(migrateStrategyDefinition(input)); }
+    catch (error) { return { success: false, errors: [error instanceof Error ? error.message : 'Strategy migration failed.'] }; }
+  }
   const parsed = strategyDefinitionSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, errors: parsed.error.issues.map(issue => `${issue.path.join('.') || 'strategy'}: ${issue.message}`) };
@@ -313,10 +327,12 @@ export function validateStrategyDefinition(input: unknown): StrategyValidationRe
   try {
     const nodes = visitCondition(definition.entry.condition, checkOperand)
       + (definition.exit.condition ? visitCondition(definition.exit.condition, checkOperand) : 0);
-    if (nodes > 100) errors.push('A strategy may contain at most 100 condition nodes.');
+    if (nodes > 2000) errors.push('A strategy may contain at most 2,000 condition nodes.');
   } catch (error) {
     errors.push(error instanceof Error ? error.message : 'Condition tree is invalid.');
   }
+  if (definition.then?.action === 'BUY' && definition.entry.direction !== 'LONG') errors.push('THEN BUY must use LONG position intent.');
+  if (definition.then?.action === 'SELL' && definition.entry.direction !== 'SHORT') errors.push('THEN SELL must use SHORT position intent.');
   if (definition.risk.takeProfitPercent <= definition.execution.slippageBps / 100) {
     errors.push('Take-profit distance must exceed configured slippage.');
   }
@@ -422,12 +438,24 @@ export function migrateStrategyDefinition(input: unknown): StrategyDefinition {
   if (!input || typeof input !== 'object') throw new Error('A strategy definition must be an object.');
   const raw = input as Record<string, unknown>;
   const version = typeof raw.schemaVersion === 'number' ? raw.schemaVersion : undefined;
-  if (version !== STRATEGY_SCHEMA_VERSION && version !== LEGACY_STRATEGY_SCHEMA_VERSION) {
+  if (version !== STRATEGY_SCHEMA_VERSION && version !== PREVIOUS_STRATEGY_SCHEMA_VERSION && version !== LEGACY_STRATEGY_SCHEMA_VERSION) {
     throw new Error(`Unsupported strategy schema version: ${String(version)}.`);
   }
 
   if (version === STRATEGY_SCHEMA_VERSION) {
     const result = validateStrategyDefinition(input);
+    if (!result.success || !result.definition) throw new Error(result.errors.join(' '));
+    return result.definition;
+  }
+
+  if (version === PREVIOUS_STRATEGY_SCHEMA_VERSION) {
+    const entry = (raw.entry ?? {}) as Record<string, unknown>;
+    const migrated = {
+      ...raw,
+      schemaVersion: STRATEGY_SCHEMA_VERSION,
+      then: raw.then ?? { action: entry.direction === 'SHORT' ? 'SELL' : 'BUY' },
+    };
+    const result = validateStrategyDefinition(migrated);
     if (!result.success || !result.definition) throw new Error(result.errors.join(' '));
     return result.definition;
   }
@@ -451,6 +479,7 @@ export function migrateStrategyDefinition(input: unknown): StrategyDefinition {
       direction: (legacyEntry.direction ?? 'LONG') as 'LONG' | 'SHORT',
       condition: migrateCondition((legacyEntry.condition ?? { type: 'comparison' }) as LegacyCondition),
     },
+    then: { action: legacyEntry.direction === 'SHORT' ? 'SELL' : 'BUY' },
     exit: legacyExit.condition
       ? { condition: migrateCondition(legacyExit.condition as LegacyCondition) }
       : {},

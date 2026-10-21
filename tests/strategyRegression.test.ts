@@ -3,12 +3,14 @@ import {
   migrateStrategyDefinition,
   priceActionParamsSchema,
   validateStrategyDefinition,
+  type StrategyCondition,
   type StrategyDefinition,
+  type StrategyOperator,
 } from '../src/services/strategy/schema';
 import { calculateIndicator } from '../src/services/strategy/indicators/calculations';
 import { resolveIndicatorParams } from '../src/services/strategy/indicators/catalog';
 import { StrategyEvaluationContext } from '../src/services/strategy/indicators/evaluate';
-import { evaluateCondition, processCompletedCandle, runStrategyBacktest } from '../src/services/strategy/engine';
+import { evaluateCondition, initialRuntimeState, processCompletedCandle, runStrategyBacktest, type StrategyRuntimeState } from '../src/services/strategy/engine';
 import { atrSeries, emaSeries, rsiSeries, smaSeries } from '../src/services/tracker-sdk/indicatorSeries';
 import { makeCandles } from './helpers/strategyCandles';
 
@@ -75,7 +77,7 @@ describe('version 1 strategies', () => {
 
   test('migrates to the current schema and still validates', () => {
     const migrated = migrateStrategyDefinition(legacy);
-    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.schemaVersion).toBe(3);
     const validation = validateStrategyDefinition(migrated);
     expect(validation.errors).toEqual([]);
     expect(validation.success).toBe(true);
@@ -234,6 +236,67 @@ describe('indicator references', () => {
 });
 
 describe('the engine', () => {
+  test('evaluates the expanded comparison operators on closed candles', () => {
+    const candles = makeCandles({ count: 80 });
+    const definition = baseDefinition();
+    const context = new StrategyEvaluationContext(definition, candles);
+    const index = candles.length - 1;
+    const current = candles[index].close;
+    const previous = candles[index - 1].close;
+    const comparison = (operator: StrategyOperator, right: number, extra: object = {}) => ({ type: 'comparison' as const, left: { kind: 'price' as const, field: 'close' as const }, operator, right: { kind: 'constant' as const, value: right }, ...extra }) as StrategyCondition;
+    expect(evaluateCondition(context, comparison('NE', current + 10), index)).toBe(true);
+    expect(evaluateCondition(context, comparison('EQ', current, { tolerance: 0.001 }), index)).toBe(true);
+    expect(evaluateCondition(context, comparison('INCREASING', 0), index)).toBe(current > previous);
+    expect(evaluateCondition(context, comparison('DECREASING', 0), index)).toBe(current < previous);
+    expect(evaluateCondition(context, comparison('BETWEEN', current - 1, { rangeTo: { kind: 'constant', value: current + 1 } }), index)).toBe(true);
+    expect(evaluateCondition(context, comparison('OUTSIDE', current + 1, { rangeTo: { kind: 'constant', value: current + 2 } }), index)).toBe(true);
+    expect(evaluateCondition(context, comparison('CHANGE_PCT_GT', -100), index)).toBe(true);
+    expect(evaluateCondition(context, comparison('CHANGE_PCT_LT', 100), index)).toBe(false);
+  });
+
+  test('nested AND/OR/NOT groups preserve explicit boolean structure at scale', () => {
+    const candles = makeCandles({ count: 80 });
+    const definition = baseDefinition();
+    const context = new StrategyEvaluationContext(definition, candles);
+    const always = { type: 'comparison' as const, left: { kind: 'price' as const, field: 'close' as const }, operator: 'GT' as const, right: { kind: 'constant' as const, value: 0 } };
+    const never = { ...always, operator: 'LT' as const, right: { kind: 'constant' as const, value: 0 } };
+    const tree: StrategyCondition = { type: 'any', conditions: [{ type: 'all', conditions: [always, { type: 'not', condition: never }] }, never] };
+    expect(evaluateCondition(context, tree, candles.length - 1)).toBe(true);
+    const large: StrategyCondition = { type: 'all', conditions: Array.from({ length: 150 }, () => always) };
+    expect(evaluateCondition(context, large, candles.length - 1)).toBe(true);
+    expect(validateStrategyDefinition(baseDefinition({ entry: { direction: 'LONG', condition: large } })).success).toBe(true);
+  });
+
+  test('schema v2 migration supplies an explicit paper action and range rows must be complete', () => {
+    const old = baseDefinition();
+    const migrated = migrateStrategyDefinition(old);
+    expect(migrated.schemaVersion).toBe(3);
+    expect(migrated.then?.action).toBe('BUY');
+    const invalid = baseDefinition({ entry: { direction: 'LONG', condition: { type: 'comparison', left: { kind: 'price', field: 'close' }, operator: 'BETWEEN', right: { kind: 'constant', value: 1 } } } });
+    expect(validateStrategyDefinition(invalid).success).toBe(false);
+  });
+
+  test('ALERT_ONLY is edge-triggered and backtest and paper produce the same trades', () => {
+    const candles = makeCandles({ count: 120 });
+    const alertDefinition = baseDefinition({
+      then: { action: 'ALERT_ONLY' },
+      entry: { direction: 'LONG', condition: { type: 'comparison', left: { kind: 'price', field: 'close' }, operator: 'GT', right: { kind: 'constant', value: 0 } } },
+    });
+    let alertState: StrategyRuntimeState = { ...initialRuntimeState(alertDefinition), status: 'PAPER' };
+    for (let end = 1; end <= candles.length; end += 1) alertState = processCompletedCandle(alertDefinition, alertState, candles.slice(0, end));
+    expect(alertState.trades).toHaveLength(0);
+    expect(alertState.logs.filter(item => item.type === 'STRATEGY_ALERT')).toHaveLength(1);
+
+    const tradeDefinition = baseDefinition({
+      entry: { direction: 'LONG', condition: { type: 'comparison', left: { kind: 'price', field: 'close' }, operator: 'CROSS_ABOVE', right: { kind: 'constant', value: 100 } } },
+      risk: { sizing: { mode: 'PERCENT_RISK', percent: 1 }, stopLossPercent: 1, takeProfitPercent: 2, maxExposurePercent: 25, maxConcurrentPositions: 1, maxTradesPerDay: 10, cooldownCandles: 0, maxDailyLossPercent: 5 },
+    });
+    let paperState: StrategyRuntimeState = { ...initialRuntimeState(tradeDefinition), status: 'PAPER' };
+    for (let end = 1; end <= candles.length; end += 1) paperState = processCompletedCandle(tradeDefinition, paperState, candles.slice(0, end));
+    const backtest = runStrategyBacktest(tradeDefinition, candles);
+    expect(paperState.trades).toEqual(backtest.trades);
+  });
+
   test('runs a backtest and fills at the next candle open', () => {
     const candles = makeCandles({ count: 400 });
     const definition = baseDefinition({
