@@ -264,7 +264,7 @@ export function createBrowserMediaTransport(
   const { getAuthHeaders } = options;
 
   return {
-    async requestUploadTicket({ purpose, contentType, roomId, signal }) {
+    async requestUploadTicket({ purpose, contentType, roomId, robotId, signal }) {
       /**
        * A server without media configured says so before a pointless
        * ticket round trip.
@@ -284,6 +284,7 @@ export function createBrowserMediaTransport(
         {
           purpose,
           ...(roomId ? { roomId } : {}),
+          ...(robotId ? { robotId } : {}),
           contentType,
         },
         getAuthHeaders,
@@ -304,18 +305,21 @@ export function createBrowserMediaTransport(
       return putBytes(uploadUrl, headers, file, onProgress, signal);
     },
 
-    async commitMedia({ key, purpose, contentType, size, roomId, signal }) {
+    async commitMedia({ key, purpose, contentType, size, roomId, robotId, signal }) {
       const response = await postJson<{
         avatar?: { url?: string } | null;
         avatarUrl?: string | null;
         cover?: { url?: string } | null;
         coverUrl?: string | null;
+        robotCover?: { url?: string } | null;
+        robotCoverUrl?: string | null;
       }>(
         '/api/media/commit',
         {
           key,
           purpose,
           ...(roomId ? { roomId } : {}),
+          ...(robotId ? { robotId } : {}),
           contentType,
           size,
         },
@@ -326,19 +330,22 @@ export function createBrowserMediaTransport(
       const url =
         response.avatarUrl ??
         response.coverUrl ??
+        response.robotCoverUrl ??
         response.avatar?.url ??
         response.cover?.url ??
+        response.robotCover?.url ??
         null;
 
       return { url };
     },
 
-    async removeMedia({ purpose, roomId, signal }) {
+    async removeMedia({ purpose, roomId, robotId, signal }) {
       await postJson<{ ok?: boolean }>(
         '/api/media/remove',
         {
           purpose,
           ...(roomId ? { roomId } : {}),
+          ...(robotId ? { robotId } : {}),
         },
         getAuthHeaders,
         signal,

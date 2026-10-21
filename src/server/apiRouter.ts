@@ -85,6 +85,7 @@ import {
 } from "../services/market-data/hyperliquid/MarketCatalog";
 import { paperProvider, PaperMarketDataProvider, PAPER_DATA_MODE } from "../services/market-data/PaperMarketDataProvider";
 import { draftStrategy } from '../services/strategy/aiDrafting';
+import { createRobotStore, type RobotRecord } from './robots/RobotStore';
 import { CTRADER_CATALOG, CTRADER_REFERENCE_PRICES, CTRADER_SYMBOLS } from "../services/market-data/ctrader/CTraderSymbolCatalog";
 import {
   MarketDataProvider,
@@ -145,7 +146,27 @@ import {
 } from "../services/telegram/NotificationOutbox";
 
 export const apiRouter = express.Router();
-apiRouter.use(express.json({ limit: "1mb" }));
+
+/**
+ * THE JSON PARSER
+ * ---------------
+ * The application already mounts a JSON parser, so a body is normally parsed
+ * before this router sees the request.
+ *
+ * Express's own parser records "already parsed" on `req._body`, and it skips
+ * on that basis. Some runtimes do not keep that property, and then the
+ * second parser tries to read a stream that has already been consumed,
+ * which fails the request with a 500 before a single route runs.
+ *
+ * So the check is done here as well, on the observable fact rather than on
+ * the bookkeeping: a body that is already an object has been parsed.
+ */
+const jsonBodyParser = express.json({ limit: "1mb" });
+apiRouter.use((req, res, next) => {
+  if ((req as unknown as { _body?: boolean })._body === true) return next();
+  if (req.body !== undefined && req.body !== null) return next();
+  return jsonBodyParser(req, res, next);
+});
 
 /** Public market endpoints remain usable anonymously, but authenticated callers
  * get the market provider saved in their own Settings. Invalid supplied auth is
@@ -5289,6 +5310,223 @@ apiRouter.delete(
     res.json({ success: true, connected: false });
   }),
 );
+
+// ---- Robot broker connections ----------------------------------------
+
+/**
+ * A ROBOT'S BROKER CONNECTION
+ * ============================
+ *
+ * A robot owner may bind the robot to one of THEIR OWN broker accounts, so
+ * the robot knows which venue it would trade on. Two rules hold here, and
+ * both of them are the point of this route:
+ *
+ *   1. ONLY A REFERENCE IS STORED. The robot remembers the provider, the
+ *      account id, a label and the environment. The OAuth token and the
+ *      PropDAO API key stay in the encrypted vault and are never written to
+ *      a robot record, never returned to a browser and never stored in a
+ *      strategy definition.
+ *
+ *   2. CONNECTING DOES NOT ENABLE LIVE EXECUTION. The runtime in this
+ *      build is PAPER only. The response says so explicitly, and the
+ *      interface is built from that statement rather than from an
+ *      assumption. Enabling live trading needs a supported broker adapter,
+ *      risk validation and an intentional activation flow, none of which
+ *      exist here yet.
+ *
+ * The account must come from the caller's OWN authorized list. The route
+ * asks the provider again rather than trusting the id in the request, so a
+ * caller cannot bind somebody else's account by guessing its id.
+ */
+
+const robotBrokerStore = createRobotStore();
+
+/** Resolves a robot the caller OWNS. A stranger's robot is reported as missing. */
+async function ownedRobotForBroker(idOrSlug: string, userId: string, res: Response): Promise<RobotRecord | null> {
+  const robot = await robotBrokerStore.get(idOrSlug);
+  if (!robot || robot.ownerUserId !== userId) {
+    fail(res, 404, "ROBOT_NOT_FOUND", "That trading robot does not exist.");
+    return null;
+  }
+  return robot;
+}
+
+interface BrokerAccountChoice {
+  accountId: string;
+  label: string;
+  environment: "demo" | "live" | "challenge" | "funded" | "unknown";
+  isLive: boolean;
+}
+
+apiRouter.get("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+
+  const cTraderAccounts: BrokerAccountChoice[] = [];
+  let cTraderError: string | null = null;
+  let cTraderConnected = false;
+  if (await credentialVault.hasCredential(user.uid, "ctrader")) {
+    cTraderConnected = true;
+    try {
+      const accounts = await (await cTraderClientForUser(user.uid)).listAccounts();
+      for (const account of accounts) {
+        cTraderAccounts.push({
+          accountId: account.ctidTraderAccountId,
+          label: account.brokerTitleShort || account.traderLogin || `Account ${account.ctidTraderAccountId}`,
+          environment: account.isLive ? "live" : "demo",
+          isLive: account.isLive,
+        });
+      }
+    } catch (error) {
+      cTraderError = error instanceof Error ? error.message : "The cTrader account list could not be read.";
+    }
+  }
+
+  const propDaoAccounts: BrokerAccountChoice[] = [];
+  let propDaoError: string | null = null;
+  let propDaoConnected = false;
+  if (await credentialVault.hasCredential(user.uid, "propdao")) {
+    try {
+      const verification = await propDaoFor(user.uid).verifyConnection();
+      propDaoConnected = verification.connected === true;
+      if (propDaoConnected) {
+        for (const account of await propDaoFor(user.uid).listAccounts()) {
+          const status = (account.status ?? "").toLowerCase();
+          const isChallenge = Boolean(account.challengeId) || status.includes("challenge") || status.includes("evaluation");
+          propDaoAccounts.push({
+            accountId: account.accountId,
+            label: account.challengeId ? `Challenge ${account.challengeId}` : `Account ${account.accountId}`,
+            environment: isChallenge ? "challenge" : "funded",
+            isLive: false,
+          });
+        }
+      } else {
+        propDaoError = verification.connected === false ? verification.message : null;
+      }
+    } catch (error) {
+      propDaoError = error instanceof Error ? error.message : "The PropDAO account list could not be read.";
+    }
+  }
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    robot: { id: robot.id, slug: robot.slug, name: robot.name },
+    bound: robot.brokerAccount ?? null,
+    execution: {
+      mode: "PAPER",
+      liveTradingSupported: false,
+      message: "This build executes in paper mode only. Binding a broker records which account the robot is intended for; it does not enable live orders.",
+    },
+    cTrader: {
+      configured: Boolean(process.env.CTRADER_CLIENT_ID && process.env.CTRADER_SECRET && process.env.CTRADER_REDIRECT_URI),
+      connected: cTraderConnected,
+      accounts: cTraderAccounts,
+      error: cTraderError,
+    },
+    propDao: {
+      connected: propDaoConnected,
+      accounts: propDaoAccounts,
+      error: propDaoError,
+    },
+  });
+}));
+
+apiRouter.post("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+
+  const provider = typeof req.body?.provider === "string" ? req.body.provider : "";
+  const accountId = typeof req.body?.accountId === "string" ? req.body.accountId.trim() : "";
+  if (provider !== "ctrader" && provider !== "propdao") {
+    return fail(res, 400, "INVALID_BROKER", "Choose cTrader or PropDAO.");
+  }
+  if (!accountId || accountId.length > 128) {
+    return fail(res, 400, "INVALID_BROKER_ACCOUNT", "Choose an account from your own account list.");
+  }
+
+  /**
+   * The account is looked up in the CALLER'S OWN list, never trusted from
+   * the request. A caller cannot bind an account they are not authorized for
+   * by guessing its id.
+   */
+  let choice: BrokerAccountChoice | null = null;
+  if (provider === "ctrader") {
+    if (!(await credentialVault.hasCredential(user.uid, "ctrader"))) {
+      return fail(res, 409, "CTRADER_NOT_CONNECTED", "Connect your cTrader account first.");
+    }
+    let accounts: CTraderAccount[];
+    try {
+      accounts = await (await cTraderClientForUser(user.uid)).listAccounts();
+    } catch (error) {
+      return fail(res, 502, "CTRADER_ACCOUNTS_UNAVAILABLE", error instanceof Error ? error.message : "The cTrader account list could not be read.");
+    }
+    const found = accounts.find((account) => account.ctidTraderAccountId === accountId);
+    if (!found) return fail(res, 404, "BROKER_ACCOUNT_NOT_FOUND", "That account is not in your own cTrader account list.");
+    choice = {
+      accountId: found.ctidTraderAccountId,
+      label: found.brokerTitleShort || found.traderLogin || `Account ${found.ctidTraderAccountId}`,
+      environment: found.isLive ? "live" : "demo",
+      isLive: found.isLive,
+    };
+  } else {
+    if (!(await credentialVault.hasCredential(user.uid, "propdao"))) {
+      return fail(res, 409, "PROPDAO_NOT_CONNECTED", "Save your PropDAO API key first.");
+    }
+    const providerClient = propDaoFor(user.uid);
+    let accounts: Awaited<ReturnType<typeof providerClient.listAccounts>>;
+    try {
+      accounts = await providerClient.listAccounts();
+    } catch (error) {
+      return fail(res, 502, "PROPDAO_ACCOUNTS_UNAVAILABLE", error instanceof Error ? error.message : "The PropDAO account list could not be read.");
+    }
+    const found = accounts.find((account) => account.accountId === accountId);
+    if (!found) return fail(res, 404, "BROKER_ACCOUNT_NOT_FOUND", "That account is not in your own PropDAO account list.");
+    const status = (found.status ?? "").toLowerCase();
+    const isChallenge = Boolean(found.challengeId) || status.includes("challenge") || status.includes("evaluation");
+    choice = {
+      accountId: found.accountId,
+      label: found.challengeId ? `Challenge ${found.challengeId}` : `Account ${found.accountId}`,
+      environment: isChallenge ? "challenge" : "funded",
+      isLive: false,
+    };
+  }
+
+  await robotBrokerStore.setBrokerAccount(robot, {
+    provider,
+    accountId: choice.accountId,
+    label: choice.label,
+    environment: choice.environment,
+    updatedAt: new Date().toISOString(),
+  });
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    ok: true,
+    bound: {
+      provider,
+      accountId: choice.accountId,
+      label: choice.label,
+      environment: choice.environment,
+      updatedAt: new Date().toISOString(),
+    },
+    execution: {
+      mode: "PAPER",
+      liveTradingSupported: false,
+      message: "The account is recorded. This robot still runs in paper mode: no live orders are possible.",
+    },
+  });
+}));
+
+apiRouter.delete("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+  await robotBrokerStore.setBrokerAccount(robot, undefined);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ ok: true, bound: null });
+}));
 
 // ---- Settings / keys (user-scoped) ----------------------------------
 

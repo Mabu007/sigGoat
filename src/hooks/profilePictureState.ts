@@ -354,6 +354,8 @@ export interface MediaTransport {
     purpose: MediaPurpose;
     contentType: string;
     roomId?: string | null;
+    /** The robot whose cover is being uploaded, for the robot-cover purpose. */
+    robotId?: string | null;
     signal?: AbortSignal;
   }): Promise<MediaUploadTicket>;
 
@@ -373,6 +375,7 @@ export interface MediaTransport {
     contentType: string;
     size: number;
     roomId?: string | null;
+    robotId?: string | null;
     signal?: AbortSignal;
   }): Promise<{ url: string | null }>;
 
@@ -380,6 +383,7 @@ export interface MediaTransport {
   removeMedia(input: {
     purpose: MediaPurpose;
     roomId?: string | null;
+    robotId?: string | null;
     signal?: AbortSignal;
   }): Promise<void>;
 }
@@ -390,8 +394,8 @@ export interface MediaTransport {
 
 export interface ProfilePictureFlowOptions {
   transport: MediaTransport;
-  /** The purpose and the room, read fresh on every call. */
-  getContext: () => { purpose: MediaPurpose; roomId?: string | null };
+  /** The purpose, the room and the robot, read fresh on every call. */
+  getContext: () => { purpose: MediaPurpose; roomId?: string | null; robotId?: string | null };
   /** Notified after every state change. */
   onChange?: (state: ProfilePictureState) => void;
   /** Notified when the COMMITTED url changes. */
@@ -483,7 +487,7 @@ export function createProfilePictureFlow(
       return null;
     }
 
-    const { purpose, roomId } = options.getContext();
+    const { purpose, roomId, robotId } = options.getContext();
     const contentType = resolveContentType(file) as string;
 
     write(beginPrepare(state));
@@ -493,6 +497,7 @@ export function createProfilePictureFlow(
       const ticket = await options.transport.requestUploadTicket({
         purpose,
         roomId,
+        robotId,
         contentType,
         signal: attempt.signal,
       });
@@ -541,7 +546,7 @@ export function createProfilePictureFlow(
 
     const attempt = beginAttempt();
     const isCurrent = () => attempt.current();
-    const { purpose, roomId } = options.getContext();
+    const { purpose, roomId, robotId } = options.getContext();
 
     write(beginCommit(state));
 
@@ -550,6 +555,7 @@ export function createProfilePictureFlow(
         key: staged.key,
         purpose,
         roomId,
+        robotId,
         contentType: staged.contentType,
         size: staged.size,
         signal: attempt.signal,
@@ -585,7 +591,7 @@ export function createProfilePictureFlow(
   const remove = async (): Promise<boolean> => {
     const attempt = beginAttempt();
     const isCurrent = () => attempt.current();
-    const { purpose, roomId } = options.getContext();
+    const { purpose, roomId, robotId } = options.getContext();
 
     /**
      * A staged upload is irrelevant once the saved picture is being deleted,
@@ -595,7 +601,7 @@ export function createProfilePictureFlow(
     write(beginPrepare(state));
 
     try {
-      await options.transport.removeMedia({ purpose, roomId, signal: attempt.signal });
+      await options.transport.removeMedia({ purpose, roomId, robotId, signal: attempt.signal });
       if (!isCurrent()) return false;
 
       write(removeSucceeded(state));

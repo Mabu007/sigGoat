@@ -79,7 +79,7 @@ import {
   type MediaPurpose,
   type RoomCategory,
 } from "../types/rooms";
-import { createRobotStore } from './robots/RobotStore';
+import { createRobotStore, type RobotRecord } from './robots/RobotStore';
 import { initialRuntimeState, processCompletedCandle, runStrategyBacktest } from '../services/strategy/engine';
 import { migrateStrategyDefinition, type StrategyDefinition } from '../services/strategy/schema';
 import { normalizeCompletedCandles, requestedBarsForRange } from '../services/strategy/marketData';
@@ -297,9 +297,64 @@ async function robotForOwner(idOrSlug: string, userId: string, res: Response) {
   return robot;
 }
 
+/**
+ * Resolves a robot the caller OWNS, for the endpoints that change it.
+ *
+ * A robot that belongs to somebody else is reported as NOT FOUND rather than
+ * forbidden, so these endpoints cannot be used to discover which robots
+ * exist. The cover and the broker binding are owner-only, and this is the
+ * single place that decision is made.
+ */
+async function resolveOwnRobot(idOrSlug: unknown, userId: string, res: Response): Promise<RobotRecord | null> {
+  const id = typeof idOrSlug === 'string' ? idOrSlug.trim() : '';
+  if (!id) { fail(res, 400, 'INVALID_ROBOT', 'A robot is required.'); return null; }
+  const robot = await robotStore.get(id);
+  if (!robot || robot.ownerUserId !== userId) {
+    fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
+    return null;
+  }
+  return robot;
+}
+
+/**
+ * The shape a robot takes in the directory.
+ *
+ * The cover is delivered through a freshly signed url, because the stored
+ * value is only the object key: a signed url expires, so a stored url would
+ * be a broken image tomorrow.
+ */
+function robotSummary(robot: RobotRecord, options: { includeBrokerAccountId?: boolean } = {}) {
+  const coverReference = robot.cover?.key ? toMediaReference(robot.cover, 'robot-cover') : null;
+  return {
+    ...robot,
+    coverUrl: coverReference?.url ?? null,
+    coverContentType: robot.cover?.contentType ?? null,
+    /**
+     * The broker account is a REFERENCE, never a credential — but the
+     * account id itself is the creator's own broker identifier, and the
+     * directory is public. So the id is only ever given to the owner, and
+     * everybody else sees the label and the environment.
+     */
+    brokerAccount: robot.brokerAccount
+      ? {
+        provider: robot.brokerAccount.provider,
+        accountId: options.includeBrokerAccountId ? robot.brokerAccount.accountId : '',
+        label: robot.brokerAccount.label,
+        environment: robot.brokerAccount.environment,
+        updatedAt: robot.brokerAccount.updatedAt,
+      }
+      : null,
+  };
+}
+
 roomsRouter.get('/robot-marketplace', handle(async (req, res) => {
   const query = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase().slice(0, 80) : '';
-  const robots = (await robotStore.listPublic()).filter(robot => !query || `${robot.name} ${robot.description} ${robot.market}`.toLowerCase().includes(query));
+  const robots = (await robotStore.listPublic())
+    .filter(robot => !query || `${robot.name} ${robot.description} ${robot.market}`.toLowerCase().includes(query))
+    // The cover is delivered through a freshly signed url. The stored value
+    // is only the object key, so a url stored on the record would be a
+    // broken image tomorrow.
+    .map(robot => robotSummary(robot));
   res.setHeader('Cache-Control', 'public, max-age=10, stale-while-revalidate=30');
   res.json({ robots, total: robots.length });
 }));
@@ -307,7 +362,7 @@ roomsRouter.get('/robot-marketplace', handle(async (req, res) => {
 roomsRouter.get('/robot-marketplace/mine', authMiddleware, handle(async (req, res) => {
   const user = requireUser(req);
   res.setHeader('Cache-Control', 'private, no-store');
-  res.json({ robots: await robotStore.listForOwner(user.uid) });
+  res.json({ robots: (await robotStore.listForOwner(user.uid)).map(robot => robotSummary(robot, { includeBrokerAccountId: true })) });
 }));
 
 roomsRouter.post('/robot-marketplace', authMiddleware, handle(async (req, res) => {
@@ -375,8 +430,11 @@ roomsRouter.get('/robot-marketplace/:idOrSlug', optionalAuthMiddleware, handle(a
     return fail(res, 500, 'ROBOT_VERSION_INVALID', 'The stored strategy version could not be read.');
   }
   const backtests = isOwner ? await robotStore.listBacktests(robot) : [];
+  // The runtime snapshot belongs to the creator alone. It is the PAPER
+  // account, and it must never be confused with a live one.
+  const runtime = isOwner ? await robotStore.runtime(robot) : null;
   res.setHeader('Cache-Control', isOwner ? 'private, no-store' : 'public, max-age=10');
-  res.json({ robot, definition, backtests, canManage: isOwner });
+  res.json({ robot: robotSummary(robot, { includeBrokerAccountId: isOwner }), definition, backtests, runtime, canManage: isOwner });
 }));
 
 roomsRouter.get('/robot-marketplace/:idOrSlug/logs', authMiddleware, handle(async (req, res) => {
@@ -466,6 +524,17 @@ roomsRouter.post('/robot-marketplace/:idOrSlug/backtests', authMiddleware, handl
   const createdAt = new Date().toISOString();
   const record = { id: `backtest_${Date.now()}_${randomBytes(4).toString('hex')}`, robotId: robot.id, ownerUserId: user.uid, strategyVersionId: definition.versionId, configuration: { requestedBars, provider: definition.market.provider, instrument: definition.market.instrument, timeframe: definition.market.timeframe, ...(rangeBars ? { from: new Date(from).toISOString(), to: new Date(to).toISOString() } : {}) }, result, createdAt };
   await robotStore.saveBacktest(record); await robotStore.appendLogs(robot, result.logs.slice(-2));
+  // The directory shows whether a robot has VERIFIED performance, so the
+  // summary is kept on the robot record. A backtest is a simulation, and the
+  // interface says so wherever the number appears.
+  await robotStore.setLastBacktest(robot, {
+    strategyVersionId: definition.versionId,
+    totalReturn: result.metrics.totalReturn,
+    winRate: result.metrics.winRate,
+    maxDrawdown: result.metrics.maxDrawdown,
+    completedTrades: result.metrics.completedTrades,
+    at: createdAt,
+  });
   res.status(201).json({ backtest: record });
 }));
 
@@ -1537,13 +1606,17 @@ roomsRouter.post("/media/upload-ticket", authMiddleware, handle(async (req, res)
     );
   }
 
-  const body = (req.body ?? {}) as { purpose?: unknown; roomId?: unknown; contentType?: unknown };
+  const body = (req.body ?? {}) as { purpose?: unknown; roomId?: unknown; robotId?: unknown; contentType?: unknown };
   const purpose = body.purpose as MediaPurpose;
-  if (purpose !== "avatar" && purpose !== "room-cover") {
-    return fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar or room-cover.");
+  if (purpose !== "avatar" && purpose !== "room-cover" && purpose !== "robot-cover") {
+    return fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar, room-cover or robot-cover.");
   }
 
   let team: GoatTeam | null = null;
+  if (purpose === "robot-cover") {
+    const robot = await resolveOwnRobot(body.robotId, user.uid, res);
+    if (!robot) return;
+  }
   if (purpose === "room-cover") {
     if (typeof body.roomId !== "string") {
       return fail(res, 400, "INVALID_ROOM", "A room is required for a room cover.");
@@ -1600,6 +1673,7 @@ roomsRouter.post("/media/commit", authMiddleware, handle(async (req, res) => {
     key?: unknown;
     purpose?: unknown;
     roomId?: unknown;
+    robotId?: unknown;
     contentType?: unknown;
     size?: unknown;
   };
@@ -1607,8 +1681,8 @@ roomsRouter.post("/media/commit", authMiddleware, handle(async (req, res) => {
     return fail(res, 400, "INVALID_KEY", "No image key was supplied.");
   }
   const purpose = body.purpose as MediaPurpose;
-  if (purpose !== "avatar" && purpose !== "room-cover") {
-    return fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar or room-cover.");
+  if (purpose !== "avatar" && purpose !== "room-cover" && purpose !== "robot-cover") {
+    return fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar, room-cover or robot-cover.");
   }
 
   const expectedPrefix = purpose === "avatar" ? "avatars/" : "covers/";
@@ -1647,6 +1721,22 @@ roomsRouter.post("/media/commit", authMiddleware, handle(async (req, res) => {
     return;
   }
 
+  if (purpose === "robot-cover") {
+    const robot = await resolveOwnRobot(body.robotId, user.uid, res);
+    if (!robot) return;
+    const previous = robot.cover;
+    await robotStore.setCover(robot, { ...stored });
+    // The replaced object is deleted, so a robot that changes its cover does
+    // not leave an orphan image in the bucket forever.
+    if (previous && previous.key !== stored.key) {
+      await deleteMediaObject(previous.key);
+    }
+    const reference = toMediaReference(stored, "robot-cover");
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ robotCover: reference, robotCoverUrl: reference?.url ?? null });
+    return;
+  }
+
   if (typeof body.roomId !== "string") {
     return fail(res, 400, "INVALID_ROOM", "A room is required for a room cover.");
   }
@@ -1676,7 +1766,7 @@ roomsRouter.post("/media/commit", authMiddleware, handle(async (req, res) => {
 /** Removes an image and clears the reference. */
 roomsRouter.post("/media/remove", authMiddleware, handle(async (req, res) => {
   const user = requireUser(req);
-  const body = (req.body ?? {}) as { purpose?: unknown; roomId?: unknown };
+  const body = (req.body ?? {}) as { purpose?: unknown; roomId?: unknown; robotId?: unknown };
   const purpose = body.purpose as MediaPurpose;
 
   if (purpose === "avatar") {
@@ -1684,6 +1774,17 @@ roomsRouter.post("/media/remove", authMiddleware, handle(async (req, res) => {
     await mediaStore.clearAvatar(user.uid);
     if (previous) await deleteMediaObject(previous.key);
     res.json({ ok: true, avatarUrl: null });
+    return;
+  }
+
+  if (purpose === "robot-cover") {
+    const robot = await resolveOwnRobot(body.robotId, user.uid, res);
+    if (!robot) return;
+    const previous = robot.cover;
+    // Clearing the cover restores the designed default artwork on the card.
+    await robotStore.clearCover(robot);
+    if (previous) await deleteMediaObject(previous.key);
+    res.json({ ok: true, robotCoverUrl: null });
     return;
   }
 
@@ -1706,7 +1807,7 @@ roomsRouter.post("/media/remove", authMiddleware, handle(async (req, res) => {
     return;
   }
 
-  fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar or room-cover.");
+  fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar, room-cover or robot-cover.");
 }));
 
 // ---------------------------------------------------------------------------

@@ -550,15 +550,29 @@ const describeParameters = (indicator: IndicatorDraft) => {
   return entry.parameters.map(parameter => `${indicator.params[parameter.key] ?? parameter.default}`).join(', ');
 };
 
-export function describeCondition(condition: StrategyCondition, labels: Map<string, string> = new Map()): string {
-  if (condition.type === 'all' || condition.type === 'any') return `(${condition.conditions.map(child => describeCondition(child, labels)).join(condition.type === 'all' ? ' AND ' : ' OR ')})`;
-  if (condition.type === 'not') return `NOT ${describeCondition(condition.condition, labels)}`;
+/**
+ * The readable text of a condition.
+ *
+ * `labels` maps an indicator id to the name it should be called by.
+ * `outputs` maps `indicatorId::output` to the text of that output, and an
+ * EMPTY string means "do not mention it" — which is what the default output
+ * of an indicator gets, because "RSI(14) crosses above 30" already says
+ * everything "RSI(14) → RSI crosses above 30" would say, and more.
+ */
+export function describeCondition(
+  condition: StrategyCondition,
+  labels: Map<string, string> = new Map(),
+  outputs: Map<string, string> = new Map(),
+): string {
+  if (condition.type === 'all' || condition.type === 'any') return `(${condition.conditions.map(child => describeCondition(child, labels, outputs)).join(condition.type === 'all' ? ' AND ' : ' OR ')})`;
+  if (condition.type === 'not') return `NOT ${describeCondition(condition.condition, labels, outputs)}`;
   if (condition.type === 'price_action') return `${condition.pattern.replaceAll('_', ' ').toLowerCase()} (${condition.params.lookback} candles)`;
-  if (condition.type === 'sequence') return `${condition.steps.map(step => describeCondition(step, labels)).join(' THEN ')} (within ${condition.maxGapCandles} candles)`;
-  const operand = (value: StrategyCondition extends never ? never : any) => value.kind === 'constant'
-    ? String(value.value)
-    : value.kind === 'indicator'
-      ? `${labels.get(value.indicatorId) ?? value.indicatorId}${value.output ? ` → ${value.output}` : ''}`
-      : value.field;
+  if (condition.type === 'sequence') return `${condition.steps.map(step => describeCondition(step, labels, outputs)).join(' THEN ')} (within ${condition.maxGapCandles} candles)`;
+  const operand = (value: StrategyCondition extends never ? never : any) => {
+    if (value.kind === 'constant') return String(value.value);
+    if (value.kind === 'price') return value.field;
+    const output = value.output ? (outputs.get(`${value.indicatorId}::${value.output}`) ?? value.output) : '';
+    return `${labels.get(value.indicatorId) ?? value.indicatorId}${output ? ` → ${output}` : ''}`;
+  };
   return `${operand(condition.left)} ${condition.operator.replaceAll('_', ' ').toLowerCase()} ${operand(condition.right)}`;
 }
