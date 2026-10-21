@@ -65,7 +65,31 @@ function operand(definition: StrategyDefinition, value: StrategyOperand, candles
   return { current: Number(current), previous: previous == null ? null : Number(previous), available: Number.isFinite(current) };
 }
 
+function evaluatePriceAction(pattern: Extract<StrategyCondition, { type: 'price_action' }>['pattern'], lookback: number, candles: readonly Candle[]): boolean {
+  if (candles.length < Math.max(3, lookback + 1)) return false;
+  const current = candles[candles.length - 1];
+  const previous = candles[candles.length - 2];
+  const prior = candles.slice(-lookback - 1, -1);
+  const priorHigh = Math.max(...prior.map(bar => bar.high));
+  const priorLow = Math.min(...prior.map(bar => bar.low));
+  const body = Math.abs(current.close - current.open);
+  const range = current.high - current.low;
+  const upperWick = current.high - Math.max(current.open, current.close);
+  const lowerWick = Math.min(current.open, current.close) - current.low;
+  switch (pattern) {
+    case 'BULLISH_SWEEP': return current.low < priorLow && current.close > priorLow;
+    case 'BEARISH_SWEEP': return current.high > priorHigh && current.close < priorHigh;
+    case 'BREAKOUT_HIGH': return current.close > priorHigh && previous.close <= priorHigh;
+    case 'BREAKOUT_LOW': return current.close < priorLow && previous.close >= priorLow;
+    case 'BULLISH_ENGULFING': return previous.close < previous.open && current.close > current.open && current.open <= previous.close && current.close >= previous.open;
+    case 'BEARISH_ENGULFING': return previous.close > previous.open && current.close < current.open && current.open >= previous.close && current.close <= previous.open;
+    case 'BULLISH_PIN_BAR': return range > 0 && lowerWick >= 2 * body && lowerWick >= 0.55 * range && upperWick <= 0.25 * range;
+    case 'BEARISH_PIN_BAR': return range > 0 && upperWick >= 2 * body && upperWick >= 0.55 * range && lowerWick <= 0.25 * range;
+  }
+}
+
 export function evaluateCondition(definition: StrategyDefinition, condition: StrategyCondition, candles: readonly Candle[]): boolean {
+  if (condition.type === 'price_action') return evaluatePriceAction(condition.pattern, condition.lookback, candles);
   if (condition.type === 'all') return condition.conditions.every(child => evaluateCondition(definition, child, candles));
   if (condition.type === 'any') return condition.conditions.some(child => evaluateCondition(definition, child, candles));
   if (condition.type === 'not') return !evaluateCondition(definition, condition.condition, candles);
