@@ -115,7 +115,35 @@ function CreateRobotModal({ headers, onClose, onCreated }: { headers: (json?: bo
   const manualDefinition = useMemo<StrategyDefinition>(() => ({ schemaVersion: 1, strategyId: 'draft_strategy', versionId: 'draft_version', version: 1, name, description, market: { provider: 'hyperliquid', instrument: instrument.trim().toUpperCase(), timeframe }, indicators, entry: { direction, condition: groupedCondition(entryConditions, entryJoin) }, exit: exitConditions.length ? { condition: groupedCondition(exitConditions, exitJoin) } : {}, risk: { sizing: sizingMode === 'PERCENT_RISK' ? { mode: sizingMode, percent: sizeValue } : { mode: sizingMode, quantity: sizeValue }, stopLossPercent: stopLoss, takeProfitPercent: takeProfit, maxExposurePercent: maxExposure, maxConcurrentPositions: 1, maxTradesPerDay: maxTrades, cooldownCandles: cooldown, maxDailyLossPercent: maxDailyLoss }, execution: { mode: 'PAPER', startingBalance: 10_000, feeRate: 0.00045, slippageBps: 2 }, visibility, validationStatus: 'VALID', createdAt: new Date().toISOString() }), [name, description, instrument, timeframe, indicators, direction, entryConditions, entryJoin, exitConditions, exitJoin, sizingMode, sizeValue, stopLoss, takeProfit, maxExposure, maxTrades, cooldown, maxDailyLoss, visibility]);
   const validation = useMemo(() => validateStrategyDefinition(manualDefinition), [manualDefinition]);
   const moveIndicator = (index: number, offset: number) => setIndicators(previous => { const next = [...previous]; const target = index + offset; if (target < 0 || target >= next.length) return previous; [next[index], next[target]] = [next[target], next[index]]; return next; });
-  const generate = async () => { setBusy(true); setError(''); try { const response = await fetch('/api/robot-marketplace/ai-draft', { method: 'POST', headers: await headers(true), body: JSON.stringify({ prompt: aiPrompt }) }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body?.error?.message || 'AI strategy generation failed.'); setAiDefinition(body.definition); } catch (cause) { setError(cause instanceof Error ? cause.message : 'AI strategy generation failed.'); } finally { setBusy(false); } };
+  const generate = async () => { setBusy(true); setError(''); try { const response = await fetch('/api/robot-marketplace/ai-draft', { method: 'POST', headers: await headers(true), body: JSON.stringify({ prompt: aiPrompt }) }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body?.error?.message || 'AI strategy generation failed.'); 
+    const draft = body.definition as StrategyDefinition;
+    const extracted = draft?.entry?.condition;
+    if (!draft || !extracted) throw new Error('AI did not return a usable strategy.');
+    setName(draft.name || name || 'My Trading Robot');
+    setDescription(draft.description || aiPrompt);
+    setInstrument(draft.market?.instrument || instrument);
+    setTimeframe(draft.market?.timeframe || timeframe);
+    setDirection(draft.entry.direction);
+    setIndicators(draft.indicators?.length ? draft.indicators as IndicatorDraft[] : indicators);
+    const toDraft = (node: StrategyCondition): ConditionDraft[] => {
+      if (node.type === 'all' || node.type === 'any') return node.conditions.flatMap(toDraft);
+      if (node.type === 'not') return toDraft(node.condition).map(item => ({ ...item, negate: true }));
+      if (node.type === 'price_action') return [{ ...newCondition(), pattern: node.pattern, lookback: node.lookback }];
+      return [{ id: draftId(), leftKind: node.left.kind, leftValue: node.left.kind === 'indicator' ? node.left.indicatorId : node.left.kind === 'price' ? node.left.field : String(node.left.value), operator: node.operator, rightKind: node.right.kind, rightValue: node.right.kind === 'indicator' ? node.right.indicatorId : node.right.kind === 'price' ? node.right.field : String(node.right.value), negate: false }];
+    };
+    setEntryConditions(toDraft(extracted));
+    setExitConditions(draft.exit?.condition ? toDraft(draft.exit.condition) : []);
+    setCreationMode('manual'); } catch (cause) { const prompt = aiPrompt.toLowerCase();
+    const bullish = !/\\b(sell|short|bearish)\\b/.test(prompt);
+    const pattern = /liquidity|sweep|stop hunt/.test(prompt) ? (bullish ? 'BULLISH_SWEEP' : 'BEARISH_SWEEP') : /breakout|break above|break below/.test(prompt) ? (bullish ? 'BREAKOUT_HIGH' : 'BREAKOUT_LOW') : /engulf/.test(prompt) ? (bullish ? 'BULLISH_ENGULFING' : 'BEARISH_ENGULFING') : /pin bar|hammer|shooting star/.test(prompt) ? (bullish ? 'BULLISH_PIN_BAR' : 'BEARISH_PIN_BAR') : null;
+    if (pattern) {
+      setName(name || 'My Trading Robot');
+      setDescription(aiPrompt);
+      setDirection(bullish ? 'LONG' : 'SHORT');
+      setEntryConditions([{ ...newCondition(), pattern: pattern as NonNullable<ConditionDraft['pattern']>, lookback: 20 }]);
+      setCreationMode('manual');
+      setError('Draft created from recognized price-action language. Review the market, timeframe, lookback and risk settings before saving. The AI endpoint did not provide a complete strategy.');
+    } else setError(cause instanceof Error ? cause.message : 'AI strategy generation failed.'); } finally { setBusy(false); } };
   const save = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { const definition = creationMode === 'ai' ? aiDefinition : manualDefinition; if (!definition) throw new Error('Generate and review a valid strategy first.'); const localValidation = validateStrategyDefinition(definition); if (!localValidation.success) throw new Error(localValidation.errors.join(' ')); const response = await fetch('/api/robot-marketplace', { method: 'POST', headers: await headers(true), body: JSON.stringify({ clientRequestId: stableRequestId.current, definition }) }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body?.error?.message || 'Could not create the trading robot.'); onCreated(body.robot.slug); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not create the trading robot.'); } finally { setBusy(false); } };
 
   return <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-0 sm:items-center sm:p-5" role="dialog" aria-modal="true"><div className="panel flex max-h-[94vh] w-full max-w-4xl flex-col overflow-hidden rounded-b-none sm:rounded-2xl">
