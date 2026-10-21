@@ -134,7 +134,7 @@ function CreateRobotModal({ headers, onClose, onCreated }: { headers: (json?: bo
     setEntryConditions(toDraft(extracted));
     setExitConditions(draft.exit?.condition ? toDraft(draft.exit.condition) : []);
     setCreationMode('manual'); } catch (cause) { const prompt = aiPrompt.toLowerCase();
-    const bullish = !/\\b(sell|short|bearish)\\b/.test(prompt);
+    const bullish = !/\b(sell|short|bearish)\b/.test(prompt);
     const pattern = /liquidity|sweep|stop hunt/.test(prompt) ? (bullish ? 'BULLISH_SWEEP' : 'BEARISH_SWEEP') : /breakout|break above|break below/.test(prompt) ? (bullish ? 'BREAKOUT_HIGH' : 'BREAKOUT_LOW') : /engulf/.test(prompt) ? (bullish ? 'BULLISH_ENGULFING' : 'BEARISH_ENGULFING') : /pin bar|hammer|shooting star/.test(prompt) ? (bullish ? 'BULLISH_PIN_BAR' : 'BEARISH_PIN_BAR') : null;
     if (pattern) {
       setName(name || 'My Trading Robot');
