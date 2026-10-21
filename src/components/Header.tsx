@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { LogIn, LogOut, Plus, RefreshCw, Search, Settings, UserRound } from 'lucide-react';
+import { LogIn, LogOut, RefreshCw, Search, Settings, UserRound } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { BrandMark } from './Navigation';
 import { UserAvatar } from './UserAvatar';
@@ -10,13 +10,12 @@ interface HeaderProps {
   displayName?: string | null;
   email?: string | null;
   onOpenSettings: () => void;
-  onCreateRoom: () => void;
   onRefresh: () => void;
   refreshing?: boolean;
   lastUpdatedMs?: number | null;
 }
 
-export function Header({ displayName, email, onOpenSettings, onCreateRoom, onRefresh, refreshing = false, lastUpdatedMs }: HeaderProps) {
+export function Header({ displayName, email, onOpenSettings, onRefresh, refreshing = false, lastUpdatedMs }: HeaderProps) {
   const [search, setSearch] = useState('');
   const { currentUser, authMode, openAuthModal, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
