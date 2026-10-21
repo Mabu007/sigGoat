@@ -250,7 +250,9 @@ export function StrategyBuilder({
   const addIndicator = (entry: IndicatorCatalogEntry) => {
     const indicator = newIndicator(entry.key, indicators);
     setIndicators([...indicators, indicator]);
-    if (!entryConditions.length) setEntryConditions([newComparison(indicator.id)]);
+    // Each selected indicator creates an editable entry rule immediately.
+    // It cannot sit on the strategy as an unused standalone decoration.
+    setEntryConditions(previous => [...previous, newComparison(indicator.id)]);
     setPickerOpen(false);
   };
 
@@ -452,13 +454,13 @@ export function StrategyBuilder({
             <textarea value={description} onChange={event => setDescription(event.target.value)} rows={2} maxLength={2000} className="input mt-1 w-full" />
           </label>
 
-          <section>
+          <section className="rounded-2xl border border-white/10 bg-white/[.025] p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-bold">Indicators</h3>
-              <button type="button" className="btn btn-secondary" onClick={() => setPickerOpen(open => !open)}><CirclePlus size={13} /> Add indicator</button>
+              <div><h3 className="text-sm font-bold">Entry conditions</h3><p className="mt-1 text-xs text-fg-subtle">Choose a signal, then set what it must do before the robot enters.</p></div>
+              <button type="button" className="btn btn-secondary" onClick={() => setPickerOpen(open => !open)}><CirclePlus size={13} /> Add indicator condition</button>
             </div>
             {pickerOpen && <div className="mt-2"><IndicatorPicker onPick={addIndicator} onClose={() => setPickerOpen(false)} /></div>}
-            {!indicators.length && <p className="mt-2 text-xs text-fg-subtle">No indicators yet. Conditions can still use price action on their own.</p>}
+            {!indicators.length && <p className="mt-2 text-xs text-fg-subtle">Use any of the 53 indicators in a condition, or add a price action rule below.</p>}
             <div className="mt-2 space-y-2">
               {indicators.map((indicator, index) => {
                 const entry = indicatorCatalogEntry(indicator.type);
@@ -466,7 +468,7 @@ export function StrategyBuilder({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <p className="text-sm font-semibold text-fg">{entry?.name ?? indicator.type}</p>
-                      <p className="text-[11px] text-fg-subtle">Configured automatically from the indicator catalog.</p>
+                      <p className="text-[11px] text-fg-subtle">This signal is used by the entry condition below.</p>
                     </div>
                     <div className="flex items-center gap-1">
                       <button type="button" onClick={() => moveIndicator(index, -1)} aria-label="Move indicator up" className="text-fg-subtle"><ChevronUp size={15} /></button>
@@ -509,7 +511,7 @@ export function StrategyBuilder({
           </section>
 
           <ConditionSection
-            title="Entry conditions"
+            title="IF · Entry rules"
             required
             join={entryJoin}
             setJoin={setEntryJoin}

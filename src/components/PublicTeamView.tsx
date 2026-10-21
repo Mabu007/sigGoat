@@ -111,7 +111,7 @@ const quoteIsFresh = (quote: MarketQuote | null) => {
   return true;
 };
 
-export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { window.location.href = '/#/rooms'; } }: { slug: string; backLabel?: string; onBack?: () => void }) {
+export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { window.location.href = '/#/bots'; } }: { slug: string; backLabel?: string; onBack?: () => void }) {
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -864,7 +864,7 @@ export function PublicTeamView({ slug, backLabel = 'Rooms', onBack = () => { win
         body: JSON.stringify({ confirm: true }),
       });
       await read<{ success: boolean }>(response);
-      window.location.href = '/#/rooms';
+      window.location.href = '/#/bots';
     } catch (err) {
       setSettingsError(err instanceof Error ? err.message : 'Could not delete the room.');
       setDeleteBusy(false);

@@ -5,12 +5,12 @@
  * can never drift apart.
  *
  * NAVIGATION MODEL
- *   Rooms · Markets · Settings
+ *   Bots · Markets · Settings
  *
- * TradingVibes is a social trading product: rooms, markets, and the settings
+ * TradingVibes is a trading product: bots, markets, and the settings
  * that connect an account. The destinations that belonged to the previous
  * product — trade proposals, agent skills, backtests — are gone from the
- * navigation. Their hashes still resolve, to the room directory, so an old
+ * navigation. Their hashes still resolve to the bot directory, so an old
  * link lands somewhere real instead of a dead screen.
  *
  * ACTIVE INDICATION uses `aria-current="page"`, not only colour. A
@@ -18,11 +18,11 @@
  * accent from the muted foreground.
  */
 
-import { Bot, CandlestickChart, Settings, type LucideIcon } from 'lucide-react';
+import { Bot, ReceiptText, Settings, type LucideIcon } from 'lucide-react';
 
 export type TabId =
-  | 'rooms'
-  | 'markets'
+  | 'bots'
+  | 'trades'
   | 'settings';
 
 export interface NavigationItem {
@@ -34,8 +34,8 @@ export interface NavigationItem {
 }
 
 export const NAVIGATION_ITEMS: NavigationItem[] = [
-  { id: 'rooms', label: 'Robots', shortLabel: 'Robots', icon: Bot },
-  { id: 'markets', label: 'Markets', icon: CandlestickChart },
+  { id: 'bots', label: 'Bots', icon: Bot },
+  { id: 'trades', label: 'Trades', icon: ReceiptText },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 

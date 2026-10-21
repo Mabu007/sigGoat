@@ -15,7 +15,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, Check, LogOut, Moon, Palette as PaletteIcon, Sun, UserRound } from 'lucide-react';
+import { ArrowLeft, Check, LogOut, Moon, Palette as PaletteIcon, Sun, UserRound, WandSparkles } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { ProfilePicture } from '../ProfilePicture';
@@ -45,6 +45,12 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
   const [displayName, setDisplayName] = useState('');
   const [nameSaving, setNameSaving] = useState(false);
   const [nameNotice, setNameNotice] = useState<string | null>(null);
+  const [openRouterKey, setOpenRouterKey] = useState('');
+  const [openRouterConfigured, setOpenRouterConfigured] = useState(false);
+  const [freeModels, setFreeModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedModel, setSelectedModel] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiNotice, setAiNotice] = useState('');
 
   useEffect(() => {
     setDisplayName(profile?.displayName ?? '');
@@ -58,6 +64,7 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
         const response = await fetch('/api/settings/preferences', { headers, cache: 'no-store' });
         const body = await response.json().catch(() => null);
         if (!cancelled && response.ok && body) {
+          setSelectedModel(body.aiModel ?? '');
           setPreferences({
             tradingProvider: body.tradingProvider === 'hyperliquid' ? 'hyperliquid' : 'ctrader',
             tradingProviderAvailable: body.tradingProviderAvailable,
@@ -71,6 +78,16 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
     })();
     return () => { cancelled = true; };
   }, [getApiAuthHeaders]);
+
+  const loadFreeModels = useCallback(async () => {
+    const response = await fetch('/api/ai/models?provider=openrouter', { headers: await getApiAuthHeaders(), cache: 'no-store' });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body?.error?.message ?? 'OpenRouter models could not be loaded.');
+    setFreeModels((body.models ?? []).filter((model: { free: boolean }) => model.free));
+  }, [getApiAuthHeaders]);
+  useEffect(() => { let active = true; void (async () => { try { const response = await fetch('/api/settings/keys', { headers: await getApiAuthHeaders(), cache: 'no-store' }); const body = await response.json(); if (active && response.ok) { setOpenRouterConfigured(Boolean(body.openRouterKeyConfigured)); if (body.openRouterKeyConfigured) await loadFreeModels(); } } catch { /* status remains unset until a save */ } })(); return () => { active = false; }; }, [getApiAuthHeaders, loadFreeModels]);
+  const saveAiKey = async () => { setAiBusy(true); setAiNotice(''); try { const response = await fetch('/api/settings/keys', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) }, body: JSON.stringify({ provider: 'openrouter', openRouterKey: openRouterKey.trim() }) }); const body = await response.json(); if (!response.ok) throw new Error(body?.error?.message ?? 'Could not save OpenRouter key.'); setOpenRouterKey(''); setOpenRouterConfigured(true); await loadFreeModels(); setAiNotice('OpenRouter connected. Choose a free model for robot creation.'); } catch (cause) { setAiNotice(cause instanceof Error ? cause.message : 'Could not save OpenRouter key.'); } finally { setAiBusy(false); } };
+  const saveAiModel = async () => { setAiBusy(true); setAiNotice(''); try { const response = await fetch('/api/settings/preferences', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await getApiAuthHeaders()) }, body: JSON.stringify({ aiModel: selectedModel }) }); const body = await response.json(); if (!response.ok) throw new Error(body?.error?.message ?? 'Could not save model.'); setAiNotice('Robot creation model saved.'); } catch (cause) { setAiNotice(cause instanceof Error ? cause.message : 'Could not save model.'); } finally { setAiBusy(false); } };
 
   const savePreferences = useCallback(
     async (patch: Partial<Pick<UserPreferences, 'tradingProvider'>>) => {
@@ -137,7 +154,7 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
             Your account, how TradingVibes looks, and the trading accounts you connect.
           </p>
         </div>
-        <button type="button" onClick={() => { window.location.hash = '/rooms'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs font-bold text-fg hover:bg-raised">
+        <button type="button" onClick={() => { window.location.hash = '/bots'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs font-bold text-fg hover:bg-raised">
           <ArrowLeft className="h-3.5 w-3.5" /> Back to Rooms
         </button>
       </div>
@@ -246,6 +263,14 @@ export const SettingsView: React.FC<{ section?: string }> = ({ section }) => {
       </div>
 
       {/* ---- TRADING PROVIDER ---- */}
+      <section className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
+        <h2 className="flex items-center gap-2 text-sm font-semibold"><WandSparkles size={16}/> Robot creation AI</h2>
+        <p className="text-xs text-fg-muted">Your OpenRouter key and free model draft entry conditions in Robot Studio. This is an app setting, shared across your robot editor.</p>
+        <div className="flex flex-col gap-2 sm:flex-row"><input className="input flex-1" type="password" autoComplete="off" value={openRouterKey} onChange={event => setOpenRouterKey(event.target.value)} placeholder={openRouterConfigured ? 'Key saved · enter to replace' : 'OpenRouter API key'} aria-label="OpenRouter API key"/><button className="btn btn-secondary" disabled={aiBusy || !openRouterKey.trim()} onClick={() => void saveAiKey()}>Save key</button></div>
+        {openRouterConfigured && <div className="flex flex-col gap-2 sm:flex-row"><select className="input flex-1" value={selectedModel} onChange={event => setSelectedModel(event.target.value)} aria-label="Free OpenRouter model"><option value="">Choose a free model</option>{freeModels.map(model => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}</select><button className="btn btn-secondary" disabled={aiBusy || !selectedModel || !freeModels.some(model => model.id === selectedModel)} onClick={() => void saveAiModel()}>Save model</button></div>}
+        {aiNotice && <p role="status" className="text-xs text-fg-muted">{aiNotice}</p>}
+      </section>
+
       <div className="bg-surface border border-line rounded-2xl p-4 sm:p-5 space-y-3">
         <div>
           <h2 className="text-[13px] font-semibold text-fg">Your default venue</h2>

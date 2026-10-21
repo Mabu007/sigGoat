@@ -377,7 +377,7 @@ function ChatMessageBody({ content }: { content: string }) {
     <p className="tr-chat-row-body">
       {parts.map((part, index) => part.link
         ? (
-          <a key={index} href={part.value} target="_blank" rel="noopener noreferrer noreferrer">
+          <a key={index} href={part.value} target="_blank" rel="noopener noreferrer">
             {part.value}
           </a>
         )
@@ -448,7 +448,14 @@ function RoomChatConversation({
 
   const [draft, setDraft] = useState('');
   const [sendingLocal, setSendingLocal] = useState(false);
-  const [sendError, setSendError] = useState('');
+  /**
+   * Why the last send failed.
+   *
+   * `null` means the send has not failed. An empty string means it failed
+   * and the PARENT is explaining why (it has the server's words). Anything
+   * else is the server's own message, caught here.
+   */
+  const [sendError, setSendError] = useState<string | null>(null);
   /** Older history the panel has paged in, oldest first. */
   const [olderMessages, setOlderMessages] = useState<RoomChatMessage[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -461,16 +468,20 @@ function RoomChatConversation({
   const [unreadCount, setUnreadCount] = useState(() => Math.max(0, initialUnreadCount || 0));
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  /** The list of messages — the anchor for a scroll restore. */
+  const listRef = useRef<HTMLDivElement | null>(null);
   /** True when the reader is at (or within a few pixels of) the bottom. */
   const atBottomRef = useRef(true);
   /** True when the panel is actually on screen. */
   const visibleRef = useRef(true);
   /** The last message this reader has been shown. */
   const readCursorRef = useRef<string | null>(lastReadMessageId);
+  /** When that message was written — the cursor only ever moves forward. */
+  const readCursorAtRef = useRef<string | null>(null);
   /** Every message id the panel has already accounted for. */
   const seenIdsRef = useRef<Set<string>>(new Set());
   /** The scroll geometry captured before an older page is prepended. */
-  const restoreRef = useRef<{ height: number; top: number } | null>(null);
+  const restoreRef = useRef<{ height: number; top: number; anchor: HTMLElement | null; anchorTop: number } | null>(null);
   const loadingOlderRef = useRef(false);
   const busyRef = useRef(false);
   /** The list as it is on screen, for callbacks that run outside a render. */
@@ -570,7 +581,12 @@ function RoomChatConversation({
     const last = list[list.length - 1];
     if (!last) return;
     if (readCursorRef.current === last.id) return;
+    /* The cursor moves FORWARD only. A list that is replaced by an older
+       page must never walk the reader's cursor backwards. */
+    const cursorAt = readCursorAtRef.current;
+    if (cursorAt && Date.parse(last.createdAt) <= Date.parse(cursorAt)) return;
     readCursorRef.current = last.id;
+    readCursorAtRef.current = last.createdAt;
     setUnreadCount(0);
     setPendingNew(0);
     void reportRead(last.id);
@@ -611,6 +627,16 @@ function RoomChatConversation({
     const element = scrollRef.current;
     const previousHeight = element?.scrollHeight ?? 0;
     const previousTop = element?.scrollTop ?? 0;
+    /* The anchor is the message the reader is looking at. Its distance from
+       the top of the scroll content is remembered, so the panel can put the
+       reader back on exactly that message after the page above it arrives —
+       whatever else changed in the meantime. */
+    const anchor = listRef.current?.firstElementChild instanceof HTMLElement
+      ? listRef.current.firstElementChild
+      : null;
+    const anchorTop = element && anchor
+      ? anchor.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop
+      : 0;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     setOlderError('');
@@ -619,7 +645,7 @@ function RoomChatConversation({
       if (page.messages.length) {
         /* Remember where the reader was: the content above the fold must not
            move when the page above it arrives. */
-        restoreRef.current = { height: previousHeight, top: previousTop };
+        restoreRef.current = { height: previousHeight, top: previousTop, anchor, anchorTop };
         /* Older messages are history, not news: they are never unread. */
         const seen = new Set(seenIdsRef.current);
         for (const message of page.messages) seen.add(message.id);
@@ -690,9 +716,17 @@ function RoomChatConversation({
     restoreRef.current = null;
     const element = scrollRef.current;
     if (!element) return;
-    const delta = element.scrollHeight - restore.height;
+    /* The anchor moved down by exactly the height of the prepended page, so
+       the reader is put back on the message they were reading. */
+    let delta = element.scrollHeight - restore.height;
+    const anchor = restore.anchor;
+    if (anchor && anchor.isConnected) {
+      const anchorTop = anchor.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop;
+      delta = anchorTop - restore.anchorTop;
+    }
     element.scrollTop = restore.top + delta;
     atBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight <= CHAT_NEAR_BOTTOM_PX;
+    (window as unknown as { __chatDebug?: unknown }).__chatDebug = { restore, delta, applied: element.scrollTop, connected: Boolean(anchor && anchor.isConnected) };
   }, [olderMessages]);
 
   /* NEW MESSAGES.
@@ -761,14 +795,15 @@ function RoomChatConversation({
     if (!content || busyRef.current) return;
     busyRef.current = true;
     setSendingLocal(true);
-    setSendError('');
+    setSendError(null);
     try {
       const outcome = onSend(content);
       const promise = outcome as unknown as Promise<boolean | void> | undefined;
       if (promise && typeof promise.then === 'function') {
         const settled = await promise;
         if (settled === false) {
-          setSendError('Your message could not be sent.');
+          /* The parent says what went wrong; the draft stays put. */
+          setSendError('');
           return;
         }
       }
@@ -795,7 +830,16 @@ function RoomChatConversation({
     else void sendDraft();
   };
 
-  const errorText = sendError || (canPost ? joinError : '');
+  /**
+   * What the reader is told about a failure.
+   *
+   * The server's own words win. The parent usually has them (it made the
+   * request), so it is asked first; the panel's own message is the fallback
+   * for a parent that says nothing.
+   */
+  const errorText = sendError !== null
+    ? (sendError || (canPost ? joinError : '') || 'Your message could not be sent.')
+    : (canPost ? joinError : '');
 
   return (
     <div className="tr-chat-panel">
@@ -832,6 +876,7 @@ function RoomChatConversation({
           />
         ) : (
           <div
+            ref={listRef}
             className="tr-chat-list"
             role="log"
             aria-live="polite"

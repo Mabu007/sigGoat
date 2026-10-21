@@ -19,6 +19,7 @@ export interface RobotRecord {
   currentVersionId: string;
   currentVersion: number;
   market: string;
+  assetSelected?: boolean;
   timeframe: string;
   runtimeStatus: 'STOPPED' | 'PAPER' | 'ERROR';
   followerCount?: number;
@@ -67,6 +68,9 @@ export interface RobotRecord {
     completedTrades: number;
     at: string;
   };
+  alertPreferences?: { entry: boolean; exit: boolean; fill: boolean; risk: boolean };
+  contactPhone?: string;
+  telegram?: { chatId: string; username: string; updatedAt: string };
   createdAt: string;
   updatedAt: string;
 }
@@ -178,6 +182,44 @@ export class RobotStore {
     return this.db.versions[robot.currentVersionId] ?? null;
   }
 
+  /** Selecting an asset creates a new immutable strategy version. */
+  async setMarket(robot: RobotRecord, definition: StrategyDefinition): Promise<void> {
+    this.assertAvailable();
+    const updatedAt = new Date().toISOString();
+    const changes = { currentVersionId: definition.versionId, currentVersion: definition.version, market: definition.market.instrument, timeframe: definition.market.timeframe, assetSelected: true, runtimeStatus: 'STOPPED' as const, lastBacktest: null, updatedAt };
+    if (this.firestore) {
+      const ref = this.firestore.collection('robots').doc(safeId(robot.id));
+      await this.firestore.runTransaction(async transaction => {
+        transaction.create(ref.collection('versions').doc(safeId(definition.versionId)), firestoreSafe(definition));
+        transaction.set(ref, changes, { merge: true });
+        transaction.delete(ref.collection('runtime').doc('current'));
+      });
+    } else {
+      this.db.versions[definition.versionId] = definition;
+      this.db.robots[robot.id] = { ...(this.db.robots[robot.id] ?? robot), ...changes, lastBacktest: undefined };
+      delete this.db.runtime[robot.id];
+      this.persist();
+    }
+  }
+
+  async setAlertPreferences(robot: RobotRecord, alertPreferences: NonNullable<RobotRecord['alertPreferences']>): Promise<void> {
+    this.assertAvailable();
+    if (this.firestore) await this.firestore.collection('robots').doc(safeId(robot.id)).set({ alertPreferences }, { merge: true });
+    else { this.db.robots[robot.id] = { ...(this.db.robots[robot.id] ?? robot), alertPreferences }; this.persist(); }
+  }
+
+  async setContactPhone(robot: RobotRecord, contactPhone: string): Promise<void> {
+    this.assertAvailable();
+    if (this.firestore) await this.firestore.collection('robots').doc(safeId(robot.id)).set({ contactPhone }, { merge: true });
+    else { this.db.robots[robot.id] = { ...(this.db.robots[robot.id] ?? robot), contactPhone }; this.persist(); }
+  }
+
+  async setTelegram(robot: RobotRecord, telegram: RobotRecord['telegram'] | null): Promise<void> {
+    this.assertAvailable();
+    if (this.firestore) await this.firestore.collection('robots').doc(safeId(robot.id)).set({ telegram: telegram ?? null }, { merge: true });
+    else { this.db.robots[robot.id] = { ...(this.db.robots[robot.id] ?? robot), telegram: telegram ?? undefined }; this.persist(); }
+  }
+
   async setRuntime(robot: RobotRecord, state: StrategyRuntimeState): Promise<void> {
     this.assertAvailable();
     const updatedAt = new Date().toISOString();
@@ -189,7 +231,7 @@ export class RobotStore {
       await batch.commit();
     } else {
       this.db.runtime[robot.id] = state;
-      this.db.robots[robot.id] = { ...robot, runtimeStatus: state.status, updatedAt };
+      this.db.robots[robot.id] = { ...(this.db.robots[robot.id] ?? robot), runtimeStatus: state.status, updatedAt };
       this.persist();
     }
   }

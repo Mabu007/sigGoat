@@ -9,7 +9,7 @@ import { AuthGate } from './components/AuthGate';
 import { AuthModal } from './components/AuthModal';
 
 const TradingRobotsView = React.lazy(() => import('./components/views/TradingRobotsView').then(module => ({ default: module.TradingRobotsView })));
-const QuotesView = React.lazy(() => import('./components/views/QuotesView').then(module => ({ default: module.QuotesView })));
+const TradesView = React.lazy(() => import('./components/views/TradesView').then(module => ({ default: module.TradesView })));
 const SettingsView = React.lazy(() => import('./components/views/SettingsView').then(module => ({ default: module.SettingsView })));
 const PublicTeamView = React.lazy(() => import('./components/PublicTeamView').then(module => ({ default: module.PublicTeamView })));
 
@@ -29,16 +29,17 @@ const ViewLoadingFallback: React.FC = () => (
  * user-visible gain.
  */
 function tabFromHash(): TabId {
-  if (typeof window === 'undefined') return 'rooms';
+  if (typeof window === 'undefined') return 'bots';
   const raw = hashPath();
-  const allowed: TabId[] = ['rooms', 'markets', 'settings'];
+  const allowed: TabId[] = ['bots', 'trades', 'settings'];
   /**
    * Everything that used to be a destination belongs to a different product.
-   * Those hashes now land on the room directory, which is where the product
+   * Those hashes now land on the bot directory, which is where the product
    * actually lives, rather than rendering a dead screen.
    */
-  if (raw === 'trades' || raw === 'proposals' || raw === 'skills' || raw === 'backtest' || raw === 'goats' || raw === 'overview') return 'rooms';
-  return allowed.includes(raw as TabId) ? (raw as TabId) : 'rooms';
+  if (raw.startsWith('robots/') || raw === 'rooms' || raw === 'robots') return 'bots';
+  if (raw === 'markets' || raw === 'proposals' || raw === 'skills' || raw === 'backtest' || raw === 'goats' || raw === 'overview') return 'bots';
+  return allowed.includes(raw as TabId) ? (raw as TabId) : 'bots';
 }
 
 /** The path part of the hash, without any query string. */
@@ -66,18 +67,21 @@ function hashSection(): string {
 
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
+  const [robotDetailOpen, setRobotDetailOpen] = useState(() => hashPath().startsWith('robots/'));
   const [settingsSection, setSettingsSection] = useState<string>(hashSection);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
   useEffect(() => {
-    const onHashChange = () => { setActiveTab(tabFromHash()); setSettingsSection(hashSection()); };
+    const onHashChange = () => { setActiveTab(tabFromHash()); setSettingsSection(hashSection()); setRobotDetailOpen(hashPath().startsWith('robots/')); };
     window.addEventListener('hashchange', onHashChange);
+    if (!hashPath() || hashPath() === 'rooms' || hashPath() === 'robots') window.history.replaceState(null, '', '#/bots');
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
   const navigate = useCallback((tab: TabId) => {
     setActiveTab(tab);
+    setRobotDetailOpen(false);
     if (typeof window !== 'undefined') {
       window.location.hash = `/${tab}`;
       window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
@@ -91,24 +95,24 @@ const MainApp: React.FC = () => {
 
   return (
     <div className="premium-shell flex min-h-screen flex-col text-fg">
-      <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-20">
-        <Header
+      <div className={`flex min-h-screen min-w-0 flex-1 flex-col ${robotDetailOpen ? '' : 'pb-20'}`}>
+        {!robotDetailOpen && <Header
           displayName={profile?.displayName ?? null}
           email={currentUser?.email ?? null}
           onOpenSettings={() => navigate('settings')}
           onRefresh={() => void refreshQuotes()}
           lastUpdatedMs={lastUpdatedMs}
-        />
+        />}
 
-        <main className="w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
+        <main className={robotDetailOpen ? 'w-full flex-1' : 'w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8'}>
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {activeTab === 'rooms' && <TradingRobotsView />}
-            {activeTab === 'markets' && <QuotesView />}
+            {activeTab === 'bots' && <TradingRobotsView />}
+            {activeTab === 'trades' && <TradesView />}
             {activeTab === 'settings' && <SettingsView section={settingsSection} />}
           </React.Suspense>
         </main>
       </div>
-      <Navigation activeTab={activeTab} onSelect={navigate} />
+      {!robotDetailOpen && <Navigation activeTab={activeTab} onSelect={navigate} />}
     </div>
   );
 };

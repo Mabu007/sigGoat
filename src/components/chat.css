@@ -154,7 +154,7 @@
 }
 
 .tr-chat-row-body {
-  margin: 3px 0 0;
+  margin: 3px 0 0 27px;
   color: var(--color-fg);
   font: 400 11.5px/1.55 var(--tr-sans);
   overflow-wrap: anywhere;
