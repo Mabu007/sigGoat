@@ -108,7 +108,15 @@ export interface RoomSessionRecord {
 // Media (Cloudflare R2)
 // ---------------------------------------------------------------------------
 
-export type MediaPurpose = 'avatar' | 'room-cover';
+/**
+ * What an uploaded image is FOR.
+ *
+ * The purpose decides the R2 key namespace, who may write it and who may
+ * read it. It is signed into the upload ticket, so the browser cannot
+ * relabel a room cover as a robot cover and have the Worker store it in the
+ * wrong place.
+ */
+export type MediaPurpose = 'avatar' | 'room-cover' | 'robot-cover';
 
 export interface MediaReference {
   /** R2 object key. The canonical stored value. */

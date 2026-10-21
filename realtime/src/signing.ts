@@ -140,7 +140,7 @@ export async function verifyUploadTicket(
     return null;
   }
   if (payload.e * 1000 < Date.now()) return null;
-  if (!/^(avatars|covers)\/[A-Za-z0-9_-]{1,64}\/[a-z0-9-]+\.[a-z0-9]{1,5}$/.test(payload.k)) {
+  if (!/^(avatars|covers|robots)\/[A-Za-z0-9_-]{1,64}\/[a-z0-9-]+\.[a-z0-9]{1,5}$/.test(payload.k)) {
     return null;
   }
 

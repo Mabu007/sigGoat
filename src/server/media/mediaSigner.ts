@@ -194,6 +194,10 @@ export function createDeliveryUrl(
  * The key never contains a user-supplied filename, a path separator, or
  * anything that could escape the key namespace. The extension is derived
  * from the DETECTED content type, not from the filename.
+ *
+ * Each purpose has its OWN folder, so a robot cover can never be mistaken
+ * for a room cover and the two can be deleted independently. The Worker
+ * enforces the same namespace when it verifies a ticket.
  */
 export function buildMediaKey(input: {
   purpose: MediaPurpose;
@@ -201,7 +205,12 @@ export function buildMediaKey(input: {
   contentType: string;
   random: string;
 }): string {
-  const folder = input.purpose === 'avatar' ? 'avatars' : 'covers';
+  const folder =
+    input.purpose === "avatar"
+      ? "avatars"
+      : input.purpose === "robot-cover"
+        ? "robots"
+        : "covers";
   const safeUid = input.uid.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || 'anon';
   const extension =
     input.contentType === 'image/png'

@@ -34,6 +34,8 @@ import { useImageUpload, type ImageUploadPurpose } from '../hooks/useImageUpload
 export interface RoomCoverPickerProps {
   /** Omit while creating a room — a cover can only be attached to a saved room. */
   roomId?: string | null;
+  /** Required for the 'robot-cover' purpose. */
+  robotId?: string | null;
   /** Defaults to 'room-cover'. */
   purpose?: ImageUploadPurpose;
   /** The cover that is stored right now. */
@@ -43,6 +45,16 @@ export interface RoomCoverPickerProps {
   className?: string;
   /** The field label. */
   label?: string;
+  /**
+   * The shape of the preview.
+   *
+   * A robot cover is a PORTRAIT (4:5), a room cover is a landscape (16:9).
+   * The preview uses the real ratio, so what the owner sees while choosing
+   * is the shape the card will have.
+   */
+  aspect?: 'landscape' | 'portrait';
+  /** Rendered instead of the image while the owner picks a file. */
+  fallback?: React.ReactNode;
 }
 
 const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
@@ -51,11 +63,14 @@ const NO_ROOM_HINT = 'Save the room first, then add a cover.';
 
 export function RoomCoverPicker({
   roomId,
+  robotId,
   purpose = 'room-cover',
   currentUrl,
   onChange,
   className,
   label,
+  aspect = 'landscape',
+  fallback,
 }: RoomCoverPickerProps) {
   const inputId = useId();
 
@@ -66,11 +81,15 @@ export function RoomCoverPicker({
     status,
     progress,
     error,
+    staged,
     upload,
+    commit,
+    discard,
     remove,
   } = useImageUpload({
     purpose,
     roomId: roomId ?? null,
+    robotId: robotId ?? null,
     onUploaded: (url) => {
       setPreview(url);
       setPreviewBroken(false);
@@ -87,13 +106,32 @@ export function RoomCoverPicker({
     setPreviewBroken(false);
   }, [currentUrl]);
 
+  /**
+   * The saved cover changed underneath us, and there is nothing staged any
+   * more, so the local preview follows the server.
+   */
+  useEffect(() => {
+    if (!staged) {
+      setPreview(currentUrl ?? null);
+      setPreviewBroken(false);
+    }
+  }, [staged, currentUrl]);
+
   /** A room cover cannot be uploaded before the room exists. */
   const waitingForRoom = purpose === 'room-cover' && !roomId;
 
   const busy = status === 'preparing' || status === 'uploading' || status === 'committing';
   const percent = Math.round(Math.min(1, Math.max(0, progress)) * 100);
 
-  const showImage = Boolean(preview) && !previewBroken;
+  /**
+   * The bytes the owner has chosen but NOT yet saved.
+   *
+   * A staged upload is shown as the preview, so the owner sees exactly what
+   * they picked before it becomes the robot's cover. Nothing is saved until
+   * they say so.
+   */
+  const stagedUrl = staged?.url ?? null;
+  const showImage = (Boolean(preview) || Boolean(stagedUrl)) && !previewBroken;
 
   const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
@@ -116,7 +154,7 @@ export function RoomCoverPicker({
     await remove();
   };
 
-  const fieldLabel = label ?? (purpose === 'avatar' ? 'Profile picture' : 'Room cover');
+  const fieldLabel = label ?? (purpose === 'avatar' ? 'Profile picture' : purpose === 'robot-cover' ? 'Robot cover' : 'Room cover');
 
   /**
    * What a screen reader hears while the upload runs. The visible progress
@@ -138,14 +176,19 @@ export function RoomCoverPicker({
       <span className="label">{fieldLabel}</span>
 
       {/* ---- preview ---- */}
-      <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-line bg-sunken">
+      <div className={[
+        'relative w-full overflow-hidden rounded-xl border border-line bg-sunken',
+        aspect === 'portrait' ? 'aspect-[4/5]' : 'aspect-video',
+      ].join(' ')}>
         {showImage ? (
           <img
-            src={preview as string}
+            src={(stagedUrl ?? preview) as string}
             alt=""
             className="h-full w-full object-cover"
             onError={() => setPreviewBroken(true)}
           />
+        ) : fallback ? (
+          <div className="absolute inset-0">{fallback}</div>
         ) : (
           <div className="absolute inset-0">
             <div className="absolute inset-0 bg-gradient-to-br from-raised via-sunken to-raised" />
@@ -222,10 +265,31 @@ export function RoomCoverPicker({
           aria-disabled={waitingForRoom || busy}
         >
           <Upload size={14} aria-hidden="true" />
-          {showImage ? 'Replace cover' : 'Add cover'}
+          {stagedUrl ? 'Choose another' : showImage ? 'Replace cover' : 'Add cover'}
         </label>
 
-        {showImage ? (
+        {stagedUrl ? (
+          <>
+            <button
+              type="button"
+              onClick={() => void commit()}
+              disabled={busy}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-accent bg-accent px-3 py-2 text-xs font-semibold text-accent-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Save cover
+            </button>
+            <button
+              type="button"
+              onClick={discard}
+              disabled={busy}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs font-semibold text-fg-muted transition-colors hover:bg-raised disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </>
+        ) : null}
+
+        {!stagedUrl && showImage ? (
           <button
             type="button"
             onClick={handleRemove}
@@ -237,6 +301,12 @@ export function RoomCoverPicker({
           </button>
         ) : null}
       </div>
+
+      {stagedUrl ? (
+        <p className="mt-2 text-[11px] text-fg-muted">
+          This is the image you chose. Save it to make it the cover, or cancel to keep the current one.
+        </p>
+      ) : null}
 
       {/* ---- messages ---- */}
       <p className="sr-only" aria-live="polite">
