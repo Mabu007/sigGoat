@@ -251,6 +251,15 @@ describe('the mobile layout', () => {
     expect(source).toContain('min-w-[420px]');
   });
 
+  test('a robot cover lives in the key namespace the deployed Worker accepts', () => {
+    const signer = read('src/server/media/mediaSigner.ts');
+    // The realtime Worker is deployed by hand, so a new prefix would mean
+    // the upload fails in production until somebody redeploys it. A robot
+    // cover therefore lives in the folder the Worker already accepts.
+    expect(signer).toContain('input.purpose === "avatar" ? "avatars" : "covers"');
+    expect(signer).not.toContain('"robots"');
+  });
+
   test('the cover preview uses the real portrait ratio', () => {
     const source = read(PICKER);
     expect(source).toContain("aspect === 'portrait'");

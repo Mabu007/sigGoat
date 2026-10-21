@@ -195,9 +195,20 @@ export function createDeliveryUrl(
  * anything that could escape the key namespace. The extension is derived
  * from the DETECTED content type, not from the filename.
  *
- * Each purpose has its OWN folder, so a robot cover can never be mistaken
- * for a room cover and the two can be deleted independently. The Worker
- * enforces the same namespace when it verifies a ticket.
+ * WHY A ROBOT COVER USES THE `covers` FOLDER
+ * ------------------------------------------
+ * The realtime Worker that owns the bucket accepts a fixed set of key
+ * prefixes, and that Worker is a SEPARATE deployment from this application:
+ * it is deployed by hand, not by the pipeline that ships the web app. A new
+ * prefix would mean the cover upload fails in production until somebody
+ * redeploys the Worker, which is exactly the kind of half-finished feature
+ * this repository is trying not to ship.
+ *
+ * So a robot cover lives in the folder the Worker already accepts. The
+ * purpose still says `robot-cover`, which is what decides WHERE the
+ * reference is recorded and which record owns it, and the random part of
+ * the key keeps a robot cover and a room cover from ever being the same
+ * object.
  */
 export function buildMediaKey(input: {
   purpose: MediaPurpose;
@@ -205,12 +216,7 @@ export function buildMediaKey(input: {
   contentType: string;
   random: string;
 }): string {
-  const folder =
-    input.purpose === "avatar"
-      ? "avatars"
-      : input.purpose === "robot-cover"
-        ? "robots"
-        : "covers";
+  const folder = input.purpose === "avatar" ? "avatars" : "covers";
   const safeUid = input.uid.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || 'anon';
   const extension =
     input.contentType === 'image/png'

@@ -138,7 +138,9 @@ describe('the robot cover', () => {
       body: { purpose: 'robot-cover', robotId: robot.id, contentType: 'image/jpeg' },
     });
     expect(ticket.status).toBe(200);
-    expect(ticket.json.ticket.key.startsWith('robots/owner_cover/')).toBe(true);
+    // The key lives in the folder the realtime Worker already accepts, so
+    // the upload works with the Worker that is deployed today.
+    expect(ticket.json.ticket.key.startsWith('covers/owner_cover/')).toBe(true);
     expect(ticket.json.ticket.maxBytes).toBeGreaterThan(0);
 
     // 2. the commit records the cover on the robot.
@@ -151,7 +153,7 @@ describe('the robot cover', () => {
 
     const read = await req('GET', `/robot-marketplace/${robot.slug}`, { userId: 'owner_cover' });
     expect(read.json.robot.coverUrl).toBeTruthy();
-    expect(read.json.robot.cover.key.startsWith('robots/owner_cover/')).toBe(true);
+    expect(read.json.robot.cover.key.startsWith('covers/owner_cover/')).toBe(true);
 
     // 3. a replacement is a second commit, and the old key is gone.
     const second = await req('POST', '/media/upload-ticket', {
@@ -198,7 +200,7 @@ describe('the robot cover', () => {
     });
     const commit = await req('POST', '/media/commit', {
       userId: 'stranger',
-      body: { key: `robots/stranger/abc-123.jpg`, purpose: 'robot-cover', robotId: robot.id, contentType: 'image/jpeg', size: 100 },
+      body: { key: `covers/stranger/abc-123.jpg`, purpose: 'robot-cover', robotId: robot.id, contentType: 'image/jpeg', size: 100 },
     });
     expect(commit.status).toBe(404);
     expect(strangerTicket.status).toBe(404);

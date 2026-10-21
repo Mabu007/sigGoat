@@ -1685,8 +1685,7 @@ roomsRouter.post("/media/commit", authMiddleware, handle(async (req, res) => {
     return fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar, room-cover or robot-cover.");
   }
 
-  const expectedPrefix =
-    purpose === "avatar" ? "avatars/" : purpose === "robot-cover" ? "robots/" : "covers/";
+  const expectedPrefix = purpose === "avatar" ? "avatars/" : "covers/";
   if (!body.key.startsWith(expectedPrefix)) {
     return fail(res, 400, "INVALID_KEY", "That image key does not belong to this upload.");
   }
