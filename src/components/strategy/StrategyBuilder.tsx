@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Bot, ChevronDown, ChevronUp, CirclePlus, Crosshair, Rocket, ShieldCheck, Trash2, WandSparkles, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { Bot, ChevronDown, ChevronUp, CirclePlus, Crosshair, Redo2, Rocket, ShieldCheck, Trash2, Undo2, WandSparkles, X } from 'lucide-react';
 import { indicatorCatalogEntry, type IndicatorCatalogEntry } from '../../services/strategy/indicators/catalog';
 import {
   priceActionParamsSchema,
@@ -43,6 +43,30 @@ const requestId = () => globalThis.crypto?.randomUUID?.().replaceAll('-', '_') ?
 const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'] as const;
 
 type Timeframe = typeof TIMEFRAMES[number];
+
+interface BuilderSnapshot {
+  name: string;
+  description: string;
+  instrument: string;
+  timeframe: Timeframe;
+  direction: 'LONG' | 'SHORT';
+  visibility: 'PUBLIC' | 'PRIVATE';
+  indicators: IndicatorDraft[];
+  entryConditions: ConditionDraft[];
+  entryJoin: 'all' | 'any';
+  exitConditions: ConditionDraft[];
+  exitJoin: 'all' | 'any';
+  sizingMode: 'PERCENT_RISK' | 'FIXED_QUANTITY';
+  sizeValue: number;
+  stopLoss: number;
+  takeProfit: number;
+  maxExposure: number;
+  maxTrades: number;
+  cooldown: number;
+  maxDailyLoss: number;
+  advanced: boolean;
+  action: 'BUY' | 'SELL' | 'CLOSE_POSITION' | 'NO_TRADE' | 'ALERT_ONLY';
+}
 
 export function StrategyBuilder({
   headers,
@@ -89,6 +113,80 @@ export function StrategyBuilder({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const stableRequestId = useRef(requestId());
+  const undoStack = useRef<BuilderSnapshot[]>([]);
+  const redoStack = useRef<BuilderSnapshot[]>([]);
+  const previousSnapshot = useRef<BuilderSnapshot | null>(null);
+  const skipHistory = useRef(false);
+  const [, setHistoryVersion] = useState(0);
+
+  const snapshot = useMemo<BuilderSnapshot>(() => ({
+    name, description, instrument, timeframe, direction, visibility, indicators,
+    entryConditions, entryJoin, exitConditions, exitJoin, sizingMode, sizeValue,
+    stopLoss, takeProfit, maxExposure, maxTrades, cooldown, maxDailyLoss, advanced, action,
+  }), [name, description, instrument, timeframe, direction, visibility, indicators, entryConditions, entryJoin, exitConditions, exitJoin, sizingMode, sizeValue, stopLoss, takeProfit, maxExposure, maxTrades, cooldown, maxDailyLoss, advanced, action]);
+
+  useEffect(() => {
+    const previous = previousSnapshot.current;
+    if (skipHistory.current) {
+      skipHistory.current = false;
+      previousSnapshot.current = snapshot;
+      return;
+    }
+    if (previous && JSON.stringify(previous) !== JSON.stringify(snapshot)) {
+      undoStack.current = [...undoStack.current.slice(-49), previous];
+      redoStack.current = [];
+      setHistoryVersion(version => version + 1);
+    }
+    previousSnapshot.current = snapshot;
+  }, [snapshot]);
+
+  const restoreSnapshot = useCallback((value: BuilderSnapshot) => {
+    skipHistory.current = true;
+    setName(value.name); setDescription(value.description); setInstrument(value.instrument);
+    setTimeframe(value.timeframe); setDirection(value.direction); setVisibility(value.visibility);
+    setIndicators(value.indicators); setEntryConditions(value.entryConditions); setEntryJoin(value.entryJoin);
+    setExitConditions(value.exitConditions); setExitJoin(value.exitJoin); setSizingMode(value.sizingMode);
+    setSizeValue(value.sizeValue); setStopLoss(value.stopLoss); setTakeProfit(value.takeProfit);
+    setMaxExposure(value.maxExposure); setMaxTrades(value.maxTrades); setCooldown(value.cooldown);
+    setMaxDailyLoss(value.maxDailyLoss); setAdvanced(value.advanced); setAction(value.action);
+    setRiskConfirmed(false);
+  }, []);
+
+  const undo = () => {
+    const previous = undoStack.current.pop();
+    if (!previous) return;
+    if (previousSnapshot.current) redoStack.current.push(previousSnapshot.current);
+    restoreSnapshot(previous);
+    setHistoryVersion(version => version + 1);
+  };
+  const redo = () => {
+    const next = redoStack.current.pop();
+    if (!next) return;
+    if (previousSnapshot.current) undoStack.current.push(previousSnapshot.current);
+    restoreSnapshot(next);
+    setHistoryVersion(version => version + 1);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.key.toLowerCase() === 'z' && !event.shiftKey) { event.preventDefault(); undo(); }
+      else if (event.key.toLowerCase() === 'y' || (event.key.toLowerCase() === 'z' && event.shiftKey)) { event.preventDefault(); redo(); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !busy) onClose(); };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [busy, onClose]);
 
   const gaps = useMemo(() => new Set(aiGaps.map(gap => gap.field)), [aiGaps]);
   const resolveGap = (field: string) => setAiGaps(previous => previous.filter(gap => gap.field !== field));
@@ -267,15 +365,19 @@ export function StrategyBuilder({
     }
   };
 
-  return <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-5" role="dialog" aria-modal="true">
+  return <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-5" role="dialog" aria-modal="true" aria-labelledby="robot-builder-title" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <div className="robot-builder flex max-h-[96vh] w-full max-w-6xl flex-col overflow-hidden rounded-t-[24px] border border-white/10 bg-[#0d0d12] text-white shadow-2xl sm:rounded-[24px]">
-      <div className="flex items-center justify-between border-b border-white/10 p-5 sm:px-7">
+      <div className="flex items-center justify-between gap-3 border-b border-white/10 p-5 sm:px-7">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[.2em] text-red-500">Robot studio</p>
-          <h2 className="mt-1 text-xl font-black sm:text-2xl">Build an executable strategy</h2>
+          <h2 id="robot-builder-title" className="mt-1 text-xl font-black sm:text-2xl">Build an executable strategy</h2>
           <p className="mt-1 text-xs text-white/45">Design the logic first. Bind it to a market only when you deploy.</p>
         </div>
-        <button type="button" onClick={onClose} aria-label="Close" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5"><X size={18} /></button>
+        <div className="flex shrink-0 items-center gap-1">
+          <button type="button" onClick={undo} disabled={!undoStack.current.length} aria-label="Undo last change" title="Undo (Ctrl+Z)" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5 disabled:opacity-35"><Undo2 size={16} /></button>
+          <button type="button" onClick={redo} disabled={!redoStack.current.length} aria-label="Redo last change" title="Redo (Ctrl+Y)" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5 disabled:opacity-35"><Redo2 size={16} /></button>
+          <button type="button" onClick={onClose} aria-label="Close" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5"><X size={18} /></button>
+        </div>
       </div>
       <div className="grid grid-cols-3 border-b border-white/10 bg-black/20 px-5 py-3 text-[11px] font-bold sm:px-7">
         <span className="flex items-center gap-2 text-red-400"><i className="grid h-5 w-5 place-items-center rounded-full bg-red-600 text-[9px] text-white">1</i> Blueprint</span>
@@ -364,7 +466,7 @@ export function StrategyBuilder({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <p className="text-sm font-semibold text-fg">{entry?.name ?? indicator.type}</p>
-                      <p className="text-[11px] text-fg-subtle">Internal reference {indicator.id} — generated for you, never typed.</p>
+                      <p className="text-[11px] text-fg-subtle">Configured automatically from the indicator catalog.</p>
                     </div>
                     <div className="flex items-center gap-1">
                       <button type="button" onClick={() => moveIndicator(index, -1)} aria-label="Move indicator up" className="text-fg-subtle"><ChevronUp size={15} /></button>
@@ -438,11 +540,9 @@ export function StrategyBuilder({
               {(action === 'ALERT_ONLY' || action === 'NO_TRADE') && <p className="self-end text-[11px] text-white/45">No order will be placed for this action.</p>}
               {(action === 'BUY' || action === 'SELL') && <label className="flex items-start gap-2 text-[11px] text-white/65 sm:col-span-2"><input type="checkbox" checked={riskConfirmed} onChange={event=>setRiskConfirmed(event.target.checked)} className="mt-0.5 accent-red-500"/>I reviewed the risk per trade, stop loss, take profit and exposure settings shown below.</label>}
             </div>
-          </section>
-
-          <section>
-            <div className="flex items-center gap-2"><ShieldCheck size={16} className="text-red-400"/><h3 className="text-sm font-bold">Position &amp; risk controls</h3></div>
-            <div className="mt-2 grid gap-3 sm:grid-cols-4">
+            {(action === 'BUY' || action === 'SELL') && <div className="mt-4 border-t border-white/10 pt-4">
+              <div className="flex items-center gap-2"><ShieldCheck size={16} className="text-red-400"/><h3 className="text-sm font-bold">Position &amp; risk</h3></div>
+              <div className="mt-2 grid gap-3 sm:grid-cols-4">
               <label className="text-xs text-fg-muted">
                 Sizing
                 <select value={sizingMode} onChange={event => { setSizingMode(event.target.value as typeof sizingMode); resolveGap('risk.sizing'); }} className="input mt-1 w-full">
@@ -453,14 +553,14 @@ export function StrategyBuilder({
               <NumberField label={sizingMode === 'PERCENT_RISK' ? 'Risk per trade %' : 'Quantity'} value={sizeValue} onChange={value => { setRiskConfirmed(false); setSizeValue(value); resolveGap('risk.sizingValue'); }} min={0.01} max={sizingMode === 'PERCENT_RISK' ? 10 : 1_000_000} suggested={suggested('risk.sizingValue')} gap={gaps.has('risk.sizingValue')} />
               <NumberField label="Stop loss %" value={stopLoss} onChange={value => { setRiskConfirmed(false); setStopLoss(value); resolveGap('risk.stopLossPercent'); }} min={0.01} max={50} suggested={suggested('risk.stopLossPercent')} gap={gaps.has('risk.stopLossPercent')} />
               <NumberField label="Take profit %" value={takeProfit} onChange={value => { setRiskConfirmed(false); setTakeProfit(value); resolveGap('risk.takeProfitPercent'); }} min={0.01} max={100} suggested={suggested('risk.takeProfitPercent')} gap={gaps.has('risk.takeProfitPercent')} />
-            </div>
-            <details className="mt-3 rounded-xl border border-white/10 p-3"><summary className="cursor-pointer text-xs font-semibold text-white/65">Advanced risk settings</summary><div className="mt-3 grid gap-3 sm:grid-cols-3">
-              <NumberField label="Max exposure %" value={maxExposure} onChange={setMaxExposure} min={0.01} max={100} suggested={suggested('risk.maxExposurePercent')} />
-              <NumberField label="Max trades / day" value={maxTrades} onChange={setMaxTrades} min={1} max={100} step={1} suggested={suggested('risk.maxTradesPerDay')} />
-              <NumberField label="Cooldown candles" value={cooldown} onChange={setCooldown} min={0} max={10_000} step={1} suggested={suggested('risk.cooldownCandles')} />
-              <NumberField label="Max daily loss %" value={maxDailyLoss} onChange={setMaxDailyLoss} min={0.01} max={100} suggested={suggested('risk.maxDailyLossPercent')} />
-            </div></details>
-            {action !== 'BUY' && action !== 'SELL' && <p className="mt-2 text-[11px] text-white/40">Order sizing and protective stops are used only for BUY/SELL actions.</p>}
+              </div>
+              <details className="mt-3 rounded-xl border border-white/10 p-3"><summary className="cursor-pointer text-xs font-semibold text-white/65">Advanced risk settings</summary><div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <NumberField label="Max exposure %" value={maxExposure} onChange={setMaxExposure} min={0.01} max={100} suggested={suggested('risk.maxExposurePercent')} />
+                <NumberField label="Max trades / day" value={maxTrades} onChange={setMaxTrades} min={1} max={100} step={1} suggested={suggested('risk.maxTradesPerDay')} />
+                <NumberField label="Cooldown candles" value={cooldown} onChange={setCooldown} min={0} max={10_000} step={1} suggested={suggested('risk.cooldownCandles')} />
+                <NumberField label="Max daily loss %" value={maxDailyLoss} onChange={setMaxDailyLoss} min={0.01} max={100} suggested={suggested('risk.maxDailyLossPercent')} />
+              </div></details>
+            </div>}
           </section>
 
           <section className="rounded-2xl border border-red-500/25 bg-red-500/[.04] p-4 sm:p-5">
