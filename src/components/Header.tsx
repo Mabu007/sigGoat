@@ -62,14 +62,14 @@ export function Header({ displayName, email, onOpenSettings, onCreateRoom, onRef
   return (
     <header className="premium-header yt-header sticky top-0 z-30 border-b border-line">
       <div className="yt-header-inner flex h-[68px] w-full items-center gap-4 px-4 sm:px-6">
-        <button type="button" onClick={() => { window.location.hash = '/rooms'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} aria-label="TradingVibes home — Rooms" title="Back to Rooms" className="flex shrink-0 items-center gap-3 rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+        <button type="button" onClick={() => { window.location.hash = '/rooms'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} aria-label="TradingVibes home — Robots" title="Back to Robots" className="flex shrink-0 items-center gap-3 rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
           <BrandMark compact />
           <span className="hidden text-[15px] font-extrabold tracking-tight text-fg sm:inline">TRADING<span className="text-accent-text">VIBES</span></span>
         </button>
 
         <form onSubmit={submitSearch} className="yt-search mx-auto flex w-full max-w-[620px] items-center">
           <Search size={18} className="ml-4 shrink-0 text-fg-subtle" aria-hidden="true" />
-          <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search trading rooms and their leaders..." aria-label="Search trading rooms" className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-fg outline-none placeholder:text-fg-subtle" />
+          <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search trading robots and strategies..." aria-label="Search trading robots" className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-fg outline-none placeholder:text-fg-subtle" />
           {search && <button type="button" onClick={() => { setSearch(''); window.dispatchEvent(new CustomEvent('tradingvibes-directory-search', { detail: '' })); }} aria-label="Clear search" className="px-2 text-fg-subtle hover:text-fg">×</button>}
           <button type="submit" aria-label="Search" className="yt-search-button flex h-10 w-14 shrink-0 items-center justify-center"><Search size={18} /></button>
         </form>
@@ -122,7 +122,7 @@ export function Header({ displayName, email, onOpenSettings, onCreateRoom, onRef
             </button>
           )}
 
-          <button type="button" onClick={onCreateRoom} className="yt-create-button flex h-10 items-center gap-2 rounded-full px-4 text-sm font-semibold" aria-label="Create a trading room"><Plus size={18} /><span className="hidden lg:inline">Create room</span></button>
+          <button type="button" onClick={onCreateRoom} className="yt-create-button flex h-10 items-center gap-2 rounded-full px-4 text-sm font-semibold" aria-label="Create a trading robot"><Plus size={18} /><span className="hidden lg:inline">Create robot</span></button>
         </div>
       </div>
     </header>

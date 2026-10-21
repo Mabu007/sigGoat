@@ -18,7 +18,7 @@
  * accent from the muted foreground.
  */
 
-import { CandlestickChart, Settings, Users, type LucideIcon } from 'lucide-react';
+import { Bot, CandlestickChart, Settings, type LucideIcon } from 'lucide-react';
 
 export type TabId =
   | 'rooms'
@@ -34,7 +34,7 @@ export interface NavigationItem {
 }
 
 export const NAVIGATION_ITEMS: NavigationItem[] = [
-  { id: 'rooms', label: 'Rooms', shortLabel: 'Rooms', icon: Users },
+  { id: 'rooms', label: 'Robots', shortLabel: 'Robots', icon: Bot },
   { id: 'markets', label: 'Markets', icon: CandlestickChart },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];

@@ -22,7 +22,7 @@
  */
 
 import express, { type Request, type Response } from "express";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { authMiddleware, optionalAuthMiddleware, requireUser } from "./auth";
 import { createGoatTeamStore, type GoatTeam } from "./GoatTeamStore";
 import {
@@ -79,6 +79,11 @@ import {
   type MediaPurpose,
   type RoomCategory,
 } from "../types/rooms";
+import { createRobotStore } from './robots/RobotStore';
+import { initialRuntimeState, processCompletedCandle, runStrategyBacktest } from '../services/strategy/engine';
+import { validateStrategyDefinition } from '../services/strategy/schema';
+import { normalizeCompletedCandles, requestedBarsForRange } from '../services/strategy/marketData';
+import { hyperliquidProvider } from '../services/market-data/hyperliquid/HyperliquidMarketDataProvider';
 
 export const roomsRouter = express.Router();
 
@@ -90,6 +95,7 @@ const mediaStore = createMediaStore();
 const voiceStore = createVoiceRosterStore();
 const presenceStore = createRoomPresenceStore();
 const readCursorStore = createRoomReadCursorStore();
+const robotStore = createRobotStore();
 
 /** The conversation of one room. The id is shared with the legacy API. */
 const roomConversationId = (roomId: string) => `room_${roomId}`;
@@ -279,6 +285,176 @@ roomsRouter.get("/realtime/status", (_req, res) => {
     },
   });
 });
+
+// ---------------------------------------------------------------------------
+// Robot marketplace (strategy-first compatibility layer)
+// ---------------------------------------------------------------------------
+
+async function robotForOwner(idOrSlug: string, userId: string, res: Response) {
+  const robot = await robotStore.get(idOrSlug);
+  if (!robot) { fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.'); return null; }
+  if (robot.ownerUserId !== userId) { fail(res, 403, 'ROBOT_FORBIDDEN', 'Only the robot creator may perform this action.'); return null; }
+  return robot;
+}
+
+roomsRouter.get('/robot-marketplace', handle(async (req, res) => {
+  const query = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase().slice(0, 80) : '';
+  const robots = (await robotStore.listPublic()).filter(robot => !query || `${robot.name} ${robot.description} ${robot.market}`.toLowerCase().includes(query));
+  res.setHeader('Cache-Control', 'public, max-age=10, stale-while-revalidate=30');
+  res.json({ robots, total: robots.length });
+}));
+
+roomsRouter.get('/robot-marketplace/mine', authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({ robots: await robotStore.listForOwner(user.uid) });
+}));
+
+roomsRouter.post('/robot-marketplace', authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const clientRequestId = typeof req.body?.clientRequestId === 'string' ? req.body.clientRequestId.trim() : '';
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(clientRequestId)) return fail(res, 400, 'INVALID_REQUEST_ID', 'Creation requires a stable client request id.');
+  const robotId = `robot_${createHash('sha256').update(`${user.uid}:${clientRequestId}`).digest('hex').slice(0, 24)}`;
+  const existing = await robotStore.get(robotId);
+  if (existing) {
+    if (existing.ownerUserId !== user.uid) return fail(res, 409, 'ROBOT_ID_CONFLICT', 'That creation request id is already in use.');
+    res.json({ robot: existing, created: false });
+    return;
+  }
+  const now = new Date().toISOString();
+  const versionId = `${robotId}_v1`;
+  const candidate = {
+    ...(req.body?.definition ?? {}), schemaVersion: 1, strategyId: robotId, versionId, version: 1,
+    validationStatus: 'VALID', createdAt: now,
+  };
+  const validation = validateStrategyDefinition(candidate);
+  if (!validation.success || !validation.definition) return fail(res, 400, 'INVALID_STRATEGY', validation.errors.join(' '));
+  const definition = validation.definition;
+  const slugBase = definition.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 36) || 'trading-robot';
+  const slug = `${slugBase}-${randomBytes(10).toString('hex')}`;
+  const profile = await getCreatorProfile(user.uid).catch(() => null);
+  const robot = {
+    id: robotId, slug, ownerUserId: user.uid, creatorName: profile?.displayName?.trim().slice(0, 80) || 'Robot creator', name: definition.name,
+    description: definition.description, visibility: definition.visibility, currentVersionId: versionId, currentVersion: 1,
+    market: definition.market.instrument, timeframe: definition.market.timeframe, runtimeStatus: 'STOPPED' as const,
+    createdAt: now, updatedAt: now,
+  };
+  try {
+    await robotStore.create(robot, definition);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'ROBOT_ALREADY_EXISTS') {
+      const duplicate = await robotStore.get(robotId);
+      if (duplicate?.ownerUserId === user.uid) {
+        res.json({ robot: duplicate, created: false });
+        return;
+      }
+    }
+    throw error;
+  }
+  res.status(201).json({ robot, created: true });
+}));
+
+roomsRouter.get('/robot-marketplace/:idOrSlug', optionalAuthMiddleware, handle(async (req, res) => {
+  const robot = await robotStore.get(req.params.idOrSlug);
+  if (!robot) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
+  const isOwner = req.user?.uid === robot.ownerUserId;
+  if (robot.visibility === 'PRIVATE' && !isOwner) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
+  const definition = await robotStore.definition(robot);
+  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current immutable strategy version is unavailable.');
+  const backtests = isOwner ? await robotStore.listBacktests(robot) : [];
+  res.setHeader('Cache-Control', isOwner ? 'private, no-store' : 'public, max-age=10');
+  res.json({ robot, definition, backtests, canManage: isOwner });
+}));
+
+roomsRouter.get('/robot-marketplace/:idOrSlug/logs', authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+  res.json({ logs: await robotStore.listLogs(robot) });
+}));
+
+roomsRouter.get('/robot-marketplace/:idOrSlug/market', optionalAuthMiddleware, handle(async (req, res) => {
+  const robot = await robotStore.get(req.params.idOrSlug);
+  if (!robot) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
+  if (robot.visibility === 'PRIVATE' && req.user?.uid !== robot.ownerUserId) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
+  const definition = await robotStore.definition(robot);
+  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
+  if (definition.market.provider !== 'hyperliquid') return fail(res, 400, 'UNSUPPORTED_MARKET_PROVIDER', 'The browser runner currently supports Hyperliquid completed candles.');
+  const rawCandles = await hyperliquidProvider.getCandles(definition.market.instrument, definition.market.timeframe, 300);
+  const candles = normalizeCompletedCandles(rawCandles, definition.market.timeframe);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ candles, provider: hyperliquidProvider.name, dataMode: hyperliquidProvider.dataMode, completedOnly: true });
+}));
+
+roomsRouter.post('/robot-marketplace/:idOrSlug/start', authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+  const definition = await robotStore.definition(robot);
+  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
+  const previous = await robotStore.runtime(robot) ?? initialRuntimeState(definition);
+  const entry = { id: `start_${Date.now()}`, at: new Date().toISOString(), type: 'RUNTIME_STARTED', message: 'Browser paper-trading runtime started. It stops evaluating when the page is closed or suspended.' };
+  const state = { ...previous, status: 'PAPER' as const, logs: [...previous.logs, entry] };
+  await robotStore.setRuntime(robot, state); await robotStore.appendLogs(robot, [entry]);
+  res.json({ state });
+}));
+
+roomsRouter.post('/robot-marketplace/:idOrSlug/stop', authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+  const definition = await robotStore.definition(robot);
+  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
+  const previous = await robotStore.runtime(robot) ?? initialRuntimeState(definition);
+  const entry = { id: `stop_${Date.now()}`, at: new Date().toISOString(), type: 'RUNTIME_STOPPED', message: 'Paper-trading runtime stopped.' };
+  const state = { ...previous, status: 'STOPPED' as const, logs: [...previous.logs, entry] };
+  await robotStore.setRuntime(robot, state); await robotStore.appendLogs(robot, [entry]);
+  res.json({ state });
+}));
+
+roomsRouter.post('/robot-marketplace/:idOrSlug/process', authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+  const definition = await robotStore.definition(robot);
+  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
+  if (definition.market.provider !== 'hyperliquid') return fail(res, 400, 'UNSUPPORTED_MARKET_PROVIDER', 'The browser runner currently supports Hyperliquid completed candles.');
+  // Never trust prices supplied by the browser. The authenticated server
+  // resolves the robot's immutable market and loads its provider data.
+  const rawCandles = await hyperliquidProvider.getCandles(definition.market.instrument, definition.market.timeframe, 600);
+  const candles = normalizeCompletedCandles(rawCandles, definition.market.timeframe);
+  if (!candles.length) return fail(res, 422, 'INSUFFICIENT_HISTORY', 'The provider returned no completed candles.');
+  const previous = await robotStore.runtime(robot) ?? initialRuntimeState(definition);
+  const state = processCompletedCandle(definition, previous, candles);
+  const newLogs = state.logs.slice(previous.logs.length);
+  await robotStore.setRuntime(robot, state); await robotStore.appendLogs(robot, newLogs);
+  res.json({ state, processed: state.lastProcessedCandleTime !== previous.lastProcessedCandleTime });
+}));
+
+roomsRouter.post('/robot-marketplace/:idOrSlug/backtests', authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+  const definition = await robotStore.definition(robot);
+  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
+  if (definition.market.provider !== 'hyperliquid') return fail(res, 400, 'UNSUPPORTED_BACKTEST_PROVIDER', 'Robot backtests currently support existing Hyperliquid historical candles.');
+  const from = typeof req.body?.from === 'string' ? Date.parse(req.body.from) : Number.NaN;
+  const to = typeof req.body?.to === 'string' ? Date.parse(req.body.to) : Number.NaN;
+  const rangeBars = requestedBarsForRange(from, to, definition.market.timeframe);
+  if ((Number.isFinite(from) || Number.isFinite(to)) && (!rangeBars || from >= Date.now() || to > Date.now() + 60_000)) {
+    return fail(res, 400, 'INVALID_BACKTEST_RANGE', 'Choose a completed historical range with a start before its end.');
+  }
+  const requestedBars = Math.min(5000, Math.max(100, rangeBars || Number(req.body?.bars) || 1000));
+  const rawCandles = await hyperliquidProvider.getCandles(definition.market.instrument, definition.market.timeframe, requestedBars);
+  const normalized = normalizeCompletedCandles(rawCandles, definition.market.timeframe);
+  const candles = rangeBars ? normalized.filter(candle => candle.time >= from && candle.time <= to) : normalized;
+  if (candles.length < 50) return fail(res, 422, 'INSUFFICIENT_HISTORY', `Only ${candles.length} candles were available; at least 50 are required.`);
+  const result = runStrategyBacktest(definition, candles);
+  const createdAt = new Date().toISOString();
+  const record = { id: `backtest_${Date.now()}_${randomBytes(4).toString('hex')}`, robotId: robot.id, ownerUserId: user.uid, strategyVersionId: definition.versionId, configuration: { requestedBars, provider: definition.market.provider, instrument: definition.market.instrument, timeframe: definition.market.timeframe, ...(rangeBars ? { from: new Date(from).toISOString(), to: new Date(to).toISOString() } : {}) }, result, createdAt };
+  await robotStore.saveBacktest(record); await robotStore.appendLogs(robot, result.logs.slice(-2));
+  res.status(201).json({ backtest: record });
+}));
 
 // ---------------------------------------------------------------------------
 // Directory

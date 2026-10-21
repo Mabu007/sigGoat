@@ -8,7 +8,7 @@ import { Navigation, type TabId } from './components/Navigation';
 import { AuthGate } from './components/AuthGate';
 import { AuthModal } from './components/AuthModal';
 
-const TradeRoomsView = React.lazy(() => import('./components/views/TradeRoomsView').then(module => ({ default: module.TradeRoomsView })));
+const TradingRobotsView = React.lazy(() => import('./components/views/TradingRobotsView').then(module => ({ default: module.TradingRobotsView })));
 const QuotesView = React.lazy(() => import('./components/views/QuotesView').then(module => ({ default: module.QuotesView })));
 const SettingsView = React.lazy(() => import('./components/views/SettingsView').then(module => ({ default: module.SettingsView })));
 const PublicTeamView = React.lazy(() => import('./components/PublicTeamView').then(module => ({ default: module.PublicTeamView })));
@@ -67,19 +67,17 @@ function hashSection(): string {
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
   const [settingsSection, setSettingsSection] = useState<string>(hashSection);
-  const [createRoomRequested, setCreateRoomRequested] = useState(false);
-  const [selectedRoom, setSelectedRoom] = useState<{ type: 'team' | 'bot'; slug: string; backLabel: string } | null>(null);
+  const [createRobotRequested, setCreateRobotRequested] = useState(false);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
   useEffect(() => {
-    const onHashChange = () => { setSelectedRoom(null); setActiveTab(tabFromHash()); setSettingsSection(hashSection()); };
+    const onHashChange = () => { setActiveTab(tabFromHash()); setSettingsSection(hashSection()); };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
   const navigate = useCallback((tab: TabId) => {
-    setSelectedRoom(null);
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
       window.location.hash = `/${tab}`;
@@ -93,33 +91,26 @@ const MainApp: React.FC = () => {
   );
 
   return (
-    <div className={(selectedRoom ? "trade-room-app-shell " : "") + "premium-shell flex min-h-screen flex-col text-fg"}>
-      <div className={(selectedRoom ? "trade-room-app-frame " : "") + "flex min-h-screen min-w-0 flex-1 flex-col pb-20"}>
-        {!selectedRoom && <Header
+    <div className="premium-shell flex min-h-screen flex-col text-fg">
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-20">
+        <Header
           displayName={profile?.displayName ?? null}
           email={currentUser?.email ?? null}
           onOpenSettings={() => navigate('settings')}
-          onCreateRoom={() => { navigate('rooms'); setCreateRoomRequested(true); }}
+          onCreateRoom={() => { navigate('rooms'); setCreateRobotRequested(true); }}
           onRefresh={() => void refreshQuotes()}
           lastUpdatedMs={lastUpdatedMs}
-        />}
+        />
 
-        <main className={selectedRoom ? 'trade-room-app-main w-full flex-1' : 'w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8'}>
-          <TradeRoomsView
-            createTeamRequested={createRoomRequested}
-            onCreateTeamRequestHandled={() => setCreateRoomRequested(false)}
-            showDirectoryContent={activeTab === 'rooms' && !selectedRoom}
-            onOpenRoom={(type, slug, backLabel) => { setSelectedRoom({ type, slug, backLabel }); setActiveTab('rooms'); window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }}
-            onShowDirectory={() => navigate('rooms')}
-          />
+        <main className="w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {selectedRoom?.type === 'team' && <PublicTeamView slug={selectedRoom.slug} backLabel={selectedRoom.backLabel} onBack={() => setSelectedRoom(null)} />}
-            {!selectedRoom && activeTab === 'markets' && <QuotesView />}
-            {!selectedRoom && activeTab === 'settings' && <SettingsView section={settingsSection} />}
+            {activeTab === 'rooms' && <TradingRobotsView createRequested={createRobotRequested} onCreateHandled={() => setCreateRobotRequested(false)} />}
+            {activeTab === 'markets' && <QuotesView />}
+            {activeTab === 'settings' && <SettingsView section={settingsSection} />}
           </React.Suspense>
         </main>
       </div>
-      {!selectedRoom && <Navigation activeTab={activeTab} onSelect={navigate} />}
+      <Navigation activeTab={activeTab} onSelect={navigate} />
     </div>
   );
 };
