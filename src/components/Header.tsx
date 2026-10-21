@@ -121,7 +121,6 @@ export function Header({ displayName, email, onOpenSettings, onRefresh, refreshi
             </button>
           )}
 
-          <button type="button" onClick={onCreateRoom} className="yt-create-button flex h-10 items-center gap-2 rounded-full px-4 text-sm font-semibold" aria-label="Create a trading robot"><Plus size={18} /><span className="hidden lg:inline">Create robot</span></button>
         </div>
       </div>
     </header>
