@@ -1,6 +1,7 @@
 import type { Candle } from '../../types';
-import { atrSeries, emaSeries, priceSeries, rsiSeries, smaSeries, type IndicatorResult } from '../tracker-sdk/indicatorSeries';
+import { StrategyEvaluationContext } from './indicators/evaluate';
 import { normalizeCompletedCandles, STRATEGY_TIMEFRAME_MS } from './marketData';
+import { evaluatePriceAction } from './priceAction';
 import { migrateStrategyDefinition, type StrategyCondition, type StrategyDefinition, type StrategyOperand } from './schema';
 
 export interface StrategyLog { id: string; at: string; candleTime?: number; type: string; message: string; details?: Record<string, unknown> }
@@ -41,60 +42,45 @@ export function initialRuntimeState(definition: StrategyDefinition): StrategyRun
   return { status: 'STOPPED', lastProcessedCandleTime: null, balance: definition.execution.startingBalance, equity: definition.execution.startingBalance, position: null, trades: [], logs: [], lastEntryCandleIndex: null, lastEntryCandleTime: null, tradeDay: null, tradesToday: 0, dayStartBalance: null, pendingEntry: null, pendingExitSignalTime: null };
 }
 
-function indicatorValue(definition: StrategyDefinition, id: string, candles: readonly Candle[]): IndicatorResult {
-  const item = definition.indicators.find(indicator => indicator.id === id);
-  if (!item) return { value: 0, previous: null, available: false, warmupRequired: 0, warmupAvailable: candles.length, shortfall: 0 };
-  if (item.type === 'SMA') return smaSeries(candles, item.period);
-  if (item.type === 'EMA') return emaSeries(candles, item.period);
-  if (item.type === 'RSI') return rsiSeries(candles, item.period);
-  return atrSeries(candles, item.period);
-}
-
-function operand(definition: StrategyDefinition, value: StrategyOperand, candles: readonly Candle[]): { current: number; previous: number | null; available: boolean } {
-  if (value.kind === 'constant') return { current: value.value, previous: value.value, available: true };
-  if (value.kind === 'indicator') {
-    const result = indicatorValue(definition, value.indicatorId, candles);
-    return { current: result.value, previous: result.previous, available: result.available };
+/**
+ * EVALUATES ONE CONDITION AT ONE CANDLE
+ *
+ * The condition is evaluated with the candles up to and including `index`.
+ * Nothing after that candle is read, so a signal can never depend on a
+ * candle that has not closed yet.
+ */
+export function evaluateCondition(
+  context: StrategyEvaluationContext,
+  condition: StrategyCondition,
+  index: number,
+): boolean {
+  if (condition.type === 'price_action') {
+    return evaluatePriceAction(condition.pattern, condition.params, context.candles, index);
   }
-  if (value.field === 'close') {
-    const result = priceSeries(candles);
-    return { current: result.value, previous: result.previous, available: result.available };
+  if (condition.type === 'all') return condition.conditions.every(child => evaluateCondition(context, child, index));
+  if (condition.type === 'any') return condition.conditions.some(child => evaluateCondition(context, child, index));
+  if (condition.type === 'not') return !evaluateCondition(context, condition.condition, index);
+  if (condition.type === 'sequence') {
+    const steps = condition.steps;
+    // The LAST step has to happen on this candle. The earlier steps have to
+    // have happened on strictly earlier candles, no more than
+    // `maxGapCandles` apart. That is what "followed by" means here, and it
+    // is not the same thing as "and".
+    if (!evaluateCondition(context, steps[steps.length - 1], index)) return false;
+    let upper = index;
+    for (let step = steps.length - 2; step >= 0; step -= 1) {
+      let found = -1;
+      for (let candidate = upper - 1; candidate >= 0; candidate -= 1) {
+        if (upper - candidate > condition.maxGapCandles) break;
+        if (evaluateCondition(context, steps[step], candidate)) { found = candidate; break; }
+      }
+      if (found < 0) return false;
+      upper = found;
+    }
+    return true;
   }
-  const current = candles.at(-1)?.[value.field];
-  const previous = candles.at(-2)?.[value.field];
-  return { current: Number(current), previous: previous == null ? null : Number(previous), available: Number.isFinite(current) };
-}
-
-function evaluatePriceAction(pattern: Extract<StrategyCondition, { type: 'price_action' }>['pattern'], lookback: number, candles: readonly Candle[]): boolean {
-  if (candles.length < Math.max(3, lookback + 1)) return false;
-  const current = candles[candles.length - 1];
-  const previous = candles[candles.length - 2];
-  const prior = candles.slice(-lookback - 1, -1);
-  const priorHigh = Math.max(...prior.map(bar => bar.high));
-  const priorLow = Math.min(...prior.map(bar => bar.low));
-  const body = Math.abs(current.close - current.open);
-  const range = current.high - current.low;
-  const upperWick = current.high - Math.max(current.open, current.close);
-  const lowerWick = Math.min(current.open, current.close) - current.low;
-  switch (pattern) {
-    case 'BULLISH_SWEEP': return current.low < priorLow && current.close > priorLow;
-    case 'BEARISH_SWEEP': return current.high > priorHigh && current.close < priorHigh;
-    case 'BREAKOUT_HIGH': return current.close > priorHigh && previous.close <= priorHigh;
-    case 'BREAKOUT_LOW': return current.close < priorLow && previous.close >= priorLow;
-    case 'BULLISH_ENGULFING': return previous.close < previous.open && current.close > current.open && current.open <= previous.close && current.close >= previous.open;
-    case 'BEARISH_ENGULFING': return previous.close > previous.open && current.close < current.open && current.open >= previous.close && current.close <= previous.open;
-    case 'BULLISH_PIN_BAR': return range > 0 && lowerWick >= 2 * body && lowerWick >= 0.55 * range && upperWick <= 0.25 * range;
-    case 'BEARISH_PIN_BAR': return range > 0 && upperWick >= 2 * body && upperWick >= 0.55 * range && lowerWick <= 0.25 * range;
-  }
-}
-
-export function evaluateCondition(definition: StrategyDefinition, condition: StrategyCondition, candles: readonly Candle[]): boolean {
-  if (condition.type === 'price_action') return evaluatePriceAction(condition.pattern, condition.lookback, candles);
-  if (condition.type === 'all') return condition.conditions.every(child => evaluateCondition(definition, child, candles));
-  if (condition.type === 'any') return condition.conditions.some(child => evaluateCondition(definition, child, candles));
-  if (condition.type === 'not') return !evaluateCondition(definition, condition.condition, candles);
-  const left = operand(definition, condition.left, candles);
-  const right = operand(definition, condition.right, candles);
+  const left = context.operand(condition.left, index);
+  const right = context.operand(condition.right, index);
   if (!left.available || !right.available || !Number.isFinite(left.current) || !Number.isFinite(right.current)) return false;
   switch (condition.operator) {
     case 'GT': return left.current > right.current;
@@ -105,6 +91,22 @@ export function evaluateCondition(definition: StrategyDefinition, condition: Str
     case 'CROSS_ABOVE': return left.previous !== null && right.previous !== null && left.previous <= right.previous && left.current > right.current;
     case 'CROSS_BELOW': return left.previous !== null && right.previous !== null && left.previous >= right.previous && left.current < right.current;
   }
+}
+
+/**
+ * Evaluates a condition against a candle list, using the last candle as the
+ * decision candle. Kept for callers that hold a candle list rather than a
+ * context.
+ */
+export function evaluateConditionOnCandles(
+  definition: StrategyDefinition,
+  condition: StrategyCondition,
+  candles: readonly Candle[],
+  context?: StrategyEvaluationContext,
+): boolean {
+  if (!candles.length) return false;
+  const evaluation = context ?? new StrategyEvaluationContext(definition, candles);
+  return evaluateCondition(evaluation, condition, candles.length - 1);
 }
 
 function fillPrice(close: number, direction: 'LONG' | 'SHORT', slippageBps: number, opening: boolean): number {
@@ -123,13 +125,22 @@ function closePosition(definition: StrategyDefinition, state: StrategyRuntimeSta
   return { ...state, balance: round(balance), equity: round(balance), position: null, trades: [...state.trades, trade], logs: [...state.logs, log('POSITION_CLOSED', `${position.direction} position closed by ${reason}.`, candle.time, { pnl: trade.pnl, exitPrice: trade.exitPrice })] };
 }
 
-export function processCompletedCandle(rawDefinition: StrategyDefinition, state: StrategyRuntimeState, candles: readonly Candle[]): StrategyRuntimeState {
-  const definition = migrateStrategyDefinition(rawDefinition);
-  const candle = candles.at(-1);
+/**
+ * Processes one completed candle.
+ *
+ * `index` is the index of the candle inside `context.candles`. It must be
+ * the last candle of the series that the caller has already closed.
+ */
+function processCompletedCandleAt(
+  definition: StrategyDefinition,
+  state: StrategyRuntimeState,
+  context: StrategyEvaluationContext,
+  index: number,
+): StrategyRuntimeState {
+  const candle = context.candles[index];
   if (!candle) return { ...state, status: 'ERROR', logs: [...state.logs, log('RUNTIME_ERROR', 'No completed candle was supplied.')] };
   if (state.status !== 'PAPER') return state;
   if (state.lastProcessedCandleTime !== null && candle.time <= state.lastProcessedCandleTime) return state;
-  const index = candles.length - 1;
   const day = new Date(candle.time).toISOString().slice(0, 10);
   const newTradingDay = state.tradeDay !== day;
   let next: StrategyRuntimeState = {
@@ -187,22 +198,41 @@ export function processCompletedCandle(rawDefinition: StrategyDefinition, state:
 
   const cooldownReady = next.lastEntryCandleTime === null
     || candle.time - next.lastEntryCandleTime > definition.risk.cooldownCandles * STRATEGY_TIMEFRAME_MS[definition.market.timeframe];
-  if (next.position && next.pendingExitSignalTime === null && definition.exit.condition && evaluateCondition(definition, definition.exit.condition, candles)) {
+  if (next.position && next.pendingExitSignalTime === null && definition.exit.condition && evaluateCondition(context, definition.exit.condition, index)) {
     next = { ...next, pendingExitSignalTime: candle.time, logs: [...next.logs, log('EXIT_SIGNAL', 'Exit condition matched; order queued for the next candle open.', candle.time)] };
-  } else if (!next.position && !next.pendingEntry && next.tradesToday < definition.risk.maxTradesPerDay && cooldownReady && evaluateCondition(definition, definition.entry.condition, candles)) {
+  } else if (!next.position && !next.pendingEntry && next.tradesToday < definition.risk.maxTradesPerDay && cooldownReady && evaluateCondition(context, definition.entry.condition, index)) {
     next = { ...next, pendingEntry: { direction: definition.entry.direction, signalCandleTime: candle.time }, logs: [...next.logs, log('ENTRY_SIGNAL', `${definition.entry.direction} entry condition matched; order queued for the next candle open.`, candle.time)] };
   }
   const unrealized = next.position ? (next.position.direction === 'LONG' ? candle.close - next.position.entryPrice : next.position.entryPrice - candle.close) * next.position.quantity : 0;
   return { ...next, equity: round(next.balance + unrealized), logs: next.logs.slice(-500) };
 }
 
+/**
+ * Processes the last completed candle of a candle list.
+ *
+ * `context` may be supplied by a caller that already has one, so a backtest
+ * calculates every indicator only once for the whole run.
+ */
+export function processCompletedCandle(
+  rawDefinition: StrategyDefinition,
+  state: StrategyRuntimeState,
+  candles: readonly Candle[],
+  context?: StrategyEvaluationContext,
+): StrategyRuntimeState {
+  const definition = migrateStrategyDefinition(rawDefinition);
+  if (!candles.length) return { ...state, status: 'ERROR', logs: [...state.logs, log('RUNTIME_ERROR', 'No completed candle was supplied.')] };
+  const evaluation = context ?? new StrategyEvaluationContext(definition, candles);
+  return processCompletedCandleAt(definition, state, evaluation, candles.length - 1);
+}
+
 export function runStrategyBacktest(rawDefinition: StrategyDefinition, input: readonly Candle[]): StrategyBacktestResult {
   const definition = migrateStrategyDefinition(rawDefinition);
   const candles = normalizeCompletedCandles(input, definition.market.timeframe, Number.MAX_SAFE_INTEGER);
+  const context = new StrategyEvaluationContext(definition, candles);
   let state: StrategyRuntimeState = { ...initialRuntimeState(definition), status: 'PAPER', logs: [log('BACKTEST_STARTED', `Backtest started with ${candles.length} completed candles.`, candles[0]?.time ?? 0)] };
   const equityCurve: Array<{ time: number; equity: number }> = [];
   for (let index = 0; index < candles.length; index += 1) {
-    state = processCompletedCandle(definition, state, candles.slice(0, index + 1));
+    state = processCompletedCandleAt(definition, state, context, index);
     equityCurve.push({ time: candles[index].time, equity: state.equity });
   }
   const finalCandle = candles.at(-1);

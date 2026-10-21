@@ -1,0 +1,278 @@
+import { ChevronDown, ChevronUp, CirclePlus, Trash2 } from 'lucide-react';
+import { indicatorCatalogEntry } from '../../services/strategy/indicators/catalog';
+import { PRICE_ACTION_PATTERNS, type PriceActionParams, type PriceActionPattern, type StrategyOperator } from '../../services/strategy/schema';
+import { describePriceActionPattern } from '../../services/strategy/priceAction';
+import {
+  newComparison,
+  newGroup,
+  newPriceAction,
+  newSequence,
+  type ConditionDraft,
+  type IndicatorDraft,
+  type OperandDraft,
+} from './builderModel';
+import { PriceActionFields } from './PriceActionFields';
+
+/**
+ * THE CONDITION EDITOR
+ * ====================
+ *
+ * Conditions are a tree: a comparison, a price-action pattern, a group of
+ * conditions joined with AND or OR, or a sequence of steps that have to
+ * happen one after the other.
+ *
+ * The editor stays flat where it can. A group is only opened when the user
+ * asks for one, so the common case is a short readable list.
+ */
+
+const OPERATORS: StrategyOperator[] = ['GT', 'GTE', 'LT', 'LTE', 'EQ', 'CROSS_ABOVE', 'CROSS_BELOW'];
+const OPERATOR_LABELS: Record<StrategyOperator, string> = {
+  GT: 'is above', GTE: 'is at or above', LT: 'is below', LTE: 'is at or below',
+  EQ: 'equals', CROSS_ABOVE: 'crosses above', CROSS_BELOW: 'crosses below',
+};
+
+export function ConditionEditor({
+  conditions,
+  onChange,
+  indicators,
+  depth = 0,
+  removable = true,
+}: {
+  conditions: ConditionDraft[];
+  onChange: (update: (previous: ConditionDraft[]) => ConditionDraft[]) => void;
+  indicators: IndicatorDraft[];
+  depth?: number;
+  removable?: boolean;
+}) {
+  const update = (index: number, value: Partial<ConditionDraft>) => onChange(previous => previous.map((item, itemIndex) => (itemIndex === index ? ({ ...item, ...value } as ConditionDraft) : item)));
+  const remove = (index: number) => onChange(previous => previous.filter((_, itemIndex) => itemIndex !== index));
+  const move = (index: number, offset: number) => onChange(previous => {
+    const next = [...previous];
+    const target = index + offset;
+    if (target < 0 || target >= next.length) return previous;
+    [next[index], next[target]] = [next[target], next[index]];
+    return next;
+  });
+
+  return <div className={depth ? 'mt-2 space-y-2 border-l border-line pl-3' : 'space-y-2'}>
+    {conditions.map((condition, index) => <div key={condition.id} className="rounded-xl border border-line p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1 text-[11px] text-fg-muted">
+          <input type="checkbox" checked={condition.negate} onChange={event => update(index, { negate: event.target.checked } as Partial<ConditionDraft>)} /> NOT
+        </label>
+        {condition.kind === 'comparison' && <select
+          aria-label="Condition type"
+          className="input py-1 text-xs"
+          value="comparison"
+          onChange={event => {
+            const next = event.target.value;
+            if (next === 'price_action') update(index, newPriceAction());
+            else if (next === 'group') update(index, newGroup());
+            else if (next === 'sequence') update(index, newSequence());
+          }}
+        >
+          <option value="comparison">Indicator / price comparison</option>
+          <option value="price_action">Price action</option>
+          <option value="group">Group of conditions</option>
+          <option value="sequence">Then (in order)</option>
+        </select>}
+        {condition.kind === 'price_action' && <select
+          aria-label="Condition type"
+          className="input py-1 text-xs"
+          value="price_action"
+          onChange={event => {
+            const next = event.target.value;
+            if (next === 'comparison') update(index, newComparison(indicators[0]?.id ?? ''));
+            else if (next === 'group') update(index, newGroup());
+            else if (next === 'sequence') update(index, newSequence());
+          }}
+        >
+          <option value="price_action">Price action</option>
+          <option value="comparison">Indicator / price comparison</option>
+          <option value="group">Group of conditions</option>
+          <option value="sequence">Then (in order)</option>
+        </select>}
+        {condition.kind === 'group' && <select
+          aria-label="Condition type"
+          className="input py-1 text-xs"
+          value="group"
+          onChange={event => {
+            const next = event.target.value;
+            if (next === 'comparison') update(index, newComparison(indicators[0]?.id ?? ''));
+            else if (next === 'price_action') update(index, newPriceAction());
+            else if (next === 'sequence') update(index, newSequence());
+          }}
+        >
+          <option value="group">Group of conditions</option>
+          <option value="comparison">Indicator / price comparison</option>
+          <option value="price_action">Price action</option>
+          <option value="sequence">Then (in order)</option>
+        </select>}
+        {condition.kind === 'sequence' && <select
+          aria-label="Condition type"
+          className="input py-1 text-xs"
+          value="sequence"
+          onChange={event => {
+            const next = event.target.value;
+            if (next === 'comparison') update(index, newComparison(indicators[0]?.id ?? ''));
+            else if (next === 'price_action') update(index, newPriceAction());
+            else if (next === 'group') update(index, newGroup());
+          }}
+        >
+          <option value="sequence">Then (in order)</option>
+          <option value="comparison">Indicator / price comparison</option>
+          <option value="price_action">Price action</option>
+          <option value="group">Group of conditions</option>
+        </select>}
+
+        {condition.kind === 'group' && <select
+          aria-label="Group join"
+          value={condition.join}
+          onChange={event => update(index, { join: event.target.value as 'all' | 'any' } as Partial<ConditionDraft>)}
+          className="input py-1 text-xs"
+        >
+          <option value="all">ALL of them (AND)</option>
+          <option value="any">ANY of them (OR)</option>
+        </select>}
+
+        {condition.kind !== 'group' && <div className="ml-auto flex items-center gap-1">
+          <button type="button" onClick={() => move(index, -1)} aria-label="Move condition up" className="text-fg-subtle"><ChevronUp size={15} /></button>
+          <button type="button" onClick={() => move(index, 1)} aria-label="Move condition down" className="text-fg-subtle"><ChevronDown size={15} /></button>
+          {removable && <button type="button" onClick={() => remove(index)} aria-label="Remove condition" className="text-fg-subtle"><Trash2 size={15} /></button>}
+        </div>}
+      </div>
+
+      {condition.kind === 'comparison' && <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_150px_1fr]">
+        <OperandEditor draft={condition.left} indicators={indicators} onChange={left => update(index, { left } as Partial<ConditionDraft>)} />
+        <select aria-label="Operator" value={condition.operator} onChange={event => update(index, { operator: event.target.value as StrategyOperator } as Partial<ConditionDraft>)} className="input self-end">
+          {OPERATORS.map(operator => <option key={operator} value={operator}>{OPERATOR_LABELS[operator]}</option>)}
+        </select>
+        <OperandEditor draft={condition.right} indicators={indicators} onChange={right => update(index, { right } as Partial<ConditionDraft>)} />
+      </div>}
+
+      {condition.kind === 'price_action' && <>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <select
+            aria-label="Price action pattern"
+            value={condition.pattern}
+            onChange={event => update(index, { pattern: event.target.value as PriceActionPattern } as Partial<ConditionDraft>)}
+            className="input py-1 text-xs"
+          >
+            {PRICE_ACTION_PATTERNS.map(pattern => <option key={pattern} value={pattern}>{describePriceActionPattern(pattern)}</option>)}
+          </select>
+          <span className="text-[11px] text-fg-subtle">evaluated on the closed candle</span>
+        </div>
+        <PriceActionFields
+          pattern={condition.pattern}
+          params={condition.params}
+          onChange={(params: PriceActionParams) => update(index, { params } as Partial<ConditionDraft>)}
+        />
+      </>}
+
+      {condition.kind === 'group' && <div className="mt-2">
+        <ConditionEditor
+          conditions={condition.conditions}
+          onChange={updateChildren => update(index, { conditions: updateChildren(condition.conditions) } as Partial<ConditionDraft>)}
+          indicators={indicators}
+          depth={depth + 1}
+          removable={false}
+        />
+        <button type="button" className="btn btn-secondary mt-2" onClick={() => update(index, { conditions: [...condition.conditions, newComparison(indicators[0]?.id ?? '')] } as Partial<ConditionDraft>)}>
+          <CirclePlus size={13} /> Add condition to the group
+        </button>
+      </div>}
+
+      {condition.kind === 'sequence' && <div className="mt-2">
+        <p className="text-[11px] text-fg-subtle">Each step has to happen on a later candle than the one before it.</p>
+        {condition.steps.map((step, stepIndex) => <div key={step.id} className="mt-2 rounded-lg border border-line p-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-fg-subtle">Step {stepIndex + 1}</span>
+            <button type="button" onClick={() => update(index, { steps: condition.steps.filter((_, itemIndex) => itemIndex !== stepIndex) } as Partial<ConditionDraft>)} aria-label="Remove step" className="text-fg-subtle"><Trash2 size={14} /></button>
+          </div>
+          <ConditionEditor
+            conditions={[step]}
+            onChange={updateChildren => {
+              const steps = [...condition.steps];
+              const next = updateChildren(condition.steps);
+              if (next[0]) steps[stepIndex] = next[0];
+              update(index, { steps } as Partial<ConditionDraft>);
+            }}
+            indicators={indicators}
+            depth={depth + 1}
+            removable={false}
+          />
+        </div>)}
+        <div className="mt-2 flex flex-wrap items-end gap-2">
+          <button type="button" className="btn btn-secondary" onClick={() => update(index, { steps: [...condition.steps, newComparison(indicators[0]?.id ?? '')] } as Partial<ConditionDraft>)}>
+            <CirclePlus size={13} /> Add step
+          </button>
+          <label className="text-xs text-fg-muted">Steps may be up to
+            <input type="number" min={1} max={200} value={condition.maxGapCandles} onChange={event => update(index, { maxGapCandles: Number(event.target.value) } as Partial<ConditionDraft>)} className="input mx-1 w-24" />
+            candles apart
+          </label>
+        </div>
+      </div>}
+    </div>)}
+  </div>;
+}
+
+function OperandEditor({
+  draft,
+  indicators,
+  onChange,
+}: {
+  draft: OperandDraft;
+  indicators: IndicatorDraft[];
+  onChange: (draft: OperandDraft) => void;
+}) {
+  const first = indicators[0];
+  const selected = indicators.find(indicator => indicator.id === draft.indicatorId);
+  const entry = selected ? indicatorCatalogEntry(selected.type) : undefined;
+  return <div className="grid gap-1 sm:grid-cols-2">
+    <select
+      aria-label="Operand kind"
+      value={draft.kind}
+      onChange={event => {
+        const kind = event.target.value as OperandDraft['kind'];
+        if (kind === 'indicator') onChange({ ...draft, kind, indicatorId: draft.indicatorId || first?.id || '', output: draft.output });
+        else if (kind === 'price') onChange({ ...draft, kind });
+        else onChange({ ...draft, kind, value: Number.isFinite(draft.value) ? draft.value : 0 });
+      }}
+      className="input"
+    >
+      <option value="indicator">Indicator</option>
+      <option value="price">Price / volume</option>
+      <option value="constant">Number</option>
+    </select>
+    {draft.kind === 'indicator' && <>
+      <select
+        aria-label="Indicator"
+        value={draft.indicatorId}
+        onChange={event => {
+          const indicator = indicators.find(item => item.id === event.target.value);
+          onChange({ ...draft, indicatorId: event.target.value, output: indicator?.output ?? '' });
+        }}
+        className="input"
+      >
+        {indicators.length === 0 && <option value="">No indicators yet</option>}
+        {indicators.map(indicator => {
+          const catalog = indicatorCatalogEntry(indicator.type);
+          const parameters = catalog?.parameters.map(parameter => `${parameter.label} ${indicator.params[parameter.key] ?? parameter.default}`).join(', ');
+          return <option key={indicator.id} value={indicator.id}>{catalog?.shortName ?? indicator.type}{parameters ? ` — ${parameters}` : ''}</option>;
+        })}
+      </select>
+      {entry && entry.outputs.length > 1 && <select
+        aria-label="Output series"
+        value={draft.output || selected?.output || entry.outputs[0].key}
+        onChange={event => onChange({ ...draft, output: event.target.value })}
+        className="input sm:col-span-2"
+      >
+        {entry.outputs.map(output => <option key={output.key} value={output.key}>{output.label}</option>)}
+      </select>}
+    </>}
+    {draft.kind === 'price' && <select aria-label="Price field" value={draft.field} onChange={event => onChange({ ...draft, field: event.target.value as OperandDraft['field'] })} className="input sm:col-span-2">
+      {['open', 'high', 'low', 'close', 'volume'].map(field => <option key={field} value={field}>{field}</option>)}
+    </select>}
+    {draft.kind === 'constant' && <input aria-label="Number" type="number" value={draft.value} onChange={event => onChange({ ...draft, value: Number(event.target.value) })} className="input sm:col-span-2" />}
+  </div>;
+}

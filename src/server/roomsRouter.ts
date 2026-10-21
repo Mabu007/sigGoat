@@ -81,7 +81,7 @@ import {
 } from "../types/rooms";
 import { createRobotStore } from './robots/RobotStore';
 import { initialRuntimeState, processCompletedCandle, runStrategyBacktest } from '../services/strategy/engine';
-import { validateStrategyDefinition } from '../services/strategy/schema';
+import { migrateStrategyDefinition, type StrategyDefinition } from '../services/strategy/schema';
 import { normalizeCompletedCandles, requestedBarsForRange } from '../services/strategy/marketData';
 import { hyperliquidProvider } from '../services/market-data/hyperliquid/HyperliquidMarketDataProvider';
 
@@ -323,13 +323,18 @@ roomsRouter.post('/robot-marketplace', authMiddleware, handle(async (req, res) =
   }
   const now = new Date().toISOString();
   const versionId = `${robotId}_v1`;
+  // The server owns the identity of the version. The client may send either
+  // schema version, and an older one is MIGRATED rather than reinterpreted.
   const candidate = {
-    ...(req.body?.definition ?? {}), schemaVersion: 1, strategyId: robotId, versionId, version: 1,
+    ...(req.body?.definition ?? {}), schemaVersion: req.body?.definition?.schemaVersion, strategyId: robotId, versionId, version: 1,
     validationStatus: 'VALID', createdAt: now,
   };
-  const validation = validateStrategyDefinition(candidate);
-  if (!validation.success || !validation.definition) return fail(res, 400, 'INVALID_STRATEGY', validation.errors.join(' '));
-  const definition = validation.definition;
+  let definition: StrategyDefinition;
+  try {
+    definition = migrateStrategyDefinition(candidate);
+  } catch (error) {
+    return fail(res, 400, 'INVALID_STRATEGY', error instanceof Error ? error.message : 'The strategy could not be read.');
+  }
   const slugBase = definition.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 36) || 'trading-robot';
   const slug = `${slugBase}-${randomBytes(10).toString('hex')}`;
   const profile = await getCreatorProfile(user.uid).catch(() => null);
@@ -359,8 +364,16 @@ roomsRouter.get('/robot-marketplace/:idOrSlug', optionalAuthMiddleware, handle(a
   if (!robot) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
   const isOwner = req.user?.uid === robot.ownerUserId;
   if (robot.visibility === 'PRIVATE' && !isOwner) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
-  const definition = await robotStore.definition(robot);
-  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current immutable strategy version is unavailable.');
+  const stored = await robotStore.definition(robot);
+  if (!stored) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current immutable strategy version is unavailable.');
+  // A version saved before the current schema is MIGRATED on the way out, so
+  // the client always receives the shape it knows how to read.
+  let definition: StrategyDefinition;
+  try {
+    definition = migrateStrategyDefinition(stored);
+  } catch {
+    return fail(res, 500, 'ROBOT_VERSION_INVALID', 'The stored strategy version could not be read.');
+  }
   const backtests = isOwner ? await robotStore.listBacktests(robot) : [];
   res.setHeader('Cache-Control', isOwner ? 'private, no-store' : 'public, max-age=10');
   res.json({ robot, definition, backtests, canManage: isOwner });
