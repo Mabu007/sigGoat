@@ -30,6 +30,7 @@ const comparisonSchema = z.object({
 }).strict();
 
 export type StrategyCondition =
+  | { type: 'price_action'; pattern: 'BULLISH_SWEEP' | 'BEARISH_SWEEP' | 'BREAKOUT_HIGH' | 'BREAKOUT_LOW' | 'BULLISH_ENGULFING' | 'BEARISH_ENGULFING' | 'BULLISH_PIN_BAR' | 'BEARISH_PIN_BAR'; lookback: number }
   | StrategyComparisonCondition
   | { type: 'all'; conditions: StrategyCondition[] }
   | { type: 'any'; conditions: StrategyCondition[] }
@@ -38,6 +39,7 @@ export type StrategyCondition =
 export const conditionSchema = z.lazy(() =>
   z.discriminatedUnion('type', [
     comparisonSchema,
+    z.object({ type: z.literal('price_action'), pattern: z.enum(['BULLISH_SWEEP', 'BEARISH_SWEEP', 'BREAKOUT_HIGH', 'BREAKOUT_LOW', 'BULLISH_ENGULFING', 'BEARISH_ENGULFING', 'BULLISH_PIN_BAR', 'BEARISH_PIN_BAR']), lookback: z.number().int().min(2).max(500) }).strict(),
     z.object({ type: z.literal('all'), conditions: z.array(conditionSchema).min(1).max(20) }).strict(),
     z.object({ type: z.literal('any'), conditions: z.array(conditionSchema).min(1).max(20) }).strict(),
     z.object({ type: z.literal('not'), condition: conditionSchema }).strict(),
@@ -110,6 +112,7 @@ function visitCondition(condition: StrategyCondition, visit: (operand: StrategyO
     }
     return 1;
   }
+  if (condition.type === 'price_action') return 1;
   if (condition.type === 'not') return 1 + visitCondition(condition.condition, visit, depth + 1);
   return 1 + condition.conditions.reduce((sum, child) => sum + visitCondition(child, visit, depth + 1), 0);
 }
