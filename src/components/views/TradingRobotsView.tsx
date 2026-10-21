@@ -22,7 +22,7 @@ function selectedRobotFromHash(): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-export function TradingRobotsView({ createRequested, onCreateHandled }: { createRequested: boolean; onCreateHandled: () => void }) {
+export function TradingRobotsView() {
   const { currentUser, authMode, getApiAuthHeaders, openAuthModal } = useAuth();
   const signedIn = Boolean(currentUser) || authMode === 'dev';
   const [robots, setRobots] = useState<Robot[]>([]);
@@ -71,7 +71,6 @@ export function TradingRobotsView({ createRequested, onCreateHandled }: { create
     window.addEventListener('hashchange', listener);
     return () => window.removeEventListener('hashchange', listener);
   }, []);
-  useEffect(() => { if (createRequested) { setCreateOpen(true); onCreateHandled(); } }, [createRequested, onCreateHandled]);
 
   if (selected) return <RobotWorkspace slug={selected} headers={headers} onBack={closeRobot} />;
 
