@@ -67,6 +67,9 @@ export function evaluateCondition(
     // `maxGapCandles` apart. That is what "followed by" means here, and it
     // is not the same thing as "and".
     if (!evaluateCondition(context, steps[steps.length - 1], index)) return false;
+    // A sequence represents events. If its final condition remains true on
+    // consecutive candles, it is one event rather than a fresh event each bar.
+    if (index > 0 && evaluateCondition(context, steps[steps.length - 1], index - 1)) return false;
     let upper = index;
     for (let step = steps.length - 2; step >= 0; step -= 1) {
       let found = -1;
@@ -82,14 +85,27 @@ export function evaluateCondition(
   const left = context.operand(condition.left, index);
   const right = context.operand(condition.right, index);
   if (!left.available || !right.available || !Number.isFinite(left.current) || !Number.isFinite(right.current)) return false;
+  const rangeTo = condition.rangeTo ? context.operand(condition.rangeTo, index) : null;
+  if (rangeTo && (!rangeTo.available || !Number.isFinite(rangeTo.current))) return false;
+  const tolerance = condition.tolerance ?? 1e-8 * Math.max(1, Math.abs(left.current), Math.abs(right.current));
+  const changePercent = left.previous !== null && left.previous !== 0
+    ? ((left.current - left.previous) / Math.abs(left.previous)) * 100
+    : null;
   switch (condition.operator) {
     case 'GT': return left.current > right.current;
     case 'GTE': return left.current >= right.current;
     case 'LT': return left.current < right.current;
     case 'LTE': return left.current <= right.current;
-    case 'EQ': return Math.abs(left.current - right.current) <= Number.EPSILON * Math.max(1, Math.abs(left.current), Math.abs(right.current));
+    case 'EQ': return Math.abs(left.current - right.current) <= tolerance;
+    case 'NE': return Math.abs(left.current - right.current) > tolerance;
     case 'CROSS_ABOVE': return left.previous !== null && right.previous !== null && left.previous <= right.previous && left.current > right.current;
     case 'CROSS_BELOW': return left.previous !== null && right.previous !== null && left.previous >= right.previous && left.current < right.current;
+    case 'INCREASING': return left.previous !== null && left.current > left.previous;
+    case 'DECREASING': return left.previous !== null && left.current < left.previous;
+    case 'BETWEEN': return rangeTo !== null && left.current >= Math.min(right.current, rangeTo.current) && left.current <= Math.max(right.current, rangeTo.current);
+    case 'OUTSIDE': return rangeTo !== null && (left.current < Math.min(right.current, rangeTo.current) || left.current > Math.max(right.current, rangeTo.current));
+    case 'CHANGE_PCT_GT': return changePercent !== null && changePercent >= right.current;
+    case 'CHANGE_PCT_LT': return changePercent !== null && changePercent <= -right.current;
   }
 }
 
@@ -198,10 +214,15 @@ function processCompletedCandleAt(
 
   const cooldownReady = next.lastEntryCandleTime === null
     || candle.time - next.lastEntryCandleTime > definition.risk.cooldownCandles * STRATEGY_TIMEFRAME_MS[definition.market.timeframe];
-  if (next.position && next.pendingExitSignalTime === null && definition.exit.condition && evaluateCondition(context, definition.exit.condition, index)) {
+  const action = definition.then?.action ?? (definition.entry.direction === 'LONG' ? 'BUY' : 'SELL');
+  const entryMatched = evaluateCondition(context, definition.entry.condition, index);
+  if (next.position && next.pendingExitSignalTime === null && ((definition.exit.condition && evaluateCondition(context, definition.exit.condition, index)) || (action === 'CLOSE_POSITION' && entryMatched))) {
     next = { ...next, pendingExitSignalTime: candle.time, logs: [...next.logs, log('EXIT_SIGNAL', 'Exit condition matched; order queued for the next candle open.', candle.time)] };
-  } else if (!next.position && !next.pendingEntry && next.tradesToday < definition.risk.maxTradesPerDay && cooldownReady && evaluateCondition(context, definition.entry.condition, index)) {
-    next = { ...next, pendingEntry: { direction: definition.entry.direction, signalCandleTime: candle.time }, logs: [...next.logs, log('ENTRY_SIGNAL', `${definition.entry.direction} entry condition matched; order queued for the next candle open.`, candle.time)] };
+  } else if (!next.position && !next.pendingEntry && next.tradesToday < definition.risk.maxTradesPerDay && cooldownReady && entryMatched && (action === 'BUY' || action === 'SELL')) {
+    const direction = action === 'BUY' ? 'LONG' : 'SHORT';
+    next = { ...next, pendingEntry: { direction, signalCandleTime: candle.time }, logs: [...next.logs, log('ENTRY_SIGNAL', `${direction} entry condition matched; order queued for the next candle open.`, candle.time)] };
+  } else if (action === 'ALERT_ONLY' && entryMatched && (index === 0 || !evaluateCondition(context, definition.entry.condition, index - 1))) {
+    next = { ...next, logs: [...next.logs, log('STRATEGY_ALERT', 'The IF rules matched. Alert only action; no order was placed.', candle.time)] };
   }
   const unrealized = next.position ? (next.position.direction === 'LONG' ? candle.close - next.position.entryPrice : next.position.entryPrice - candle.close) * next.position.quantity : 0;
   return { ...next, equity: round(next.balance + unrealized), logs: next.logs.slice(-500) };

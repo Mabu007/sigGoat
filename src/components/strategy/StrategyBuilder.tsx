@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Bot, ChevronDown, ChevronUp, CirclePlus, Trash2, WandSparkles, X } from 'lucide-react';
+import { Bot, ChevronDown, ChevronUp, CirclePlus, Crosshair, Rocket, ShieldCheck, Trash2, WandSparkles, X } from 'lucide-react';
 import { indicatorCatalogEntry, type IndicatorCatalogEntry } from '../../services/strategy/indicators/catalog';
 import {
   priceActionParamsSchema,
@@ -13,13 +13,16 @@ import { ConditionEditor } from './ConditionEditor';
 import { IndicatorPicker } from './IndicatorPicker';
 import {
   defaultParams,
+  conditionDraftErrors,
   draftFromAiCondition,
   groupedCondition,
   newComparison,
+  newGroup,
   newIndicator,
   type ConditionDraft,
   type IndicatorDraft,
 } from './builderModel';
+import './robot-builder.css';
 
 /**
  * THE STRATEGY BUILDER
@@ -71,6 +74,9 @@ export function StrategyBuilder({
   const [cooldown, setCooldown] = useState(1);
   const [maxDailyLoss, setMaxDailyLoss] = useState(5);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+  const [action, setAction] = useState<'BUY' | 'SELL' | 'CLOSE_POSITION' | 'NO_TRADE' | 'ALERT_ONLY'>('BUY');
+  const [riskConfirmed, setRiskConfirmed] = useState(false);
 
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
@@ -85,6 +91,7 @@ export function StrategyBuilder({
   const stableRequestId = useRef(requestId());
 
   const gaps = useMemo(() => new Set(aiGaps.map(gap => gap.field)), [aiGaps]);
+  const resolveGap = (field: string) => setAiGaps(previous => previous.filter(gap => gap.field !== field));
   const suggested = useCallback((field: string) => aiProvided.size > 0 && !aiProvided.has(field), [aiProvided]);
 
   const definition = useMemo<StrategyDefinition | null>(() => {
@@ -98,7 +105,7 @@ export function StrategyBuilder({
       output: indicator.output,
     }));
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       strategyId: 'draft_strategy',
       versionId: 'draft_version',
       version: 1,
@@ -107,6 +114,7 @@ export function StrategyBuilder({
       market: { provider: 'hyperliquid', instrument: instrument.trim().toUpperCase(), timeframe },
       indicators: strategyIndicators,
       entry: { direction, condition: entry },
+      then: { action },
       exit: exit ? { condition: exit } : {},
       risk: {
         sizing: sizingMode === 'PERCENT_RISK' ? { mode: sizingMode, percent: sizeValue } : { mode: sizingMode, quantity: sizeValue },
@@ -123,9 +131,15 @@ export function StrategyBuilder({
       validationStatus: 'VALID',
       createdAt: new Date().toISOString(),
     };
-  }, [name, description, instrument, timeframe, direction, visibility, indicators, entryConditions, entryJoin, exitConditions, exitJoin, sizingMode, sizeValue, stopLoss, takeProfit, maxExposure, maxTrades, cooldown, maxDailyLoss]);
+  }, [name, description, instrument, timeframe, direction, visibility, indicators, entryConditions, entryJoin, exitConditions, exitJoin, sizingMode, sizeValue, stopLoss, takeProfit, maxExposure, maxTrades, cooldown, maxDailyLoss, action]);
 
-  const validation = useMemo(() => (definition ? validateStrategyDefinition(definition) : { success: false, errors: ['Add at least one entry condition.'] }), [definition]);
+  const validation = useMemo(() => {
+    const result = definition ? validateStrategyDefinition(definition) : { success: false, errors: ['Add at least one entry condition.'] };
+    const draftErrors = [...conditionDraftErrors(entryConditions), ...conditionDraftErrors(exitConditions)];
+    const errors = [...result.errors, ...draftErrors, ...aiGaps.map(gap => gap.message)];
+    const riskError = (action === 'BUY' || action === 'SELL') && !riskConfirmed ? ['Review and confirm the position size, stop loss and target before deployment.'] : [];
+    return { ...result, success: result.success && errors.length === 0 && riskError.length === 0, errors: [...errors, ...riskError] };
+  }, [definition, aiGaps, action, riskConfirmed, entryConditions, exitConditions]);
 
   const moveIndicator = (index: number, offset: number) => setIndicators(previous => {
     const next = [...previous];
@@ -160,7 +174,8 @@ export function StrategyBuilder({
       if (condition.kind === 'comparison') {
         const left = condition.left.indicatorId === removed.id ? { ...condition.left, indicatorId: fallback, output: '' } : condition.left;
         const right = condition.right.indicatorId === removed.id ? { ...condition.right, indicatorId: fallback, output: '' } : condition.right;
-        return { ...condition, left, right };
+        const rangeTo = condition.rangeTo?.indicatorId === removed.id ? { ...condition.rangeTo, indicatorId: fallback, output: '' } : condition.rangeTo;
+        return { ...condition, left, right, rangeTo };
       }
       if (condition.kind === 'group') return { ...condition, conditions: clear(condition.conditions) };
       if (condition.kind === 'sequence') return { ...condition, steps: clear(condition.steps) };
@@ -212,6 +227,7 @@ export function StrategyBuilder({
     setInstrument(model.instrument || 'BTC');
     setTimeframe((model.timeframe ?? timeframe) as Timeframe);
     setDirection(model.direction);
+    setAction(model.direction === 'LONG' ? 'BUY' : 'SELL');
     setIndicators(model.indicators.map(indicator => ({ ...indicator, output: indicator.output ?? '' })));
     setSizingMode(model.risk.sizingMode);
     setSizeValue(model.risk.sizingValue);
@@ -251,21 +267,27 @@ export function StrategyBuilder({
     }
   };
 
-  return <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-0 sm:items-center sm:p-5" role="dialog" aria-modal="true">
-    <div className="panel flex max-h-[94vh] w-full max-w-5xl flex-col overflow-hidden rounded-b-none sm:rounded-2xl">
-      <div className="flex items-center justify-between border-b border-line p-5">
+  return <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-5" role="dialog" aria-modal="true">
+    <div className="robot-builder flex max-h-[96vh] w-full max-w-6xl flex-col overflow-hidden rounded-t-[24px] border border-white/10 bg-[#0d0d12] text-white shadow-2xl sm:rounded-[24px]">
+      <div className="flex items-center justify-between border-b border-white/10 p-5 sm:px-7">
         <div>
-          <p className="text-xs font-bold uppercase tracking-wider text-accent-text">Strategy builder</p>
-          <h2 className="mt-1 text-xl font-black">Create Trading Robot</h2>
+          <p className="text-[10px] font-bold uppercase tracking-[.2em] text-red-500">Robot studio</p>
+          <h2 className="mt-1 text-xl font-black sm:text-2xl">Build an executable strategy</h2>
+          <p className="mt-1 text-xs text-white/45">Design the logic first. Bind it to a market only when you deploy.</p>
         </div>
-        <button type="button" onClick={onClose} aria-label="Close"><X /></button>
+        <button type="button" onClick={onClose} aria-label="Close" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5"><X size={18} /></button>
       </div>
-      <div className="flex gap-2 border-b border-line px-5 py-3">
-        <button type="button" onClick={() => setMode('manual')} className={mode === 'manual' ? 'btn btn-primary' : 'btn btn-secondary'}>Create Manually</button>
-        <button type="button" onClick={() => setMode('ai')} className={mode === 'ai' ? 'btn btn-primary' : 'btn btn-secondary'}><WandSparkles size={14} /> Create With AI</button>
+      <div className="grid grid-cols-3 border-b border-white/10 bg-black/20 px-5 py-3 text-[11px] font-bold sm:px-7">
+        <span className="flex items-center gap-2 text-red-400"><i className="grid h-5 w-5 place-items-center rounded-full bg-red-600 text-[9px] text-white">1</i> Blueprint</span>
+        <span className="flex items-center gap-2 text-white/55"><i className="grid h-5 w-5 place-items-center rounded-full bg-white/10 text-[9px]">2</i> Rules &amp; risk</span>
+        <span className="flex items-center justify-end gap-2 text-white/55"><i className="grid h-5 w-5 place-items-center rounded-full bg-white/10 text-[9px]">3</i> Deployment</span>
+      </div>
+      <div className="flex gap-2 border-b border-white/10 px-5 py-3 sm:px-7">
+        <button type="button" onClick={() => setMode('manual')} className={mode === 'manual' ? 'robot-builder-mode is-active' : 'robot-builder-mode'}>Professional editor</button>
+        <button type="button" onClick={() => setMode('ai')} className={mode === 'ai' ? 'robot-builder-mode is-active' : 'robot-builder-mode'}><WandSparkles size={14} /> AI strategy architect</button>
       </div>
 
-      <form onSubmit={save} className="overflow-y-auto p-5">
+      <form onSubmit={save} className="overflow-y-auto p-5 sm:px-7 sm:py-6">
         {mode === 'ai' && <section className="mb-5 space-y-3">
           <label className="block text-xs text-fg-muted">
             Describe the exact strategy
@@ -316,17 +338,10 @@ export function StrategyBuilder({
         </section>}
 
         <div className="space-y-5">
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div>
             <label className="text-xs text-fg-muted">
               Robot name
               <input required minLength={2} maxLength={80} value={name} onChange={event => setName(event.target.value)} className="input mt-1 w-full" />
-            </label>
-            <label className="text-xs text-fg-muted">
-              Visibility
-              <select value={visibility} onChange={event => setVisibility(event.target.value as typeof visibility)} className="input mt-1 w-full">
-                <option value="PRIVATE">Private</option>
-                <option value="PUBLIC">Public</option>
-              </select>
             </label>
           </div>
 
@@ -334,29 +349,6 @@ export function StrategyBuilder({
             Description
             <textarea value={description} onChange={event => setDescription(event.target.value)} rows={2} maxLength={2000} className="input mt-1 w-full" />
           </label>
-
-          <div className="grid gap-3 sm:grid-cols-3">
-            <label className={`text-xs text-fg-muted ${gaps.has('market.instrument') ? 'rounded-lg border border-warning/40 p-2' : ''}`}>
-              Market
-              <input required value={instrument} onChange={event => setInstrument(event.target.value)} className="input mt-1 w-full" />
-              {gaps.has('market.instrument') && <span className="mt-1 block text-[11px] text-warning-text">The draft did not name a market.</span>}
-            </label>
-            <label className={`text-xs text-fg-muted ${gaps.has('market.timeframe') ? 'rounded-lg border border-warning/40 p-2' : ''}`}>
-              Timeframe
-              <select value={timeframe} onChange={event => setTimeframe(event.target.value as Timeframe)} className="input mt-1 w-full">
-                {TIMEFRAMES.map(value => <option key={value}>{value}</option>)}
-              </select>
-              {gaps.has('market.timeframe') && <span className="mt-1 block text-[11px] text-warning-text">The draft did not name a timeframe.</span>}
-            </label>
-            <label className={`text-xs text-fg-muted ${gaps.has('direction') ? 'rounded-lg border border-warning/40 p-2' : ''}`}>
-              Direction
-              <select value={direction} onChange={event => setDirection(event.target.value as typeof direction)} className="input mt-1 w-full">
-                <option>LONG</option>
-                <option>SHORT</option>
-              </select>
-              {gaps.has('direction') && <span className="mt-1 block text-[11px] text-warning-text">The draft did not say which way to trade.</span>}
-            </label>
-          </div>
 
           <section>
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -406,6 +398,14 @@ export function StrategyBuilder({
             </div>
           </section>
 
+          <section className="rounded-2xl border border-white/10 bg-white/[.025] p-4">
+            <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-red-600/15 text-red-400"><Crosshair size={17}/></span><div><h3 className="text-sm font-bold">Signal context</h3><p className="mt-1 text-[11px] leading-relaxed text-white/45">These settings define how the entry conditions are evaluated. They travel with this immutable strategy version.</p></div></div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className={`text-xs text-white/55 ${gaps.has('market.timeframe') ? 'rounded-lg border border-warning/40 p-2' : ''}`}>Condition timeframe<select value={timeframe} onChange={event => { setTimeframe(event.target.value as Timeframe); resolveGap('market.timeframe'); }} className="input mt-1 w-full">{TIMEFRAMES.map(value => <option key={value}>{value}</option>)}</select><span className="mt-1 block text-[10px] text-white/35">Every indicator and price-action rule below evaluates on this candle interval.</span></label>
+              <fieldset className={`text-xs text-white/55 ${gaps.has('direction') ? 'rounded-lg border border-warning/40 p-2' : ''}`}><legend>Position intent</legend><div className="mt-1 grid grid-cols-2 gap-2">{(['LONG','SHORT'] as const).map(value=><button key={value} type="button" onClick={()=>{setDirection(value);setAction(value==='LONG'?'BUY':'SELL');resolveGap('direction');}} className={direction===value?'robot-direction is-active':'robot-direction'}>{value==='LONG'?'Buy / Long':'Sell / Short'}</button>)}</div><span className="mt-1 block text-[10px] text-white/35">Direction is part of the entry rule, not a separate market preference.</span></fieldset>
+            </div>
+          </section>
+
           <ConditionSection
             title="Entry conditions"
             required
@@ -415,6 +415,9 @@ export function StrategyBuilder({
             setConditions={setEntryConditions}
             indicators={indicators}
             gap={gaps.has('entry')}
+            advanced={advanced}
+            onAdvancedChange={setAdvanced}
+            onConditionsEdit={() => setAiGaps(previous => previous.filter(gap => gap.field !== 'entry' && !gap.field.startsWith('entry.')))}
           />
           <ConditionSection
             title="Exit conditions (optional)"
@@ -423,26 +426,50 @@ export function StrategyBuilder({
             conditions={exitConditions}
             setConditions={setExitConditions}
             indicators={indicators}
+            advanced={advanced}
           />
 
+          <section className="rounded-2xl border border-red-500/25 bg-red-500/[.04] p-4 sm:p-5" aria-label="Then action">
+            <div className="flex items-start gap-3"><span className="grid h-9 w-9 place-items-center rounded-xl bg-red-600 text-sm font-black">THEN</span><div><h3 className="text-sm font-bold">What should the robot do?</h3><p className="mt-1 text-[11px] text-white/45">Signals are simulated in paper mode. Nothing here enables live orders.</p></div></div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-white/55">Action<select value={action} onChange={event => { const next = event.target.value as typeof action; setAction(next); setRiskConfirmed(false); if (next === 'BUY') setDirection('LONG'); if (next === 'SELL') setDirection('SHORT'); }} className="input mt-1 w-full"><option value="BUY">BUY / open long</option><option value="SELL">SELL / open short</option><option value="CLOSE_POSITION">Close position</option><option value="ALERT_ONLY">Alert only</option><option value="NO_TRADE">No trade / skip</option></select></label>
+              {(action === 'BUY' || action === 'SELL') && <p className="self-end text-[11px] text-white/45">{instrument || 'Instrument'} · {direction} · risk {sizeValue}% · stop {stopLoss}% · target {takeProfit}%</p>}
+              {action === 'CLOSE_POSITION' && <p className="self-end text-[11px] text-white/45">Closes an existing paper position when these IF rules match. No entry order is created.</p>}
+              {(action === 'ALERT_ONLY' || action === 'NO_TRADE') && <p className="self-end text-[11px] text-white/45">No order will be placed for this action.</p>}
+              {(action === 'BUY' || action === 'SELL') && <label className="flex items-start gap-2 text-[11px] text-white/65 sm:col-span-2"><input type="checkbox" checked={riskConfirmed} onChange={event=>setRiskConfirmed(event.target.checked)} className="mt-0.5 accent-red-500"/>I reviewed the risk per trade, stop loss, take profit and exposure settings shown below.</label>}
+            </div>
+          </section>
+
           <section>
-            <h3 className="text-sm font-bold">Position &amp; risk</h3>
+            <div className="flex items-center gap-2"><ShieldCheck size={16} className="text-red-400"/><h3 className="text-sm font-bold">Position &amp; risk controls</h3></div>
             <div className="mt-2 grid gap-3 sm:grid-cols-4">
               <label className="text-xs text-fg-muted">
                 Sizing
-                <select value={sizingMode} onChange={event => setSizingMode(event.target.value as typeof sizingMode)} className="input mt-1 w-full">
+                <select value={sizingMode} onChange={event => { setSizingMode(event.target.value as typeof sizingMode); resolveGap('risk.sizing'); }} className="input mt-1 w-full">
                   <option value="PERCENT_RISK">% equity risk</option>
                   <option value="FIXED_QUANTITY">Fixed quantity</option>
                 </select>
               </label>
-              <NumberField label={sizingMode === 'PERCENT_RISK' ? 'Risk per trade %' : 'Quantity'} value={sizeValue} onChange={setSizeValue} min={0.01} max={sizingMode === 'PERCENT_RISK' ? 10 : 1_000_000} suggested={suggested('risk.sizingValue')} gap={gaps.has('risk.sizingValue')} />
-              <NumberField label="Stop loss %" value={stopLoss} onChange={setStopLoss} min={0.01} max={50} suggested={suggested('risk.stopLossPercent')} gap={gaps.has('risk.stopLossPercent')} />
-              <NumberField label="Take profit %" value={takeProfit} onChange={setTakeProfit} min={0.01} max={100} suggested={suggested('risk.takeProfitPercent')} gap={gaps.has('risk.takeProfitPercent')} />
+              <NumberField label={sizingMode === 'PERCENT_RISK' ? 'Risk per trade %' : 'Quantity'} value={sizeValue} onChange={value => { setRiskConfirmed(false); setSizeValue(value); resolveGap('risk.sizingValue'); }} min={0.01} max={sizingMode === 'PERCENT_RISK' ? 10 : 1_000_000} suggested={suggested('risk.sizingValue')} gap={gaps.has('risk.sizingValue')} />
+              <NumberField label="Stop loss %" value={stopLoss} onChange={value => { setRiskConfirmed(false); setStopLoss(value); resolveGap('risk.stopLossPercent'); }} min={0.01} max={50} suggested={suggested('risk.stopLossPercent')} gap={gaps.has('risk.stopLossPercent')} />
+              <NumberField label="Take profit %" value={takeProfit} onChange={value => { setRiskConfirmed(false); setTakeProfit(value); resolveGap('risk.takeProfitPercent'); }} min={0.01} max={100} suggested={suggested('risk.takeProfitPercent')} gap={gaps.has('risk.takeProfitPercent')} />
+            </div>
+            <details className="mt-3 rounded-xl border border-white/10 p-3"><summary className="cursor-pointer text-xs font-semibold text-white/65">Advanced risk settings</summary><div className="mt-3 grid gap-3 sm:grid-cols-3">
               <NumberField label="Max exposure %" value={maxExposure} onChange={setMaxExposure} min={0.01} max={100} suggested={suggested('risk.maxExposurePercent')} />
               <NumberField label="Max trades / day" value={maxTrades} onChange={setMaxTrades} min={1} max={100} step={1} suggested={suggested('risk.maxTradesPerDay')} />
               <NumberField label="Cooldown candles" value={cooldown} onChange={setCooldown} min={0} max={10_000} step={1} suggested={suggested('risk.cooldownCandles')} />
               <NumberField label="Max daily loss %" value={maxDailyLoss} onChange={setMaxDailyLoss} min={0.01} max={100} suggested={suggested('risk.maxDailyLossPercent')} />
+            </div></details>
+            {action !== 'BUY' && action !== 'SELL' && <p className="mt-2 text-[11px] text-white/40">Order sizing and protective stops are used only for BUY/SELL actions.</p>}
+          </section>
+
+          <section className="rounded-2xl border border-red-500/25 bg-red-500/[.04] p-4 sm:p-5">
+            <div className="flex items-start gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-red-600 text-white shadow-[0_8px_24px_rgba(220,38,38,.3)]"><Rocket size={18}/></span><div><p className="text-[10px] font-bold uppercase tracking-[.16em] text-red-400">Deployment profile</p><h3 className="mt-1 text-base font-black">Bind strategy to a market</h3><p className="mt-1 text-[11px] leading-relaxed text-white/45">Your reusable logic is complete. Choose where this version will run; deployment creates an immutable, auditable robot.</p></div></div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr]">
+              <label className={`text-xs text-white/55 ${gaps.has('market.instrument') ? 'rounded-lg border border-warning/40 p-2' : ''}`}>Deployment instrument<input required value={instrument} onChange={event=>{setInstrument(event.target.value);resolveGap('market.instrument');}} placeholder="BTC, ETH, SOL…" className="input mt-1 w-full uppercase"/><span className="mt-1 block text-[10px] text-white/35">Hyperliquid symbol. Validated by the server before execution.</span></label>
+              <label className="text-xs text-white/55">Publication<select value={visibility} onChange={event=>setVisibility(event.target.value as typeof visibility)} className="input mt-1 w-full"><option value="PRIVATE">Private deployment</option><option value="PUBLIC">Public in Bots directory</option></select><span className="mt-1 block text-[10px] text-white/35">Paper execution only. Public robots expose rules, never credentials.</span></label>
             </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-[10px]"><span className="rounded-full bg-white/5 px-2.5 py-1 text-white/55">{instrument.toUpperCase()||'Instrument'}</span><span className="rounded-full bg-white/5 px-2.5 py-1 text-white/55">{timeframe} conditions</span><span className="rounded-full bg-white/5 px-2.5 py-1 text-white/55">{direction}</span><span className="rounded-full bg-white/5 px-2.5 py-1 text-white/55">Paper only</span></div>
           </section>
 
           {definition && <StrategySummary definition={definition} indicators={indicators} />}
@@ -454,7 +481,7 @@ export function StrategyBuilder({
         {error && <p role="alert" className="mt-4 text-sm text-danger">{error}</p>}
         <div className="mt-5 flex justify-end gap-2 border-t border-line pt-4">
           <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
-          <button disabled={busy || !validation.success} className="btn btn-primary">{busy ? 'Saving…' : 'Save robot'}</button>
+          <button disabled={busy || !validation.success} className="robot-deploy-button"><Rocket size={15}/>{busy ? 'Deploying…' : 'Validate & deploy robot'}</button>
         </div>
       </form>
     </div>
@@ -470,6 +497,9 @@ function ConditionSection({
   setConditions,
   indicators,
   gap = false,
+  advanced = false,
+  onAdvancedChange,
+  onConditionsEdit,
 }: {
   title: string;
   required?: boolean;
@@ -479,6 +509,9 @@ function ConditionSection({
   setConditions: (update: (previous: ConditionDraft[]) => ConditionDraft[]) => void;
   indicators: IndicatorDraft[];
   gap?: boolean;
+  advanced?: boolean;
+  onAdvancedChange?: (value: boolean) => void;
+  onConditionsEdit?: () => void;
 }) {
   return <section className={gap ? 'rounded-xl border border-warning/40 p-3' : ''}>
     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -489,18 +522,20 @@ function ConditionSection({
           <option value="any">ANY (OR)</option>
         </select>}
       </div>
-      <button type="button" className="btn btn-secondary" onClick={() => setConditions(previous => [...previous, newComparison(indicators[0]?.id ?? '')])}>
-        <CirclePlus size={13} /> Add condition
-      </button>
+      <div className="flex gap-2"><button type="button" className="btn btn-secondary" onClick={() => { onConditionsEdit?.(); if (!conditions.length || join === 'all') { setConditions(previous => [...previous, newComparison(indicators[0]?.id ?? '')]); return; } const group = newGroup('any'); group.conditions = conditions; setConditions(() => [group, newComparison(indicators[0]?.id ?? '')]); setJoin('all'); }}><CirclePlus size={13} /> + AND</button>
+      <button type="button" className="btn btn-secondary" onClick={() => { onConditionsEdit?.(); if (!conditions.length || join === 'any') { setConditions(previous => [...previous, newComparison(indicators[0]?.id ?? '')]); return; } const group = newGroup('all'); group.conditions = conditions; setConditions(() => [group, newComparison(indicators[0]?.id ?? '')]); setJoin('any'); }}>+ OR alternative</button></div>
     </div>
+    {conditions.length > 1 && <p className="mt-1 text-[11px] text-white/40">This list is evaluated as {join === 'all' ? 'ALL conditions (AND)' : 'ANY condition (OR)'}. For mixed logic, add a nested group and choose its join.</p>}
+    {onAdvancedChange && <button type="button" className="mt-2 text-[11px] font-semibold text-red-400" aria-pressed={advanced} onClick={() => onAdvancedChange(!advanced)}>{advanced ? 'Hide advanced logic' : 'Advanced logic: nested groups & FOLLOWED BY'}</button>}
     {gap && <p className="mt-1 text-[11px] text-warning-text">The draft did not produce an entry rule for this side.</p>}
     {!conditions.length && <p className="mt-2 text-xs text-fg-subtle">{required ? 'Add the rule that opens a position.' : 'No explicit exit rule. Stops and targets still apply.'}</p>}
     {conditions.length > 0 && <div className="mt-2">
       <ConditionEditor
         conditions={conditions}
-        onChange={update => setConditions(update)}
+        onChange={update => { onConditionsEdit?.(); setConditions(update); }}
         indicators={indicators}
         removable={!required || conditions.length > 1}
+        advanced={advanced}
       />
     </div>}
   </section>;

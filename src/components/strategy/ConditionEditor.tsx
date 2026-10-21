@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, CirclePlus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, CirclePlus, Copy, Trash2 } from 'lucide-react';
 import { indicatorCatalogEntry } from '../../services/strategy/indicators/catalog';
 import { PRICE_ACTION_PATTERNS, type PriceActionParams, type PriceActionPattern, type StrategyOperator } from '../../services/strategy/schema';
 import { describePriceActionPattern } from '../../services/strategy/priceAction';
@@ -7,6 +7,8 @@ import {
   newGroup,
   newPriceAction,
   newSequence,
+  newOperand,
+  duplicateConditionDraft,
   type ConditionDraft,
   type IndicatorDraft,
   type OperandDraft,
@@ -25,10 +27,12 @@ import { PriceActionFields } from './PriceActionFields';
  * asks for one, so the common case is a short readable list.
  */
 
-const OPERATORS: StrategyOperator[] = ['GT', 'GTE', 'LT', 'LTE', 'EQ', 'CROSS_ABOVE', 'CROSS_BELOW'];
+const OPERATORS: StrategyOperator[] = ['GT', 'GTE', 'LT', 'LTE', 'EQ', 'NE', 'CROSS_ABOVE', 'CROSS_BELOW', 'INCREASING', 'DECREASING', 'BETWEEN', 'OUTSIDE', 'CHANGE_PCT_GT', 'CHANGE_PCT_LT'];
 const OPERATOR_LABELS: Record<StrategyOperator, string> = {
   GT: 'is above', GTE: 'is at or above', LT: 'is below', LTE: 'is at or below',
-  EQ: 'equals', CROSS_ABOVE: 'crosses above', CROSS_BELOW: 'crosses below',
+  EQ: 'is equal to', NE: 'is not equal to', CROSS_ABOVE: 'crosses above', CROSS_BELOW: 'crosses below',
+  INCREASING: 'is increasing', DECREASING: 'is decreasing', BETWEEN: 'is between', OUTSIDE: 'is outside',
+  CHANGE_PCT_GT: 'increases by at least %', CHANGE_PCT_LT: 'decreases by at least %',
 };
 
 export function ConditionEditor({
@@ -37,15 +41,23 @@ export function ConditionEditor({
   indicators,
   depth = 0,
   removable = true,
+  advanced = false,
 }: {
   conditions: ConditionDraft[];
   onChange: (update: (previous: ConditionDraft[]) => ConditionDraft[]) => void;
   indicators: IndicatorDraft[];
   depth?: number;
   removable?: boolean;
+  advanced?: boolean;
 }) {
-  const update = (index: number, value: Partial<ConditionDraft>) => onChange(previous => previous.map((item, itemIndex) => (itemIndex === index ? ({ ...item, ...value } as ConditionDraft) : item)));
+  const update = (index: number, value: Partial<ConditionDraft>) => onChange(previous => previous.map((item, itemIndex) => {
+    if (itemIndex !== index) return item;
+    const next = { ...item, ...value } as ConditionDraft;
+    if (item.kind === 'comparison' && next.kind === 'comparison' && !('configured' in value)) next.configured = true;
+    return next;
+  }));
   const remove = (index: number) => onChange(previous => previous.filter((_, itemIndex) => itemIndex !== index));
+  const duplicate = (index: number) => onChange(previous => [...previous.slice(0,index+1), duplicateConditionDraft(previous[index]), ...previous.slice(index+1)]);
   const move = (index: number, offset: number) => onChange(previous => {
     const next = [...previous];
     const target = index + offset;
@@ -74,7 +86,7 @@ export function ConditionEditor({
           <option value="comparison">Indicator / price comparison</option>
           <option value="price_action">Price action</option>
           <option value="group">Group of conditions</option>
-          <option value="sequence">Then (in order)</option>
+          {advanced && <option value="sequence">Followed by (in order)</option>}
         </select>}
         {condition.kind === 'price_action' && <select
           aria-label="Condition type"
@@ -90,7 +102,7 @@ export function ConditionEditor({
           <option value="price_action">Price action</option>
           <option value="comparison">Indicator / price comparison</option>
           <option value="group">Group of conditions</option>
-          <option value="sequence">Then (in order)</option>
+          {advanced && <option value="sequence">Followed by (in order)</option>}
         </select>}
         {condition.kind === 'group' && <select
           aria-label="Condition type"
@@ -106,7 +118,7 @@ export function ConditionEditor({
           <option value="group">Group of conditions</option>
           <option value="comparison">Indicator / price comparison</option>
           <option value="price_action">Price action</option>
-          <option value="sequence">Then (in order)</option>
+          {advanced && <option value="sequence">Followed by (in order)</option>}
         </select>}
         {condition.kind === 'sequence' && <select
           aria-label="Condition type"
@@ -119,7 +131,7 @@ export function ConditionEditor({
             else if (next === 'group') update(index, newGroup());
           }}
         >
-          <option value="sequence">Then (in order)</option>
+          {advanced && <option value="sequence">Followed by (in order)</option>}
           <option value="comparison">Indicator / price comparison</option>
           <option value="price_action">Price action</option>
           <option value="group">Group of conditions</option>
@@ -135,19 +147,22 @@ export function ConditionEditor({
           <option value="any">ANY of them (OR)</option>
         </select>}
 
-        {condition.kind !== 'group' && <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1">
           <button type="button" onClick={() => move(index, -1)} aria-label="Move condition up" className="text-fg-subtle"><ChevronUp size={15} /></button>
           <button type="button" onClick={() => move(index, 1)} aria-label="Move condition down" className="text-fg-subtle"><ChevronDown size={15} /></button>
+          <button type="button" onClick={() => duplicate(index)} aria-label="Duplicate condition" className="text-fg-subtle"><Copy size={14} /></button>
           {removable && <button type="button" onClick={() => remove(index)} aria-label="Remove condition" className="text-fg-subtle"><Trash2 size={15} /></button>}
-        </div>}
+        </div>
       </div>
 
       {condition.kind === 'comparison' && <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_150px_1fr]">
         <OperandEditor draft={condition.left} indicators={indicators} onChange={left => update(index, { left } as Partial<ConditionDraft>)} />
-        <select aria-label="Operator" value={condition.operator} onChange={event => update(index, { operator: event.target.value as StrategyOperator } as Partial<ConditionDraft>)} className="input self-end">
+        <select aria-label="Operator" value={condition.operator} onChange={event => { const operator=event.target.value as StrategyOperator; update(index, { operator, rangeTo: ['BETWEEN','OUTSIDE'].includes(operator) ? (condition.rangeTo ?? newOperand('constant')) : undefined } as Partial<ConditionDraft>); }} className="input self-end">
           {OPERATORS.map(operator => <option key={operator} value={operator}>{OPERATOR_LABELS[operator]}</option>)}
         </select>
         <OperandEditor draft={condition.right} indicators={indicators} onChange={right => update(index, { right } as Partial<ConditionDraft>)} />
+        {condition.rangeTo && <><span className="hidden sm:block"/><span className="text-[10px] text-fg-subtle sm:col-span-2">and upper bound</span><OperandEditor draft={condition.rangeTo} indicators={indicators} onChange={rangeTo => update(index, { rangeTo } as Partial<ConditionDraft>)}/></>}
+        {condition.operator === 'EQ' && advanced && <label className="text-[10px] text-fg-subtle sm:col-span-3">Numeric tolerance<input type="number" min="0" step="any" value={condition.tolerance ?? 0} onChange={event=>update(index,{tolerance:Number(event.target.value)} as Partial<ConditionDraft>)} className="input mt-1"/></label>}
       </div>}
 
       {condition.kind === 'price_action' && <>
@@ -176,6 +191,7 @@ export function ConditionEditor({
           indicators={indicators}
           depth={depth + 1}
           removable={false}
+          advanced={advanced}
         />
         <button type="button" className="btn btn-secondary mt-2" onClick={() => update(index, { conditions: [...condition.conditions, newComparison(indicators[0]?.id ?? '')] } as Partial<ConditionDraft>)}>
           <CirclePlus size={13} /> Add condition to the group
@@ -200,14 +216,15 @@ export function ConditionEditor({
             indicators={indicators}
             depth={depth + 1}
             removable={false}
+            advanced={advanced}
           />
         </div>)}
         <div className="mt-2 flex flex-wrap items-end gap-2">
           <button type="button" className="btn btn-secondary" onClick={() => update(index, { steps: [...condition.steps, newComparison(indicators[0]?.id ?? '')] } as Partial<ConditionDraft>)}>
             <CirclePlus size={13} /> Add step
           </button>
-          <label className="text-xs text-fg-muted">Steps may be up to
-            <input type="number" min={1} max={200} value={condition.maxGapCandles} onChange={event => update(index, { maxGapCandles: Number(event.target.value) } as Partial<ConditionDraft>)} className="input mx-1 w-24" />
+          <label className="text-xs text-fg-muted">Events within
+            <input type="number" min={1} max={5000} value={condition.maxGapCandles} onChange={event => update(index, { maxGapCandles: Number(event.target.value) } as Partial<ConditionDraft>)} className="input mx-1 w-24" />
             candles apart
           </label>
         </div>
