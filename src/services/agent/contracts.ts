@@ -185,6 +185,7 @@ export interface TrackerDirective {
 export interface ReasoningInvestigation {
   summary: string;
   marketView?: string;
+  newsReport?: string;
 }
 
 export interface ReasoningThesis {
@@ -1187,6 +1188,7 @@ function parseInvestigation(
     itemIssues,
     MAX_STRING_LENGTHS.summary,
   );
+  const newsReport = parseString(raw.newsReport, 'investigation.newsReport', itemIssues, MAX_STRING_LENGTHS.summary);
 
   if (itemIssues.length > 0) {
     issues.push(...itemIssues);
@@ -1196,6 +1198,7 @@ function parseInvestigation(
   return {
     summary: summary!,
     marketView,
+    newsReport,
   };
 }
 
@@ -1233,11 +1236,17 @@ function parseThesis(
     true,
   );
 
-  const confidence = parseFiniteNumber(
+  const confidenceInput = parseFiniteNumber(
     raw.confidence,
     'thesis.confidence',
     itemIssues,
   );
+  // Older free models commonly emit probabilities (0.35) while the gate and
+  // persisted thesis contract use percentage points (35). Normalize once at
+  // the untrusted model boundary; all downstream code uses 0..100.
+  const confidence = confidenceInput !== undefined && confidenceInput > 0 && confidenceInput < 1
+    ? confidenceInput * 100
+    : confidenceInput;
 
   const invalidation = parseString(
     raw.invalidation,

@@ -285,6 +285,76 @@ async function savePublishedRobotMembership(membership: PublishedRobotMembership
   }
 }
 
+/** Atomic quota for the active public-room chat. Production fails closed on DB errors. */
+async function reserveRobotChat(slug: string, userId: string, goatId: string): Promise<'OK' | 'COOLDOWN' | 'LIMIT'> {
+  const id = publishedRobotMembershipId(slug, userId);
+  const admin = getFirebaseAdmin();
+  const nowMs = Date.now();
+  const reserve = (previous: PublishedRobotMembership | null) => {
+    const last = Date.parse(previous?.lastChatAt ?? '');
+    const windowStart = Date.parse(previous?.chatWindowStartedAt ?? '');
+    if (Number.isFinite(last) && nowMs - last < 2500) return { status: 'COOLDOWN' as const };
+    const expired = !Number.isFinite(windowStart) || nowMs - windowStart >= 3_600_000;
+    const count = expired ? 0 : previous?.chatCountInWindow ?? 0;
+    if (count >= 20) return { status: 'LIMIT' as const };
+    return { status: 'OK' as const, next: {
+      ...(previous ?? { id, robotSlug: slug, goatId, userId, joinedAt: new Date(nowMs).toISOString(), mode: 'PAPER' as const }),
+      lastChatAt: new Date(nowMs).toISOString(),
+      chatWindowStartedAt: expired ? new Date(nowMs).toISOString() : previous?.chatWindowStartedAt,
+      chatCountInWindow: count + 1,
+    } };
+  };
+  if (admin) {
+    const ref = admin.firestore.collection('publishedRobotUsers').doc(id);
+    return admin.firestore.runTransaction(async tx => {
+      const snapshot = await tx.get(ref);
+      const result = reserve(snapshot.exists ? snapshot.data() as PublishedRobotMembership : null);
+      if (result.status === 'OK') tx.set(ref, result.next, { merge: true });
+      return result.status;
+    });
+  }
+  if (process.env.NODE_ENV === 'production') throw new Error('Durable chat quota unavailable.');
+  const result = reserve(localPublishedRobotMemberships.get(id) ?? null);
+  if (result.status === 'OK') localPublishedRobotMemberships.set(id, result.next);
+  return result.status;
+}
+
+async function robotChatHistory(slug: string, userId: string): Promise<NonNullable<PublishedRobotMembership['chatHistory']>> {
+  const id = publishedRobotMembershipId(slug, userId);
+  const admin = getFirebaseAdmin();
+  if (admin) {
+    const snapshot = await admin.firestore.collection('publishedRobotUsers').doc(id).get();
+    return ((snapshot.data() as PublishedRobotMembership | undefined)?.chatHistory ?? []).slice(-40);
+  }
+  if (process.env.NODE_ENV === 'production') throw new Error('Durable chat history unavailable.');
+  return (localPublishedRobotMemberships.get(id)?.chatHistory ?? []).slice(-40);
+}
+
+async function appendRobotChat(slug: string, userId: string, question: string, answer: string): Promise<NonNullable<PublishedRobotMembership['chatHistory']>> {
+  const id = publishedRobotMembershipId(slug, userId);
+  const admin = getFirebaseAdmin();
+  const turns = [
+    { role: 'user' as const, text: question, at: new Date().toISOString() },
+    { role: 'robot' as const, text: answer.slice(0, 6000), at: new Date().toISOString() },
+  ];
+  if (admin) {
+    const ref = admin.firestore.collection('publishedRobotUsers').doc(id);
+    return admin.firestore.runTransaction(async tx => {
+      const snapshot = await tx.get(ref);
+      if (!snapshot.exists) throw new Error('Robot chat membership disappeared.');
+      const history = [...((snapshot.data() as PublishedRobotMembership).chatHistory ?? []), ...turns].slice(-40);
+      tx.update(ref, { chatHistory: history });
+      return history;
+    });
+  }
+  if (process.env.NODE_ENV === 'production') throw new Error('Durable chat history unavailable.');
+  const prior = localPublishedRobotMemberships.get(id);
+  if (!prior) throw new Error('Robot chat membership disappeared.');
+  const history = [...(prior.chatHistory ?? []), ...turns].slice(-40);
+  localPublishedRobotMemberships.set(id, { ...prior, chatHistory: history });
+  return history;
+}
+
 
 /**
  * ONE PropDAO adapter factory.
@@ -1486,6 +1556,10 @@ async function notifyGoatMarketReview(
 
 goatRuntimeRegistry.onGlobalSignal(async (goat, signal) => {
   if (signal.direction === "NO_TRADE" || signal.status !== "ACTIONABLE") return;
+  if ((signal.runId || goat.publicSlug) && !(await robotSignalHasVerifiedRun(signal, goat))) {
+    console.error(`[workflow] suppressed unverified actionable signal ${signal.id}`);
+    return;
+  }
 
   /**
    * AUTONOMY MODE RUNS FIRST, before any notification.
@@ -3862,6 +3936,7 @@ apiRouter.get("/robots/:slug/market", handle(async (req, res) => {
 apiRouter.get("/goat-teams/public", optionalAuthMiddleware, handle(async (req, res) => {
   const teams = await goatTeamStore.listAll();
   const rooms = (await Promise.all(teams.map(async team => {
+    if (team.robotKind !== 'AI_ROBOT' && !team.instructions?.startsWith('This is an AI trading analyst robot.')) return null;
     const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
     const legacyAiRobot = team.memberGoatIds.length === 1 && Boolean(members[0]?.model) && Boolean(team.instructions?.startsWith("This is an AI trading analyst robot."));
     const robotKind = team.robotKind === "AI_ROBOT" || legacyAiRobot ? "AI_ROBOT" : "COMMUNITY";
@@ -3877,9 +3952,8 @@ apiRouter.get("/goat-teams/public", optionalAuthMiddleware, handle(async (req, r
     const deployment = robotAsset && team.deployment?.asset !== robotAsset && team.deployment
       ? { ...team.deployment, asset: robotAsset }
       : team.deployment;
-    if (team.visibility !== "PUBLIC" || team.robotKind !== "AI_ROBOT" || !team.publicSlug || deployment !== team.deployment) {
-      await goatTeamStore.save({ ...team, deployment, publicSlug, visibility: "PUBLIC", robotKind: "AI_ROBOT", updatedAt: new Date().toISOString() });
-    }
+    // Discovery is read-only. Legacy values are projected here; repair and
+    // indexing belong to an explicit migration, never a public GET.
     const theses = await Promise.all(team.memberGoatIds.map(id => persistence.theses.listByGoat(id, 1)));
     const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     const cover = await roomMediaStore.getCover(team.id).catch(() => null);
@@ -3942,6 +4016,7 @@ apiRouter.post("/team-rooms/:slug/copy", authMiddleware, handle(async (req, res)
       tradingProvider: resolveGoatTradingProvider(source),
       model: source.model,
       aiProvider: "openrouter",
+      freeOnly: source.freeOnly ?? source.model.endsWith(':free'),
       researchSources: source.researchSources ?? [],
     });
   } catch (error) {
@@ -3966,7 +4041,9 @@ apiRouter.post("/team-rooms/:slug/copy", authMiddleware, handle(async (req, res)
   try {
     await setGoatStatusFor(user.uid, member.id, false, false);
   } catch (error) {
-    await goatTeamStore.save({ ...team, status: "PARTIAL", updatedAt: new Date().toISOString() });
+    await goatTeamStore.deleteForUser(team.id, user.uid);
+    await stopAndResetGoatFor(user.uid, member.id).catch(() => {});
+    await persistence.goats.delete(member.id).catch(() => {});
     return fail(res, 503, "AI_SCHEDULER_UNAVAILABLE", error instanceof Error ? error.message : "The scheduler could not start the personal robot.");
   }
   return res.status(201).json({ team, shareUrl: `/robots/${team.publicSlug}`, personalInstance: true, independentlyGenerated: true });
@@ -3998,14 +4075,19 @@ function summariseRoomRun(
   const inWindow = <T extends { createdAt?: string; updatedAt?: string }>(rows: T[], stamp: (row: T) => string) =>
     rows.filter((row) => { const at = Date.parse(stamp(row)); return Number.isFinite(at) && at >= window[0] && at <= window[1]; });
 
-  const signal = (run.signalId ? signals.find((item) => item.id === run.signalId) : undefined)
-    ?? inWindow(signals, (row) => row.createdAt)[0];
-  const thesis = inWindow(theses, (row) => row.updatedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  // New runs carry their own validated display artifact. The timestamp join
+  // remains only for historical records that predate that format.
+  const analysis = run.analysis;
+  const signal = analysis ? (run.signalId ? signals.find(item => item.id === run.signalId) : undefined)
+    : (run.signalId ? signals.find((item) => item.id === run.signalId) : undefined)
+      ?? inWindow(signals, (row) => row.createdAt)[0];
+  const thesis = analysis ? undefined : inWindow(theses, (row) => row.updatedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 
   const failed = run.status === "FAILED" || Boolean(run.errorCode);
   const outcome = failed ? "failed"
-    : run.status === "RUNNING" || run.status === "WAITING_APPROVAL" ? "running"
-      : signal ? "proposal"
+    : run.status === "RUNNING" ? "running"
+      : analysis ? analysis.gate.approved ? "proposal" : "no_trade"
+        : signal?.direction === 'NO_TRADE' ? "no_trade" : signal ? "proposal"
         : thesis ? "review"
           : "no_trade";
 
@@ -4020,8 +4102,11 @@ function summariseRoomRun(
     outcome,
     at: run.createdAt,
     completedAt: run.completedAt ?? null,
+    ...(analysis ? { analysis } : {}),
     headline: failed
       ? `Review failed${run.errorCode ? ` · ${run.errorCode}` : ""}`
+      : analysis
+        ? `${analysis.gate.approved && signal ? signal.direction : 'NO_TRADE'} · ${run.market}`
       : signal
         ? `${signal.direction} · ${signal.market}`
         : thesis
@@ -4029,6 +4114,8 @@ function summariseRoomRun(
           : `Review of ${run.market}`,
     summary: failed
       ? (isOwner ? (run.errorMessage ?? run.errorCode ?? "The review did not complete.") : "This review failed. The room owner can inspect the diagnostic details.")
+      : analysis
+        ? [analysis.summary, analysis.gate.reasons.length ? `Gate: ${analysis.gate.reasons.join(' ')}` : 'Validated conditional setup.'].join('\n\n')
       : run.status === "RUNNING" && !signal && !thesis
         ? "Working through " + run.stage.replace(/_/g, " ") + "."
         : signal ? [signal.thesis, signal.rationale].filter(Boolean).join("\n\n")
@@ -4036,9 +4123,9 @@ function summariseRoomRun(
             : run.status === "RUNNING"
               ? "Review in progress: " + run.stage.replace(/_/g, " ") + "."
               : "No trade was proposed on this review.",
-    bias: thesis?.directionalHypothesis ?? null,
-    confidence: thesis?.confidence ?? signal?.confidence ?? null,
-    levels: signal
+    bias: analysis?.bias ?? thesis?.directionalHypothesis ?? null,
+    confidence: analysis?.confidencePercent ?? thesis?.confidence ?? signal?.confidence ?? null,
+    levels: signal && signal.direction !== 'NO_TRADE'
       ? { entry: signal.entry, stopLoss: signal.stopLoss, takeProfit: signal.takeProfit, riskReward: signal.riskReward ?? null }
       : null,
   };
@@ -4066,7 +4153,7 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
     (await persistence.skills.listByUser(team.ownerUserId).catch(() => [] as TradingSkill[]))
       .map(skill => [skill.id, skill.name] as const),
   );
-  const dispatcherStatus = isOwner && firebaseScheduler
+  const dispatcherStatus = team.robotKind === 'AI_ROBOT' && firebaseScheduler
     ? await firebaseScheduler.getDispatcherStatus().catch(() => null)
     : null;
   const details = await Promise.all(members.map(async member => {
@@ -4076,24 +4163,24 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
        * produced by time window — otherwise every message in Team Chat would
        * show the newest review regardless of when it ran.
        */
-      persistence.theses.listByGoat(member!.id, 200),
+      persistence.theses.listByGoat(member!.id, team.robotKind === 'AI_ROBOT' ? 40 : 200),
       // A room shows a trade log, not a five-item preview: the Trades panel
       // needs history. Still bounded so a long-lived room cannot grow this
       // public, cached response without limit.
-      persistence.signals.listByGoat(member!.id, 200),
+      persistence.signals.listByGoat(member!.id, team.robotKind === 'AI_ROBOT' ? 40 : 200),
       // Only a submitted execution is a trade that reached a venue. Claimed and
       // failed rows are attempts, and counting them would overstate activity.
-      goatWorkflowStore.listActivities(member!.id, 500),
-      goatWorkflowStore.listRuns(member!.id, 200),
+      goatWorkflowStore.listActivities(member!.id, team.robotKind === 'AI_ROBOT' ? 80 : 500),
+      goatWorkflowStore.listRuns(member!.id, team.robotKind === 'AI_ROBOT' ? 30 : 200),
     ]);
     const thesis = theses[0];
-    const robotSchedule = isOwner && firebaseScheduler
+    const robotSchedule = team.robotKind === 'AI_ROBOT' && firebaseScheduler
       ? await firebaseScheduler.getRobotSchedule(member!.id).catch(() => null)
       : null;
     return {
       id: member!.id, name: member!.name, goal: member!.goal, markets: member!.markets,
       status: member!.status, provider: resolveGoatTradingProvider(member!), timeframe: member!.timeframe || thesis?.relevantTimeframe || "15m",
-      ...(isOwner ? { robotSchedule } : {}),
+      ...(team.robotKind === 'AI_ROBOT' ? { robotSchedule } : {}),
       skills: member!.skillIds.map(id => skillNames.get(id)).filter((name): name is string => Boolean(name)),
       /**
        * The agent's working memory: the live directional hypothesis plus the
@@ -4179,7 +4266,7 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
        */
       balance: team.deployment?.startingBalance ?? null,
       trades: details.reduce((total, member) => total + member.trades, 0),
-      ...(isOwner ? {
+      ...(team.robotKind === 'AI_ROBOT' ? {
         runtimeResources: {
           scheduler: firebaseScheduler ? "firestore" : "unavailable",
           dispatcherLastSeenAt: dispatcherStatus?.lastSeenAt ?? null,
@@ -4557,10 +4644,20 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
  * the requesting viewer's own account connection status. It never wakes,
  * edits, or schedules the robot.
  */
+apiRouter.get("/team-rooms/:slug/robot-chat", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
+  const team = await goatTeamStore.getPublicBySlug(String(req.params.slug || ''));
+  if (!team || team.robotKind !== 'AI_ROBOT') return notFound(res);
+  const messages = await robotChatHistory(team.publicSlug, user.uid);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({ messages });
+}));
+
 apiRouter.post("/team-rooms/:slug/robot-chat", authMiddleware, handle(async (req, res) => {
   const user = requireUser(req);
   const slug = String(req.params.slug || "");
   const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+  const includeAccountBalance = req.body?.includeAccountBalance === true;
   if (!question) return fail(res, 400, "INVALID_QUESTION", "Enter a message for this robot.");
   if (question.length > 2000) return fail(res, 400, "INVALID_QUESTION", "Messages must be 2,000 characters or fewer.");
   let stage = "robot_lookup";
@@ -4585,44 +4682,50 @@ apiRouter.post("/team-rooms/:slug/robot-chat", authMiddleware, handle(async (req
     // throttle, shared across serverless instances. Joining does not alter the
     // robot's schedule or operating state.
     stage = "chat_throttle";
-    const membershipId = publishedRobotMembershipId(slug, user.uid);
-    const previousMembership = await getPublishedRobotMembership(slug, user.uid);
-    const nowMs = Date.now();
-    const windowStarted = Date.parse(previousMembership?.chatWindowStartedAt ?? "");
-    const windowExpired = !Number.isFinite(windowStarted) || nowMs - windowStarted >= 3_600_000;
-    const lastChat = Date.parse(previousMembership?.lastChatAt ?? "");
-    if (Number.isFinite(lastChat) && nowMs - lastChat < 2500) return fail(res, 429, "ROBOT_CHAT_COOLDOWN", "Please wait a few seconds before sending another message.");
-    const count = windowExpired ? 0 : (previousMembership?.chatCountInWindow ?? 0);
-    if (count >= 20) return fail(res, 429, "ROBOT_CHAT_LIMIT", "This robot allows up to 20 chat messages per hour per user.");
-    await savePublishedRobotMembership({
-      ...(previousMembership ?? { id: membershipId, robotSlug: slug, goatId: robot.id, userId: user.uid, joinedAt: new Date(nowMs).toISOString(), mode: "PAPER" as const }),
-      lastChatAt: new Date(nowMs).toISOString(), chatWindowStartedAt: windowExpired ? new Date(nowMs).toISOString() : previousMembership?.chatWindowStartedAt,
-      chatCountInWindow: count + 1,
-    });
+    const quota = await reserveRobotChat(slug, user.uid, robot.id);
+    if (quota === 'COOLDOWN') return fail(res, 429, 'ROBOT_CHAT_COOLDOWN', 'Please wait a few seconds before sending another message.');
+    if (quota === 'LIMIT') return fail(res, 429, 'ROBOT_CHAT_LIMIT', 'This robot allows up to 20 chat messages per hour per user.');
 
     stage = "market_context";
     const marketProvider = await marketDataProviderForGoat(robot);
     const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider }, robot.id, team.ownerUserId);
     stage = "viewer_context";
-    const [theses, news, propDao, cTrader] = await Promise.all([
+    const [theses, runs, news, propDao, cTrader, viewerProfile, priorChat] = await Promise.all([
       persistence.theses.listByGoat(robot.id, 1).catch(() => []),
+      goatWorkflowStore.listRuns(robot.id, 1).catch(() => []),
       newsService.getNews(context.market).catch(() => null),
       credentialVault.getCredentialStatus(user.uid, "propdao").catch(() => ({ configured: false })),
       credentialVault.getCredentialStatus(user.uid, "ctrader").catch(() => ({ configured: false })),
+      includeAccountBalance ? persistence.profiles.get(user.uid).catch(() => null) : Promise.resolve(null),
+      robotChatHistory(slug, user.uid),
     ]);
+    let viewerAccountBalance: Record<string, unknown> | null = null;
+    if (includeAccountBalance && viewerProfile?.autoTradeAccountId && propDao.configured) {
+      const risk = await propDaoFor(user.uid).risk(viewerProfile.autoTradeAccountId).catch(() => null);
+      if (risk) viewerAccountBalance = { provider: 'PropDAO', ...(Number.isFinite(risk.balance) ? { balance: risk.balance } : {}), ...(Number.isFinite(risk.equity) ? { equity: risk.equity } : {}), fetchedAt: new Date().toISOString() };
+    }
+    if (includeAccountBalance && !viewerAccountBalance && viewerProfile?.ctraderAccountId && cTrader.configured) {
+      const details = await cTraderClientForUser(user.uid, viewerProfile.ctraderAccountId, viewerProfile.ctraderAccountIsLive === true).then(client => client.getAccountDetails()).catch(() => null);
+      if (details && Number.isFinite(details.balance)) viewerAccountBalance = { provider: 'cTrader', balance: details.balance, fetchedAt: new Date().toISOString() };
+    }
     context.activeThesis = theses[0] ?? null;
     context.news = news?.headlines ?? [];
     context.historyContext = {
       robotStatus: team.status,
       analysisIntervalMinutes: Math.min(...(team.monitoringIntervals ?? [15])),
       robotLatestAnalysisAt: theses[0]?.updatedAt ?? null,
+      latestRun: runs[0]?.analysis ? { id: runs[0].id, at: runs[0].completedAt ?? runs[0].updatedAt, analysis: runs[0].analysis } : null,
       viewerAccountConnections: { propDaoConnected: propDao.configured, cTraderConnected: cTrader.configured },
-      responseRules: "This is an informational chat only. Never create or alter trades, signal decisions, schedules, or robot settings. Account connection booleans belong to the requesting viewer only; never imply access to account balances, positions, or credentials.",
+      recentConversation: priorChat.slice(-8).map(({ role, text, at }) => ({ role, text: text.slice(0, 1200), at })),
+      ...(includeAccountBalance ? { viewerAccountBalance } : {}),
+      responseRules: "This is an informational chat only. Never create or alter trades, signal decisions, schedules, or robot settings. Only account connection status is available unless the viewer explicitly opted to include a read-only balance with this question. Positions, orders and credentials are never supplied. Cite saved run timestamps and news sources where relevant.",
     };
     stage = "model_response";
     const answer = await reasoningGateway.answerGoatQuestion(question, context, model || robot.model, robot.aiProvider);
+    stage = 'chat_persistence';
+    const chatHistory = await appendRobotChat(slug, user.uid, question, answer);
     res.setHeader("Cache-Control", "private, no-store");
-    res.json({ answer });
+    res.json({ answer, chatHistory });
   } catch (error) {
     console.error(`[robot-chat] Failed at ${stage} for ${robotId} (${slug}):`, error);
     const providerUnavailable = stage === "provider_key_check" || stage === "model_response";
@@ -6939,6 +7042,7 @@ interface TeamMemberInput {
   asset: string;
   tradingProvider?: TradingProvider;
   model?: string;
+  freeOnly?: boolean;
   aiProvider?: 'openrouter';
   researchSources?: string[];
 }
@@ -7035,7 +7139,7 @@ function normaliseTeamMemberInput(raw: unknown): TeamMemberInput | null {
   if (model && (!isValidModel(model) || model.length > 180)) return null;
   if (asset && asset.length > 32) return null;
   const provider = isTradingProvider(body.tradingProvider) ? body.tradingProvider : undefined;
-  return { name, jobTitle, jobDescription, skills, ...(skillIds.length ? { skillIds } : {}), asset, ...(provider ? { tradingProvider: provider } : {}), ...(model ? { model } : {}), ...(body.aiProvider === 'openrouter' ? { aiProvider: 'openrouter' as const } : {}), ...(researchSources.length ? { researchSources } : {}) };
+  return { name, jobTitle, jobDescription, skills, ...(skillIds.length ? { skillIds } : {}), asset, ...(provider ? { tradingProvider: provider } : {}), ...(model ? { model } : {}), ...(body.freeOnly === true ? { freeOnly: true } : {}), ...(body.aiProvider === 'openrouter' ? { aiProvider: 'openrouter' as const } : {}), ...(researchSources.length ? { researchSources } : {}) };
 }
 
 /**
@@ -7131,6 +7235,7 @@ async function createTeamMemberRecord(
     skillIds,
     model: LEGACY_DEFAULT_MODEL,
     ...(input.model ? { model: input.model } : {}),
+    ...(input.freeOnly ? { freeOnly: true } : {}),
     ...(input.aiProvider ? { aiProvider: input.aiProvider } : {}),
     ...(input.researchSources?.length ? { researchSources: input.researchSources } : {}),
     status: "PAUSED",
@@ -7175,6 +7280,7 @@ function presentTeamMember(goat: FundGoat) {
     asset: goat.markets[0],
     tradingProvider: resolveGoatTradingProvider(goat),
     model: goat.model,
+    freeOnly: goat.freeOnly ?? false,
     aiProvider: goat.aiProvider ?? 'openrouter',
     researchSources: goat.researchSources ?? [],
     createdAt: goat.createdAt,
@@ -7403,32 +7509,49 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   if (req.body?.deployment !== undefined && req.body?.deployment !== null && !deployment) {
     return fail(res, 400, "INVALID_DEPLOYMENT_SETTINGS", "Deployment settings are incomplete. Choose a trading provider and an asset.");
   }
+  if (shouldDeploy && !deployment) return fail(res, 400, 'MISSING_DEPLOYMENT_SETTINGS', 'Choose a trading provider and asset before starting a robot.');
+  if (robotKind === 'AI_ROBOT' && (existingMemberIds.length !== 0 || newMemberInputs.length !== 1)) {
+    return fail(res, 400, 'INVALID_AI_ROBOT_SHAPE', 'An AI robot must have exactly one newly configured analyst.');
+  }
+  if (shouldDeploy && deployment?.liveTrading) {
+    const live = await liveExecutionReadinessForUser(user.uid, deployment.provider);
+    if (!live.ready) return fail(res, 409, 'LIVE_TRADING_REQUIRES_BROKER', live.reason ?? 'Connect a broker before enabling live trading.');
+  }
 
   const ownedMembers = await Promise.all(existingMemberIds.map(id => persistence.goats.getForUser(id, user.uid)));
   if (ownedMembers.some(member => !member)) return fail(res, 404, "TEAM_MEMBER_NOT_FOUND", "Every team member must be an existing member owned by the signed-in user.");
 
   const createdMembers: FundGoat[] = [];
+  const cleanupCreatedMembers = async () => {
+    for (const member of createdMembers) {
+      await stopAndResetGoatFor(user.uid, member.id).catch(() => {});
+      await persistence.goats.delete(member.id).catch(() => {});
+    }
+  };
   for (const raw of newMemberInputs) {
     const memberInput = normaliseTeamMemberInput(raw);
-    if (!memberInput) return fail(res, 400, "INVALID_MEMBER_INPUT", "Each member needs a name, a job title, and a job description.");
+    if (!memberInput) { await cleanupCreatedMembers(); return fail(res, 400, "INVALID_MEMBER_INPUT", "Each member needs a name, a job title, and a job description."); }
     if (memberInput.model) {
       const provider = memberInput.aiProvider ?? 'openrouter';
       const catalogue = await reasoningGateway.listModels(user.uid, provider).catch(() => null);
-      if (!catalogue) return fail(res, 400, 'AI_NOT_CONFIGURED', 'Connect an OpenRouter key in Settings or configure the server-side OPENROUTER_API_KEY before creating an AI robot.');
+      if (!catalogue) { await cleanupCreatedMembers(); return fail(res, 400, 'AI_NOT_CONFIGURED', 'Connect an OpenRouter key in Settings or configure the server-side OPENROUTER_API_KEY before creating an AI robot.'); }
       const selected = catalogue.models.find(model => model.id === memberInput.model);
-      if (!selected) return fail(res, 400, 'INVALID_MODEL', 'Choose a model that is currently available from OpenRouter.');
-      if (!selected.supportsStructuredOutputs) return fail(res, 400, 'MODEL_NOT_COMPATIBLE', 'This model does not advertise structured output support required for safe proposal validation. Choose a compatible model.');
+      if (!selected) { await cleanupCreatedMembers(); return fail(res, 400, 'INVALID_MODEL', 'Choose a model that is currently available from OpenRouter.'); }
+      if (!selected.supportsStructuredOutputs) { await cleanupCreatedMembers(); return fail(res, 400, 'MODEL_NOT_COMPATIBLE', 'Choose a model with structured output support.'); }
+      if (memberInput.freeOnly && !selected.id.endsWith(':free')) { await cleanupCreatedMembers(); return fail(res, 400, 'PAID_MODEL_NOT_ALLOWED', 'Choose an explicit OpenRouter free-tier model for this robot.'); }
     }
     try {
       createdMembers.push(await createTeamMemberRecord(user.uid, memberInput));
     } catch (error) {
       const message = error instanceof Error ? error.message : "A member could not be created.";
+      await cleanupCreatedMembers();
       return fail(res, error instanceof Error && (error as { code?: string }).code === "UNKNOWN_MARKET" ? 400 : 500, "MEMBER_CREATE_FAILED", message);
     }
   }
 
   const memberGoatIds = [...existingMemberIds, ...createdMembers.map(member => member.id)];
   if (coordinationMode === "LEAD_REVIEW" && (!leadGoatId || !memberGoatIds.includes(leadGoatId))) {
+    await cleanupCreatedMembers();
     return fail(res, 400, "INVALID_TEAM_LEAD", "LEAD_REVIEW teams require leadGoatId to identify one of the team members.");
   }
 
@@ -7467,21 +7590,16 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     createdAt: now,
     updatedAt: now,
   };
-  team = await goatTeamStore.create(team);
-  await stampTeamInstructions(user.uid, team.memberGoatIds, team.instructions || "");
+  try {
+    team = await goatTeamStore.create(team);
+    await stampTeamInstructions(user.uid, team.memberGoatIds, team.instructions || "");
+  } catch (error) {
+    await goatTeamStore.deleteForUser(team.id, user.uid).catch(() => false);
+    await cleanupCreatedMembers();
+    throw error;
+  }
   if (shouldDeploy) {
-    if (!deployment) return fail(res, 400, "MISSING_DEPLOYMENT_SETTINGS", "Choose your trading provider, asset, and risk limits before deploying.");
-    /**
-     * Live trading is the only thing that needs a venue credential. Refusing
-     * here -- before any member is touched -- keeps the failure legible instead
-     * of surfacing later as a partial deploy.
-     */
-    if (deployment.liveTrading) {
-      const live = await liveExecutionReadinessForUser(user.uid, deployment.provider);
-      if (!live.ready) {
-        return fail(res, 409, "LIVE_TRADING_REQUIRES_BROKER", live.reason ?? "Connect a broker in Settings before enabling live trading.");
-      }
-    }
+    if (!deployment) throw new Error('Deployment settings disappeared after preflight.');
     const results: Array<{ goatId: string; ok: boolean; error?: string }> = [];
     for (const goatId of team.memberGoatIds) {
       try {
@@ -7505,6 +7623,11 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
       } catch (error) { results.push({ goatId, ok: false, error: error instanceof Error ? error.message : "Deployment failed" }); }
     }
     const failed = results.some(result => !result.ok);
+    if (failed && robotKind === 'AI_ROBOT') {
+      await goatTeamStore.deleteForUser(team.id, user.uid);
+      await cleanupCreatedMembers();
+      return fail(res, 503, 'AI_ROBOT_START_FAILED', 'The robot could not start; the incomplete robot was removed. Check model access and scheduling, then try again.');
+    }
     team = await goatTeamStore.save({ ...team, status: failed ? "PARTIAL" : "DEPLOYED", updatedAt: new Date().toISOString(), ...(!failed ? { deployedAt: now } : {}) });
     if (failed) return res.status(409).json({ error: { code: "TEAM_DEPLOYMENT_PARTIAL", message: "The team was saved, but one or more members could not be deployed." }, team, results, shareUrl: `/robots/${shareSlug}` });
   }
@@ -7868,6 +7991,7 @@ apiRouter.patch(
     if (!name || name.length > 80) return fail(res, 400, "INVALID_NAME", "GOAT name must be between 1 and 80 characters.");
     if (!goal || goal.length > 4000) return fail(res, 400, "INVALID_DESCRIPTION", "GOAT description must be between 1 and 4000 characters.");
     if (!requestedModel || !isValidModel(requestedModel)) return fail(res, 400, "INVALID_MODEL", "Choose a valid model from this GOAT's provider catalogue.");
+    if (existing.freeOnly && (aiProvider !== 'openrouter' || !requestedModel.endsWith(':free'))) return fail(res, 400, 'PAID_MODEL_NOT_ALLOWED', 'This free-only robot requires an OpenRouter :free model.');
     if (!(await reasoningGateway.hasKeyFor(user.uid, aiProvider))) return fail(res, 400, 'AI_NOT_CONFIGURED', 'Save credentials for this GOAT provider in Settings before selecting it.');
     if (!(await reasoningGateway.isModelAvailable(user.uid, requestedModel, aiProvider))) return fail(res, 400, 'INVALID_MODEL', 'That model is not available from the selected GOAT provider.');
     const model = requestedModel;
@@ -8277,6 +8401,15 @@ async function ownedSignal(
   return { goat, signal };
 }
 
+/** A robot proposal is usable only after its durable analysis and gate decision exist. */
+async function robotSignalHasVerifiedRun(signal: TradeSignal, goat: FundGoat): Promise<boolean> {
+  if (!signal.runId) return false;
+  const run = await goatWorkflowStore.getRun(signal.runId);
+  return !!run && run.signalId === signal.id && run.goatId === goat.id &&
+    run.userId === goat.userId && run.analysis?.gate.approved === true &&
+    (run.status === 'WAITING_APPROVAL' || run.status === 'APPROVED');
+}
+
 /**
  * RECORD A PROPOSAL DECISION (accept / reject)
  * --------------------------------------------
@@ -8348,6 +8481,10 @@ apiRouter.post(
           "PROPOSAL_NOT_ACTIONABLE",
           "Only an actionable proposal can be accepted. Review the GOAT's latest analysis.",
         );
+      }
+
+      if ((signal.runId || goat.publicSlug) && !(await robotSignalHasVerifiedRun(signal, goat))) {
+        return fail(res, 409, "RUN_NOT_VERIFIED", "This proposal has no completed, verified analysis run and cannot be accepted.");
       }
 
       const latestTheses = await persistence.theses.listByGoat(goat.id, 1);

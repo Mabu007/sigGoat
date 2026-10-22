@@ -1123,10 +1123,12 @@ class FirestoreSignalRepository implements SignalRepository {
     // Use the automatic single-field goatId index, then sort in memory.
     // This keeps stale-signal cleanup working even before composite indexes
     // have propagated to a Firebase project.
-    const snap = await this.db
-      .collection(SIGNALS)
-      .where('goatId', '==', goatId)
-      .get();
+    let snap;
+    try { snap = await this.db.collection(SIGNALS).where('goatId', '==', goatId).orderBy('createdAt', 'desc').limit(limit).get(); }
+    catch (error) {
+      if (!/requires an index/i.test((error as Error).message ?? '')) throw error;
+      snap = await this.db.collection(SIGNALS).where('goatId', '==', goatId).get();
+    }
     return snap.docs
       .map((d) => d.data() as TradeSignal)
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
@@ -1246,10 +1248,12 @@ class FirestoreThesisRepository implements ThesisRepository {
     // Filter by the automatic single-field goatId index, then sort in memory.
     // The compound where(goatId)+orderBy(createdAt) query requires a composite
     // Firestore index; without it, public robot pages fail while loading a thesis.
-    const snap = await this.db
-      .collection(THESES)
-      .where('goatId', '==', goatId)
-      .get();
+    let snap;
+    try { snap = await this.db.collection(THESES).where('goatId', '==', goatId).orderBy('createdAt', 'desc').limit(limit).get(); }
+    catch (error) {
+      if (!/requires an index/i.test((error as Error).message ?? '')) throw error;
+      snap = await this.db.collection(THESES).where('goatId', '==', goatId).get();
+    }
     return snap.docs
       .map((d) => d.data() as MarketThesis)
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))

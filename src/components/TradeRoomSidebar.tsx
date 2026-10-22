@@ -100,6 +100,15 @@ export interface RoomRun {
   confidence: number | null;
   levels: { entry?: number; stopLoss?: number; takeProfit?: number; riskReward: string | null } | null;
   agentName: string;
+  analysis?: {
+    summary: string; marketView: string; bias: string; confidencePercent: number;
+    confirmation: string[]; invalidation: string[];
+    evidence: { source: string; observation: string; classification: 'SUPPORTING' | 'CONTRADICTORY'; timeframe?: string }[];
+    gate: { approved: boolean; reasons: string[] };
+    news: { report: string; fetchedAt: number; headlines: { title: string; source: string; publishedAt?: number; link?: string }[] };
+    model?: { id: string; provider: string; totalTokens?: number; cost?: number; latencyMs?: number };
+    data: { source: string; quoteAt?: number; reviewAt: number };
+  };
 }
 
 export interface RoomRunLog {
@@ -892,7 +901,7 @@ function RoomChatConversation({
                 <time className="tr-chat-row-time" dateTime={run.at} title={new Date(run.at).toLocaleString()}>{localMessageTime(run.at)}</time>
               </div>
               <strong className="block text-sm text-fg">{run.headline}</strong>
-              {run.bias && <p className="mt-1 text-[11px] text-fg-muted">Bias: {run.bias}{run.confidence != null ? ` · ${Math.round(run.confidence * 100)}% confidence` : ''}</p>}
+              {run.bias && <p className="mt-1 text-[11px] text-fg-muted">Bias: {run.bias}{run.confidence != null ? ` · ${Math.round(run.analysis ? run.confidence : run.confidence <= 1 ? run.confidence * 100 : run.confidence)}% confidence` : ''}</p>}
               <ChatMessageBody content={run.summary || 'No analysis summary was recorded for this run.'} />
               {run.levels && <p className="mt-2 text-[10px] text-fg-subtle">{[
                 run.levels.entry != null ? `Entry ${run.levels.entry}` : '',
@@ -1064,7 +1073,14 @@ export function RobotLogPanel({ runs }: { runs: RoomRun[] }) {
     {ordered.map((run, index) => <article key={run.workflowId + index} className="rounded-xl border border-line bg-panel-muted p-3">
       <div className="flex items-start justify-between gap-2"><div><p className="text-[10px] font-bold uppercase tracking-wide text-accent-text">{run.market} · {run.outcome.replace('_', ' ')}</p><h3 className="mt-1 text-sm font-semibold text-fg">{run.headline}</h3></div><span className="rounded-full border border-line px-2 py-1 text-[9px] font-bold uppercase text-fg-subtle">{run.status}</span></div>
       <p className="mt-2 whitespace-pre-line text-xs leading-5 text-fg-muted">{run.summary}</p>
-      {run.bias && <p className="mt-2 text-[10px] font-semibold text-fg-subtle">Bias: {run.bias}{run.confidence != null ? ` · ${Math.round(run.confidence * 100)}% confidence` : ''}</p>}
+      {run.bias && <p className="mt-2 text-[10px] font-semibold text-fg-subtle">Bias: {run.bias}{run.confidence != null ? ` · ${Math.round(run.analysis ? run.confidence : run.confidence <= 1 ? run.confidence * 100 : run.confidence)}% confidence` : ''}</p>}
+      {run.analysis && <div className="mt-3 space-y-2 border-t border-line pt-3 text-xs leading-5 text-fg-muted">
+        {run.analysis.marketView && <p><strong className="text-fg">Market view:</strong> {run.analysis.marketView}</p>}
+        {run.analysis.confirmation.length > 0 && <p><strong className="text-fg">Waiting for:</strong> {run.analysis.confirmation.join('; ')}</p>}
+        {run.analysis.invalidation.length > 0 && <p><strong className="text-fg">Invalidation:</strong> {run.analysis.invalidation.join('; ')}</p>}
+        {run.analysis.evidence.length > 0 && <details><summary className="cursor-pointer font-semibold text-fg">Evidence ({run.analysis.evidence.length})</summary><ul className="mt-2 list-disc space-y-1 pl-4">{run.analysis.evidence.map((item, i) => <li key={i}>{item.classification.toLowerCase()} · {item.source}: {item.observation}</li>)}</ul></details>}
+        {run.analysis.model && <p className="text-[10px] text-fg-subtle">Model {run.analysis.model.id}{run.analysis.model.totalTokens != null ? ` · ${run.analysis.model.totalTokens} tokens` : ''} · Quote {run.analysis.data.quoteAt ? new Date(run.analysis.data.quoteAt).toLocaleString() : 'time unavailable'}</p>}
+      </div>}
       {run.levels && <p className="mt-1 text-[10px] text-fg-subtle">Entry {price(run.levels.entry)} · Stop {price(run.levels.stopLoss)} · Target {price(run.levels.takeProfit)}</p>}
       <time className="mt-2 block text-[10px] text-fg-subtle" dateTime={run.completedAt ?? run.at}>{relativeTime(run.completedAt ?? run.at)}</time>
     </article>)}
@@ -1074,25 +1090,27 @@ export function RobotLogPanel({ runs }: { runs: RoomRun[] }) {
 export type RobotChatMessage = { role: 'user' | 'robot'; text: string; at: string };
 
 export function RobotChatPanel({ messages, onSend, sending, signedIn, onRequestSignIn, error }: {
-  messages: RobotChatMessage[]; onSend: (text: string) => void; sending: boolean; signedIn: boolean; onRequestSignIn: () => void; error: string;
+  messages: RobotChatMessage[]; onSend: (text: string, includeAccountBalance: boolean) => Promise<boolean>; sending: boolean; signedIn: boolean; onRequestSignIn: () => void; error: string;
 }) {
   const [draft, setDraft] = useState('');
-  const submit = (event: React.FormEvent) => { event.preventDefault(); if (!draft.trim() || sending) return; onSend(draft.trim()); setDraft(''); };
+  const [includeAccountBalance, setIncludeAccountBalance] = useState(false);
+  const submit = (event: React.FormEvent) => { event.preventDefault(); if (!draft.trim() || sending) return; const sent = draft.trim(); void onSend(sent, includeAccountBalance).then(ok => { if (ok) setDraft(current => current.trim() === sent ? '' : current); }); };
   return <div className="tr-robot-chat flex h-full min-h-0 flex-col gap-3 p-3">
     <div className="tr-robot-chat-scroll min-h-0 flex-1 space-y-3 overflow-y-auto">
-      <p className="tr-robot-chat-intro">Ask about this robot’s market, latest analysis, breaking news, or your connected account status. Chat stays separate from its trading runs.</p>
+      <p className="tr-robot-chat-intro">Ask about this robot’s market, latest analysis, cited news, or your broker connection. Balance is shared only when you select the read-only option for a question. Orders and positions are unavailable. Chat does not alter robot runs.</p>
       {messages.map((message,index)=><article key={message.at + index} className={`tr-robot-chat-message ${message.role === 'user' ? 'is-user' : 'is-robot'}`}><p className="tr-robot-chat-role">{message.role === 'user' ? 'You' : 'Robot'}</p><p className="tr-robot-chat-copy">{message.text}</p><time className="tr-robot-chat-time">{relativeTime(message.at)}</time></article>)}
       {error && <p role="alert" className="tr-robot-chat-error">{error}</p>}
     </div>
-    {!signedIn ? <button type="button" onClick={onRequestSignIn} className="btn btn-secondary justify-center">Sign in to chat with this robot</button> : <form onSubmit={submit} className="tr-robot-chat-composer flex gap-2"><textarea value={draft} onChange={event=>setDraft(event.target.value)} rows={2} maxLength={2000} className="input min-w-0 flex-1 resize-none" placeholder="Ask about the current market…"/><button className="btn btn-primary self-end" type="submit" disabled={!draft.trim()||sending}>{sending?'Thinking…':'Send'}</button></form>}
+    {!signedIn ? <button type="button" onClick={onRequestSignIn} className="btn btn-secondary justify-center">Sign in to chat with this robot</button> : <form onSubmit={submit} className="tr-robot-chat-composer flex flex-col gap-2"><label className="flex items-center gap-2 text-[11px] text-fg-muted"><input type="checkbox" checked={includeAccountBalance} onChange={event=>setIncludeAccountBalance(event.target.checked)} /> Include my broker balance in this question (read-only)</label><div className="flex gap-2"><textarea value={draft} onChange={event=>setDraft(event.target.value)} rows={2} maxLength={2000} className="input min-w-0 flex-1 resize-none" placeholder="Ask about the current market…"/><button className="btn btn-primary self-end" type="submit" disabled={!draft.trim()||sending}>{sending?'Thinking…':'Send'}</button></div></form>}
   </div>;
 }
 
-export function RobotNewsReportPanel({ market, report, loading, onRefresh }: { market: string; report: string; loading: boolean; onRefresh: () => void }) {
+export function RobotNewsReportPanel({ market, run }: { market: string; run: RoomRun | null }) {
+  const news = run?.analysis?.news;
   return <div className="tr-news">
-    <div className="tr-news-meta"><span className="tr-news-market">{market || 'MARKET'}</span><button type="button" className="tr-news-refresh" onClick={onRefresh} disabled={loading}><RefreshCw size={12} className={loading?'is-spinning':''}/><span>{loading?'Writing…':'Refresh report'}</span></button></div>
-    {loading && !report ? <PanelEmpty title="Analyzing current headlines…"/> : report ? <article className="rounded-xl border border-line bg-panel-muted p-4"><p className="whitespace-pre-line text-sm leading-6 text-fg-muted">{report}</p></article> : <PanelEmpty title="No report yet" hint="Refresh to generate an AI summary of current news and its likely market impact."/>}
-    <p className="tr-panel-disclaimer">AI analysis of available headlines. It may miss events and is not an instruction to trade.</p>
+    <div className="tr-news-meta"><span className="tr-news-market">{market || 'MARKET'}</span>{news && <time dateTime={new Date(news.fetchedAt).toISOString()}>{relativeTime(news.fetchedAt)}</time>}</div>
+    {news ? <article className="rounded-xl border border-line bg-panel-muted p-4"><p className="whitespace-pre-line text-sm leading-6 text-fg-muted">{news.report}</p>{news.headlines.length > 0 && <ul className="mt-3 space-y-2 border-t border-line pt-3">{news.headlines.map((headline, i) => <li key={i} className="text-xs text-fg-muted">{headline.link ? <a href={headline.link} target="_blank" rel="noopener noreferrer" className="text-accent-text underline">{headline.title}</a> : headline.title}<span className="ml-1 text-fg-subtle">· {headline.source}{headline.publishedAt ? ` · ${relativeTime(headline.publishedAt)}` : ''}</span></li>)}</ul>}</article> : <PanelEmpty title="No saved news report yet" hint="The next completed robot analysis will publish one shared report with its source headlines."/>}
+    <p className="tr-panel-disclaimer">Report from the saved robot run. Check its date and cited headlines before using it.</p>
   </div>;
 }
 
@@ -1417,7 +1435,7 @@ export interface RoomGroupMember {
 }
 
 export function GroupDetailsPanel({
-  room, members, memberCount, isMember, onJoin, onRequestSignIn, joining, joinError, signedIn, robotMode = false, reviewIntervals = [], robotStatus, robotSchedule, runtimeResources, latestRun,
+  room, members, memberCount, isMember, onJoin, onRequestSignIn, joining, joinError, signedIn, robotMode = false, reviewIntervals = [], robotStatus, robotSchedule, runtimeResources, latestRun, recentRuns = [],
 }: {
   room: RoomGroupDetails | null;
   members: RoomGroupMember[];
@@ -1435,6 +1453,7 @@ export function GroupDetailsPanel({
   robotSchedule?: { paused: boolean; nextAnalysisAt: string | null; nextTrackerCheckAt: string | null; leaseUntilMs: number } | null;
   runtimeResources?: { scheduler: 'firestore' | 'unavailable'; dispatcherLastSeenAt: string | null; dispatcherSource: string | null; perRobotDurableObjects: number } | null;
   latestRun?: RoomRun | null;
+  recentRuns?: RoomRun[];
 }) {
   if (!room) return <PanelEmpty title="Loading room details…" />;
 
@@ -1480,20 +1499,24 @@ export function GroupDetailsPanel({
       {robotMode && (() => {
         const lastDispatchMs = runtimeResources?.dispatcherLastSeenAt ? Date.parse(runtimeResources.dispatcherLastSeenAt) : NaN;
         const dispatchAgeMs = Date.now() - lastDispatchMs;
-        const dispatchFresh = Number.isFinite(lastDispatchMs) && dispatchAgeMs >= 0 && dispatchAgeMs <= 12 * 60_000;
+        const dispatchFresh = runtimeResources?.dispatcherSource === 'Cloudflare Worker' && Number.isFinite(lastDispatchMs) && dispatchAgeMs >= 0 && dispatchAgeMs <= 12 * 60_000;
         const scheduledTime = robotSchedule?.nextAnalysisAt ? Date.parse(robotSchedule.nextAnalysisAt) : NaN;
         const trackerTime = robotSchedule?.nextTrackerCheckAt ? Date.parse(robotSchedule.nextTrackerCheckAt) : NaN;
         const dateLabel = (value: number) => Number.isFinite(value) ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Not scheduled';
+        const lastSuccess = recentRuns.find(run => ['COMPLETED', 'WAITING_APPROVAL', 'APPROVED'].includes(run.status));
+        const lastFailure = recentRuns.find(run => run.outcome === 'failed');
         return <div className="tr-details-card">
-          <div className="tr-details-row"><span className="tr-details-row-label">Robot state</span><span className="tr-details-row-value">{robotStatus === 'PAUSED' ? 'Stopped' : 'Active'}</span></div>
+          <div className="tr-details-row"><span className="tr-details-row-label">Robot state</span><span className="tr-details-row-value">{robotStatus === 'PAUSED' ? 'Stopped' : robotStatus === 'PARTIAL' || !dispatchFresh ? 'Needs attention · Cloudflare dispatcher unverified' : 'Running'}</span></div>
           <div className="tr-details-row"><span className="tr-details-row-label">Analysis interval</span><span className="tr-details-row-value">Every {reviewIntervals[0] ?? 15} min</span></div>
           <div className="tr-details-row"><span className="tr-details-row-label">Next analysis</span><span className="tr-details-row-value">{robotStatus === 'PAUSED' ? 'Paused' : robotSchedule ? dateLabel(scheduledTime) : 'Owner view only'}</span></div>
           <div className="tr-details-row"><span className="tr-details-row-label">Next tracker check</span><span className="tr-details-row-value">{robotStatus === 'PAUSED' ? 'Paused' : robotSchedule ? dateLabel(trackerTime) : 'Owner view only'}</span></div>
           {robotSchedule && <div className="tr-details-row"><span className="tr-details-row-label">Current work</span><span className="tr-details-row-value">{robotStatus === 'PAUSED' ? 'Stopped' : robotSchedule.leaseUntilMs > Date.now() ? 'Processing' : 'Idle'}</span></div>}
-          {runtimeResources && <div className="tr-details-row"><span className="tr-details-row-label">Shared dispatcher</span><span className="tr-details-row-value">{runtimeResources.scheduler !== 'firestore' ? 'Unavailable' : !runtimeResources.dispatcherLastSeenAt ? 'No heartbeat' : `${dispatchFresh ? 'Healthy' : 'Stale'} · ${runtimeResources.dispatcherSource ?? 'Unknown source'}`}</span></div>}
+          {runtimeResources && <div className="tr-details-row"><span className="tr-details-row-label">Shared dispatcher</span><span className="tr-details-row-value">{runtimeResources.scheduler !== 'firestore' ? 'Unavailable' : !runtimeResources.dispatcherLastSeenAt ? 'No heartbeat' : `${dispatchFresh ? 'Healthy' : 'Unverified'} · ${runtimeResources.dispatcherSource ?? 'Unknown source'}`}</span></div>}
           {runtimeResources?.dispatcherLastSeenAt && <div className="tr-details-row"><span className="tr-details-row-label">Last dispatch</span><span className="tr-details-row-value">{relativeTime(runtimeResources.dispatcherLastSeenAt)}</span></div>}
           <div className="tr-details-row"><span className="tr-details-row-label">Robot Durable Objects</span><span className="tr-details-row-value">{runtimeResources?.perRobotDurableObjects ?? 0}</span></div>
           <div className="tr-details-row"><span className="tr-details-row-label">Latest review</span><span className="tr-details-row-value">{latestRun ? relativeTime(latestRun.completedAt ?? latestRun.at) : 'No run yet'}</span></div>
+          <div className="tr-details-row"><span className="tr-details-row-label">Last success</span><span className="tr-details-row-value">{lastSuccess ? relativeTime(lastSuccess.completedAt ?? lastSuccess.at) : 'No successful run yet'}</span></div>
+          {lastFailure && <p className="tr-panel-disclaimer" role={latestRun?.workflowId === lastFailure.workflowId ? 'alert' : undefined}>Last failure {relativeTime(lastFailure.completedAt ?? lastFailure.at)}: {lastFailure.errorCode ?? lastFailure.summary}</p>}
           <p className="tr-panel-disclaimer">This robot uses a Firestore schedule and shared dispatcher, not its own always-on Worker or Durable Object. Stop clears its due analysis and tracker work; other robots remain unaffected.</p>
         </div>;
       })()}

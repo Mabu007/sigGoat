@@ -65,7 +65,7 @@ import {
   WakeEventRepository,
 } from '../../server/repositories';
 import type { WakeScheduler } from '../../server/scheduler/types';
-import type { GoatWorkflowStore } from '../../server/GoatWorkflowStore';
+import type { GoatWorkflowStore, RobotRunAnalysis } from '../../server/GoatWorkflowStore';
 
 export interface GoatRuntimeOptions {
   reasoning: ReasoningGateway;
@@ -734,6 +734,7 @@ export class GoatRuntime {
     }
 
     let workflowRunId: string | undefined;
+    let workflowErrorCode: string | undefined;
     try {
       if (this.workflowStore) {
         const eventId = workflowEventId || generationId;
@@ -817,6 +818,8 @@ export class GoatRuntime {
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'unknown error';
+        workflowErrorCode = /stale|degraded|expired|out.of.date/i.test(message)
+          ? 'STALE_MARKET_DATA' : 'MARKET_DATA_UNAVAILABLE';
 
         /**
          * Distinguish "unlisted instrument" from "provider down".
@@ -829,6 +832,7 @@ export class GoatRuntime {
          * removal is logged and surfaced in dormancy state.
          */
         if (isUnlistedMarketError(err, message)) {
+          workflowErrorCode = 'MARKET_NOT_LISTED';
           const remaining = this.goatConfig.markets.filter((m) => m !== market);
           this.goatConfig = { ...this.goatConfig, markets: remaining.length > 0 ? remaining : [market] };
           console.warn(
@@ -932,6 +936,7 @@ export class GoatRuntime {
         goatId: this.goatConfig.id,
         goatName: this.goatConfig.name,
         goatGoal: this.goatConfig.goal,
+        freeOnly: this.goatConfig.freeOnly ?? this.goatConfig.model.endsWith(':free'),
         teamInstructions: this.goatConfig.teamInstructions,
         market,
         markets: this.goatConfig.markets,
@@ -1001,19 +1006,21 @@ export class GoatRuntime {
       }
 
       let reasoningResult: ReasoningResult;
+      let modelCompletion: { model: string; provider: string; usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cost?: number }; requestId?: string; latencyMs: number } | undefined;
       try {
         await this.workflowStore?.advanceRun(workflowRunId ?? "", "reasoning_started");
         reasoningResult = await runGoatReasoningGraph({
           context: reasoningContext,
           model: this.goatConfig.model,
           provider: this.goatConfig.aiProvider,
-          evaluate: (context, model, provider) => this.reasoning.evaluateGoat(context, model, provider),
+          evaluate: (context, model, provider) => this.reasoning.evaluateGoat(context, model, provider, metadata => { modelCompletion = metadata; }),
           onStage: async (stage) => {
             if (workflowRunId) await this.workflowStore?.advanceRun(workflowRunId, stage);
           },
         });
       } catch (err) {
         if (err instanceof ReasoningValidationError) {
+          workflowErrorCode = 'MODEL_INVALID_RESPONSE';
           const failure = `Model response failed validation: ${err.issues.slice(0, 3).join('; ')}`;
           await this.expirePendingProposals(failure);
           this.recordFailure(failure);
@@ -1035,9 +1042,16 @@ export class GoatRuntime {
            * unfunded OpenRouter account. Say which it is, and point at the fix.
            */
           const raw = err instanceof Error ? err.message : 'unknown error';
+          const providerStatus = (err as { status?: number })?.status;
           const missingCredential = /AI_PROVIDER_CREDENTIAL_MISSING/.test(raw);
           const outOfCredits = /insufficient credit|402|payment required|add more credits/i.test(raw);
           const modelRetired = /not listed|no endpoints found|MODEL_NOT_LISTED/i.test(raw);
+          workflowErrorCode = /MODEL_UNAVAILABLE|OPENROUTER_NO_USABLE_MODEL/.test(raw) ? 'MODEL_UNAVAILABLE'
+            : providerStatus === 402 || outOfCredits ? 'MODEL_PAYMENT_REQUIRED'
+              : providerStatus === 429 ? 'MODEL_RATE_LIMITED'
+                : /timed out|timeout/i.test(raw) ? 'MODEL_TIMEOUT'
+                  : /INVALID_REASONING_SCHEMA|validation/i.test(raw) ? 'MODEL_INVALID_RESPONSE'
+                    : 'MODEL_UNAVAILABLE';
 
           const guidance = missingCredential
             ? 'The selected provider credential became unavailable during this review. Re-save the key in Settings, then run a fresh review.'
@@ -1119,6 +1133,7 @@ export class GoatRuntime {
 
       const newThesis: MarketThesis = {
         id: thesisId,
+        ...(workflowRunId ? { runId: workflowRunId } : {}),
         userId: this.goatConfig.userId,
         goatId: this.id,
         market,
@@ -1239,11 +1254,11 @@ export class GoatRuntime {
         }
       }
 
-      let latestSignal: TradeSignal = gateResult.signal;
+      let latestSignal: TradeSignal = { ...gateResult.signal, ...(workflowRunId ? { runId: workflowRunId } : {}) };
       // A proposal whose thesis was not durably recorded is never actionable.
       if (gateResult.approved && !thesisPersisted) {
         latestSignal = {
-          ...gateResult.signal,
+          ...latestSignal,
           direction: 'NO_TRADE',
           status: 'NO_TRADE',
           rationale: 'Actionable proposal suppressed because the thesis could not be persisted.',
@@ -1262,14 +1277,47 @@ export class GoatRuntime {
         persistenceErrors.push('signal: repository unavailable');
       }
 
-      const actionable = gateResult.approved && thesisPersisted && signalPersisted;
+      let actionable = gateResult.approved && thesisPersisted && signalPersisted;
+      if (workflowRunId && this.workflowStore) {
+        const currentNews = news.find(item => item.market === market) ?? news[0];
+        const headlines = (currentNews?.headlines ?? []).slice(0, 8).map(item => ({
+          title: item.title.slice(0, 220), source: item.source.slice(0, 80),
+          ...(item.publishedAt !== undefined ? { publishedAt: item.publishedAt } : {}),
+          ...(item.link && URL.canParse(item.link) ? { link: item.link.slice(0, 1000) } : {}),
+        }));
+        const safeModel = modelCompletion as typeof modelCompletion | undefined;
+        const analysis: RobotRunAnalysis = {
+          summary: reasoningResult.thesis.summary.slice(0, 1200),
+          marketView: (reasoningResult.investigation.marketView ?? '').slice(0, 1200),
+          bias: reasoningResult.thesis.directionalBias,
+          confidencePercent: reasoningResult.thesis.confidence,
+          confirmation: newThesis.confirmationConditions.slice(0, 12).map(item => item.slice(0, 400)),
+          invalidation: newThesis.invalidationConditions.slice(0, 12).map(item => item.slice(0, 400)),
+          evidence: reasoningResult.evidence.slice(0, 24).map(item => ({ source: item.source.slice(0, 100), observation: item.observation.slice(0, 500), classification: item.classification, ...(item.timeframe ? { timeframe: item.timeframe.slice(0, 40) } : {}) })),
+          gate: { approved: actionable, reasons: (actionable ? [] : [...gateResult.reasons, ...persistenceErrors]).slice(0, 16).map(item => item.slice(0, 400)) },
+          news: { report: headlines.length ? (reasoningResult.investigation.newsReport ?? 'No AI news conclusion was produced for this review.').slice(0, 1200) : 'No fresh relevant headlines were available for this review.', fetchedAt: currentNews?.fetchedAt ?? this.now(), headlines },
+          ...(safeModel ? { model: { id: safeModel.model.slice(0, 180), provider: safeModel.provider, ...(safeModel.usage?.promptTokens !== undefined ? { promptTokens: safeModel.usage.promptTokens } : {}), ...(safeModel.usage?.completionTokens !== undefined ? { completionTokens: safeModel.usage.completionTokens } : {}), ...(safeModel.usage?.totalTokens !== undefined ? { totalTokens: safeModel.usage.totalTokens } : {}), ...(safeModel.usage?.cost !== undefined ? { cost: safeModel.usage.cost } : {}), ...(safeModel.requestId ? { requestId: safeModel.requestId.slice(0, 180) } : {}), latencyMs: safeModel.latencyMs } } : {}),
+          data: { source: String(this.marketProvider.dataMode).slice(0, 80), quoteAt: quote.timestamp, reviewAt: this.now() },
+        };
+        try {
+          await this.workflowStore.saveAnalysis(workflowRunId, analysis);
+        } catch (artifactError) {
+          actionable = false;
+          // A proposal without its run evidence must never remain actionable.
+          if (gateResult.approved && signalPersisted && this.signalRepo) {
+            latestSignal = { ...latestSignal, direction: 'NO_TRADE', status: 'NO_TRADE', rationale: 'Review suppressed because its public analysis record could not be saved.' };
+            if (!(await this.signalRepo.update(latestSignal))) throw new Error('RUN_ARTIFACT_COMPENSATION_FAILED: actionable signal could not be revoked.');
+          }
+          throw artifactError;
+        }
+      }
       if (workflowRunId) {
         await this.workflowStore?.advanceRun(
           workflowRunId,
           actionable ? "proposal_persisted" : "review_complete",
           actionable ? "WAITING_APPROVAL" : "COMPLETED",
           { signalStatus: latestSignal.status, actionable, persistenceConfirmed: thesisPersisted && signalPersisted },
-          actionable ? latestSignal.id : undefined,
+          signalPersisted ? latestSignal.id : undefined,
         );
       }
       if (gateResult.approved && !actionable) {
@@ -1364,7 +1412,7 @@ export class GoatRuntime {
               failed ? "FAILED" : "COMPLETED",
               failed ? { error: this.runtimeState.lastError ?? "wake_failed" } : undefined,
               undefined,
-              failed ? "WAKE_FAILED" : undefined,
+              failed ? workflowErrorCode ?? "WAKE_FAILED" : undefined,
               failed ? this.runtimeState.lastError ?? "The review failed without an error detail." : undefined,
             );
           }

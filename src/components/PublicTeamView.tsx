@@ -196,8 +196,6 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   const [robotMessages, setRobotMessages] = useState<RobotChatMessage[]>([]);
   const [robotChatError, setRobotChatError] = useState('');
   const [robotChatSending, setRobotChatSending] = useState(false);
-  const [newsReport, setNewsReport] = useState('');
-  const [newsReportLoading, setNewsReportLoading] = useState(false);
   const [broker, setBroker] = useState<BrokerConnectionState>({ cTrader: null, propDao: null });
   const [brokerLoading, setBrokerLoading] = useState(false);
   const [brokerError, setBrokerError] = useState('');
@@ -206,6 +204,8 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
 
   const signedIn = Boolean(currentUser) || authMode === 'dev';
   const isAiRobot = data?.team.robotKind === 'AI_ROBOT';
+  const robotDispatcherFresh = Boolean(data?.team.runtimeResources?.dispatcherSource === 'Cloudflare Worker' && data.team.runtimeResources.dispatcherLastSeenAt && Date.now() - Date.parse(data.team.runtimeResources.dispatcherLastSeenAt) < 12 * 60_000);
+  const robotStateLabel = data?.team.status === 'PAUSED' ? 'Stopped' : data?.team.status === 'PARTIAL' || !robotDispatcherFresh ? 'Needs attention' : 'Running';
 
   /**
    * Auth headers for a room request, or none at all for a visitor who is not
@@ -431,9 +431,9 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
 
   useEffect(() => {
     void load();
-    const interval = window.setInterval(() => void load(), 15000);
+    const interval = window.setInterval(() => { if (document.visibilityState === 'visible') void load(); }, isAiRobot ? 30000 : 15000);
     return () => window.clearInterval(interval);
-  }, [load]);
+  }, [load, isAiRobot]);
 
   /* ------------------------------------------------------------------ */
   /* The room community: who I am, the room chat, the mentor thread.     */
@@ -542,12 +542,12 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   }, [roomId, roomIdentity?.isMember, optionalAuthHeaders, applyChatMessages]);
 
   useEffect(() => {
-    if (panel !== 'chat' || !roomIdentity?.isMember) return;
+    if (isAiRobot || panel !== 'chat' || !roomIdentity?.isMember) return;
     chatCursor.current = null;
     void loadChat(false);
     const timer = window.setInterval(() => void loadChat(true), 5000);
     return () => window.clearInterval(timer);
-  }, [panel, roomIdentity?.isMember, loadChat]);
+  }, [isAiRobot, panel, roomIdentity?.isMember, loadChat]);
 
   /**
    * THE ROOM'S PRESENCE.
@@ -929,43 +929,43 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
     } finally { setNewsLoading(false); }
   }, [slug, marketSymbol]);
   useEffect(() => {
-    if (panel !== 'news' && panel !== 'market') return;
+    if (panel !== 'market' && (panel !== 'news' || isAiRobot)) return;
     void loadNews();
     const timer = window.setInterval(() => void loadNews(true), 15 * 60_000);
     return () => window.clearInterval(timer);
-  }, [panel, loadNews]);
+  }, [panel, isAiRobot, loadNews]);
 
-  const askRobot = useCallback(async (question: string) => {
+  const askRobot = useCallback(async (question: string, includeAccountBalance = false) => {
     const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json' });
     for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
-    return read<{ answer: string }>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/robot-chat', {
-      method: 'POST', headers, body: JSON.stringify({ question }), cache: 'no-store',
+    return read<{ answer: string; chatHistory: RobotChatMessage[] }>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/robot-chat', {
+      method: 'POST', headers, body: JSON.stringify({ question, includeAccountBalance }), cache: 'no-store',
     }));
   }, [slug, getApiAuthHeaders]);
 
-  const sendRobotQuestion = useCallback(async (question: string) => {
+  useEffect(() => {
+    if (!isAiRobot || !signedIn) { setRobotMessages([]); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const headers = new Headers({ Accept: 'application/json' });
+        for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+        const result = await read<{ messages: RobotChatMessage[] }>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/robot-chat', { headers, cache: 'no-store' }));
+        if (!cancelled) setRobotMessages(result.messages);
+      } catch (cause) { if (!cancelled) setRobotChatError(cause instanceof Error ? cause.message : 'Could not load chat history.'); }
+    })();
+    return () => { cancelled = true; };
+  }, [isAiRobot, signedIn, slug, getApiAuthHeaders]);
+
+  const sendRobotQuestion = useCallback(async (question: string, includeAccountBalance: boolean) => {
     setRobotChatSending(true); setRobotChatError('');
-    const askedAt = new Date().toISOString();
-    setRobotMessages(previous => [...previous, { role: 'user', text: question, at: askedAt }]);
     try {
-      const answer = await askRobot(question);
-      setRobotMessages(previous => [...previous, { role: 'robot', text: answer.answer, at: new Date().toISOString() }]);
-    } catch (err) { setRobotChatError(err instanceof Error ? err.message : 'The robot could not answer right now.'); }
+      const answer = await askRobot(question, includeAccountBalance);
+      setRobotMessages(answer.chatHistory);
+      return true;
+    } catch (err) { setRobotChatError(err instanceof Error ? err.message : 'The robot could not answer right now.'); return false; }
     finally { setRobotChatSending(false); }
   }, [askRobot]);
-
-  const writeNewsReport = useCallback(async () => {
-    setNewsReportLoading(true);
-    try {
-      const result = await askRobot(`Write a concise Breaking News Report for ${activeMarket || 'the robot\'s configured asset'}. Analyze the currently available breaking news and conclude what is happening, the likely direction and impact on this asset, what evidence is uncertain or conflicting, and what would change the conclusion. Use only news and market context supplied to you. Do not invent headlines, do not recommend placing an order, and say plainly when no relevant breaking news is available.`);
-      setNewsReport(result.answer);
-    } catch (err) { setNewsReport(err instanceof Error ? err.message : 'Could not generate the news report.'); }
-    finally { setNewsReportLoading(false); }
-  }, [askRobot, activeMarket]);
-
-  useEffect(() => {
-    if (isAiRobot && panel === 'news' && !newsReport && !newsReportLoading && signedIn) void writeNewsReport();
-  }, [isAiRobot, panel, newsReport, newsReportLoading, signedIn, writeNewsReport]);
 
   /**
    * A one-second clock, started at mount so the first paint already has the
@@ -1027,8 +1027,8 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
       </button>
       <div className="trade-room-identity">
         <span className="trade-room-identity-name">{data.team.name}</span>
-        {isAiRobot && <span className={'trade-room-robot-state ' + (data.team.status === 'PAUSED' ? 'is-stopped' : 'is-running')} role="status">
-          <span aria-hidden="true" />{data.team.status === 'PAUSED' ? 'Stopped' : 'Running'}
+        {isAiRobot && <span className={'trade-room-robot-state ' + (robotStateLabel === 'Running' ? 'is-running' : 'is-stopped')} role="status" title={robotStateLabel === 'Needs attention' ? 'There is no recent Cloudflare Worker heartbeat. Scheduled analysis may not run.' : undefined}>
+          <span aria-hidden="true" />{robotStateLabel}
         </span>}
         {/**
          * THE MENTOR'S AVAILABILITY.
@@ -1438,12 +1438,12 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
           onUnreadCountChange={setChatUnread}
         />}
 
-        {panel === 'news' && isAiRobot && <RobotNewsReportPanel market={activeMarket} report={newsReport} loading={newsReportLoading} onRefresh={() => void writeNewsReport()} />}
+        {panel === 'news' && isAiRobot && <RobotNewsReportPanel market={activeMarket} run={data.members.flatMap(member => member.runs).filter(run => run.analysis).sort((left, right) => Date.parse(right.at) - Date.parse(left.at))[0] ?? null} />}
         {panel === 'news' && !isAiRobot && <NewsPanel news={news} loading={newsLoading} onRefresh={() => void loadNews(true)} />}
 
         {panel === 'mentor' && isAiRobot && <RobotChatPanel
           messages={robotMessages}
-          onSend={content => void sendRobotQuestion(content)}
+          onSend={sendRobotQuestion}
           sending={robotChatSending}
           signedIn={signedIn}
           onRequestSignIn={() => openAuthModal('signup')}
@@ -1485,6 +1485,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
           robotSchedule={data.members[0]?.robotSchedule ?? null}
           runtimeResources={data.team.runtimeResources ?? null}
           latestRun={data.members.flatMap(member => member.runs).sort((left, right) => Date.parse(right.at) - Date.parse(left.at))[0] ?? null}
+          recentRuns={data.members.flatMap(member => member.runs).sort((left, right) => Date.parse(right.at) - Date.parse(left.at))}
         />}
 
         {panel === 'broker' && <ConnectBrokerPanel

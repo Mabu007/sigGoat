@@ -31,8 +31,10 @@
 
 import {
   GoatReasoningContext,
+  ApiRequestError,
   OpenRouterClient,
   OpenRouterModel,
+  type OpenRouterUsage,
 } from '../services/ai/OpenRouterClient';
 import { GroqClient, DEFAULT_GROQ_MODEL } from '../services/ai/GroqClient';
 import { SpaceBunnyClient, SPACE_BUNNY_MODEL } from '../services/ai/SpaceBunnyClient';
@@ -67,7 +69,7 @@ export interface ReasoningGateway {
    * Runs canonical reasoning for a GOAT. The caller must handle a missing
    * credential explicitly; this live path never substitutes demo reasoning.
    */
-  evaluateGoat(context: GoatReasoningContext, model: string, providerOverride?: AiProvider): Promise<ReasoningResult>;
+  evaluateGoat(context: GoatReasoningContext, model: string, providerOverride?: AiProvider, onCompletion?: (metadata: { model: string; provider: AiProvider; usage?: OpenRouterUsage; requestId?: string; latencyMs: number }) => void): Promise<ReasoningResult>;
 
   /** Answers a chat question from the canonical GOAT context. */
   answerGoatQuestion(
@@ -242,6 +244,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     context: GoatReasoningContext,
     model: string,
     providerOverride?: AiProvider,
+    onCompletion?: (metadata: { model: string; provider: AiProvider; usage?: OpenRouterUsage; requestId?: string; latencyMs: number }) => void,
   ): Promise<ReasoningResult> {
     const resolved = await this.clientFor(context.userId, providerOverride);
 
@@ -258,6 +261,8 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     }
 
     const { provider, client } = resolved;
+    const freeOnly = context.freeOnly === true || model.endsWith(':free');
+    if (freeOnly && provider !== 'openrouter') throw new Error('MODEL_UNAVAILABLE: free-only policy requires a compatible OpenRouter :free model.');
 
     if (provider === 'groq') {
       const groq = client as GroqClient;
@@ -266,11 +271,16 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       // Groq model rather than sending an OpenRouter slug to Groq.
       const available = groq.listModels().models.some((entry) => entry.id === model);
       const selectedModel = available ? model : DEFAULT_GROQ_MODEL;
-      const { result } = await groq.evaluateGoat(context, selectedModel);
+      const startedAt = Date.now();
+      const { result, model: actualModel, usage, requestId } = await groq.evaluateGoat(context, selectedModel);
+      onCompletion?.({ model: actualModel, provider, usage, requestId, latencyMs: Date.now() - startedAt });
       return result;
     }
     if (provider === 'spacebunny') {
-      return (await (client as SpaceBunnyClient).evaluateGoat(context, SPACE_BUNNY_MODEL)).result;
+      const startedAt = Date.now();
+      const { result, model: actualModel } = await (client as SpaceBunnyClient).evaluateGoat(context, SPACE_BUNNY_MODEL);
+      onCompletion?.({ model: actualModel, provider, latencyMs: Date.now() - startedAt });
+      return result;
     }
 
     // Existing GOATs may still carry a Groq or Space Bunny model after the
@@ -279,30 +289,34 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     // Prefer the saved model, but repair it when OpenRouter confirms it has
     // been retired. Catalogue outages should not prevent trying a configured
     // model; the actual completion call remains the source of truth.
-    let selectedModel = typeof model === 'string' && model.includes('/') ? model : '';
+    let selectedModel = typeof model === 'string' && model.includes('/') && (!freeOnly || model.endsWith(':free')) ? model : '';
     try {
-      if (selectedModel && !(await this.isModelAvailable(context.userId, selectedModel, provider))) selectedModel = '';
+      if (selectedModel && !(await this.listModels(context.userId, provider)).models.some(entry => entry.id === selectedModel && entry.supportsStructuredOutputs)) selectedModel = '';
     } catch (catalogueError) {
       console.warn('[reasoning] OpenRouter model catalogue unavailable; trying the saved model:', catalogueError instanceof Error ? catalogueError.message : 'unknown error');
     }
     if (!selectedModel) {
-      try { selectedModel = (await this.pickAnyModel(context.userId, provider)) || ''; }
+      try { selectedModel = (await this.pickAnyModel(context.userId, provider, undefined, freeOnly, true)) || ''; }
       catch (catalogueError) { console.warn('[reasoning] Could not select an OpenRouter fallback model:', catalogueError instanceof Error ? catalogueError.message : 'unknown error'); }
     }
     if (!selectedModel) {
-      throw new Error('OPENROUTER_NO_USABLE_MODEL: OpenRouter is configured, but no model could be selected. Check the key, model access, and account credits.');
+      throw new Error('MODEL_UNAVAILABLE: No compatible model satisfies this robot\'s free-only policy.');
     }
     try {
-      const { result } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
+      const { result, model: actualModel, usage, requestId, latencyMs } = await (client as OpenRouterClient).evaluateGoat(context, selectedModel);
+      onCompletion?.({ model: actualModel, provider, usage, requestId, latencyMs });
       return result;
     } catch (firstError) {
+      // A different model is justified only when the selected model has
+      // disappeared, not when quota, parsing, data or network errors occur.
+      if (!(firstError instanceof ApiRequestError && (firstError.code === 'MODEL_NOT_LISTED' || firstError.status === 404))) throw firstError;
       const firstDetail = firstError instanceof Error ? firstError.message : String(firstError);
       // If a saved model is unavailable at completion time, retry once with a
       // currently listed model. Never loop and never turn provider errors into a trade.
       let fallback = '';
       try {
         // Exclude the model that just failed so recovery uses a genuinely different candidate.
-        fallback = (await this.pickAnyModel(context.userId, provider, selectedModel)) || '';
+        fallback = (await this.pickAnyModel(context.userId, provider, selectedModel, freeOnly, true)) || '';
       } catch (fallbackSelectionError) {
         console.warn(
           '[reasoning] Could not select an OpenRouter fallback model:',
@@ -312,10 +326,11 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
         );
       }
       if (!fallback || fallback === selectedModel) {
-        throw new Error('OPENROUTER_REVIEW_FAILED: ' + firstDetail);
+        throw firstError;
       }
       try {
-        const { result } = await (client as OpenRouterClient).evaluateGoat(context, fallback);
+        const { result, model: actualModel, usage, requestId, latencyMs } = await (client as OpenRouterClient).evaluateGoat(context, fallback);
+        onCompletion?.({ model: actualModel, provider, usage, requestId, latencyMs });
         return result;
       } catch (fallbackError) {
         const detail = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
@@ -337,6 +352,8 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
     }
 
     const { provider, client } = resolved;
+    const freeOnly = context.freeOnly === true || model.endsWith(':free');
+    if (freeOnly && provider !== 'openrouter') throw new Error('MODEL_UNAVAILABLE: free-only chat requires a compatible OpenRouter :free model.');
 
     if (provider === 'groq') {
       const groq = client as GroqClient;
@@ -348,26 +365,27 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       return (await (client as SpaceBunnyClient).answerQuestion(question, context, SPACE_BUNNY_MODEL)).answer;
     }
 
-    let selectedModel = typeof model === 'string' && model.includes('/') ? model : '';
+    let selectedModel = typeof model === 'string' && model.includes('/') && (!freeOnly || model.endsWith(':free')) ? model : '';
     try {
       if (selectedModel && !(await this.isModelAvailable(context.userId, selectedModel, provider))) selectedModel = '';
     } catch (catalogueError) {
       console.warn('[robot-chat] OpenRouter catalogue unavailable; trying the saved model:', catalogueError instanceof Error ? catalogueError.message : 'unknown error');
     }
-    if (!selectedModel) selectedModel = (await this.pickAnyModel(context.userId, provider)) || '';
+    if (!selectedModel) selectedModel = (await this.pickAnyModel(context.userId, provider, undefined, freeOnly)) || '';
     if (!selectedModel) throw new Error('OPENROUTER_NO_USABLE_MODEL: no available text model could be selected.');
 
     try {
       const answer = await (client as OpenRouterClient).answerQuestion(context, question, selectedModel);
       return answer.answer;
     } catch (firstError) {
+      if (!(firstError instanceof ApiRequestError && (firstError.code === 'MODEL_NOT_LISTED' || firstError.status === 404))) throw firstError;
       const firstDetail = firstError instanceof Error ? firstError.message : String(firstError);
       let fallback = '';
-      try { fallback = (await this.pickAnyModel(context.userId, provider, selectedModel)) || ''; }
+      try { fallback = (await this.pickAnyModel(context.userId, provider, selectedModel, freeOnly)) || ''; }
       catch (fallbackSelectionError) {
         console.warn('[robot-chat] Could not select a fallback model:', fallbackSelectionError instanceof Error ? fallbackSelectionError.message : 'unknown error');
       }
-      if (!fallback) throw new Error('OPENROUTER_CHAT_FAILED: ' + firstDetail);
+      if (!fallback) throw firstError;
       try {
         const answer = await (client as OpenRouterClient).answerQuestion(context, question, fallback);
         return answer.answer;
@@ -410,7 +428,7 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
    * is unreachable: the caller has a fallback and a catalogue outage should
    * not be the reason a GOAT cannot be created.
    */
-  async pickAnyModel(userId: string, providerOverride?: AiProvider, excludeModelId?: string): Promise<string | null> {
+  async pickAnyModel(userId: string, providerOverride?: AiProvider, excludeModelId?: string, freeOnly = false, requireStructured = false): Promise<string | null> {
     const resolved = await this.clientFor(userId, providerOverride);
     if (!resolved) return null;
 
@@ -426,13 +444,13 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
 
     const pool = models.filter((m) => m.id.endsWith(':free'));
     const candidates = pool.length > 0 ? pool : models.filter((m) => m.free);
-    const usable = candidates.length > 0 ? candidates : models;
+    const usable = freeOnly ? pool : candidates.length > 0 ? candidates : models;
 
     // GOAT reviews require structured JSON, so prefer compatible models within
     // the chosen price tier rather than selecting the first catalogue entry.
     const structured = usable.filter((m) => m.supportsStructuredOutputs && m.textOutput);
     const textModels = usable.filter((m) => m.textOutput);
-    const chosen = structured[0] ?? textModels[0] ?? usable[0];
+    const chosen = requireStructured ? structured[0] : structured[0] ?? textModels[0] ?? usable[0];
 
     return chosen?.id ?? null;
   }

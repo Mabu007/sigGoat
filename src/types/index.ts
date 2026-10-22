@@ -435,6 +435,8 @@ export interface FundGoat {
   teamInstructions?: string;
   /** Optional per-GOAT AI provider override; absent inherits Settings. */
   aiProvider?: 'openrouter' | 'spacebunny';
+  /** Disallow paid OpenRouter fallback for this robot and its viewer chat. */
+  freeOnly?: boolean;
   /** Preferred publisher domains for cached market-news retrieval. */
   researchSources?: string[];
   /**
@@ -467,6 +469,8 @@ export interface FundGoat {
 
 export interface MarketThesis {
   id: string;
+  /** Durable analysis run that produced this thesis. */
+  runId?: string;
   userId: string;
   goatId: string;
   market: string;
@@ -565,6 +569,8 @@ export interface WakeEvent {
 
 export interface TradeSignal {
   id: string;
+  /** Durable analysis run that produced this gate result. */
+  runId?: string;
   userId: string;
   goatId: string;
   thesisId: string;

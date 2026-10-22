@@ -168,7 +168,9 @@ function parseRss(xml: string, nowMs: number): NewsHeadline[] {
     return age <= MAX_HEADLINE_AGE_MS && age > -6 * 60 * 60_000;
   });
 
-  return (fresh.length > 0 ? fresh : all).slice(0, MAX_HEADLINES);
+  // An old article is not breaking news. Return an honest empty result when
+  // the provider has no dated, recent headlines.
+  return fresh.slice(0, MAX_HEADLINES);
 }
 
 export class NewsService {
@@ -221,6 +223,18 @@ export class NewsService {
       ? `(${preferredSources.map(domain => `site:${domain}`).join(' OR ')})`
       : '';
     const query = sourceQuery ? `${marketQuery} ${sourceQuery}` : marketQuery;
+    // Search the broad feed at the same time. Preferred domains rank first,
+    // but they must not prevent the robot from seeing other relevant news.
+    const generalPromise = preferredSources.length ? this.getNews(market).catch(() => null) : null;
+    const mergeGeneral = async (preferred: NewsHeadline[]) => {
+      const general = await generalPromise;
+      const seen = new Set<string>();
+      return [...preferred, ...(general?.headlines ?? [])].filter(item => {
+        const key = item.link || item.title.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+      }).slice(0, MAX_HEADLINES);
+    };
 
     try {
       const url =
@@ -244,17 +258,18 @@ export class NewsService {
         });
 
         if (!response.ok) {
+          const headlines = await mergeGeneral([]);
           return {
             market,
-            headlines: [],
+            headlines,
             fetchedAt: Date.now(),
-            ok: false,
-            error: `News feed returned HTTP ${response.status}`,
+            ok: headlines.length > 0,
+            error: headlines.length ? undefined : `News feed returned HTTP ${response.status}`,
           };
         }
 
         const xml = await response.text();
-        const headlines = parseRss(xml, Date.now());
+        const headlines = await mergeGeneral(parseRss(xml, Date.now()));
 
         return {
           market,
@@ -270,13 +285,14 @@ export class NewsService {
         clearTimeout(timer);
       }
     } catch (err) {
+      const headlines = await mergeGeneral([]);
       return {
         market,
-        headlines: [],
+        headlines,
         fetchedAt: Date.now(),
-        ok: false,
+        ok: headlines.length > 0,
         error:
-          err instanceof Error
+          headlines.length ? undefined : err instanceof Error
             ? err.message
             : 'News research unavailable.',
       };

@@ -93,7 +93,7 @@ export function AiRobotBuilder({ headers, onClose, onCreated }: {
           newMembers: [{
             name: name.trim(), jobTitle: 'AI Trading Analyst', jobDescription: prompt.trim(),
             skills: ['Market structure', 'Liquidity analysis', 'Catalyst research'],
-            asset, tradingProvider: provider, model, aiProvider: 'openrouter', researchSources: sources,
+            asset, tradingProvider: provider, model, aiProvider: 'openrouter', freeOnly: true, researchSources: sources,
           }],
         }),
       });

@@ -34,7 +34,7 @@ const context = {
 function validCompletion() {
   return {
     content: JSON.stringify({
-      investigation: { summary: 's', marketView: 'v' },
+      investigation: { summary: 's', marketView: 'v', newsReport: 'No fresh news.' },
       thesis: {
         directionalBias: 'NEUTRAL',
         summary: 's',
@@ -46,11 +46,16 @@ function validCompletion() {
       proposal: {
         decision: 'NO_TRADE',
         market: 'xyz:GOLD',
-        direction: 'LONG',
-        orderType: 'LIMIT',
+        triggerSequence: [],
+        direction: null,
+        orderType: null,
+        entry: null,
+        entryZone: null,
+        stopLoss: null,
+        takeProfit: null,
+        riskReward: null,
         noTradeReason: 'Structure is neutral.',
         confidence: 60,
-        thesis: 't',
         rationale: 'r',
         confirmationRequired: 'c',
         invalidation: 'i',
