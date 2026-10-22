@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Clock, PanelRightClose, PanelRightOpen, Settings, X, Save, Trash2, Users, Globe, LockKeyhole, ChevronDown, Radio, Mic, MicOff, Square, SlidersHorizontal, Video, Wifi } from 'lucide-react';
+import { ArrowLeft, Clock, PanelRightClose, PanelRightOpen, Settings, X, Save, Trash2, Users, Globe, LockKeyhole, ChevronDown, Radio, Mic, MicOff, Square, Play, SlidersHorizontal, Video, Wifi } from 'lucide-react';
 import { RoomChartPanel } from './room-chart/RoomChartPanel';
 import { RoomVoiceControlsView } from './RoomVoiceControls';
 import RecordingControls from './RecordingControls';
@@ -19,13 +19,20 @@ import type { Candle, MarketQuote } from '../types';
 import type { RoomDrawing } from '../shared/roomProtocol';
 import { ROOM_CATEGORIES, type RoomCategory } from '../types/rooms';
 
-type Member = RoomMember;
+type RobotScheduleStatus = { paused: boolean; nextAnalysisAt: string | null; nextTrackerCheckAt: string | null; leaseUntilMs: number } | null;
+type Member = RoomMember & { robotSchedule?: RobotScheduleStatus };
 type Room = {
   id: string; owner?: boolean; slug: string; name: string; instructions?: string;
   robotKind?: 'AI_ROBOT' | 'COMMUNITY';
   monitoringIntervals?: number[];
   visibility: 'PUBLIC' | 'PRIVATE'; status: string; memberCount: number; markets: string[];
   asset?: string; provider?: string; balance?: number | null; trades?: number;
+  runtimeResources?: {
+    scheduler: 'firestore' | 'unavailable';
+    dispatcherLastSeenAt: string | null;
+    dispatcherSource: string | null;
+    perRobotDurableObjects: number;
+  };
 };
 type RoomSkill = { id: string; name: string; description?: string; isDefault?: boolean };
 type AccountPayload = { balance: number | null; currency?: string; source?: 'live' | 'recorded'; environment?: 'live' | 'demo'; reason?: string | null };
@@ -135,6 +142,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   const [chartSync, setChartSync] = useState(true);
   const [personalSymbol, setPersonalSymbol] = useState('');
   const [personalTimeframe, setPersonalTimeframe] = useState('15m');
+  const [robotChartTimeframe, setRobotChartTimeframe] = useState('');
   /** The collapsible chart tool strip. Closed by default: it must not cost chart height. */
   const [toolsOpen, setToolsOpen] = useState(false);
   /** Which header popover is open. Only one at a time. */
@@ -145,6 +153,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   const [streamVisible, setStreamVisible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [robotStatusSaving, setRobotStatusSaving] = useState(false);
   const [copyingRobot, setCopyingRobot] = useState(false);
   const [copyError, setCopyError] = useState('');
   const [settingsError, setSettingsError] = useState('');
@@ -320,7 +329,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
 
   const realtime = useRoomRealtime({
     roomId,
-    enabled: Boolean(roomId) && signedIn && realtimeStatus?.realtime.configured === true,
+    enabled: !isAiRobot && Boolean(roomId) && signedIn && realtimeStatus?.realtime.configured === true,
     workerUrl: realtimeStatus?.realtime.url ?? null,
     displayName: viewerName,
   });
@@ -344,8 +353,10 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   const sharedTimeframe =
     (realtime.connected && realtime.timeframe) || roomDetail?.chart.timeframe || '15m';
 
-  const activeMarket = chartSync ? sharedSymbol : (personalSymbol || sharedSymbol);
-  const activeTimeframe = chartSync ? sharedTimeframe : personalTimeframe;
+  const activeMarket = isAiRobot ? (data?.team.asset || sharedSymbol) : chartSync ? sharedSymbol : (personalSymbol || sharedSymbol);
+  const activeTimeframe = isAiRobot
+    ? (robotChartTimeframe || data?.members[0]?.timeframe || sharedTimeframe)
+    : chartSync ? sharedTimeframe : personalTimeframe;
 
 
   /**
@@ -866,9 +877,9 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
    * paused room keeps its history and its members but stops being listed.
    */
   const toggleRoomPublished = useCallback(async () => {
-    if (!data?.team.owner) return;
+    if (!data?.team.owner || robotStatusSaving) return;
     const action = data.team.status === 'PAUSED' ? 'PLAY' : 'PAUSE';
-    setSettingsSaving(true); setSettingsError('');
+    setRobotStatusSaving(true); setSettingsError('');
     try {
       const authHeaders = await getApiAuthHeaders();
       const response = await fetch('/api/goat-teams/' + encodeURIComponent(data.team.id) + '/status', {
@@ -878,8 +889,8 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
       await read<{ team: Room }>(response);
       await load();
     } catch (err) { setSettingsError(err instanceof Error ? err.message : 'Could not change the room status.'); }
-    finally { setSettingsSaving(false); }
-  }, [data, settingsSaving, getApiAuthHeaders, load]);
+    finally { setRobotStatusSaving(false); }
+  }, [data, robotStatusSaving, getApiAuthHeaders, load]);
 
   const deleteRoom = useCallback(async () => {
     if (!data?.team.owner || deleteBusy) return;
@@ -1016,6 +1027,9 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
       </button>
       <div className="trade-room-identity">
         <span className="trade-room-identity-name">{data.team.name}</span>
+        {isAiRobot && <span className={'trade-room-robot-state ' + (data.team.status === 'PAUSED' ? 'is-stopped' : 'is-running')} role="status">
+          <span aria-hidden="true" />{data.team.status === 'PAUSED' ? 'Stopped' : 'Running'}
+        </span>}
         {/**
          * THE MENTOR'S AVAILABILITY.
          *
@@ -1103,6 +1117,18 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
       </dl>
 
       <div className="trade-room-topbar-actions" ref={headerActionsRef}>
+        {isAiRobot && data.team.owner && <button
+          type="button"
+          className={'sg-room-session-button sg-room-robot-toggle' + (data.team.status === 'PAUSED' ? ' is-play' : ' is-live')}
+          onClick={() => void toggleRoomPublished()}
+          disabled={robotStatusSaving}
+          aria-label={data.team.status === 'PAUSED' ? 'Play robot' : 'Stop robot'}
+          aria-pressed={data.team.status !== 'PAUSED'}
+          title={data.team.status === 'PAUSED' ? 'Resume scheduled AI analysis' : 'Stop scheduled AI analysis'}
+        >
+          {data.team.status === 'PAUSED' ? <Play size={12} fill="currentColor" aria-hidden="true" /> : <Square size={12} fill="currentColor" aria-hidden="true" />}
+          {robotStatusSaving ? 'Updating…' : data.team.status === 'PAUSED' ? 'Play robot' : 'Stop robot'}
+        </button>}
         {data.team.robotKind === 'AI_ROBOT' && <button type="button" className="sg-room-session-button" onClick={() => void createPersonalRobot()} disabled={copyingRobot} title="Create your own independently running copy, using your own account settings">
           {copyingRobot ? 'Starting your copy…' : 'Run your own copy'}
         </button>}
@@ -1232,7 +1258,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
           <div className="sg-room-symbol-line">
             <span className="sg-room-symbol">{activeMarket || 'No instrument yet'}</span>
             {dataMode && <span className="sg-room-provider">{dataMode.toUpperCase() === 'DEMO_REFERENCE' ? 'REFERENCE' : dataMode.toUpperCase()}</span>}
-            {chartSync && realtime.connected && (
+            {!isAiRobot && chartSync && realtime.connected && (
               <span className="sg-room-shared-tag" title="This chart is the room's shared chart">
                 SHARED
               </span>
@@ -1254,6 +1280,10 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
               type="button"
               key={frame}
               onClick={() => {
+                if (isAiRobot) {
+                  setRobotChartTimeframe(frame);
+                  return;
+                }
                 if (chartSync) {
                   // A leader's timeframe is the ROOM's timeframe, so it is
                   // broadcast. A follower follows it.
@@ -1264,7 +1294,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
                 // to nobody else.
                 setPersonalTimeframe(frame);
               }}
-              disabled={chartSync && !canManageRoom}
+              disabled={!isAiRobot && chartSync && !canManageRoom}
               aria-pressed={activeTimeframe === frame}
               className="sg-room-timeframe"
             >{frame}</button>)}
@@ -1283,7 +1313,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
            * It is a local viewing preference, not a way around the room's
            * permissions: the shared chart is still guarded by the server.
            */}
-          <button
+          {!isAiRobot && <button
             type="button"
             className={'sg-room-sync' + (chartSync ? ' is-on' : ' is-off')}
             onClick={() => toggleChartSync(!chartSync)}
@@ -1293,7 +1323,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
             <span className="sg-room-sync-dot" data-state={syncState} aria-hidden="true" />
             <span className="sg-room-sync-label">Chart Sync</span>
             <span className="sg-room-sync-state">{syncStateLabel}</span>
-          </button>
+          </button>}
 
           <button
             type="button"
@@ -1314,7 +1344,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
            * leader may do that. With sync OFF it changes the viewer's own
            * instrument, which anybody may do for themselves.
            */}
-          {(chartSync ? canManageRoom : signedIn) && (
+          {!isAiRobot && (chartSync ? canManageRoom : signedIn) && (
             <div className="sg-room-instrument-picker">
               <label htmlFor="room-instrument" className="sr-only">
                 {chartSync ? 'Instrument on this room’s chart' : 'Instrument on your chart'}
@@ -1355,14 +1385,14 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
           roomName={data.team.name}
           digits={priceDigits}
           dataMode={dataMode}
-          chartMode={chartSync ? 'shared' : 'local'}
-          canManageChart={canManageRoom}
-          canDraw={chartSync ? canManageRoom : canDrawRoom}
-          drawings={chartSync ? realtime.drawings : []}
-          onDrawingCreate={chartSync ? realtime.createDrawing : undefined}
-          onDrawingUpdate={chartSync ? realtime.updateDrawing : undefined}
-          onDrawingRemove={chartSync ? realtime.removeDrawing : undefined}
-          onDrawingsClear={chartSync ? realtime.clearDrawings : undefined}
+          chartMode={!isAiRobot && chartSync ? 'shared' : 'local'}
+          canManageChart={!isAiRobot && canManageRoom}
+          canDraw={!isAiRobot && (chartSync ? canManageRoom : canDrawRoom)}
+          drawings={!isAiRobot && chartSync ? realtime.drawings : []}
+          onDrawingCreate={!isAiRobot && chartSync ? realtime.createDrawing : undefined}
+          onDrawingUpdate={!isAiRobot && chartSync ? realtime.updateDrawing : undefined}
+          onDrawingRemove={!isAiRobot && chartSync ? realtime.removeDrawing : undefined}
+          onDrawingsClear={!isAiRobot && chartSync ? realtime.clearDrawings : undefined}
           toolsOpen={toolsOpen}
           roomId={data.team.id}
           userId={currentUser?.uid}
@@ -1451,6 +1481,10 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
           signedIn={signedIn}
           robotMode={Boolean(isAiRobot)}
           reviewIntervals={data.team.monitoringIntervals ?? [15]}
+          robotStatus={data.team.status}
+          robotSchedule={data.members[0]?.robotSchedule ?? null}
+          runtimeResources={data.team.runtimeResources ?? null}
+          latestRun={data.members.flatMap(member => member.runs).sort((left, right) => Date.parse(right.at) - Date.parse(left.at))[0] ?? null}
         />}
 
         {panel === 'broker' && <ConnectBrokerPanel
@@ -1522,7 +1556,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
                 {!isAiRobot && <label><input type="checkbox" checked={settingsVoiceEnabled} onChange={event => setSettingsVoiceEnabled(event.target.checked)} /><span>Voice is available in this room</span></label>}
               </div>
             </div>
-            <div>
+            {!isAiRobot && <div>
               <p className="tr-room-settings-label">Instrument on the chart</p>
               <p className="tr-room-settings-hint">Everyone in the room looks at the same market. Change it whenever you like.</p>
               <div className="tr-room-instrument-row">
@@ -1538,15 +1572,15 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
                 </select>
                 {assetSaving && <span className="tr-room-settings-hint">Saving…</span>}
               </div>
-            </div>
+            </div>}
             <div>
               <p className="tr-room-settings-label">{isAiRobot ? 'Robot visibility' : 'In the directory'}</p>
               <div className="tr-room-creator-actions">
-                <button type="button" className="sg-room-lifecycle-button" disabled={settingsSaving} onClick={() => void toggleRoomPublished()}>
-                  {data.team.status === 'PAUSED' ? (isAiRobot ? 'Publish robot' : 'Publish room') : (isAiRobot ? 'Pause robot' : 'Pause room')}
+                <button type="button" className={'sg-room-lifecycle-button ' + (data.team.status === 'PAUSED' ? 'is-play' : 'is-pause')} disabled={settingsSaving || robotStatusSaving} onClick={() => void toggleRoomPublished()}>
+                  {data.team.status === 'PAUSED' ? (isAiRobot ? 'Play robot' : 'Publish room') : (isAiRobot ? 'Stop robot' : 'Pause room')}
                 </button>
               </div>
-              <p className="tr-room-settings-hint">A paused {isAiRobot ? 'robot' : 'room'} keeps its data but stops appearing in the directory and no longer runs scheduled analysis.</p>
+              <p className="tr-room-settings-hint">A stopped {isAiRobot ? 'robot' : 'room'} keeps its data but is hidden from the directory. A stopped robot has no due analysis or tracker work.</p>
             </div>
             <div className="tr-room-danger">
               <p className="tr-room-settings-label">Delete this {isAiRobot ? 'robot' : 'room'}</p>
