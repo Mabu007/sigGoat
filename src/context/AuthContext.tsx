@@ -399,7 +399,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    *
    * Three reasons the navigation is not a router push:
    *
-   *   1. GoatContext and MarketContext hold fetched, user-specific data in
+   *   1. MarketContext holds fetched, user-specific data in
    *      component state. A client-side transition leaves that mounted, so the
    *      previous user's GOATs remain in memory and can flash if the user
    *      presses Back.

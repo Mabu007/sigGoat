@@ -24,22 +24,20 @@
  *   chat, Telegram webhook, market ingestion status, daily recaps.
  *
  * WHY THERE IS NO SCHEDULER IN THIS FILE
- *   The per-GOAT schedule is owned by a Cloudflare Durable Object alarm
- *   (worker/scheduler-worker.ts). This function holds no timers and restores
- *   no long-lived actors at boot, because a serverless instance is frozen
- *   between invocations — an in-process timer would silently stop firing,
- *   which is the failure this architecture exists to prevent.
- *
- *   The DO calls POST /api/internal/wake, which runs the full pipeline on
- *   demand. That request creates the actor, does the work, and returns.
+ *   Firestore holds each robot's due time and the dispatcher heartbeat.
+ *   An external cron dispatcher calls GET /api/internal/cron with CRON_SECRET;
+ *   that request claims due robots and runs their analyses. This function
+ *   holds no timer: a Vercel instance can freeze between invocations.
  *
  * `restoreRuntimes()` is therefore intentionally NOT called here. Actors are
  * created lazily by ensureGoatRuntime() when a request needs one, and discarded
- * when the instance is reclaimed.
+ * when the instance is reclaimed. The Cloudflare Worker under worker/src/
+ * is stateless and optional; its cron trigger must be deployed and configured
+ * separately for recurring runs to happen.
  *
  * Node-only modules (`node:fs`, `firebase-admin`) live under src/server/ and
  * are fine here: this is the Vercel Node runtime, not the Workers runtime. The
- * Durable Object worker deliberately imports none of them.
+ * Cloudflare cron worker deliberately imports none of them.
  */
 
 import './env';

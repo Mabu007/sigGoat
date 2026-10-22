@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Bot, Plus, RefreshCw, Sparkles, Users, Activity } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { AiRobotBuilder } from '../strategy/AiRobotBuilder';
+import { AiRobotBuilder } from '../AiRobotBuilder';
 
 type PublicRobot = {
   id: string;
@@ -74,7 +74,7 @@ export function AiRobotsView() {
         {robots.map(robot => <button key={robot.id} type="button" onClick={() => openRobot(robot.slug)} className="group min-w-0 text-left">
           <span className="relative block aspect-video overflow-hidden rounded-xl border border-line bg-panel-muted shadow-sm transition group-hover:border-accent/50 group-hover:shadow-lg">
             {robot.coverUrl ? <img src={robot.coverUrl} alt={`${robot.name} cover`} loading="lazy" className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" />
-              : <span className="grid h-full w-full place-items-center bg-gradient-to-br from-[#191923] via-[#13131b] to-[#321114] text-accent-text"><Bot size={38} strokeWidth={1.4}/></span>}
+              : <span className="grid h-full w-full place-items-center bg-gradient-to-br from-sunken via-raised to-accent-soft text-accent-text"><Bot size={38} strokeWidth={1.4}/></span>}
             <span className="absolute left-2.5 top-2.5 rounded-md border border-black/20 bg-black/65 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-white backdrop-blur">{robot.latestThesis?.bias || 'Monitoring'}</span>
             <span className="absolute bottom-2.5 right-2.5 rounded-md bg-black/75 px-2 py-1 text-[10px] font-semibold text-white">{robot.markets[0] || 'AI Robot'}</span>
           </span>
