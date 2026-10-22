@@ -4537,7 +4537,8 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
  * edits, or schedules the robot.
  */
 apiRouter.post("/team-rooms/:slug/robot-chat", handle(async (req, res) => {
-  const user = requireUser(req);
+  if (!req.user?.uid) return fail(res, 401, "UNAUTHENTICATED", "Sign in to chat with this robot.");
+  const user = req.user;
   const slug = String(req.params.slug || "");
   const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
   if (!question) return fail(res, 400, "INVALID_QUESTION", "Enter a message for this robot.");
