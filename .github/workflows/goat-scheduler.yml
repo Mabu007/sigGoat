@@ -1,6 +1,8 @@
 name: GOAT Scheduler
 
 on:
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 concurrency:
