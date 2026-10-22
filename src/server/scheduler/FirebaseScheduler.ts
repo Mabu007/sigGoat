@@ -5,12 +5,51 @@ import type { FiredWake, ScheduleRequest, SchedulerHealth, WakeScheduler } from 
 export class FirebaseScheduler implements WakeScheduler {
   readonly kind = 'firebase' as const;
   private readonly schedules;
+  private readonly dispatcherStatus;
   private readonly processed = new Map<string, { eventId: string; at: number }>();
   private lastSyncAt?: number;
   private lastError?: string;
 
   constructor(private readonly db: Firestore, private readonly now: () => number = Date.now) {
     this.schedules = db.collection('goatSchedules');
+    this.dispatcherStatus = db.collection('schedulerRuntime').doc('dispatcher');
+  }
+
+  /** Persist a small heartbeat from the shared cron caller for the owner UI. */
+  async recordDispatcherHeartbeat(at = this.now(), sourceHint = '', userAgent = ''): Promise<void> {
+    const source = /cloudflare-worker/i.test(sourceHint) || /SIRGOAT-Cloudflare-Scheduler/i.test(userAgent)
+      ? 'Cloudflare Worker'
+      : /github-actions/i.test(sourceHint) || /curl/i.test(userAgent)
+        ? 'GitHub Actions'
+        : 'Shared dispatcher';
+    await this.dispatcherStatus.set({ lastSeenAt: new Date(at).toISOString(), source });
+  }
+
+  async getDispatcherStatus(): Promise<{ lastSeenAt: string | null; source: string | null } | null> {
+    const snapshot = await this.dispatcherStatus.get();
+    if (!snapshot.exists) return null;
+    const data = snapshot.data() ?? {};
+    return {
+      lastSeenAt: typeof data.lastSeenAt === 'string' ? data.lastSeenAt : null,
+      source: typeof data.source === 'string' ? data.source : null,
+    };
+  }
+
+  async getRobotSchedule(goatId: string): Promise<{
+    paused: boolean;
+    nextAnalysisAt: string | null;
+    nextTrackerCheckAt: string | null;
+    leaseUntilMs: number;
+  } | null> {
+    const snapshot = await this.schedules.doc(goatId).get();
+    if (!snapshot.exists) return null;
+    const data = snapshot.data() ?? {};
+    return {
+      paused: data.paused === true,
+      nextAnalysisAt: typeof data.nextWakeAt === 'string' ? data.nextWakeAt : null,
+      nextTrackerCheckAt: typeof data.nextTrackerCheckAt === 'string' ? data.nextTrackerCheckAt : null,
+      leaseUntilMs: typeof data.leaseUntilMs === 'number' ? data.leaseUntilMs : 0,
+    };
   }
 
   async sync(request: ScheduleRequest): Promise<void> {
