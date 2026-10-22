@@ -15,6 +15,7 @@ import {
   ReasoningResult,
   ReasoningValidationError,
 } from '../../services/agent/contracts';
+import { reasoningJsonSchema, ReasoningWireSchema } from '../agent/reasoningWireSchema';
 
 /* ============================================================================
  * Public types
@@ -25,6 +26,7 @@ export interface GoatReasoningContext {
   goatId: string;
   goatName: string;
   goatGoal: string;
+  freeOnly?: boolean;
   /**
    * The owning team's operating instructions. Global state for the team: every
    * member reasons under the same playbook, not only its own job description.
@@ -1275,7 +1277,8 @@ The top-level object MUST have exactly these four keys:
 {
   "investigation": {
     "summary": string,
-    "marketView": string
+    "marketView": string,
+    "newsReport": string
   },
   "thesis": {
     "directionalBias": "BULLISH" | "BEARISH" | "NEUTRAL",
@@ -1288,9 +1291,14 @@ The top-level object MUST have exactly these four keys:
         "description": string,
         "type": "PRICE_LEVEL" | "STRUCTURE" | "SPREAD" | "TIME_WINDOW" | "INDICATOR" | "BREAKOUT" | "RSI_THRESHOLD" | "EMA_CROSS" | "SESSION_BOUNDARY",
         "indicator": "RSI" | "EMA" | "SMA" | "ATR" | "MACD" | "MACD_HISTOGRAM" | "SWING_HIGH" | "SWING_LOW" | "SESSION_HIGH" | "SESSION_LOW",
-        "period": number,
-        "targetValue": number,
-        "operator": "GREATER_THAN" | "LESS_THAN" | "CROSS_ABOVE" | "CROSS_BELOW" | "WITHIN_RANGE"
+        "period": number | null,
+        "targetValue": number | null,
+        "fastPeriod": number | null,
+        "slowPeriod": number | null,
+        "session": "ASIAN" | "LONDON" | "NEW_YORK" | null,
+        "rangeLow": number | null,
+        "rangeHigh": number | null,
+        "operator": "GREATER_THAN" | "LESS_THAN" | "CROSS_ABOVE" | "CROSS_BELOW" | "WITHIN_RANGE" | null
       }
     ]
   },
@@ -1329,11 +1337,20 @@ RULES:
 - "investigation" and "thesis" and "proposal" are JSON OBJECTS. Never
   replace them with a plain string, even to save tokens.
 - "trackers", "evidence" and "triggerSequence" are ALWAYS arrays.
+- Include every tracker key shown above; use null for fields unused by that tracker.
 - Use only the exact enum strings listed above. Any other value is rejected.
 - Keep each summary under 400 characters. Long prose is the most common
   reason a response runs out of budget before it is complete.
-- When decision is NO_TRADE, set "noTradeReason" and omit direction,
-  orderType, entry, stopLoss and takeProfit entirely.
+- Express both confidence fields in PERCENTAGE POINTS from 0 to 100:
+  35 means 35%; never use 0.35 to mean 35%.
+- newsReport must synthesize only the supplied, dated headlines and their
+  possible effect on this asset. If no fresh headlines were supplied, write
+  "No fresh relevant headlines were available for this review." Never invent
+  an article, publisher, URL, or publication date.
+- Every object must contain the keys shown in the schema. Set unused optional
+  fields to null, including trade levels on NO_TRADE and unused tracker fields.
+- When decision is NO_TRADE, set "noTradeReason" and use null for direction,
+  orderType, entry, stopLoss and takeProfit.
 - Do not add keys that are not listed.
 `.trim();
 }
@@ -2310,10 +2327,13 @@ export class OpenRouterClient {
       options.responseFormat &&
       model.supportsStructuredOutputs
     ) {
-      body.response_format = {
-        type:
-          'json_object',
-      };
+      // `response_format` alone may only guarantee JSON object mode. Request
+      // strict schema from providers advertising `structured_outputs`, then
+      // apply our Zod and semantic validation in either case.
+      body.response_format = model.supportedParameters.includes('structured_outputs')
+        ? { type: 'json_schema', json_schema: { name: 'robot_market_review', strict: true, schema: reasoningJsonSchema } }
+        : { type: 'json_object' };
+      body.provider = { require_parameters: true };
     }
 
     /**
@@ -2740,7 +2760,9 @@ export class OpenRouterClient {
 
     let result: ReasoningResult;
     try {
-      result = parseReasoningResult(last.parsed);
+      const wire = ReasoningWireSchema.safeParse(last.parsed);
+      if (!wire.success) throw new ReasoningValidationError(wire.error.issues.slice(0, 10).map(issue => `${issue.path.join('.')}: ${issue.message}`));
+      result = parseReasoningResult(wire.data);
     } catch (validationError) {
       if (!(validationError instanceof ReasoningValidationError)) throw validationError;
 
@@ -2757,7 +2779,9 @@ export class OpenRouterClient {
         );
       }
       try {
-        result = parseReasoningResult(repaired.parsed);
+        const wire = ReasoningWireSchema.safeParse(repaired.parsed);
+        if (!wire.success) throw new ReasoningValidationError(wire.error.issues.slice(0, 10).map(issue => `${issue.path.join('.')}: ${issue.message}`));
+        result = parseReasoningResult(wire.data);
       } catch (repairError) {
         if (repairError instanceof ReasoningValidationError) {
           throw new ApiRequestError(

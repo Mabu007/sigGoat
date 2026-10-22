@@ -80,6 +80,7 @@ export async function buildGoatContext(
     goatId: goat.id,
     goatName: goat.name,
     goatGoal: goat.goal,
+    freeOnly: goat.freeOnly ?? goat.model.endsWith(':free'),
     teamInstructions: goat.teamInstructions,
     market,
     quote,

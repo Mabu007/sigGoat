@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Firestore } from "firebase-admin/firestore";
+import { z } from "zod";
 import { getFirebaseAdmin } from "./firebaseAdmin";
 import { ensureStoreDirectory } from "./storeFs";
 
@@ -24,6 +25,22 @@ export type GoatWorkflowStatus =
 export type GoatWorkflowDecision = "ACCEPTED" | "REJECTED";
 export type GoatExecutionStatus = "CLAIMED" | "SUBMITTED" | "FAILED";
 
+/** Public, bounded evidence for a single run; never includes prompts or keys. */
+export const RobotRunAnalysisSchema = z.object({
+  summary: z.string().max(1200),
+  marketView: z.string().max(1200),
+  bias: z.enum(["BULLISH", "BEARISH", "NEUTRAL"]),
+  confidencePercent: z.number().min(0).max(100),
+  confirmation: z.array(z.string().max(400)).max(12),
+  invalidation: z.array(z.string().max(400)).max(12),
+  evidence: z.array(z.object({ source: z.string().max(100), observation: z.string().max(500), classification: z.enum(["SUPPORTING", "CONTRADICTORY"]), timeframe: z.string().max(40).optional() })).max(24),
+  gate: z.object({ approved: z.boolean(), reasons: z.array(z.string().max(400)).max(16) }),
+  news: z.object({ report: z.string().max(1200), fetchedAt: z.number(), headlines: z.array(z.object({ title: z.string().max(220), source: z.string().max(80), publishedAt: z.number().optional(), link: z.string().url().max(1000).optional() })).max(8) }),
+  model: z.object({ id: z.string().max(180), provider: z.string().max(40), promptTokens: z.number().optional(), completionTokens: z.number().optional(), totalTokens: z.number().optional(), cost: z.number().optional(), requestId: z.string().max(180).optional(), latencyMs: z.number().optional() }).optional(),
+  data: z.object({ source: z.string().max(80), quoteAt: z.number().optional(), reviewAt: z.number() }),
+}).strict();
+export type RobotRunAnalysis = z.infer<typeof RobotRunAnalysisSchema>;
+
 export interface GoatWorkflowRun {
   id: string;
   goatId: string;
@@ -35,6 +52,7 @@ export interface GoatWorkflowRun {
   stage: string;
   status: GoatWorkflowStatus;
   signalId?: string;
+  analysis?: RobotRunAnalysis;
   errorCode?: string;
   /** Sanitized human-readable failure detail for room activity and diagnostics. */
   errorMessage?: string;
@@ -81,6 +99,11 @@ function emptyDb(): WorkflowDb {
 
 function safeId(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 240);
+}
+
+function indexUnavailable(error: unknown): boolean {
+  const candidate = error as { code?: number | string; message?: string };
+  return candidate?.code === 9 || candidate?.code === 'failed-precondition' || /requires an index/i.test(candidate?.message ?? '');
 }
 
 function isTerminal(status: GoatWorkflowStatus): boolean {
@@ -191,6 +214,24 @@ export class GoatWorkflowStore {
       return snapshot.exists ? snapshot.data() as GoatWorkflowRun : null;
     }
     return this.db.runs[key] ?? null;
+  }
+
+  /** The run document owns its display artifact, never a timestamp join. */
+  async saveAnalysis(id: string, payload: RobotRunAnalysis): Promise<void> {
+    const analysis = RobotRunAnalysisSchema.parse(payload);
+    const key = safeId(id);
+    if (this.firestore) {
+      const ref = this.runsCollection().doc(key);
+      await this.firestore.runTransaction(async tx => {
+        const snapshot = await tx.get(ref);
+        if (!snapshot.exists) throw new Error('RUN_NOT_FOUND');
+        tx.update(ref, { analysis, updatedAt: this.now() });
+      });
+      return;
+    }
+    if (!this.db.runs[key]) throw new Error('RUN_NOT_FOUND');
+    this.db.runs[key] = { ...this.db.runs[key], analysis, updatedAt: this.now() };
+    this.persist();
   }
 
   /**
@@ -427,7 +468,9 @@ export class GoatWorkflowStore {
   async listRuns(goatId: string, limit = 20): Promise<GoatWorkflowRun[]> {
     const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
     if (this.firestore) {
-      const snapshot = await this.runsCollection().where("goatId", "==", goatId).get();
+      let snapshot;
+      try { snapshot = await this.runsCollection().where('goatId', '==', goatId).orderBy('createdAt', 'desc').limit(safeLimit).get(); }
+      catch (error) { if (!indexUnavailable(error)) throw error; snapshot = await this.runsCollection().where('goatId', '==', goatId).get(); } // Until the index is deployed.
       return snapshot.docs.map((doc) => doc.data() as GoatWorkflowRun)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, safeLimit);
     }
@@ -438,7 +481,9 @@ export class GoatWorkflowStore {
   async listActivities(goatId: string, limit = 100): Promise<GoatWorkflowActivity[]> {
     const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     if (this.firestore) {
-      const snapshot = await this.activitiesCollection().where("goatId", "==", goatId).get();
+      let snapshot;
+      try { snapshot = await this.activitiesCollection().where('goatId', '==', goatId).orderBy('at', 'desc').limit(safeLimit).get(); }
+      catch (error) { if (!indexUnavailable(error)) throw error; snapshot = await this.activitiesCollection().where('goatId', '==', goatId).get(); }
       return snapshot.docs.map((doc) => doc.data() as GoatWorkflowActivity)
         .sort((a, b) => b.at.localeCompare(a.at)).slice(0, safeLimit);
     }
