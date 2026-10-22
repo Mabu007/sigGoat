@@ -31,4 +31,5 @@ jobs:
           curl --fail --silent --show-error \
             --max-time 250 \
             -H "Authorization: Bearer ${CRON_SECRET}" \
+            -H "X-Scheduler-Source: github-actions" \
             "${SIRGOAT_API_URL%/}/api/internal/cron"

@@ -39,6 +39,7 @@ async function dispatch(env: Env, trigger: "scheduled" | "manual"): Promise<Resp
       headers: {
         authorization: `Bearer ${secret}`,
         accept: "application/json",
+        "x-scheduler-source": "cloudflare-worker",
         "user-agent": "SIRGOAT-Cloudflare-Scheduler/1.0",
       },
       signal: controller.signal,

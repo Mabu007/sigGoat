@@ -2474,6 +2474,19 @@ apiRouter.get(
       return fail(res, 503, "FIREBASE_SCHEDULER_UNAVAILABLE", "Firebase-backed scheduling is unavailable.");
     }
 
+    // Keep a durable heartbeat so the owner can distinguish an active robot
+    // schedule from a dispatcher that has stopped calling this endpoint.
+    // Heartbeat failure must not block otherwise healthy scheduled work.
+    try {
+      await firebaseScheduler.recordDispatcherHeartbeat(
+        Date.now(),
+        req.header("x-scheduler-source") ?? "",
+        req.header("user-agent") ?? "",
+      );
+    } catch (error) {
+      console.warn("[firebase-cron] dispatcher heartbeat could not be saved:", error instanceof Error ? error.message : error);
+    }
+
     // Tracker checks are deterministic and time-sensitive; claim them first.
     // The shared Firestore lease prevents one GOAT from being claimed for both
     // tracker and AI work in a single cron pass. A coincident AI review remains
@@ -4035,6 +4048,9 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
     (await persistence.skills.listByUser(team.ownerUserId).catch(() => [] as TradingSkill[]))
       .map(skill => [skill.id, skill.name] as const),
   );
+  const dispatcherStatus = isOwner && firebaseScheduler
+    ? await firebaseScheduler.getDispatcherStatus().catch(() => null)
+    : null;
   const details = await Promise.all(members.map(async member => {
     const [theses, signals, activities, runs] = await Promise.all([
       /**
@@ -4053,9 +4069,13 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
       goatWorkflowStore.listRuns(member!.id, 200),
     ]);
     const thesis = theses[0];
+    const robotSchedule = isOwner && firebaseScheduler
+      ? await firebaseScheduler.getRobotSchedule(member!.id).catch(() => null)
+      : null;
     return {
       id: member!.id, name: member!.name, goal: member!.goal, markets: member!.markets,
       status: member!.status, provider: resolveGoatTradingProvider(member!), timeframe: member!.timeframe || thesis?.relevantTimeframe || "15m",
+      ...(isOwner ? { robotSchedule } : {}),
       skills: member!.skillIds.map(id => skillNames.get(id)).filter((name): name is string => Boolean(name)),
       /**
        * The agent's working memory: the live directional hypothesis plus the
@@ -4141,6 +4161,14 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
        */
       balance: team.deployment?.startingBalance ?? null,
       trades: details.reduce((total, member) => total + member.trades, 0),
+      ...(isOwner ? {
+        runtimeResources: {
+          scheduler: firebaseScheduler ? "firestore" : "unavailable",
+          dispatcherLastSeenAt: dispatcherStatus?.lastSeenAt ?? null,
+          dispatcherSource: dispatcherStatus?.source ?? null,
+          perRobotDurableObjects: 0,
+        },
+      } : {}),
     },
     members: details,
   });
