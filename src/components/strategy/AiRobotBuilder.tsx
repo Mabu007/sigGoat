@@ -96,7 +96,7 @@ export function AiRobotBuilder({ headers, onClose, onCreated }: {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body?.error?.message || 'Could not create the AI robot.');
       if (!body.team?.publicSlug) throw new Error('The robot was created, but its workspace link was not returned. Refresh the bots page to continue.');
-      setCreatedRoom({ id: body.team.id, path: `/team/${encodeURIComponent(body.team.publicSlug)}` });
+      setCreatedRoom({ id: body.team.id, path: `/robots/${encodeURIComponent(body.team.publicSlug)}` });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not create the AI robot.');
     } finally { setBusy(false); }

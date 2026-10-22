@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bot, Plus, RefreshCw, Sparkles } from 'lucide-react';
+import { Bot, Plus, RefreshCw, Sparkles, Users, Activity } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { AiRobotBuilder } from '../strategy/AiRobotBuilder';
 
@@ -8,9 +8,10 @@ type PublicRobot = {
   slug: string;
   name: string;
   description: string;
+  memberCount: number;
+  coverUrl: string | null;
   creatorName: string;
   status: string;
-  memberCount: number;
   markets: string[];
   latestThesis: { market: string; bias: string; summary: string; updatedAt: string } | null;
   updatedAt: string;
@@ -47,7 +48,7 @@ export function AiRobotsView() {
   useEffect(() => { void load(); }, [load]);
 
   const create = () => signedIn ? setCreateOpen(true) : openAuthModal('signup');
-  const openRobot = (slug: string) => { window.location.href = `/team/${encodeURIComponent(slug)}`; };
+  const openRobot = (slug: string) => { window.location.href = `/robots/${encodeURIComponent(slug)}`; };
 
   return <div className="mx-auto max-w-7xl space-y-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
@@ -69,22 +70,21 @@ export function AiRobotsView() {
         <p className="max-w-md text-sm text-fg-muted">Create the first one. Its analysis will appear here and in its public team room.</p>
         <button className="btn btn-primary mt-1" type="button" onClick={create}><Sparkles size={15}/> Create an AI robot</button>
       </section>
-      : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {robots.map(robot => <article key={robot.id} className="panel flex min-h-64 flex-col overflow-hidden transition hover:border-accent/40">
-          <div className="flex items-start justify-between gap-3 border-b border-line p-4">
-            <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-[.14em] text-accent-text">Public AI robot</p><h2 className="mt-1 truncate text-lg font-bold text-fg">{robot.name}</h2><p className="mt-1 text-xs text-fg-muted">By {robot.creatorName} · {robot.markets.slice(0, 3).join(', ') || 'Market analysis'}</p></div>
-            <span className="shrink-0 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold text-emerald-400">{robot.status}</span>
-          </div>
-          <div className="flex-1 space-y-3 p-4">
-            <p className="line-clamp-3 text-sm leading-6 text-fg-muted">{robot.description}</p>
-            {robot.latestThesis ? <div className="rounded-xl border border-line bg-panel-muted p-3">
-              <div className="flex justify-between gap-2 text-[10px] font-bold uppercase tracking-wide text-fg-subtle"><span>Latest analysis · {robot.latestThesis.market}</span><span>{robot.latestThesis.bias}</span></div>
-              <p className="mt-2 line-clamp-3 whitespace-pre-line text-xs leading-5 text-fg-muted">{robot.latestThesis.summary}</p>
-              <time className="mt-2 block text-[10px] text-fg-subtle" dateTime={robot.latestThesis.updatedAt}>{new Date(robot.latestThesis.updatedAt).toLocaleString()}</time>
-            </div> : <p className="rounded-xl border border-dashed border-line p-3 text-xs text-fg-subtle">Waiting for its first analysis run.</p>}
-          </div>
-          <button type="button" className="m-4 mt-0 btn btn-secondary justify-center" onClick={() => openRobot(robot.slug)}>Watch robot · open team room</button>
-        </article>)}
+      : <div className="grid gap-x-5 gap-y-7 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {robots.map(robot => <button key={robot.id} type="button" onClick={() => openRobot(robot.slug)} className="group min-w-0 text-left">
+          <span className="relative block aspect-video overflow-hidden rounded-xl border border-line bg-panel-muted shadow-sm transition group-hover:border-accent/50 group-hover:shadow-lg">
+            {robot.coverUrl ? <img src={robot.coverUrl} alt={`${robot.name} cover`} loading="lazy" className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" />
+              : <span className="grid h-full w-full place-items-center bg-gradient-to-br from-[#191923] via-[#13131b] to-[#321114] text-accent-text"><Bot size={38} strokeWidth={1.4}/></span>}
+            <span className="absolute left-2.5 top-2.5 rounded-md border border-black/20 bg-black/65 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-white backdrop-blur">{robot.latestThesis?.bias || 'Monitoring'}</span>
+            <span className="absolute bottom-2.5 right-2.5 rounded-md bg-black/75 px-2 py-1 text-[10px] font-semibold text-white">{robot.markets[0] || 'AI Robot'}</span>
+          </span>
+          <span className="mt-3 flex gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-panel-muted text-accent-text"><Bot size={19}/></span>
+            <span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-fg group-hover:text-accent-text">{robot.name}</span>
+              <span className="mt-1 flex items-center gap-2 text-[11px] text-fg-muted"><span className="truncate">{robot.creatorName}</span><span aria-hidden="true">·</span><Users size={12}/>{robot.memberCount}<Activity size={12}/>{robot.status}</span>
+              <span className="mt-1 line-clamp-2 block text-xs leading-5 text-fg-subtle">{robot.description}</span></span>
+          </span>
+        </button>)}
       </div>}
 
     {createOpen && <AiRobotBuilder headers={headers} onClose={() => setCreateOpen(false)} onCreated={path => { setCreateOpen(false); window.location.assign(path); }} />}

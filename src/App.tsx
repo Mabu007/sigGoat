@@ -74,13 +74,15 @@ const MainApp: React.FC = () => {
     const onHashChange = () => { setActiveTab(tabFromHash()); setSettingsSection(hashSection()); };
     window.addEventListener('hashchange', onHashChange);
     if (!hashPath() || hashPath() === 'rooms' || hashPath() === 'robots') window.history.replaceState(null, '', '#/bots');
+    if (window.location.pathname === '/' && !window.location.hash) window.history.replaceState(null, '', '/robots/');
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
   const navigate = useCallback((tab: TabId) => {
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
-      window.location.hash = `/${tab}`;
+      if (tab === 'bots') window.location.assign('/robots/');
+      else window.location.hash = `/${tab}`;
       window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
     }
   }, []);
@@ -120,8 +122,8 @@ export default function App() {
       <AuthProvider>
         <AuthGate>
           <>
-            {typeof window !== 'undefined' && /^\/team\/[^/]+\/?$/.test(window.location.pathname)
-              ? <React.Suspense fallback={<ViewLoadingFallback />}><PublicTeamView slug={decodeURIComponent(window.location.pathname.split('/')[2] || '')} /></React.Suspense>
+            {typeof window !== 'undefined' && /^\/(?:team|robots)\/[^/]+\/?$/.test(window.location.pathname)
+              ? <React.Suspense fallback={<ViewLoadingFallback />}><PublicTeamView slug={decodeURIComponent(window.location.pathname.split('/')[2] || '')} backLabel="AI Robots" onBack={() => window.location.assign('/robots/')} /></React.Suspense>
               : <>
                   <MarketProvider>
                     <MainApp />
