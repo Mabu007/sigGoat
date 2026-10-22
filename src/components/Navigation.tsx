@@ -5,9 +5,9 @@
  * can never drift apart.
  *
  * NAVIGATION MODEL
- *   Bots · Markets · Settings
+ *   AI Robots · Settings
  *
- * TradingVibes is a trading product: bots, markets, and the settings
+ * TradingVibes is a trading product: AI robots and the settings
  * that connect an account. The destinations that belonged to the previous
  * product — trade proposals, agent skills, backtests — are gone from the
  * navigation. Their hashes still resolve to the bot directory, so an old

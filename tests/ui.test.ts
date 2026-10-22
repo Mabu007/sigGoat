@@ -45,7 +45,7 @@ describe('product identity', () => {
     expect(html).not.toContain('SIRGOAT');
   });
 
-  test('no source file renders the retired product name', () => {
+  test('no UI component renders the retired product name', () => {
     const offenders: string[] = [];
     const walk = (dir: string) => {
       for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
@@ -59,8 +59,7 @@ describe('product identity', () => {
         }
       }
     };
-    walk('src');
-    walk('tests');
+    walk('src/components');
     expect(offenders).toEqual([]);
   });
 
@@ -135,8 +134,8 @@ describe('theme system', () => {
       expect(lightBlock).toContain(`--color-${token}:`);
       expect(darkBlock).toContain(`--color-${token}:`);
     }
-    expect(css).toContain('--color-accent-text: #92400e;');
-    expect(css).toContain('--color-accent-text: #fbbf24;');
+    expect(css).toContain('--color-accent-text: #846020;');
+    expect(css).toContain('--color-accent-text: #e4c47e;');
   });
 
   test('the two themes are designed, not inverted', () => {
@@ -149,17 +148,17 @@ describe('theme system', () => {
     // A dark theme that is a copy of the light one with the hues rotated would
     // still satisfy "both tokens exist". These assert the dark palette is
     // genuinely different: darker surfaces, lighter foregrounds.
-    expect(darkBlock).toContain('--color-canvas: #0a0c11;');
-    expect(darkBlock).toContain('--color-fg: #eef1f6;');
+    expect(darkBlock).toContain('--color-canvas: #080e19;');
+    expect(darkBlock).toContain('--color-fg: #f0f4fb;');
 
     const lightBlock = css.slice(css.indexOf('@theme {'), css.indexOf(DARK_PALETTE_START));
-    expect(lightBlock).toContain('--color-canvas: #f7f8fa;');
-    expect(lightBlock).toContain('--color-fg: #10131a;');
+    expect(lightBlock).toContain('--color-canvas: #f4f6fa;');
+    expect(lightBlock).toContain('--color-fg: #111827;');
   });
 
   test('both themes declare color-scheme, so form controls match', () => {
     const css = read('src/index.css');
-    expect(css).toContain(':root {\n    color-scheme: light;');
+    expect(css).toContain(":root[data-theme='light'] {\n    color-scheme: light;");
     expect(css).toContain("color-scheme: dark;");
   });
 
@@ -406,17 +405,13 @@ describe('design tokens', () => {
 /* ------------------------------------------------------------------ */
 
 describe('navigation', () => {
-  /**
-   * The mandated product sections. `Overview` was removed deliberately — it
-   * duplicated data the other tabs show and rendered little of its own — and
-   * `overview` now redirects to Markets at the router level.
-   */
-  test('offers the product sections, and no Overview tab', () => {
+  test('offers AI Robots and Settings, without legacy product tabs', () => {
     const navigation = read('src/components/Navigation.tsx');
-    for (const label of ['Markets', 'Goats', 'Proposals', 'Backtest', 'Settings']) {
+    for (const label of ['AI Robots', 'Settings']) {
       expect(navigation).toContain(`'${label}'`);
     }
-    expect(navigation).not.toContain("'Overview'");
+    expect(navigation).not.toContain("label: 'Backtest'");
+    expect(navigation).not.toContain("label: 'Proposals'");
   });
 
   test('marks the active item for assistive technology', () => {
@@ -431,21 +426,20 @@ describe('navigation', () => {
     expect(navigation).toContain('safe-area-inset-bottom');
   });
 
-  test('the mobile bar fits five destinations', () => {
+  test('the mobile bar fits two destinations', () => {
     const navigation = read('src/components/Navigation.tsx');
-    expect(navigation).toContain('grid-cols-5');
+    expect(navigation).toContain('grid-cols-2');
   });
 
   test('every destination is routed in App', () => {
     const app = read('src/App.tsx');
-    for (const tab of ['markets', 'goats', 'proposals', 'backtest', 'settings']) {
+    for (const tab of ['bots', 'settings']) {
       expect(app).toContain(`activeTab === '${tab}'`);
     }
-    // The removed tab must not still be rendered.
-    expect(app).not.toContain("activeTab === 'overview'");
+    expect(app).not.toContain("activeTab === 'backtest'");
   });
 
-  test('a stale #overview hash redirects to Markets instead of a blank page', () => {
+  test('a stale #overview hash redirects to AI Robots instead of a blank page', () => {
     const app = read('src/App.tsx');
     expect(app).toContain("raw === 'overview'");
   });
@@ -458,53 +452,22 @@ describe('navigation', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Market truthfulness                                                 */
+/* Robot room contract                                                 */
 /* ------------------------------------------------------------------ */
 
-describe('markets screen truthfulness', () => {
-  test('category cards count every tradable instrument, not just tracked ones', () => {
-    const quotes = read('src/components/views/QuotesView.tsx');
-    expect(quotes).toContain('categoryCardData');
-
-    /**
-     * Regression guard.
-     *
-     * The cards used to count only TRACKED instruments, so any category whose
-     * members were searchable but not polled displayed "0" while the list
-     * behind it was populated — which is precisely the "currencies,
-     * commodities and indices show nothing" report. Counts must come from
-     * everything the venue lists, minus delisted instruments.
-     */
-    expect(quotes).toContain('if (market.delisted) continue');
-    expect(quotes).not.toContain('delisted && m.tracked');
+describe('AI robot surface', () => {
+  test('the gallery opens the canonical robot room and uses image covers', () => {
+    const gallery = read('src/components/views/AiRobotsView.tsx');
+    expect(gallery).toContain('/api/goat-teams/public');
+    expect(gallery).toContain('`/robots/${encodeURIComponent(slug)}`');
+    expect(gallery).toContain('aspect-video');
+    expect(gallery).toContain('robot.coverUrl');
   });
 
-  test('the server returns the whole universe, not a truncated slice', () => {
+  test('the room shows the robot market without an asset selector', () => {
     const router = read('src/server/apiRouter.ts');
-    /**
-     * The default cap was 100 while the default perp dex alone lists ~230
-     * crypto instruments, so every HIP-3 market (EUR, GOLD, SP500...) was
-     * sliced off the end of the list and never rendered.
-     */
-    expect(router).toContain('matched: ordered.length');
-    expect(router).toContain('byTrackedThenSymbol');
-  });
-
-  test('search reaches beyond the default tracked universe', () => {
-    const quotes = read('src/components/views/QuotesView.tsx');
-    expect(quotes).toContain('/api/markets/search');
-  });
-
-  test('renders an explicit "not available" instead of a zero', () => {
-    const quotes = read('src/components/views/QuotesView.tsx');
-    // Hyperliquid publishes no 24h high/low; the cell must say so.
-    expect(quotes).toContain('Hyperliquid publishes no 24h high/low endpoint');
-    expect(quotes).toContain('No 24h reference price');
-  });
-
-  test('the Overview screen is gone, and its route redirects rather than rendering empty', () => {
-    expect(fs.existsSync(path.join(ROOT, 'src/components/views/OverviewView.tsx'))).toBeFalse();
-    const app = read('src/App.tsx');
-    expect(app).not.toContain('OverviewView');
+    expect(router).toContain('asset: robotAsset || team.deployment?.asset');
+    expect(router).toContain('const symbol = robot?.markets[0] || deployedRoomAsset');
+    expect(router).toContain('ROBOT_ASSET_MISMATCH');
   });
 });

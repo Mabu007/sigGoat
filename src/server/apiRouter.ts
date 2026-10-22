@@ -3871,8 +3871,14 @@ apiRouter.get("/goat-teams/public", optionalAuthMiddleware, handle(async (req, r
     const slugBase = team.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "ai-robot";
     const slugSuffix = team.id.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase();
     const publicSlug = team.publicSlug || `${slugBase}-${slugSuffix}`;
-    if (team.visibility !== "PUBLIC" || team.robotKind !== "AI_ROBOT" || !team.publicSlug) {
-      await goatTeamStore.save({ ...team, publicSlug, visibility: "PUBLIC", robotKind: "AI_ROBOT", updatedAt: new Date().toISOString() });
+    // Older room settings could change the chart asset without changing the
+    // robot. Repair that stored mismatch from the robot's own market once.
+    const robotAsset = members[0]?.markets[0];
+    const deployment = robotAsset && team.deployment?.asset !== robotAsset && team.deployment
+      ? { ...team.deployment, asset: robotAsset }
+      : team.deployment;
+    if (team.visibility !== "PUBLIC" || team.robotKind !== "AI_ROBOT" || !team.publicSlug || deployment !== team.deployment) {
+      await goatTeamStore.save({ ...team, deployment, publicSlug, visibility: "PUBLIC", robotKind: "AI_ROBOT", updatedAt: new Date().toISOString() });
     }
     const theses = await Promise.all(team.memberGoatIds.map(id => persistence.theses.listByGoat(id, 1)));
     const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
@@ -3909,7 +3915,7 @@ apiRouter.get("/goat-teams/public", optionalAuthMiddleware, handle(async (req, r
  * generated independently under the caller's account, so any execution uses
  * only that caller's own broker connection and explicit automation settings.
  */
-apiRouter.post("/team-rooms/:slug/copy", handle(async (req, res) => {
+apiRouter.post("/team-rooms/:slug/copy", authMiddleware, handle(async (req, res) => {
   const user = requireUser(req);
   const sourceTeam = await goatTeamStore.getPublicBySlug(String(req.params.slug || ""));
   if (!sourceTeam || sourceTeam.status !== "DEPLOYED" || sourceTeam.robotKind !== "AI_ROBOT") {
@@ -4053,6 +4059,7 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
   const viewerId = req.user?.uid ?? null;
   const isOwner = viewerId != null && viewerId === team.ownerUserId;
   const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+  const robotAsset = team.robotKind === "AI_ROBOT" ? members[0]?.markets[0] : null;
   // One lookup for the whole team: every member belongs to the same owner, so
   // this resolves skill names without an extra query per agent.
   const skillNames = new Map<string, string>(
@@ -4159,7 +4166,7 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
        * the room answers with the instrument it will actually chart rather
        * than leaving the reader to guess.
        */
-      asset: team.deployment?.asset || "EURUSD",
+      asset: robotAsset || team.deployment?.asset || "EURUSD",
       provider: team.deployment?.provider,
       /** Whether this room may place real orders, as chosen when it was created. */
       liveTrading: team.deployment?.liveTrading === true,
@@ -4350,9 +4357,13 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
    * where the agent's own market list is a legacy fallback.
    */
   const memberId = typeof req.query.memberId === "string" ? req.query.memberId : "";
-  const goat = memberId && team.memberGoatIds.includes(memberId)
-    ? await roomGoatForOwner(memberId, team.ownerUserId)
+  const robot = team.robotKind === "AI_ROBOT" && team.memberGoatIds.length === 1
+    ? await roomGoatForOwner(team.memberGoatIds[0], team.ownerUserId)
     : null;
+  const goat = robot ?? (memberId && team.memberGoatIds.includes(memberId)
+    ? await roomGoatForOwner(memberId, team.ownerUserId)
+    : null);
+  if (team.robotKind === "AI_ROBOT" && !robot) return fail(res, 503, "AI_ROBOT_UNAVAILABLE", "The robot's market configuration is unavailable.");
   const requestedSymbol = typeof req.query.symbol === "string" ? req.query.symbol : "";
   // Team environment selects the market-data source only. It never enables or disables order execution.
   const environment: "DEMO" | "LIVE" = team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO");
@@ -4360,9 +4371,9 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   const hyperliquidRoom = environment === "LIVE" && selectedLiveProvider === "hyperliquid";
   const fallbackSymbol = hyperliquidRoom ? "BTC" : "EURUSD";
   const deployedRoomAsset = team.deployment?.asset;
-  // The room's own instrument is authoritative. It is not required to appear
-  // in an agent's legacy market list, because the room owns the contract.
-  const symbol = deployedRoomAsset || (requestedSymbol && goat?.markets.includes(requestedSymbol)
+  // AI rooms follow their robot's instrument; community rooms retain their
+  // independently configured room chart.
+  const symbol = robot?.markets[0] || deployedRoomAsset || (requestedSymbol && goat?.markets.includes(requestedSymbol)
     ? requestedSymbol
     : goat?.markets[0] || fallbackSymbol);
   /**
@@ -4411,14 +4422,21 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
   };
   try {
     const payload = await roomMarketCached(
-      `${team.id}:${symbol}:${timeframe}:${count}`,
+      `${team.id}:${symbol}:${timeframe}:${count}:${robot && resolveGoatTradingProvider(robot) === "hyperliquid" ? "hyperliquid" : "biquote"}`,
       async () => {
         /**
-         * A room's chart is the same for everyone in it, and it comes from the
-         * reference price feed. A member's own broker connection is what they
-         * trade with — it is not the room's price source, and a room that
-         * needed one would be a room you could not walk into.
+         * Public Hyperliquid robots chart the same native market feed used by
+         * their analysis. Other rooms use a public reference feed, because a
+         * visitor cannot access the creator's private broker connection.
          */
+        if (robot && resolveGoatTradingProvider(robot) === "hyperliquid") {
+          const provider = await marketDataProviderForGoat(robot);
+          const [quotes, candles] = await Promise.all([
+            provider.getQuotes([symbol]),
+            provider.getCandles(symbol, timeframe, count),
+          ]);
+          return { symbol, quotes, candles, provider: provider.name, environment, marketDataProvider: provider.name, dataMode: provider.dataMode, requestedCount: count, executionAllowed: false };
+        }
         const market = await biQuoteRoomMarket(symbol, timeframe, count);
         return { symbol, ...market, environment, marketDataProvider: "biquote", dataMode: "DEMO_REFERENCE", executionAllowed: false };
       },
@@ -4429,7 +4447,7 @@ apiRouter.get("/team-rooms/:slug/market", handle(async (req, res) => {
     return res.json({
       ...payload,
       environment,
-      marketDataProvider: "biquote",
+      marketDataProvider: payload.marketDataProvider,
       executionAllowed: false,
       indicators: indicatorsFor(candles, quotes[0]?.mid ?? 0),
       /**
@@ -4512,7 +4530,10 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
    * chooses that instrument, so the news follows it rather than the other way
    * round.
    */
-  const market = team.deployment?.asset || "EURUSD";
+  const robot = team.robotKind === "AI_ROBOT" && team.memberGoatIds.length === 1
+    ? await roomGoatForOwner(team.memberGoatIds[0], team.ownerUserId)
+    : null;
+  const market = robot?.markets[0] || team.deployment?.asset || "EURUSD";
 
   // Never throws: research failure is reported in-band so the panel can say so.
   const requestedForceRefresh = req.query?.refresh === "1";
@@ -4536,9 +4557,8 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
  * the requesting viewer's own account connection status. It never wakes,
  * edits, or schedules the robot.
  */
-apiRouter.post("/team-rooms/:slug/robot-chat", handle(async (req, res) => {
-  if (!req.user?.uid) return fail(res, 401, "UNAUTHENTICATED", "Sign in to chat with this robot.");
-  const user = req.user;
+apiRouter.post("/team-rooms/:slug/robot-chat", authMiddleware, handle(async (req, res) => {
+  const user = requireUser(req);
   const slug = String(req.params.slug || "");
   const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
   if (!question) return fail(res, 400, "INVALID_QUESTION", "Enter a message for this robot.");
@@ -7574,6 +7594,12 @@ apiRouter.patch("/goat-teams/:id", handle(async (req, res) => {
   const requestedAsset = typeof req.body?.asset === "string" ? req.body.asset.trim().toUpperCase() : "";
   if (requestedAsset && !/^[A-Z0-9._-]{2,16}$/.test(requestedAsset)) {
     return fail(res, 400, "INVALID_ROOM_ASSET", "That is not a valid instrument symbol.");
+  }
+  if (team.robotKind === "AI_ROBOT" && requestedAsset) {
+    const robot = await persistence.goats.getForUser(team.memberGoatIds[0], user.uid);
+    if (!robot?.markets.includes(requestedAsset)) {
+      return fail(res, 409, "ROBOT_ASSET_MISMATCH", "The robot chart must show the asset its AI analyses. Change the robot's market configuration first.");
+    }
   }
   const asset = requestedAsset || team.deployment?.asset || "";
 

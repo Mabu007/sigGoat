@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
-import { RoomCoverPicker } from '../RoomCoverPicker';
+import { RoomCoverPicker } from './RoomCoverPicker';
 
 type Provider = 'hyperliquid' | 'ctrader';
 type Asset = { symbol: string; name: string; category: string };

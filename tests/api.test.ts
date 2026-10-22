@@ -160,6 +160,22 @@ async function createGoat(userId: string, name = 'Owned Goat'): Promise<string> 
 }
 
 describe('API authentication', () => {
+  test('public robot actions verify a supplied identity before accessing a robot', async () => {
+    for (const action of ['robot-chat', 'copy']) {
+      const url = `/team-rooms/nonexistent-robot/${action}`;
+      const anonymous = await req('POST', url, { body: { question: 'What is the market doing?' } });
+      expect(anonymous.status).toBe(401);
+      expect(anonymous.json.error.code).toBe('UNAUTHENTICATED');
+
+      const signedIn = await req('POST', url, {
+        userId: 'robot_viewer',
+        body: { question: 'What is the market doing?' },
+      });
+      expect(signedIn.status).toBe(404);
+      expect(signedIn.json.error.code).toBe('AI_ROBOT_NOT_FOUND');
+    }
+  });
+
   test('unauthenticated request is rejected with 401', async () => {
     const res = await req('GET', '/goats');
     expect(res.status).toBe(401);

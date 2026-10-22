@@ -49,6 +49,6 @@ Keep the GitHub Actions dispatcher enabled until the Worker has been deployed an
 
 Then disable `.github/workflows/goat-scheduler.yml` to avoid two permanent dispatchers.
 
-## Validation status
+## Validation status (2026-10-22)
 
-Code and configuration have been updated in the migration pull request. Automated CI has not yet produced a usable passing result, and no live Cloudflare/Firebase deployment has been verified. Treat production cutover as incomplete until the checks above pass.
+The production API reports Firebase/Firestore persistence, and manual robot analyses are persisted. The connected Cloudflare account has no `sirgoat-scheduler` Worker; the GitHub Actions fallback's recent scheduled runs failed. A configured schedule in Firestore does not prove that a dispatcher is running. Treat recurring analysis as unavailable until a Worker is deployed with `SIRGOAT_API_ORIGIN` and the API's matching `CRON_SECRET`, then verify a recent dispatcher heartbeat and a completed interval run. The legacy per-robot Durable Object architecture is retired.

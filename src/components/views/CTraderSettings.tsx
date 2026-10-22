@@ -133,14 +133,14 @@ export const CTraderSettings: React.FC = () => {
           </div>
         </div>
         {status?.connected ? (
-          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600"><CheckCircle size={13} /> Connected</span>
+          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-positive"><CheckCircle size={13} /> Connected</span>
         ) : null}
       </div>
 
       {loading ? (
         <div className="flex items-center gap-2 text-xs text-fg-muted"><Loader2 size={14} className="animate-spin" /> Checking cTrader connection…</div>
       ) : !status?.configured ? (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-fg-muted">
+        <div className="rounded-xl border border-warning/30 bg-warning-soft p-3 text-xs text-fg-muted">
           cTrader is not configured on this deployment. Set <code>CTRADER_CLIENT_ID</code>, <code>CTRADER_SECRET</code> and <code>CTRADER_REDIRECT_URI</code> in server environment variables, and register the redirect URI in the cTrader Open API application.
         </div>
       ) : !status.connected ? (
