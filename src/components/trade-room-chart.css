@@ -177,6 +177,16 @@
   white-space: nowrap;
 }
 
+.trade-room-robot-state {
+  display:inline-flex; align-items:center; gap:6px; flex:0 0 auto;
+  padding:5px 8px; border:1px solid var(--color-line); border-radius:999px;
+  color:var(--color-fg-muted); font:750 9px/1 var(--tr-sans); text-transform:uppercase;
+}
+.trade-room-robot-state > span { width:6px; height:6px; border-radius:50%; background:var(--color-fg-subtle); }
+.trade-room-robot-state.is-running { color:var(--color-positive); border-color:color-mix(in srgb, var(--color-positive) 38%, var(--color-line)); }
+.trade-room-robot-state.is-running > span { background:var(--color-positive); box-shadow:0 0 0 3px color-mix(in srgb, var(--color-positive) 14%, transparent); }
+.trade-room-robot-state.is-stopped { color:var(--color-fg-subtle); }
+
 /* --- live stats — clock, balance, trades, account mode ------------------- */
 .trade-room-stats {
   display: flex;
@@ -1985,6 +1995,11 @@
   border-color: color-mix(in srgb, var(--color-negative) 45%, transparent);
   background: var(--color-negative-soft);
   color: var(--color-negative);
+}
+.sg-room-session-button.sg-room-robot-toggle.is-play {
+  border-color: color-mix(in srgb, var(--color-positive) 42%, transparent);
+  background: color-mix(in srgb, var(--color-positive) 9%, var(--color-surface));
+  color: var(--color-positive);
 }
 
 /* ================================================================== */
