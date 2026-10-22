@@ -1078,13 +1078,13 @@ export function RobotChatPanel({ messages, onSend, sending, signedIn, onRequestS
 }) {
   const [draft, setDraft] = useState('');
   const submit = (event: React.FormEvent) => { event.preventDefault(); if (!draft.trim() || sending) return; onSend(draft.trim()); setDraft(''); };
-  return <div className="flex h-full min-h-0 flex-col gap-3 p-3">
-    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
-      <p className="rounded-xl border border-line bg-panel-muted p-3 text-xs leading-5 text-fg-muted">Ask this robot about its market data, latest analysis, breaking news, or your own connected account status. This conversation never triggers or changes a trading run.</p>
-      {messages.map((message,index)=><article key={message.at + index} className={`max-w-[92%] rounded-xl border border-line p-3 text-xs leading-5 ${message.role === 'user' ? 'ml-auto bg-accent-soft text-fg' : 'bg-panel-muted text-fg-muted'}`}><p className="whitespace-pre-wrap">{message.text}</p><time className="mt-1 block text-[9px] text-fg-subtle">{relativeTime(message.at)}</time></article>)}
-      {error && <p role="alert" className="text-xs text-danger">{error}</p>}
+  return <div className="tr-robot-chat flex h-full min-h-0 flex-col gap-3 p-3">
+    <div className="tr-robot-chat-scroll min-h-0 flex-1 space-y-3 overflow-y-auto">
+      <p className="tr-robot-chat-intro">Ask about this robot’s market, latest analysis, breaking news, or your connected account status. Chat stays separate from its trading runs.</p>
+      {messages.map((message,index)=><article key={message.at + index} className={`tr-robot-chat-message ${message.role === 'user' ? 'is-user' : 'is-robot'}`}><p className="tr-robot-chat-role">{message.role === 'user' ? 'You' : 'Robot'}</p><p className="tr-robot-chat-copy">{message.text}</p><time className="tr-robot-chat-time">{relativeTime(message.at)}</time></article>)}
+      {error && <p role="alert" className="tr-robot-chat-error">{error}</p>}
     </div>
-    {!signedIn ? <button type="button" onClick={onRequestSignIn} className="btn btn-secondary justify-center">Sign in to chat with this robot</button> : <form onSubmit={submit} className="flex gap-2"><textarea value={draft} onChange={event=>setDraft(event.target.value)} rows={2} maxLength={2000} className="input min-w-0 flex-1 resize-none" placeholder="Ask about the current market…"/><button className="btn btn-primary self-end" type="submit" disabled={!draft.trim()||sending}>{sending?'Thinking…':'Send'}</button></form>}
+    {!signedIn ? <button type="button" onClick={onRequestSignIn} className="btn btn-secondary justify-center">Sign in to chat with this robot</button> : <form onSubmit={submit} className="tr-robot-chat-composer flex gap-2"><textarea value={draft} onChange={event=>setDraft(event.target.value)} rows={2} maxLength={2000} className="input min-w-0 flex-1 resize-none" placeholder="Ask about the current market…"/><button className="btn btn-primary self-end" type="submit" disabled={!draft.trim()||sending}>{sending?'Thinking…':'Send'}</button></form>}
   </div>;
 }
 

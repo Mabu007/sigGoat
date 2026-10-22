@@ -348,11 +348,34 @@ export class UserScopedReasoningGateway implements ReasoningGateway {
       return (await (client as SpaceBunnyClient).answerQuestion(question, context, SPACE_BUNNY_MODEL)).answer;
     }
 
-    const selectedModel = typeof model === 'string' && model.includes('/')
-      ? model
-      : (await this.pickAnyModel(context.userId, provider)) || model;
-    const answer = await (client as OpenRouterClient).answerQuestion(context, question, selectedModel);
-    return answer.answer;
+    let selectedModel = typeof model === 'string' && model.includes('/') ? model : '';
+    try {
+      if (selectedModel && !(await this.isModelAvailable(context.userId, selectedModel, provider))) selectedModel = '';
+    } catch (catalogueError) {
+      console.warn('[robot-chat] OpenRouter catalogue unavailable; trying the saved model:', catalogueError instanceof Error ? catalogueError.message : 'unknown error');
+    }
+    if (!selectedModel) selectedModel = (await this.pickAnyModel(context.userId, provider)) || '';
+    if (!selectedModel) throw new Error('OPENROUTER_NO_USABLE_MODEL: no available text model could be selected.');
+
+    try {
+      const answer = await (client as OpenRouterClient).answerQuestion(context, question, selectedModel);
+      return answer.answer;
+    } catch (firstError) {
+      const firstDetail = firstError instanceof Error ? firstError.message : String(firstError);
+      let fallback = '';
+      try { fallback = (await this.pickAnyModel(context.userId, provider, selectedModel)) || ''; }
+      catch (fallbackSelectionError) {
+        console.warn('[robot-chat] Could not select a fallback model:', fallbackSelectionError instanceof Error ? fallbackSelectionError.message : 'unknown error');
+      }
+      if (!fallback) throw new Error('OPENROUTER_CHAT_FAILED: ' + firstDetail);
+      try {
+        const answer = await (client as OpenRouterClient).answerQuestion(context, question, fallback);
+        return answer.answer;
+      } catch (fallbackError) {
+        const detail = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        throw new Error('OPENROUTER_CHAT_FAILED: selected model failed (' + firstDetail + '); fallback model failed (' + detail + ').');
+      }
+    }
   }
 
   async hasKeyFor(userId: string, providerOverride?: AiProvider): Promise<boolean> {

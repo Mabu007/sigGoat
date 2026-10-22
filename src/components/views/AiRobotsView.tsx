@@ -53,8 +53,8 @@ export function AiRobotsView() {
   return <div className="mx-auto max-w-7xl space-y-6">
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div><p className="text-[11px] font-bold uppercase tracking-[.18em] text-red-500">SignalGoat · AI Robots</p>
-        <h1 className="mt-1 text-2xl font-black text-fg sm:text-3xl">Public AI robots</h1>
-        <p className="mt-2 max-w-2xl text-sm text-fg-muted">Watch each robot’s market analysis, review history, and proposals. Connect your own PropDAO or cTrader account in a robot room to set up your personal trading access.</p>
+        <h1 className="mt-1 text-2xl font-black text-fg sm:text-3xl">AI Robots</h1>
+        <p className="mt-2 max-w-2xl text-sm text-fg-muted">Explore every AI robot, follow its market analysis, and connect your own PropDAO or cTrader account from its room.</p>
       </div>
       <div className="flex gap-2">
         <button className="btn btn-secondary" type="button" onClick={() => void load(true)} disabled={refreshing} aria-label="Refresh AI robots"><RefreshCw size={15} className={refreshing ? 'animate-spin' : ''}/> Refresh</button>
@@ -63,11 +63,11 @@ export function AiRobotsView() {
     </header>
 
     {error && <div role="alert" className="panel p-4 text-danger">{error}</div>}
-    {loading ? <div role="status" className="panel p-10 text-center text-fg-muted">Loading public AI robots…</div>
+    {loading ? <div role="status" className="panel p-10 text-center text-fg-muted">Loading AI robots…</div>
       : robots.length === 0 ? <section className="panel grid justify-items-center gap-3 p-10 text-center">
         <span className="grid h-12 w-12 place-items-center rounded-2xl bg-accent-soft text-accent-text"><Bot size={23}/></span>
-        <h2 className="text-lg font-bold text-fg">No public AI robots yet</h2>
-        <p className="max-w-md text-sm text-fg-muted">Create the first one. Its analysis will appear here and in its public team room.</p>
+        <h2 className="text-lg font-bold text-fg">No AI robots yet</h2>
+        <p className="max-w-md text-sm text-fg-muted">Create the first one. Its analysis will appear here and in its robot room.</p>
         <button className="btn btn-primary mt-1" type="button" onClick={create}><Sparkles size={15}/> Create an AI robot</button>
       </section>
       : <div className="grid gap-x-5 gap-y-7 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

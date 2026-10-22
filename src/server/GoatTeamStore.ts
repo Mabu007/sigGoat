@@ -255,6 +255,15 @@ export class GoatTeamStore {
     return Object.values(this.db.teams).filter(team => team.ownerUserId === userId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  /** Lists room records for server-side discovery and one-time migrations. */
+  async listAll(): Promise<GoatTeam[]> {
+    this.assertAvailable();
+    const teams = this.firestore
+      ? (await this.collection().get()).docs.map(doc => doc.data() as GoatTeam)
+      : Object.values(this.db.teams);
+    return teams.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
   async listPublic(): Promise<GoatTeam[]> {
     this.assertAvailable();
     const teams = this.firestore
