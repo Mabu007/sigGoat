@@ -34,8 +34,6 @@ import { useImageUpload, type ImageUploadPurpose } from '../hooks/useImageUpload
 export interface RoomCoverPickerProps {
   /** Omit while creating a room — a cover can only be attached to a saved room. */
   roomId?: string | null;
-  /** Required for the 'robot-cover' purpose. */
-  robotId?: string | null;
   /** Defaults to 'room-cover'. */
   purpose?: ImageUploadPurpose;
   /** The cover that is stored right now. */
@@ -48,7 +46,7 @@ export interface RoomCoverPickerProps {
   /**
    * The shape of the preview.
    *
-   * A robot cover is a PORTRAIT (4:5), a room cover is a landscape (16:9).
+   * A room cover is landscape (16:9).
    * The preview uses the real ratio, so what the owner sees while choosing
    * is the shape the card will have.
    */
@@ -63,7 +61,6 @@ const NO_ROOM_HINT = 'Save the room first, then add a cover.';
 
 export function RoomCoverPicker({
   roomId,
-  robotId,
   purpose = 'room-cover',
   currentUrl,
   onChange,
@@ -89,7 +86,6 @@ export function RoomCoverPicker({
   } = useImageUpload({
     purpose,
     roomId: roomId ?? null,
-    robotId: robotId ?? null,
     onUploaded: (url) => {
       setPreview(url);
       setPreviewBroken(false);
@@ -154,7 +150,7 @@ export function RoomCoverPicker({
     await remove();
   };
 
-  const fieldLabel = label ?? (purpose === 'avatar' ? 'Profile picture' : purpose === 'robot-cover' ? 'Robot cover' : 'Room cover');
+  const fieldLabel = label ?? (purpose === 'avatar' ? 'Profile picture' : 'Room cover');
 
   /**
    * What a screen reader hears while the upload runs. The visible progress

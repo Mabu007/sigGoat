@@ -8,7 +8,7 @@ import { RoomMembersModal } from './RoomMembersModal';
 import {
   ConnectBrokerPanel, GroupDetailsPanel, MarketPanel, MentorChatPanel, NewsPanel, RoomChatPanel, TradeRoomSidebar,
   type BrokerConnectionState, type MentorThreadSummary, type RoomChatMessage, type RoomGroupDetails, type RoomGroupMember,
-  type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId,
+  type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId, type RoomRun,
 } from './TradeRoomSidebar';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -22,6 +22,7 @@ import { ROOM_CATEGORIES, type RoomCategory } from '../types/rooms';
 type Member = RoomMember;
 type Room = {
   id: string; owner?: boolean; slug: string; name: string; instructions?: string;
+  robotKind?: 'AI_ROBOT' | 'COMMUNITY';
   visibility: 'PUBLIC' | 'PRIVATE'; status: string; memberCount: number; markets: string[];
   asset?: string; provider?: string; balance?: number | null; trades?: number;
 };
@@ -143,6 +144,8 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   const [streamVisible, setStreamVisible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [copyingRobot, setCopyingRobot] = useState(false);
+  const [copyError, setCopyError] = useState('');
   const [settingsError, setSettingsError] = useState('');
   const [settingsName, setSettingsName] = useState('');
   const [settingsDescription, setSettingsDescription] = useState('');
@@ -226,6 +229,22 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
 
   const roomId = data?.team.id ?? null;
   const viewerName = currentUser?.displayName?.trim() || 'Member';
+
+  const createPersonalRobot = useCallback(async () => {
+    if (!signedIn) { openAuthModal('signup'); return; }
+    if (!data?.team.slug || copyingRobot) return;
+    setCopyingRobot(true); setCopyError('');
+    try {
+      const response = await fetch(`/api/team-rooms/${encodeURIComponent(data.team.slug)}/copy`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(await optionalAuthHeaders()) }, body: '{}',
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || 'Could not create your personal robot.');
+      window.location.assign(body.shareUrl);
+    } catch (cause) {
+      setCopyError(cause instanceof Error ? cause.message : 'Could not create your personal robot.');
+    } finally { setCopyingRobot(false); }
+  }, [signedIn, openAuthModal, data?.team.slug, copyingRobot, optionalAuthHeaders]);
 
   /**
    * What the server can actually do.
@@ -1042,6 +1061,9 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
       </dl>
 
       <div className="trade-room-topbar-actions" ref={headerActionsRef}>
+        {data.team.robotKind === 'AI_ROBOT' && <button type="button" className="sg-room-session-button" onClick={() => void createPersonalRobot()} disabled={copyingRobot} title="Create your own independently running copy, using your own account settings">
+          {copyingRobot ? 'Starting your copy…' : 'Run your own copy'}
+        </button>}
         {canManageRoom && (
           <div className="sg-room-session-controls" role="group" aria-label="Live session">
             {liveSession ? (
@@ -1307,6 +1329,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
       </div>
     </section>
     <aside id="trade-room-stream" className="trade-room-stream" aria-label="Room control panel" aria-hidden={!streamVisible}>
+      {copyError && <div role="alert" className="sg-room-environment-notice">{copyError}</div>}
       <TradeRoomSidebar
         panel={panel}
         onPanelChange={setPanel}
@@ -1325,6 +1348,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
       <div className="trade-room-stream-list">
         {panel === 'chat' && <RoomChatPanel
           messages={chatMessages}
+          analysisRuns={data.members.flatMap(member => member.runs).sort((left, right) => left.at.localeCompare(right.at)) as RoomRun[]}
           onSend={content => void sendChatMessage(content)}
           sending={chatSending}
           canPost={Boolean(roomIdentity?.isMember)}

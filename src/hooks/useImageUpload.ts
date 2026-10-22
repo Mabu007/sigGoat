@@ -108,8 +108,6 @@ export interface UseImageUploadOptions {
   purpose: ImageUploadPurpose;
   /** Required for 'room-cover'. */
   roomId?: string | null;
-  /** Required for 'robot-cover'. */
-  robotId?: string | null;
   /** Called after a successful commit with the new url (or null after removal). */
   onUploaded?: (url: string | null) => void;
   /**
@@ -126,7 +124,7 @@ export interface UseImageUploadOptions {
 // ---------------------------------------------------------------------------
 
 export function useImageUpload(options: UseImageUploadOptions): UseImageUpload {
-  const { purpose, roomId, robotId, onUploaded, commitOnUpload } = options;
+  const { purpose, roomId, onUploaded, commitOnUpload } = options;
 
   const { getApiAuthHeaders } = useAuth();
 
@@ -139,10 +137,9 @@ export function useImageUpload(options: UseImageUploadOptions): UseImageUpload {
   /** The latest auth getter, for the same reason. */
   const getApiAuthHeadersRef = useRef(getApiAuthHeaders);
   /** The latest purpose, room and robot, read fresh on every call. */
-  const contextRef = useRef<{ purpose: ImageUploadPurpose; roomId?: string | null; robotId?: string | null }>({
+  const contextRef = useRef<{ purpose: ImageUploadPurpose; roomId?: string | null }>({
     purpose,
     roomId,
-    robotId,
   });
   /** Guards every state write after unmount. */
   const mountedRef = useRef(true);
@@ -156,8 +153,8 @@ export function useImageUpload(options: UseImageUploadOptions): UseImageUpload {
   }, [getApiAuthHeaders]);
 
   useEffect(() => {
-    contextRef.current = { purpose, roomId, robotId };
-  }, [purpose, roomId, robotId]);
+    contextRef.current = { purpose, roomId };
+  }, [purpose, roomId]);
 
   useEffect(() => {
     mountedRef.current = true;

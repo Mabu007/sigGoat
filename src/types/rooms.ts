@@ -116,7 +116,7 @@ export interface RoomSessionRecord {
  * relabel a room cover as a robot cover and have the Worker store it in the
  * wrong place.
  */
-export type MediaPurpose = 'avatar' | 'room-cover' | 'robot-cover';
+export type MediaPurpose = 'avatar' | 'room-cover';
 
 export interface MediaReference {
   /** R2 object key. The canonical stored value. */

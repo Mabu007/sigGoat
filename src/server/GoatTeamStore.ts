@@ -72,6 +72,8 @@ export interface GoatTeam {
   instructions?: string;
   /** How members reconcile their views. Derived from instructions by default. */
   coordinationMode: GoatTeamCoordinationMode;
+  /** Product role for public discovery and room presentation. */
+  robotKind?: "AI_ROBOT" | "COMMUNITY";
   /** Market-data environment only; it never grants or revokes order execution. */
   environment?: GoatTeamEnvironment;
   /** DEMO uses BiQuote reference prices; LIVE uses the selected venue feed. */

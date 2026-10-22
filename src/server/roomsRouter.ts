@@ -22,7 +22,7 @@
  */
 
 import express, { type Request, type Response } from "express";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { authMiddleware, optionalAuthMiddleware, requireUser } from "./auth";
 import { createGoatTeamStore, type GoatTeam } from "./GoatTeamStore";
 import {
@@ -79,13 +79,6 @@ import {
   type MediaPurpose,
   type RoomCategory,
 } from "../types/rooms";
-import { createRobotStore, type RobotRecord } from './robots/RobotStore';
-import { initialRuntimeState, processCompletedCandle, runStrategyBacktest } from '../services/strategy/engine';
-import { migrateStrategyDefinition, type StrategyDefinition } from '../services/strategy/schema';
-import { normalizeCompletedCandles, requestedBarsForRange } from '../services/strategy/marketData';
-import { hyperliquidProvider } from '../services/market-data/hyperliquid/HyperliquidMarketDataProvider';
-import { getCredentialVault } from './security/instance';
-import { TelegramBotClient, isPlausibleBotToken } from '../services/telegram/TelegramBotClient';
 
 export const roomsRouter = express.Router();
 
@@ -97,8 +90,6 @@ const mediaStore = createMediaStore();
 const voiceStore = createVoiceRosterStore();
 const presenceStore = createRoomPresenceStore();
 const readCursorStore = createRoomReadCursorStore();
-const robotStore = createRobotStore();
-const localRobotTimers = new Map<string, ReturnType<typeof setInterval>>();
 const BIQUOTE_ASSETS = ['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD','NZDUSD','EURGBP','EURJPY','XAUUSD','XAGUSD','BTCUSD','ETHUSD','SOLUSD','XRPUSD','SPX500','NAS100','US30'] as const;
 let biquoteAssetCache: { at: number; assets: Array<{ symbol: string; name: string }> } | null = null;
 async function biquoteAssets(): Promise<Array<{ symbol: string; name: string }>> {
@@ -121,16 +112,6 @@ async function biquoteAssets(): Promise<Array<{ symbol: string; name: string }>>
     return BIQUOTE_ASSETS.map(symbol => ({ symbol, name: symbol }));
   }
 }
-const robotCandles = async (definition: StrategyDefinition, count: number) => {
-  const { provider, instrument, timeframe } = definition.market;
-  if (provider === 'hyperliquid') return hyperliquidProvider.getCandles(instrument, timeframe, count);
-  if (provider !== 'biquote' || !/^[A-Za-z0-9._-]{2,32}$/.test(instrument)) throw new Error('Unsupported robot market.');
-  const response = await fetch(`https://biquote.io/api/${encodeURIComponent(instrument)}/ohlc?interval=${timeframe}&limit=${Math.min(count, 1000)}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
-  if (!response.ok) throw new Error(`BiQuote historical data is unavailable (${response.status}).`);
-  const body = await response.json() as { bars?: Array<{ openTime?: string; open?: number; high?: number; low?: number; close?: number; tickVolume?: number; volume?: number; isOpen?: boolean }> };
-  return (body.bars ?? []).filter(bar => !bar.isOpen).map(bar => ({ time: Date.parse(bar.openTime ?? ''), open: Number(bar.open), high: Number(bar.high), low: Number(bar.low), close: Number(bar.close), volume: Number(bar.tickVolume ?? bar.volume ?? 0) }));
-};
-
 /** The conversation of one room. The id is shared with the legacy API. */
 const roomConversationId = (roomId: string) => `room_${roomId}`;
 
@@ -319,431 +300,6 @@ roomsRouter.get("/realtime/status", (_req, res) => {
     },
   });
 });
-
-// ---------------------------------------------------------------------------
-// Robot marketplace (strategy-first compatibility layer)
-// ---------------------------------------------------------------------------
-
-async function robotForOwner(idOrSlug: string, userId: string, res: Response) {
-  const robot = await robotStore.get(idOrSlug);
-  if (!robot) { fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.'); return null; }
-  if (robot.ownerUserId !== userId) { fail(res, 403, 'ROBOT_FORBIDDEN', 'Only the robot creator may perform this action.'); return null; }
-  return robot;
-}
-
-/**
- * Resolves a robot the caller OWNS, for the endpoints that change it.
- *
- * A robot that belongs to somebody else is reported as NOT FOUND rather than
- * forbidden, so these endpoints cannot be used to discover which robots
- * exist. The cover and the broker binding are owner-only, and this is the
- * single place that decision is made.
- */
-async function resolveOwnRobot(idOrSlug: unknown, userId: string, res: Response): Promise<RobotRecord | null> {
-  const id = typeof idOrSlug === 'string' ? idOrSlug.trim() : '';
-  if (!id) { fail(res, 400, 'INVALID_ROBOT', 'A robot is required.'); return null; }
-  const robot = await robotStore.get(id);
-  if (!robot || robot.ownerUserId !== userId) {
-    fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
-    return null;
-  }
-  return robot;
-}
-
-/**
- * The shape a robot takes in the directory.
- *
- * The cover is delivered through a freshly signed url, because the stored
- * value is only the object key: a signed url expires, so a stored url would
- * be a broken image tomorrow.
- */
-function robotSummary(robot: RobotRecord, options: { includeBrokerAccountId?: boolean } = {}) {
-  const coverReference = robot.cover?.key ? toMediaReference(robot.cover, 'robot-cover') : null;
-  return {
-    ...robot,
-    telegram: options.includeBrokerAccountId ? robot.telegram ?? null : null,
-    coverUrl: coverReference?.url ?? null,
-    coverContentType: robot.cover?.contentType ?? null,
-    /**
-     * The broker account is a REFERENCE, never a credential — but the
-     * account id itself is the creator's own broker identifier, and the
-     * directory is public. So the id is only ever given to the owner, and
-     * everybody else sees the label and the environment.
-     */
-    brokerAccount: robot.brokerAccount
-      ? {
-        provider: robot.brokerAccount.provider,
-        accountId: options.includeBrokerAccountId ? robot.brokerAccount.accountId : '',
-        label: robot.brokerAccount.label,
-        environment: robot.brokerAccount.environment,
-        updatedAt: robot.brokerAccount.updatedAt,
-      }
-      : null,
-  };
-}
-
-roomsRouter.get('/robot-marketplace', handle(async (req, res) => {
-  const query = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase().slice(0, 80) : '';
-  const robots = (await robotStore.listPublic())
-    .filter(robot => !query || `${robot.name} ${robot.description} ${robot.market}`.toLowerCase().includes(query))
-    // The cover is delivered through a freshly signed url. The stored value
-    // is only the object key, so a url stored on the record would be a
-    // broken image tomorrow.
-    .map(robot => robotSummary(robot));
-  res.setHeader('Cache-Control', 'public, max-age=10, stale-while-revalidate=30');
-  res.json({ robots, total: robots.length });
-}));
-
-roomsRouter.get('/robot-marketplace/mine', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  res.setHeader('Cache-Control', 'private, no-store');
-  res.json({ robots: (await robotStore.listForOwner(user.uid)).map(robot => robotSummary(robot, { includeBrokerAccountId: true })) });
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/copy', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const source = await robotStore.get(req.params.idOrSlug);
-  if (!source || source.visibility !== 'PUBLIC') return fail(res, 404, 'ROBOT_NOT_FOUND', 'That public robot does not exist.');
-  const original = await robotStore.definition(source);
-  if (!original) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The strategy is unavailable.');
-  const id = `robot_${randomBytes(12).toString('hex')}`;
-  const now = new Date().toISOString();
-  const definition = migrateStrategyDefinition({ ...original, strategyId: id, versionId: `${id}_v1`, version: 1, visibility: 'PRIVATE', createdAt: now });
-  const robot: RobotRecord = { id, slug: `${source.slug.slice(0, 35)}-${randomBytes(5).toString('hex')}`, ownerUserId: user.uid, creatorName: (await getCreatorProfile(user.uid).catch(() => null))?.displayName ?? 'Robot creator', name: source.name, description: source.description, visibility: 'PRIVATE', currentVersionId: definition.versionId, currentVersion: 1, market: definition.market.instrument, timeframe: definition.market.timeframe, runtimeStatus: 'STOPPED', createdAt: now, updatedAt: now };
-  await robotStore.create(robot, definition);
-  res.status(201).json({ robot: robotSummary(robot, { includeBrokerAccountId: true }) });
-}));
-
-roomsRouter.get('/robot-trades', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const robots = await robotStore.listForOwner(user.uid);
-  const snapshots = await Promise.all(robots.map(async robot => ({ robot, runtime: await robotStore.runtime(robot) })));
-  const trades = snapshots.flatMap(({ robot, runtime }) => (runtime?.trades ?? []).map(trade => ({
-    ...trade, robotId: robot.id, robotName: robot.name, instrument: robot.market,
-    mode: 'PAPER' as const,
-  }))).sort((a, b) => b.closedAt - a.closedAt);
-  res.setHeader('Cache-Control', 'private, no-store');
-  res.json({ trades });
-}));
-
-roomsRouter.post('/robot-marketplace', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const clientRequestId = typeof req.body?.clientRequestId === 'string' ? req.body.clientRequestId.trim() : '';
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(clientRequestId)) return fail(res, 400, 'INVALID_REQUEST_ID', 'Creation requires a stable client request id.');
-  const robotId = `robot_${createHash('sha256').update(`${user.uid}:${clientRequestId}`).digest('hex').slice(0, 24)}`;
-  const existing = await robotStore.get(robotId);
-  if (existing) {
-    if (existing.ownerUserId !== user.uid) return fail(res, 409, 'ROBOT_ID_CONFLICT', 'That creation request id is already in use.');
-    res.json({ robot: existing, created: false });
-    return;
-  }
-  const now = new Date().toISOString();
-  const versionId = `${robotId}_v1`;
-  // The server owns the identity of the version. The client may send either
-  // schema version, and an older one is MIGRATED rather than reinterpreted.
-  const candidate = {
-    ...(req.body?.definition ?? {}), schemaVersion: req.body?.definition?.schemaVersion, strategyId: robotId, versionId, version: 1,
-    validationStatus: 'VALID', createdAt: now,
-  };
-  let definition: StrategyDefinition;
-  try {
-    definition = migrateStrategyDefinition(candidate);
-  } catch (error) {
-    return fail(res, 400, 'INVALID_STRATEGY', error instanceof Error ? error.message : 'The strategy could not be read.');
-  }
-  const slugBase = definition.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 36) || 'trading-robot';
-  const slug = `${slugBase}-${randomBytes(10).toString('hex')}`;
-  const profile = await getCreatorProfile(user.uid).catch(() => null);
-  const robot = {
-    id: robotId, slug, ownerUserId: user.uid, creatorName: profile?.displayName?.trim().slice(0, 80) || 'Robot creator', name: definition.name,
-    description: definition.description, visibility: definition.visibility, currentVersionId: versionId, currentVersion: 1,
-    market: definition.market.instrument, timeframe: definition.market.timeframe, runtimeStatus: 'STOPPED' as const,
-    createdAt: now, updatedAt: now,
-  };
-  try {
-    await robotStore.create(robot, definition);
-  } catch (error) {
-    if (error instanceof Error && error.message === 'ROBOT_ALREADY_EXISTS') {
-      const duplicate = await robotStore.get(robotId);
-      if (duplicate?.ownerUserId === user.uid) {
-        res.json({ robot: duplicate, created: false });
-        return;
-      }
-    }
-    throw error;
-  }
-  res.status(201).json({ robot, created: true });
-}));
-
-roomsRouter.get('/robot-marketplace/:idOrSlug', optionalAuthMiddleware, handle(async (req, res) => {
-  const robot = await robotStore.get(req.params.idOrSlug);
-  if (!robot) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
-  const isOwner = req.user?.uid === robot.ownerUserId;
-  if (robot.visibility === 'PRIVATE' && !isOwner) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
-  const stored = await robotStore.definition(robot);
-  if (!stored) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current immutable strategy version is unavailable.');
-  // A version saved before the current schema is MIGRATED on the way out, so
-  // the client always receives the shape it knows how to read.
-  let definition: StrategyDefinition;
-  try {
-    definition = migrateStrategyDefinition(stored);
-  } catch {
-    return fail(res, 500, 'ROBOT_VERSION_INVALID', 'The stored strategy version could not be read.');
-  }
-  const backtests = isOwner ? await robotStore.listBacktests(robot) : [];
-  // The runtime snapshot belongs to the creator alone. It is the PAPER
-  // account, and it must never be confused with a live one.
-  const runtime = isOwner ? await robotStore.runtime(robot) : null;
-  res.setHeader('Cache-Control', isOwner ? 'private, no-store' : 'public, max-age=10');
-  res.json({ robot: robotSummary(robot, { includeBrokerAccountId: isOwner }), definition, backtests, runtime, canManage: isOwner });
-}));
-
-roomsRouter.get('/robot-marketplace/:idOrSlug/logs', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  res.json({ logs: await robotStore.listLogs(robot) });
-}));
-
-roomsRouter.get('/robot-marketplace/:idOrSlug/assets', optionalAuthMiddleware, handle(async (req, res) => {
-  const robot = await robotStore.get(req.params.idOrSlug);
-  if (!robot || (robot.visibility === 'PRIVATE' && req.user?.uid !== robot.ownerUserId)) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
-  const [biquote, hyperliquid] = await Promise.all([biquoteAssets(), hyperliquidProvider.getSymbols().catch(() => [])]);
-  res.json({ biquote, hyperliquid: hyperliquid.map(asset => ({ symbol: asset.symbol, name: asset.name })) });
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/market', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  if (robot.runtimeStatus === 'PAPER') return fail(res, 409, 'ROBOT_RUNNING', 'Stop paper trading before changing the asset.');
-  const provider = req.body?.provider;
-  const instrument = typeof req.body?.instrument === 'string' ? req.body.instrument.trim() : '';
-  if (provider !== 'biquote' && provider !== 'hyperliquid') return fail(res, 400, 'INVALID_PROVIDER', 'Choose BiQuote or Hyperliquid.');
-  const available = provider === 'biquote' ? (await biquoteAssets()).map(asset => asset.symbol) : (await hyperliquidProvider.getSymbols()).map(asset => asset.symbol);
-  if (!available.includes(instrument)) return fail(res, 400, 'INVALID_ASSET', 'Choose an asset from the current catalogue.');
-  const previous = await robotStore.definition(robot);
-  if (!previous) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
-  const next = migrateStrategyDefinition({ ...previous, version: robot.currentVersion + 1, versionId: `${robot.id}_v${robot.currentVersion + 1}`, market: { ...previous.market, provider, instrument }, createdAt: new Date().toISOString() });
-  await robotStore.setMarket(robot, next);
-  res.json({ robot: robotSummary((await robotStore.get(robot.id))!) });
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/alerts', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  const alerts = req.body;
-  if (!alerts || ['entry','exit','fill','risk'].some(key => typeof alerts[key] !== 'boolean')) return fail(res, 400, 'INVALID_ALERTS', 'Set each alert option to true or false.');
-  const saved = { entry: alerts.entry, exit: alerts.exit, fill: alerts.fill, risk: alerts.risk };
-  await robotStore.setAlertPreferences(robot, saved);
-  res.json({ alertPreferences: saved });
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/contact', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  const contactPhone = typeof req.body?.contactPhone === 'string' ? req.body.contactPhone.trim() : '';
-  if (contactPhone && !/^\+?[0-9 ()-]{7,30}$/.test(contactPhone)) return fail(res, 400, 'INVALID_PHONE', 'Enter a valid contact phone number.');
-  await robotStore.setContactPhone(robot, contactPhone);
-  res.json({ contactPhone });
-}));
-
-const robotTelegramOwner = (robot: RobotRecord) => `${robot.ownerUserId}:robot:${robot.id}`;
-
-roomsRouter.get('/robot-marketplace/:idOrSlug/telegram', authMiddleware, handle(async (req, res) => {
-  const robot = await robotForOwner(req.params.idOrSlug, requireUser(req).uid, res);
-  if (!robot) return;
-  const status = await getCredentialVault().getCredentialStatus(robotTelegramOwner(robot), 'telegram');
-  res.setHeader('Cache-Control', 'private, no-store');
-  res.json({ connected: status.configured && Boolean(robot.telegram), tokenConfigured: status.configured, chatId: robot.telegram?.chatId ?? null, bot: robot.telegram ? { username: robot.telegram.username } : null });
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/telegram', authMiddleware, handle(async (req, res) => {
-  const robot = await robotForOwner(req.params.idOrSlug, requireUser(req).uid, res);
-  if (!robot) return;
-  const token = typeof req.body?.telegramToken === 'string' ? req.body.telegramToken.trim() : '';
-  const chatId = typeof req.body?.chatId === 'string' ? req.body.chatId.trim() : '';
-  if (!isPlausibleBotToken(token) || !/^-?\d{1,20}$/.test(chatId)) return fail(res, 400, 'INVALID_TELEGRAM', 'Enter a valid bot token and numeric chat ID.');
-  const client = new TelegramBotClient(token);
-  const bot = await client.getMe();
-  await client.verifyChat(chatId);
-  await getCredentialVault().saveCredential(robotTelegramOwner(robot), 'telegram', token);
-  await robotStore.setTelegram(robot, { chatId, username: bot.username, updatedAt: new Date().toISOString() });
-  res.json({ connected: true, chatId, bot: { username: bot.username } });
-}));
-
-roomsRouter.delete('/robot-marketplace/:idOrSlug/telegram', authMiddleware, handle(async (req, res) => {
-  const robot = await robotForOwner(req.params.idOrSlug, requireUser(req).uid, res);
-  if (!robot) return;
-  await getCredentialVault().saveCredential(robotTelegramOwner(robot), 'telegram', null);
-  await robotStore.setTelegram(robot, null);
-  res.json({ connected: false });
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/telegram/test', authMiddleware, handle(async (req, res) => {
-  const robot = await robotForOwner(req.params.idOrSlug, requireUser(req).uid, res);
-  if (!robot) return;
-  const token = await getCredentialVault().getCredential(robotTelegramOwner(robot), 'telegram');
-  if (!token || !robot.telegram) return fail(res, 409, 'TELEGRAM_NOT_CONNECTED', 'Connect this robot to Telegram first.');
-  const result = await new TelegramBotClient(token).sendMessage(robot.telegram.chatId, `🤖 ${robot.name}: test notification`);
-  if (!result.ok) return fail(res, 502, 'TELEGRAM_SEND_FAILED', result.description ?? 'Telegram rejected the message.');
-  res.json({ ok: true });
-}));
-
-roomsRouter.get('/robot-marketplace/:idOrSlug/market', optionalAuthMiddleware, handle(async (req, res) => {
-  const robot = await robotStore.get(req.params.idOrSlug);
-  if (!robot) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
-  if (robot.visibility === 'PRIVATE' && req.user?.uid !== robot.ownerUserId) return fail(res, 404, 'ROBOT_NOT_FOUND', 'That trading robot does not exist.');
-  const definition = await robotStore.definition(robot);
-  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
-  const rawCandles = await robotCandles(definition, 300);
-  const candles = normalizeCompletedCandles(rawCandles, definition.market.timeframe);
-  res.setHeader('Cache-Control', 'no-store');
-  res.json({ candles, provider: definition.market.provider, dataMode: 'LIVE', completedOnly: true });
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/start', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  if (!robot.assetSelected) return fail(res, 409, 'ASSET_REQUIRED', 'Choose an asset in PAIRS before starting this robot.');
-  const definition = await robotStore.definition(robot);
-  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
-  const previous = await robotStore.runtime(robot) ?? initialRuntimeState(definition);
-  const entry = { id: `start_${Date.now()}`, at: new Date().toISOString(), type: 'RUNTIME_STARTED', message: 'Scheduled paper trading started. Completed candles are processed while the browser is closed.' };
-  const state = { ...previous, status: 'PAPER' as const, logs: [...previous.logs, entry] };
-  await robotStore.setRuntime(robot, state); await robotStore.appendLogs(robot, [entry]);
-  try { await signalRobotWorker(robot.id, 'POST'); }
-  catch (error) {
-    await robotStore.setRuntime(robot, { ...state, status: 'STOPPED' });
-    return fail(res, 503, 'ROBOT_WORKER_UNAVAILABLE', error instanceof Error ? error.message : 'The durable worker could not start.');
-  }
-  res.json({ state });
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/stop', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  const definition = await robotStore.definition(robot);
-  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
-  const previous = await robotStore.runtime(robot) ?? initialRuntimeState(definition);
-  const entry = { id: `stop_${Date.now()}`, at: new Date().toISOString(), type: 'RUNTIME_STOPPED', message: 'Paper-trading runtime stopped.' };
-  const state = { ...previous, status: 'STOPPED' as const, logs: [...previous.logs, entry] };
-  await robotStore.setRuntime(robot, state); await robotStore.appendLogs(robot, [entry]);
-  await signalRobotWorker(robot.id, 'DELETE').catch(error => console.error('[robots] Worker stop failed; API status still prevents processing:', error));
-  res.json({ state });
-}));
-
-async function signalRobotWorker(id: string, method: 'POST' | 'DELETE'): Promise<void> {
-  const origin = process.env.ROBOT_WORKER_URL?.trim().replace(/\/+$/, '');
-  const secret = process.env.CRON_SECRET?.trim();
-  // Local development can use the manual process endpoint. Production must
-  // never claim a robot is running without a scheduler to wake it.
-  if (!origin || !secret) {
-    if (process.env.NODE_ENV === 'production') throw new Error('Set ROBOT_WORKER_URL and CRON_SECRET to enable scheduled trading.');
-    if (method === 'DELETE') { const timer = localRobotTimers.get(id); if (timer) clearInterval(timer); localRobotTimers.delete(id); }
-    else if (!localRobotTimers.has(id)) {
-      const tick = async () => { const robot = await robotStore.get(id); if (robot?.runtimeStatus === 'PAPER') await processRobot(robot); else await signalRobotWorker(id, 'DELETE'); };
-      localRobotTimers.set(id, setInterval(() => void tick().catch(error => console.error('[robots] Local scan failed:', error)), 60_000));
-      void tick().catch(error => console.error('[robots] Initial scan failed:', error));
-    }
-    return;
-  }
-  const response = await fetch(`${origin}/robots/${encodeURIComponent(id)}`, { method, headers: { 'x-worker-admin-secret': secret }, signal: AbortSignal.timeout(10_000) });
-  if (!response.ok) throw new Error(`Durable worker rejected ${method === 'POST' ? 'start' : 'stop'} (${response.status}).`);
-}
-
-async function processRobot(robot: RobotRecord) {
-  const definition = await robotStore.definition(robot);
-  if (!definition) throw new Error('The current strategy version is unavailable.');
-  // Never trust prices supplied by the browser. The authenticated server
-  // resolves the robot's immutable market and loads its provider data.
-  const previous = await robotStore.runtime(robot) ?? initialRuntimeState(definition);
-  if (previous.status !== 'PAPER') return null;
-  const rawCandles = await robotCandles(definition, 600);
-  const candles = normalizeCompletedCandles(rawCandles, definition.market.timeframe);
-  if (!candles.length) throw new Error('The provider returned no completed candles.');
-  const state = processCompletedCandle(definition, previous, candles);
-  const newLogs = state.logs.slice(previous.logs.length);
-  await robotStore.setRuntime(robot, state); await robotStore.appendLogs(robot, newLogs);
-  const preferences = robot.alertPreferences;
-  if (preferences && robot.telegram) {
-    const token = await getCredentialVault().getCredential(robotTelegramOwner(robot), 'telegram');
-    if (token) {
-    for (const entry of newLogs) {
-      const enabled = (entry.type === 'ENTRY_SIGNAL' || entry.type === 'STRATEGY_ALERT') ? preferences.entry
-        : entry.type === 'EXIT_SIGNAL' ? preferences.exit
-        : (entry.type === 'PAPER_FILL' || entry.type === 'POSITION_CLOSED') ? preferences.fill
-        : entry.type === 'RISK_REJECTED' ? preferences.risk : false;
-      if (!enabled) continue;
-      try {
-        await new TelegramBotClient(token).sendMessage(robot.telegram.chatId, `🤖 ${robot.name} · ${definition.market.instrument}\n${entry.message}\nPaper trading · ${new Date(entry.at).toLocaleString()}`);
-      } catch (error) { console.error('[robots] Telegram alert delivery failed:', error); }
-    }
-    }
-  }
-  return { state, processed: state.lastProcessedCandleTime !== previous.lastProcessedCandleTime };
-}
-
-roomsRouter.post('/internal/robots/:id/process', handle(async (req, res) => {
-  const secret = process.env.CRON_SECRET?.trim();
-  if (!secret || req.header('authorization') !== `Bearer ${secret}`) return fail(res, 401, 'UNAUTHORISED', 'Invalid worker secret.');
-  const robot = await robotStore.get(req.params.id);
-  if (!robot) return fail(res, 404, 'ROBOT_NOT_FOUND', 'Robot not found.');
-  const result = await processRobot(robot);
-  if (!result) return fail(res, 409, 'ROBOT_STOPPED', 'Robot is stopped.');
-  res.json(result);
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/process', authMiddleware, handle(async (req, res) => {
-  if (process.env.NODE_ENV === 'production') return fail(res, 405, 'WORKER_ONLY', 'The durable worker processes trading candles.');
-  const user = requireUser(req);
-  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  const result = await processRobot(robot);
-  if (!result) return fail(res, 409, 'ROBOT_STOPPED', 'Robot is stopped.');
-  res.json(result);
-}));
-
-roomsRouter.post('/robot-marketplace/:idOrSlug/backtests', authMiddleware, handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await robotForOwner(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  const definition = await robotStore.definition(robot);
-  if (!definition) return fail(res, 500, 'ROBOT_VERSION_MISSING', 'The current strategy version is unavailable.');
-  const from = typeof req.body?.from === 'string' ? Date.parse(req.body.from) : Number.NaN;
-  const to = typeof req.body?.to === 'string' ? Date.parse(req.body.to) : Number.NaN;
-  const rangeBars = requestedBarsForRange(from, to, definition.market.timeframe);
-  if ((Number.isFinite(from) || Number.isFinite(to)) && (!rangeBars || from >= Date.now() || to > Date.now() + 60_000)) {
-    return fail(res, 400, 'INVALID_BACKTEST_RANGE', 'Choose a completed historical range with a start before its end.');
-  }
-  const maxBars = definition.market.provider === 'biquote' ? 1000 : 5000;
-  if (rangeBars > maxBars) return fail(res, 400, 'BACKTEST_RANGE_TOO_LONG', `This market and timeframe support at most ${maxBars} candles per backtest. Choose a shorter date range.`);
-  const requestedBars = Math.min(maxBars, Math.max(100, rangeBars || Number(req.body?.bars) || 1000));
-  const rawCandles = await robotCandles(definition, requestedBars);
-  const normalized = normalizeCompletedCandles(rawCandles, definition.market.timeframe);
-  const candles = rangeBars ? normalized.filter(candle => candle.time >= from && candle.time <= to) : normalized;
-  if (candles.length < 50) return fail(res, 422, 'INSUFFICIENT_HISTORY', `Only ${candles.length} candles were available; at least 50 are required.`);
-  const result = runStrategyBacktest(definition, candles);
-  const createdAt = new Date().toISOString();
-  const record = { id: `backtest_${Date.now()}_${randomBytes(4).toString('hex')}`, robotId: robot.id, ownerUserId: user.uid, strategyVersionId: definition.versionId, configuration: { requestedBars, provider: definition.market.provider, instrument: definition.market.instrument, timeframe: definition.market.timeframe, from: new Date(candles[0].time).toISOString(), to: new Date(candles[candles.length - 1].time).toISOString() }, result, createdAt };
-  await robotStore.saveBacktest(record); await robotStore.appendLogs(robot, result.logs.slice(-2));
-  // The directory shows whether a robot has VERIFIED performance, so the
-  // summary is kept on the robot record. A backtest is a simulation, and the
-  // interface says so wherever the number appears.
-  await robotStore.setLastBacktest(robot, {
-    strategyVersionId: definition.versionId,
-    totalReturn: result.metrics.totalReturn,
-    winRate: result.metrics.winRate,
-    maxDrawdown: result.metrics.maxDrawdown,
-    completedTrades: result.metrics.completedTrades,
-    at: createdAt,
-  });
-  res.status(201).json({ backtest: record });
-}));
 
 // ---------------------------------------------------------------------------
 // Directory
@@ -1813,17 +1369,13 @@ roomsRouter.post("/media/upload-ticket", authMiddleware, handle(async (req, res)
     );
   }
 
-  const body = (req.body ?? {}) as { purpose?: unknown; roomId?: unknown; robotId?: unknown; contentType?: unknown };
+  const body = (req.body ?? {}) as { purpose?: unknown; roomId?: unknown; contentType?: unknown };
   const purpose = body.purpose as MediaPurpose;
-  if (purpose !== "avatar" && purpose !== "room-cover" && purpose !== "robot-cover") {
-    return fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar, room-cover or robot-cover.");
+  if (purpose !== "avatar" && purpose !== "room-cover") {
+    return fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar or room-cover.");
   }
 
   let team: GoatTeam | null = null;
-  if (purpose === "robot-cover") {
-    const robot = await resolveOwnRobot(body.robotId, user.uid, res);
-    if (!robot) return;
-  }
   if (purpose === "room-cover") {
     if (typeof body.roomId !== "string") {
       return fail(res, 400, "INVALID_ROOM", "A room is required for a room cover.");
@@ -1880,7 +1432,6 @@ roomsRouter.post("/media/commit", authMiddleware, handle(async (req, res) => {
     key?: unknown;
     purpose?: unknown;
     roomId?: unknown;
-    robotId?: unknown;
     contentType?: unknown;
     size?: unknown;
   };
@@ -1888,8 +1439,8 @@ roomsRouter.post("/media/commit", authMiddleware, handle(async (req, res) => {
     return fail(res, 400, "INVALID_KEY", "No image key was supplied.");
   }
   const purpose = body.purpose as MediaPurpose;
-  if (purpose !== "avatar" && purpose !== "room-cover" && purpose !== "robot-cover") {
-    return fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar, room-cover or robot-cover.");
+  if (purpose !== "avatar" && purpose !== "room-cover") {
+    return fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar or room-cover.");
   }
 
   const expectedPrefix = purpose === "avatar" ? "avatars/" : "covers/";
@@ -1928,22 +1479,6 @@ roomsRouter.post("/media/commit", authMiddleware, handle(async (req, res) => {
     return;
   }
 
-  if (purpose === "robot-cover") {
-    const robot = await resolveOwnRobot(body.robotId, user.uid, res);
-    if (!robot) return;
-    const previous = robot.cover;
-    await robotStore.setCover(robot, { ...stored });
-    // The replaced object is deleted, so a robot that changes its cover does
-    // not leave an orphan image in the bucket forever.
-    if (previous && previous.key !== stored.key) {
-      await deleteMediaObject(previous.key);
-    }
-    const reference = toMediaReference(stored, "robot-cover");
-    res.setHeader("Cache-Control", "private, no-store");
-    res.json({ robotCover: reference, robotCoverUrl: reference?.url ?? null });
-    return;
-  }
-
   if (typeof body.roomId !== "string") {
     return fail(res, 400, "INVALID_ROOM", "A room is required for a room cover.");
   }
@@ -1973,7 +1508,7 @@ roomsRouter.post("/media/commit", authMiddleware, handle(async (req, res) => {
 /** Removes an image and clears the reference. */
 roomsRouter.post("/media/remove", authMiddleware, handle(async (req, res) => {
   const user = requireUser(req);
-  const body = (req.body ?? {}) as { purpose?: unknown; roomId?: unknown; robotId?: unknown };
+  const body = (req.body ?? {}) as { purpose?: unknown; roomId?: unknown };
   const purpose = body.purpose as MediaPurpose;
 
   if (purpose === "avatar") {
@@ -1981,17 +1516,6 @@ roomsRouter.post("/media/remove", authMiddleware, handle(async (req, res) => {
     await mediaStore.clearAvatar(user.uid);
     if (previous) await deleteMediaObject(previous.key);
     res.json({ ok: true, avatarUrl: null });
-    return;
-  }
-
-  if (purpose === "robot-cover") {
-    const robot = await resolveOwnRobot(body.robotId, user.uid, res);
-    if (!robot) return;
-    const previous = robot.cover;
-    // Clearing the cover restores the designed default artwork on the card.
-    await robotStore.clearCover(robot);
-    if (previous) await deleteMediaObject(previous.key);
-    res.json({ ok: true, robotCoverUrl: null });
     return;
   }
 
@@ -2014,7 +1538,7 @@ roomsRouter.post("/media/remove", authMiddleware, handle(async (req, res) => {
     return;
   }
 
-  fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar, room-cover or robot-cover.");
+  fail(res, 400, "INVALID_PURPOSE", "purpose must be avatar or room-cover.");
 }));
 
 // ---------------------------------------------------------------------------
