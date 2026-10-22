@@ -4542,37 +4542,47 @@ apiRouter.post("/team-rooms/:slug/robot-chat", handle(async (req, res) => {
   const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
   if (!question) return fail(res, 400, "INVALID_QUESTION", "Enter a message for this robot.");
   if (question.length > 2000) return fail(res, 400, "INVALID_QUESTION", "Messages must be 2,000 characters or fewer.");
-  const team = await goatTeamStore.getPublicBySlug(slug);
-  if (!team || team.robotKind !== "AI_ROBOT" || team.memberGoatIds.length !== 1) {
-    return fail(res, 404, "AI_ROBOT_NOT_FOUND", "This AI robot is not available.");
-  }
-  const robot = await persistence.goats.getForUser(team.memberGoatIds[0], team.ownerUserId);
-  if (!robot?.model) return fail(res, 503, "AI_ROBOT_UNAVAILABLE", "This robot's AI configuration is unavailable.");
-  if (!(await reasoningGateway.hasKeyFor(team.ownerUserId, robot.aiProvider))) {
-    return fail(res, 503, "CREATOR_AI_NOT_CONFIGURED", "The robot creator needs to configure a working AI provider key before this robot can chat.");
-  }
-
-  // The existing public-robot membership record is the durable per-viewer
-  // throttle, shared across serverless instances. Joining does not alter the
-  // robot's schedule or operating state.
-  const membershipId = publishedRobotMembershipId(slug, user.uid);
-  const previousMembership = await getPublishedRobotMembership(slug, user.uid);
-  const nowMs = Date.now();
-  const windowStarted = Date.parse(previousMembership?.chatWindowStartedAt ?? "");
-  const windowExpired = !Number.isFinite(windowStarted) || nowMs - windowStarted >= 3_600_000;
-  const lastChat = Date.parse(previousMembership?.lastChatAt ?? "");
-  if (Number.isFinite(lastChat) && nowMs - lastChat < 2500) return fail(res, 429, "ROBOT_CHAT_COOLDOWN", "Please wait a few seconds before sending another message.");
-  const count = windowExpired ? 0 : (previousMembership?.chatCountInWindow ?? 0);
-  if (count >= 20) return fail(res, 429, "ROBOT_CHAT_LIMIT", "This robot allows up to 20 chat messages per hour per user.");
-  await savePublishedRobotMembership({
-    ...(previousMembership ?? { id: membershipId, robotSlug: slug, goatId: robot.id, userId: user.uid, joinedAt: new Date(nowMs).toISOString(), mode: "PAPER" as const }),
-    lastChatAt: new Date(nowMs).toISOString(), chatWindowStartedAt: windowExpired ? new Date(nowMs).toISOString() : previousMembership?.chatWindowStartedAt,
-    chatCountInWindow: count + 1,
-  });
-
+  let stage = "robot_lookup";
+  let robotId = "unknown";
   try {
+    const team = await goatTeamStore.getPublicBySlug(slug);
+    if (!team || team.robotKind !== "AI_ROBOT" || team.memberGoatIds.length !== 1) {
+      return fail(res, 404, "AI_ROBOT_NOT_FOUND", "This AI robot is not available.");
+    }
+
+    stage = "robot_configuration";
+    const robot = await persistence.goats.getForUser(team.memberGoatIds[0], team.ownerUserId);
+    if (!robot?.model) return fail(res, 503, "AI_ROBOT_UNAVAILABLE", "This robot's AI configuration is unavailable.");
+    robotId = robot.id;
+
+    stage = "provider_key_check";
+    if (!(await reasoningGateway.hasKeyFor(team.ownerUserId, robot.aiProvider))) {
+      return fail(res, 503, "CREATOR_AI_NOT_CONFIGURED", "The robot creator needs to configure a working AI provider key before this robot can chat.");
+    }
+
+    // The existing public-robot membership record is the durable per-viewer
+    // throttle, shared across serverless instances. Joining does not alter the
+    // robot's schedule or operating state.
+    stage = "chat_throttle";
+    const membershipId = publishedRobotMembershipId(slug, user.uid);
+    const previousMembership = await getPublishedRobotMembership(slug, user.uid);
+    const nowMs = Date.now();
+    const windowStarted = Date.parse(previousMembership?.chatWindowStartedAt ?? "");
+    const windowExpired = !Number.isFinite(windowStarted) || nowMs - windowStarted >= 3_600_000;
+    const lastChat = Date.parse(previousMembership?.lastChatAt ?? "");
+    if (Number.isFinite(lastChat) && nowMs - lastChat < 2500) return fail(res, 429, "ROBOT_CHAT_COOLDOWN", "Please wait a few seconds before sending another message.");
+    const count = windowExpired ? 0 : (previousMembership?.chatCountInWindow ?? 0);
+    if (count >= 20) return fail(res, 429, "ROBOT_CHAT_LIMIT", "This robot allows up to 20 chat messages per hour per user.");
+    await savePublishedRobotMembership({
+      ...(previousMembership ?? { id: membershipId, robotSlug: slug, goatId: robot.id, userId: user.uid, joinedAt: new Date(nowMs).toISOString(), mode: "PAPER" as const }),
+      lastChatAt: new Date(nowMs).toISOString(), chatWindowStartedAt: windowExpired ? new Date(nowMs).toISOString() : previousMembership?.chatWindowStartedAt,
+      chatCountInWindow: count + 1,
+    });
+
+    stage = "market_context";
     const marketProvider = await marketDataProviderForGoat(robot);
     const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider }, robot.id, team.ownerUserId);
+    stage = "viewer_context";
     const [theses, news, propDao, cTrader] = await Promise.all([
       persistence.theses.listByGoat(robot.id, 1).catch(() => []),
       newsService.getNews(context.market).catch(() => null),
@@ -4588,12 +4598,21 @@ apiRouter.post("/team-rooms/:slug/robot-chat", handle(async (req, res) => {
       viewerAccountConnections: { propDaoConnected: propDao.configured, cTraderConnected: cTrader.configured },
       responseRules: "This is an informational chat only. Never create or alter trades, signal decisions, schedules, or robot settings. Account connection booleans belong to the requesting viewer only; never imply access to account balances, positions, or credentials.",
     };
+    stage = "model_response";
     const answer = await reasoningGateway.answerGoatQuestion(question, context, model || robot.model, robot.aiProvider);
     res.setHeader("Cache-Control", "private, no-store");
     res.json({ answer });
   } catch (error) {
-    console.error(`[robot-chat] Failed to answer for robot ${robot.id}:`, error);
-    return fail(res, 502, "ROBOT_CHAT_UNAVAILABLE", "The robot could not reach its market or AI provider. Please try again shortly.");
+    console.error(`[robot-chat] Failed at ${stage} for ${robotId} (${slug}):`, error);
+    const providerUnavailable = stage === "provider_key_check" || stage === "model_response";
+    return fail(
+      res,
+      providerUnavailable ? 502 : 503,
+      providerUnavailable ? "ROBOT_AI_UNAVAILABLE" : "ROBOT_CHAT_DATA_UNAVAILABLE",
+      providerUnavailable
+        ? "The robot's AI provider is temporarily unavailable. Please try again shortly."
+        : "The robot could not load the data needed for chat. Please try again shortly.",
+    );
   }
 }));
 
