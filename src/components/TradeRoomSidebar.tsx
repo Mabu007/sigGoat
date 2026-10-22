@@ -1417,7 +1417,7 @@ export interface RoomGroupMember {
 }
 
 export function GroupDetailsPanel({
-  room, members, memberCount, isMember, onJoin, onRequestSignIn, joining, joinError, signedIn, robotMode = false, reviewIntervals = [],
+  room, members, memberCount, isMember, onJoin, onRequestSignIn, joining, joinError, signedIn, robotMode = false, reviewIntervals = [], robotStatus, robotSchedule, runtimeResources, latestRun,
 }: {
   room: RoomGroupDetails | null;
   members: RoomGroupMember[];
@@ -1431,6 +1431,10 @@ export function GroupDetailsPanel({
   signedIn: boolean;
   robotMode?: boolean;
   reviewIntervals?: number[];
+  robotStatus?: string;
+  robotSchedule?: { paused: boolean; nextAnalysisAt: string | null; nextTrackerCheckAt: string | null; leaseUntilMs: number } | null;
+  runtimeResources?: { scheduler: 'firestore' | 'unavailable'; dispatcherLastSeenAt: string | null; dispatcherSource: string | null; perRobotDurableObjects: number } | null;
+  latestRun?: RoomRun | null;
 }) {
   if (!room) return <PanelEmpty title="Loading room details…" />;
 
@@ -1473,7 +1477,26 @@ export function GroupDetailsPanel({
         </div>
       </div>
 
-      {robotMode && <div className="tr-details-card"><div className="tr-details-row"><span className="tr-details-row-label">Review schedule</span><span className="tr-details-row-value">Every {reviewIntervals[0] ?? 15} min</span></div><p className="tr-panel-disclaimer">Scheduled analysis runs appear in Robot Log. The robot keeps running independently of this conversation.</p></div>}
+      {robotMode && (() => {
+        const lastDispatchMs = runtimeResources?.dispatcherLastSeenAt ? Date.parse(runtimeResources.dispatcherLastSeenAt) : NaN;
+        const dispatchAgeMs = Date.now() - lastDispatchMs;
+        const dispatchFresh = Number.isFinite(lastDispatchMs) && dispatchAgeMs >= 0 && dispatchAgeMs <= 12 * 60_000;
+        const scheduledTime = robotSchedule?.nextAnalysisAt ? Date.parse(robotSchedule.nextAnalysisAt) : NaN;
+        const trackerTime = robotSchedule?.nextTrackerCheckAt ? Date.parse(robotSchedule.nextTrackerCheckAt) : NaN;
+        const dateLabel = (value: number) => Number.isFinite(value) ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Not scheduled';
+        return <div className="tr-details-card">
+          <div className="tr-details-row"><span className="tr-details-row-label">Robot state</span><span className="tr-details-row-value">{robotStatus === 'PAUSED' ? 'Stopped' : 'Active'}</span></div>
+          <div className="tr-details-row"><span className="tr-details-row-label">Analysis interval</span><span className="tr-details-row-value">Every {reviewIntervals[0] ?? 15} min</span></div>
+          <div className="tr-details-row"><span className="tr-details-row-label">Next analysis</span><span className="tr-details-row-value">{robotStatus === 'PAUSED' ? 'Paused' : robotSchedule ? dateLabel(scheduledTime) : 'Owner view only'}</span></div>
+          <div className="tr-details-row"><span className="tr-details-row-label">Next tracker check</span><span className="tr-details-row-value">{robotStatus === 'PAUSED' ? 'Paused' : robotSchedule ? dateLabel(trackerTime) : 'Owner view only'}</span></div>
+          {robotSchedule && <div className="tr-details-row"><span className="tr-details-row-label">Current work</span><span className="tr-details-row-value">{robotStatus === 'PAUSED' ? 'Stopped' : robotSchedule.leaseUntilMs > Date.now() ? 'Processing' : 'Idle'}</span></div>}
+          {runtimeResources && <div className="tr-details-row"><span className="tr-details-row-label">Shared dispatcher</span><span className="tr-details-row-value">{runtimeResources.scheduler !== 'firestore' ? 'Unavailable' : !runtimeResources.dispatcherLastSeenAt ? 'No heartbeat' : `${dispatchFresh ? 'Healthy' : 'Stale'} · ${runtimeResources.dispatcherSource ?? 'Unknown source'}`}</span></div>}
+          {runtimeResources?.dispatcherLastSeenAt && <div className="tr-details-row"><span className="tr-details-row-label">Last dispatch</span><span className="tr-details-row-value">{relativeTime(runtimeResources.dispatcherLastSeenAt)}</span></div>}
+          <div className="tr-details-row"><span className="tr-details-row-label">Robot Durable Objects</span><span className="tr-details-row-value">{runtimeResources?.perRobotDurableObjects ?? 0}</span></div>
+          <div className="tr-details-row"><span className="tr-details-row-label">Latest review</span><span className="tr-details-row-value">{latestRun ? relativeTime(latestRun.completedAt ?? latestRun.at) : 'No run yet'}</span></div>
+          <p className="tr-panel-disclaimer">This robot uses a Firestore schedule and shared dispatcher, not its own always-on Worker or Durable Object. Stop clears its due analysis and tracker work; other robots remain unaffected.</p>
+        </div>;
+      })()}
 
       {members.length > 0 && !robotMode && (
         <>
