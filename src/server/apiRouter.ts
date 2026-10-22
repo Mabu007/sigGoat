@@ -63,6 +63,7 @@ import {
 } from "./reasoningGateway";
 import { buildGoatContext } from "./goatContext";
 import { newsService } from "../services/news/NewsService";
+import { normaliseResearchSources } from "../services/news/researchSources";
 import { calculateATR, calculateEMA, calculateRSI, calculateSMA, calculateMACD, calculateBollingerBands, calculateStochastic, calculateVWAP, analyzeMarketStructure } from "../services/tracker-sdk/indicators";
 import { configureCredentialVault, credentialVault } from "./security/instance";
 import { CredentialVaultError } from "./security/CredentialVault";
@@ -7006,6 +7007,9 @@ interface TeamMemberInput {
   skillIds?: string[];
   asset: string;
   tradingProvider?: TradingProvider;
+  model?: string;
+  aiProvider?: 'openrouter';
+  researchSources?: string[];
 }
 
 const MAX_MEMBERS_PER_TEAM = 10;
@@ -7043,7 +7047,9 @@ function normaliseTeamDeployment(raw: unknown): TeamDeploymentSettings | null {
   if (typeof raw !== "object" || raw === null) return null;
   const body = raw as Record<string, unknown>;
   if (!isTradingProvider(body.provider)) return null;
-  const asset = typeof body.asset === "string" ? body.asset.trim().toUpperCase() : "";
+  // Keep provider-issued canonical identifiers intact. Hyperliquid HIP-3
+  // instruments include a case-sensitive dex prefix (for example xyz:GOLD).
+  const asset = typeof body.asset === "string" ? body.asset.trim() : "";
   if (!asset || asset.length > 32) return null;
   const risk: TeamRiskParameters = {};
   const position = normalisePercent((body.risk as Record<string, unknown> | undefined)?.maxPositionSizePercent, 0.01, 100);
@@ -7088,13 +7094,17 @@ function normaliseTeamMemberInput(raw: unknown): TeamMemberInput | null {
   const asset = typeof body.asset === "string" ? body.asset.trim() : "";
   const skills = normaliseStringList(body.skills, MAX_MEMBER_SKILLS, 60);
   const skillIds = normaliseStringList(body.skillIds, MAX_MEMBER_SKILLS, 128);
+  const model = typeof body.model === 'string' ? body.model.trim() : '';
+  const rawResearchSources = normaliseStringList(body.researchSources, 8, 300);
+  const researchSources = rawResearchSources === null ? null : normaliseResearchSources(rawResearchSources);
   if (!name || name.length > 80) return null;
   if (!jobTitle || jobTitle.length > 80) return null;
-  if (!jobDescription || jobDescription.length > 1000) return null;
-  if (skills === null || skillIds === null) return null;
+  if (!jobDescription || jobDescription.length > 4000) return null;
+  if (skills === null || skillIds === null || researchSources === null) return null;
+  if (model && (!isValidModel(model) || model.length > 180)) return null;
   if (asset && asset.length > 32) return null;
   const provider = isTradingProvider(body.tradingProvider) ? body.tradingProvider : undefined;
-  return { name, jobTitle, jobDescription, skills, ...(skillIds.length ? { skillIds } : {}), asset, ...(provider ? { tradingProvider: provider } : {}) };
+  return { name, jobTitle, jobDescription, skills, ...(skillIds.length ? { skillIds } : {}), asset, ...(provider ? { tradingProvider: provider } : {}), ...(model ? { model } : {}), ...(body.aiProvider === 'openrouter' ? { aiProvider: 'openrouter' as const } : {}), ...(researchSources.length ? { researchSources } : {}) };
 }
 
 /**
@@ -7189,6 +7199,9 @@ async function createTeamMemberRecord(
     markets,
     skillIds,
     model: LEGACY_DEFAULT_MODEL,
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.aiProvider ? { aiProvider: input.aiProvider } : {}),
+    ...(input.researchSources?.length ? { researchSources: input.researchSources } : {}),
     status: "PAUSED",
     deploymentState: "DRAFT",
     schedule: normaliseSchedule(undefined),
@@ -7230,6 +7243,9 @@ function presentTeamMember(goat: FundGoat) {
     status: goat.status,
     asset: goat.markets[0],
     tradingProvider: resolveGoatTradingProvider(goat),
+    model: goat.model,
+    aiProvider: goat.aiProvider ?? 'openrouter',
+    researchSources: goat.researchSources ?? [],
     createdAt: goat.createdAt,
   };
 }
@@ -7454,6 +7470,14 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   for (const raw of newMemberInputs) {
     const memberInput = normaliseTeamMemberInput(raw);
     if (!memberInput) return fail(res, 400, "INVALID_MEMBER_INPUT", "Each member needs a name, a job title, and a job description.");
+    if (memberInput.model) {
+      const provider = memberInput.aiProvider ?? 'openrouter';
+      const catalogue = await reasoningGateway.listModels(user.uid, provider).catch(() => null);
+      if (!catalogue) return fail(res, 400, 'AI_NOT_CONFIGURED', 'Connect an OpenRouter key in Settings or configure the server-side OPENROUTER_API_KEY before creating an AI robot.');
+      const selected = catalogue.models.find(model => model.id === memberInput.model);
+      if (!selected) return fail(res, 400, 'INVALID_MODEL', 'Choose a model that is currently available from OpenRouter.');
+      if (!selected.supportsStructuredOutputs) return fail(res, 400, 'MODEL_NOT_COMPATIBLE', 'This model does not advertise structured output support required for safe proposal validation. Choose a compatible model.');
+    }
     try {
       createdMembers.push(await createTeamMemberRecord(user.uid, memberInput));
     } catch (error) {

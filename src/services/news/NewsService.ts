@@ -181,37 +181,46 @@ export class NewsService {
    * Returns recent headlines for a market. NEVER throws: research failure is
    * reported in-band via `ok: false` so the prompt stays truthful.
    */
-  async getNews(market: string, forceRefresh = false): Promise<NewsSnapshot> {
+  async getNews(market: string, forceRefresh = false, preferredSources: string[] = []): Promise<NewsSnapshot> {
     const key = market.trim().toUpperCase();
+    const sources = [...new Set(preferredSources.map(value => value.toLowerCase().replace(/^www\./, '').trim()).filter(value => /^[a-z0-9.-]+\.[a-z]{2,63}$/.test(value)))].slice(0, 8);
+    const cacheKey = `${key}::${sources.join(',')}`;
     const now = Date.now();
 
-    const cached = this.cache.get(key);
+    const cached = this.cache.get(cacheKey);
     if (cached && cached.expiresAt > now) {
       return cached.snapshot;
     }
 
     // Collapse concurrent requests for the same market into one fetch.
-    const existing = this.inflight.get(key);
+    const existing = this.inflight.get(cacheKey);
     if (existing) return existing;
 
-    const request = this.fetchNews(key)
+    const request = this.fetchNews(key, sources)
       .then((snapshot) => {
-        this.cache.set(key, {
+        this.cache.set(cacheKey, {
           snapshot,
           expiresAt: Date.now() + this.ttlMs,
         });
         return snapshot;
       })
       .finally(() => {
-        this.inflight.delete(key);
+        this.inflight.delete(cacheKey);
       });
 
-    this.inflight.set(key, request);
+    this.inflight.set(cacheKey, request);
     return request;
   }
 
-  private async fetchNews(market: string): Promise<NewsSnapshot> {
-    const query = queriesFor(market)[0];
+  private async fetchNews(market: string, preferredSources: string[] = []): Promise<NewsSnapshot> {
+    const marketQuery = queriesFor(market)[0];
+    // Preferred sources are Google News search filters, never URLs fetched by
+    // the app. This keeps user supplied domains out of the network request
+    // destination while still prioritising their coverage in the feed.
+    const sourceQuery = preferredSources.length
+      ? `(${preferredSources.map(domain => `site:${domain}`).join(' OR ')})`
+      : '';
+    const query = sourceQuery ? `${marketQuery} ${sourceQuery}` : marketQuery;
 
     try {
       const url =
@@ -281,9 +290,10 @@ export class NewsService {
   async getNewsForMarkets(
     symbols: string[],
     _quote?: MarketQuote,
+    preferredSources: string[] = [],
   ): Promise<NewsSnapshot[]> {
     const unique = [...new Set(symbols.map((s) => s.trim()).filter(Boolean))].slice(0, 4);
-    return Promise.all(unique.map((symbol) => this.getNews(symbol)));
+    return Promise.all(unique.map((symbol) => this.getNews(symbol, false, preferredSources)));
   }
 
   /** Compact, prompt-ready block. Untrusted text is fenced and labelled. */
