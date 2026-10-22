@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 110289)
-Total output lines: 10088
-
 /**
  * TradingVibes API ROUTER
  * ======================
@@ -4834,7 +4831,935 @@ function roomMessageView(message: ChatMessage) {
 }
 
 /**
- * Resolves the room behind a slug…10289 tokens truncated…ngProvider !== undefined) {
+ * Resolves the room behind a slug.
+ *
+ * The room record is the authority on who the LEADER is; membership for
+ * everyone else is a separate record, scoped to this one room.
+ */
+async function resolveRoom(slug: string): Promise<GoatTeam | null> {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return null;
+  return goatTeamStore.getPublicBySlug(slug);
+}
+
+/**
+ * Whether a person is in a room: the leader always is, and anyone else has
+ * to have a membership row for THAT room.
+ */
+async function isRoomMember(team: GoatTeam, userId: string | null): Promise<boolean> {
+  if (!userId) return false;
+  if (team.ownerUserId === userId) return true;
+  return Boolean(await roomMemberStore.get(team.id, userId));
+}
+
+/**
+ * JOIN A ROOM.
+ *
+ * A room is joined by following its link: a public room is discoverable, and
+ * a private room's slug is an unguessable capability. Either way the person
+ * joining has to be signed in, so a conversation always has a real author.
+ */
+apiRouter.post("/team-rooms/:slug/join", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const user = requireUser(req);
+  const isOwner = team.ownerUserId === user.uid;
+
+  // The leader is already in the room; there is nothing to record.
+  if (isOwner) {
+    return res.json({
+      joined: true,
+      role: "LEADER",
+      member: {
+        id: user.uid,
+        displayName: await displayNameFor(user.uid, "Room leader"),
+        role: "LEADER",
+        joinedAt: team.createdAt,
+      },
+    });
+  }
+
+  const displayName = await displayNameFor(user.uid, "Member");
+  const membership = await roomMemberStore.join(team.id, user.uid, displayName);
+  res.json({
+    joined: true,
+    role: "MEMBER",
+    member: {
+      id: membership.userId,
+      displayName: membership.displayName,
+      role: "MEMBER",
+      joinedAt: membership.joinedAt,
+    },
+  });
+}));
+
+/**
+ * THE ROOM CONVERSATION.
+ *
+ * Every member of the room — and the leader — can read it, and every member
+ * can post to it. The audience is checked on the server: hiding the composer
+ * in the browser would not stop a request.
+ *
+ * Reads are incremental. `since` asks for what is new since a cursor, and
+ * `before` pages backwards through history; neither re-reads the whole
+ * conversation.
+ */
+apiRouter.get("/team-rooms/:slug/chat", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  if (!req.user?.uid) return fail(res, 401, "UNAUTHENTICATED", "Sign in to read the room conversation.");
+  if (!(await isRoomMember(team, req.user.uid))) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room to read and post in its conversation.");
+  }
+
+  const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || ROOM_MESSAGE_PAGE_LIMIT), 10) || ROOM_MESSAGE_PAGE_LIMIT));
+  const since = typeof req.query.since === "string" ? req.query.since : "";
+  const before = typeof req.query.before === "string" ? req.query.before : "";
+  const chatId = roomConversationId(team.id);
+
+  let messages: ChatMessage[];
+  if (since) messages = await persistence.messages.listSince(chatId, since, limit);
+  else if (before) messages = await persistence.messages.listBefore(chatId, before, limit);
+  else messages = await persistence.messages.listLatest(chatId, limit);
+
+  /**
+   * Whether anything older exists. One extra message is read to find out,
+   * which is cheaper than a second count query — and it is only asked for
+   * when a page is actually being opened, never on an incremental poll.
+   */
+  let hasMore = false;
+  if (!since) {
+    const oldest = messages[0]?.createdAt;
+    hasMore = oldest
+      ? (await persistence.messages.listBefore(chatId, oldest, 1)).length > 0
+      : false;
+  }
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ messages: messages.map(roomMessageView), hasMore });
+}));
+
+/** POST A MESSAGE IN THE ROOM CONVERSATION. */
+apiRouter.post("/team-rooms/:slug/chat", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const user = requireUser(req);
+  const isLeader = team.ownerUserId === user.uid;
+  if (!(await isRoomMember(team, user.uid))) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room before posting in its conversation.");
+  }
+
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+  if (!content) return fail(res, 400, "EMPTY_MESSAGE", "Write something before posting.");
+  if (content.length > ROOM_MESSAGE_MAX_LENGTH) {
+    return fail(res, 400, "MESSAGE_TOO_LONG", `Messages must be ${ROOM_MESSAGE_MAX_LENGTH} characters or fewer.`);
+  }
+
+  const now = new Date().toISOString();
+  const chatId = roomConversationId(team.id);
+
+  /**
+   * The conversation document is created with the first message and reused
+   * afterwards, so an idle room costs nothing and a busy room writes one
+   * document rather than one per post.
+   */
+  const existing = await persistence.chats.get(chatId);
+  if (!existing) {
+    await persistence.chats.create({
+      id: chatId,
+      userId: team.ownerUserId,
+      title: team.name,
+      kind: "room",
+      roomId: team.id,
+      createdAt: now,
+      updatedAt: now,
+      lastMessageAt: now,
+    });
+  }
+
+  const message: ChatMessage = {
+    id: `msg_${Date.now()}_${randomBytes(6).toString("hex")}`,
+    chatId,
+    userId: user.uid,
+    role: "user",
+    content,
+    authorName: await displayNameFor(user.uid, isLeader ? "Room leader" : "Member"),
+    createdAt: now,
+  };
+  await persistence.messages.create(chatId, message);
+  await persistence.chats.update(chatId, { updatedAt: now, lastMessageAt: now });
+
+  res.status(201).json({ message: roomMessageView(message) });
+}));
+
+/**
+ * THE PRIVATE MENTOR THREAD.
+ *
+ * One conversation between a member and the room leader. The leader sees the
+ * list of threads their members have started; a member sees their own thread
+ * with the leader. Nobody else can read either.
+ */
+apiRouter.get("/team-rooms/:slug/mentor-chat", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const user = requireUser(req);
+  if (!(await isRoomMember(team, user.uid))) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room to talk to its leader.");
+  }
+
+  const isOwner = team.ownerUserId === user.uid;
+  const leaderName = await displayNameFor(team.ownerUserId, "Room leader");
+  const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || ROOM_MESSAGE_PAGE_LIMIT), 10) || ROOM_MESSAGE_PAGE_LIMIT));
+  const requestedMemberId = typeof req.query.memberId === "string" ? req.query.memberId : "";
+
+  /**
+   * The leader's inbox: one thread per member who has written to them. The
+   * thread document is the source of truth for who the members are, and each
+   * one carries only the leader and that member.
+   */
+  const threads = isOwner
+    ? (await persistence.chats.listByParticipant(team.ownerUserId))
+        .filter(chat => chat.kind === "direct" && chat.roomId === team.id)
+        .map(chat => {
+          const memberId = (chat.participantIds ?? []).find(id => id !== team.ownerUserId) ?? "";
+          return { chat, memberId };
+        })
+        .filter(entry => entry.memberId.length > 0)
+    : [];
+
+  const selectedMemberId = isOwner
+    ? requestedMemberId
+    : user.uid;
+
+  let thread: {
+    memberId: string;
+    memberName: string;
+    messages: ReturnType<typeof roomMessageView>[];
+  } | null = null;
+
+  if (selectedMemberId) {
+    /**
+     * Only a member of THIS room can be the other side of the leader's
+     * thread, so the leader cannot open a conversation with someone who is
+     * not in the room.
+     */
+    if (isOwner && selectedMemberId !== team.ownerUserId) {
+      const membership = await roomMemberStore.get(team.id, selectedMemberId);
+      if (!membership) {
+        return fail(res, 404, "ROOM_MEMBER_NOT_FOUND", "That person is not a member of this room.");
+      }
+    }
+    const threadId = mentorThreadId(team.id, selectedMemberId);
+    const messages = await persistence.messages.listLatest(threadId, limit);
+    const memberName = isOwner
+      ? await displayNameFor(selectedMemberId, "Member")
+      : leaderName;
+    thread = { memberId: selectedMemberId, memberName, messages: messages.map(roomMessageView) };
+  }
+
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    role: isOwner ? "LEADER" : "MEMBER",
+    mentor: { id: team.ownerUserId, displayName: leaderName },
+    threads: await Promise.all(threads.map(async ({ chat, memberId }) => {
+      /**
+       * One message is read per thread: the preview and its timestamp. The
+       * conversation itself is not read here, so a leader with a busy inbox
+       * does not pay for every thread's history on every poll.
+       */
+      const last = (await persistence.messages.listLatest(chat.id, 1)).at(-1) ?? null;
+      return {
+        memberId,
+        memberName: await displayNameFor(memberId, "Member"),
+        lastMessageAt: last?.createdAt ?? null,
+        lastMessage: last?.content ?? null,
+      };
+    })),
+    thread,
+  });
+}));
+
+/** POST IN THE PRIVATE MENTOR THREAD. */
+apiRouter.post("/team-rooms/:slug/mentor-chat", handle(async (req, res) => {
+  const slug = String(req.params.slug || "");
+  const team = await resolveRoom(slug);
+  if (!team) return fail(res, 404, "TEAM_NOT_FOUND", "This team link is invalid or no longer available.");
+  const user = requireUser(req);
+  if (!(await isRoomMember(team, user.uid))) {
+    return fail(res, 403, "ROOM_NOT_JOINED", "Join this room before writing to its leader.");
+  }
+
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+  if (!content) return fail(res, 400, "EMPTY_MESSAGE", "Write something before sending.");
+  if (content.length > ROOM_MESSAGE_MAX_LENGTH) {
+    return fail(res, 400, "MESSAGE_TOO_LONG", `Messages must be ${ROOM_MESSAGE_MAX_LENGTH} characters or fewer.`);
+  }
+
+  const isOwner = team.ownerUserId === user.uid;
+  const requestedMemberId = typeof req.body?.memberId === "string" ? req.body.memberId.trim() : "";
+
+  /**
+   * A member writes to the leader; the leader writes back to a member. The
+   * other side is NEVER taken from an unverified field on a member's request:
+   * a member's request can only ever address their own thread with the
+   * leader.
+   */
+  const memberId = isOwner ? requestedMemberId : user.uid;
+  if (!memberId) {
+    return fail(res, 400, "MEMBER_REQUIRED", "Choose the member you want to write to.");
+  }
+  if (isOwner && memberId === team.ownerUserId) {
+    return fail(res, 400, "MEMBER_REQUIRED", "Choose the member you want to write to.");
+  }
+  if (isOwner) {
+    const membership = await roomMemberStore.get(team.id, memberId);
+    if (!membership) {
+      return fail(res, 404, "ROOM_MEMBER_NOT_FOUND", "That person is not a member of this room.");
+    }
+  }
+
+  const now = new Date().toISOString();
+  const threadId = mentorThreadId(team.id, memberId);
+  const existing = await persistence.chats.get(threadId);
+  if (!existing) {
+    await persistence.chats.create({
+      id: threadId,
+      userId: team.ownerUserId,
+      title: `Mentor thread · ${team.name}`,
+      kind: "direct",
+      roomId: team.id,
+      /** Exactly the two people who may read this conversation. */
+      participantIds: [team.ownerUserId, memberId],
+      createdAt: now,
+      updatedAt: now,
+      lastMessageAt: now,
+    });
+  }
+
+  const message: ChatMessage = {
+    id: `msg_${Date.now()}_${randomBytes(6).toString("hex")}`,
+    chatId: threadId,
+    userId: user.uid,
+    role: "user",
+    content,
+    authorName: await displayNameFor(user.uid, isOwner ? "Room leader" : "Member"),
+    createdAt: now,
+  };
+  await persistence.messages.create(threadId, message);
+  await persistence.chats.update(threadId, { updatedAt: now, lastMessageAt: now });
+
+  res.status(201).json({ message: roomMessageView(message), memberId });
+}));
+
+/** Publish the existing GOAT under a stable, shareable URL. */
+apiRouter.post("/goats/:id/publish", handle(async (req, res) => {
+  const user = requireUser(req);
+  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!goat) return notFound(res);
+  if (goat.deploymentState !== "DEPLOYED") return fail(res, 409, "ROBOT_MUST_BE_DEPLOYED", "Deploy this GOAT before publishing its robot link.");
+  const baseName = goat.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "trading-robot";
+  const stableSuffix = goat.id.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase();
+  const slug = goat.publicSlug || (baseName + "-" + stableSuffix);
+  const updated: FundGoat = { ...goat, publicSlug: slug, isPublished: true, publishedAt: goat.publishedAt ?? new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await persistence.goats.save(updated);
+  res.json({ goat: updated, slug, path: "/robots/" + slug });
+}));
+
+apiRouter.post("/goats/:id/unpublish", handle(async (req, res) => {
+  const user = requireUser(req);
+  const goat = await persistence.goats.getForUser(req.params.id, user.uid);
+  if (!goat) return notFound(res);
+  const updated: FundGoat = { ...goat, isPublished: false, updatedAt: new Date().toISOString() };
+  await persistence.goats.save(updated);
+  res.json({ goat: updated, unpublished: true });
+}));
+
+apiRouter.get("/robots/:slug/me", handle(async (req, res) => {
+  const user = requireUser(req);
+  const slug = String(req.params.slug || "");
+  const goat = await findPublishedRobot(slug);
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  const membership = await getPublishedRobotMembership(slug, user.uid);
+  const propDao = await credentialVault.getCredentialStatus(user.uid, "propdao");
+  res.json({ joined: Boolean(membership), membership: membership ? { joinedAt: membership.joinedAt, activatedAt: membership.activatedAt ?? null, mode: membership.mode } : null, propDaoKeyConfigured: propDao.configured, chatHistory: (membership?.chatHistory ?? []).map(({ role, text, at }) => ({ role, text, at })) });
+}));
+
+apiRouter.post("/robots/:slug/join", handle(async (req, res) => {
+  const user = requireUser(req);
+  const slug = String(req.params.slug || "");
+  const goat = await findPublishedRobot(slug);
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  const id = publishedRobotMembershipId(slug, user.uid);
+  const existing = await getPublishedRobotMembership(slug, user.uid);
+  const membership: PublishedRobotMembership = existing ?? { id, robotSlug: slug, goatId: goat.id, userId: user.uid, joinedAt: new Date().toISOString(), mode: "PAPER" };
+  await savePublishedRobotMembership(membership);
+  res.json({ joined: true, membership: { joinedAt: membership.joinedAt, activatedAt: membership.activatedAt ?? null, mode: membership.mode } });
+}));
+
+apiRouter.post("/robots/:slug/activate", handle(async (req, res) => {
+  const user = requireUser(req);
+  const slug = String(req.params.slug || "");
+  const goat = await findPublishedRobot(slug);
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  const existing = await getPublishedRobotMembership(slug, user.uid);
+  if (!existing) return fail(res, 403, "ROBOT_MEMBERSHIP_REQUIRED", "Join this robot before activating it.");
+  const membership: PublishedRobotMembership = { ...existing, activatedAt: existing.activatedAt ?? new Date().toISOString(), mode: "PAPER" };
+  await savePublishedRobotMembership(membership);
+  res.json({ activated: true, mode: "PAPER", message: "Robot activated in paper mode. No live orders were submitted." });
+}));
+
+/** Public robot chat uses the creator's configured AI credential server-side. */
+apiRouter.post("/robots/:slug/chat", handle(async (req, res) => {
+  const user = requireUser(req);
+  const slug = String(req.params.slug || "");
+  const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+  if (!question) return fail(res, 400, "INVALID_QUESTION", "Enter a message for this robot.");
+  if (question.length > 2000) return fail(res, 400, "INVALID_QUESTION", "Messages must be 2,000 characters or fewer.");
+  const goat = await findPublishedRobot(slug);
+  if (!goat) return fail(res, 404, "ROBOT_NOT_FOUND", "This trading robot is not published or no longer exists.");
+  const membership = await getPublishedRobotMembership(slug, user.uid);
+  if (!membership) return fail(res, 403, "ROBOT_MEMBERSHIP_REQUIRED", "Join this robot before chatting with it.");
+  if (!(await reasoningGateway.hasKeyFor(goat.userId, goat.aiProvider))) {
+    return fail(res, 503, "CREATOR_AI_NOT_CONFIGURED", "The robot creator needs to configure a working AI provider key before this robot can chat.");
+  }
+  const chatNow = Date.now();
+  const lastChatAt = Date.parse(membership.lastChatAt ?? "");
+  if (Number.isFinite(lastChatAt) && chatNow - lastChatAt < 2500) return fail(res, 429, "ROBOT_CHAT_COOLDOWN", "Please wait a few seconds before sending another message.");
+  const priorWindow = Date.parse(membership.chatWindowStartedAt ?? "");
+  const windowExpired = !Number.isFinite(priorWindow) || chatNow - priorWindow >= 3600000;
+  const countInWindow = windowExpired ? 0 : (membership.chatCountInWindow ?? 0);
+  if (countInWindow >= 20) return fail(res, 429, "ROBOT_CHAT_LIMIT", "This robot allows up to 20 chat messages per hour per user.");
+  await savePublishedRobotMembership({ ...membership, lastChatAt: new Date(chatNow).toISOString(), chatWindowStartedAt: windowExpired ? new Date(chatNow).toISOString() : membership.chatWindowStartedAt, chatCountInWindow: countInWindow + 1 });
+  const goatMarketProvider = await marketDataProviderForGoat(goat);
+  const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider: goatMarketProvider }, goat.id, goat.userId);
+  const answer = await reasoningGateway.answerGoatQuestion(question, context, model || goat.model, goat.aiProvider);
+  // Keep the conversation private to this authenticated room member. The
+  // public activity feed contains workflow records only, never chat prompts.
+  const latestMembership = await getPublishedRobotMembership(slug, user.uid);
+  const now = new Date().toISOString();
+  const chatHistory = [
+    ...(latestMembership?.chatHistory ?? []),
+    { role: "user" as const, text: question, at: now },
+    { role: "robot" as const, text: answer.slice(0, 6000), at: new Date().toISOString() },
+  ].slice(-40);
+  if (latestMembership) await savePublishedRobotMembership({ ...latestMembership, chatHistory });
+  res.json({ answer, chatHistory: chatHistory.map(({ role, text, at }) => ({ role, text, at })), provider: goat.aiProvider ?? await reasoningGateway.providerFor(goat.userId) });
+}));
+
+// ---- cTrader OAuth / account selection --------------------------------
+
+apiRouter.post(
+  "/ctrader/connect",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    try {
+      res.json({ authorizationUrl: buildCTraderAuthorizationUrl(user.uid), provider: "ctrader" });
+    } catch (error) {
+      return fail(res, 503, "CTRADER_NOT_CONFIGURED", error instanceof Error ? error.message : "cTrader OAuth is not configured.");
+    }
+  }),
+);
+
+/**
+ * Public OAuth callback: the HMAC-signed state binds this callback to the
+ * verified SirGOAT UID that initiated it. OAuth tokens are encrypted by the
+ * credential vault and never returned to the browser.
+ */
+apiRouter.get(
+  "/ctrader/oauth/callback",
+  handle(async (req, res) => {
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    const oauthError = typeof req.query.error === "string" ? req.query.error : "";
+    if (!state) return fail(res, 400, "CTRADER_OAUTH_CALLBACK_INVALID", "cTrader did not return the authorization state. Start the connection again.");
+    const secret = process.env.CTRADER_SECRET;
+    if (!secret) return fail(res, 503, "CTRADER_NOT_CONFIGURED", "cTrader server credentials are not configured.");
+    let userId: string;
+    try {
+      userId = verifyCTraderOAuthState(state, secret).userId;
+    } catch (error) {
+      return fail(res, 400, "CTRADER_OAUTH_STATE_INVALID", error instanceof Error ? error.message : "Invalid cTrader authorization state.");
+    }
+    // Validate state before handling a provider-side denial, so arbitrary
+    // callers cannot use this public callback to spoof connection status.
+    if (oauthError) {
+      return fail(res, 400, "CTRADER_OAUTH_DENIED", "cTrader authorization was cancelled or denied. No credentials were changed; start the connection again when ready.");
+    }
+    if (!code || code.length > 4096) return fail(res, 400, "CTRADER_OAUTH_CALLBACK_INVALID", "cTrader did not return a valid authorization code. Start the connection again.");
+    try {
+      const token = await exchangeCTraderAuthorizationCode(code);
+      await credentialVault.saveCredential(userId, "ctrader", JSON.stringify(token));
+    } catch (error) {
+      console.warn("[ctrader] OAuth token exchange failed:", error instanceof Error ? error.message : "unknown provider error");
+      return fail(res, 502, "CTRADER_OAUTH_EXCHANGE_FAILED", "cTrader could not complete account authorization. Check the registered redirect URI and app credentials, then reconnect.");
+    }
+    let appBase: string;
+    try {
+      appBase = process.env.TradingVibes_APP_URL?.trim() || new URL(process.env.CTRADER_REDIRECT_URI as string).origin;
+    } catch {
+      return fail(res, 503, "CTRADER_NOT_CONFIGURED", "Set a valid CTRADER_REDIRECT_URI before connecting cTrader.");
+    }
+    const destination = new URL("/", appBase);
+    destination.searchParams.set("ctrader", "connected");
+    res.redirect(302, destination.toString());
+  }),
+);
+
+apiRouter.get(
+  "/ctrader/status",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const credential = await credentialVault.getCredentialStatus(user.uid, "ctrader");
+    const profile = await persistence.profiles.get(user.uid).catch(() => null);
+    res.json({
+      provider: "ctrader",
+      configured: Boolean(process.env.CTRADER_CLIENT_ID && process.env.CTRADER_SECRET && process.env.CTRADER_REDIRECT_URI),
+      connected: credential.configured && !/unreadable/.test(credential.maskedHint ?? ""),
+      credential: {
+        configured: credential.configured,
+        updatedAt: credential.updatedAt,
+        maskedHint: credential.maskedHint,
+        needsRotation: credential.needsRotation,
+      },
+      selectedAccountId: profile?.ctraderAccountId ?? null,
+      selectedAccountIsLive: profile?.ctraderAccountIsLive === true,
+      defaultAccountMode: "demo",
+    });
+  }),
+);
+
+apiRouter.get(
+  "/ctrader/accounts",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    if (!(await credentialVault.hasCredential(user.uid, "ctrader"))) {
+      return fail(res, 409, "CTRADER_NOT_CONNECTED", "Connect your cTrader account before listing accounts.");
+    }
+    let selection: Awaited<ReturnType<typeof resolveSelectedCTraderAccount>>;
+    try {
+      selection = await resolveSelectedCTraderAccount(user.uid);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const authorizationLost = /HTTP (400|401|403)|invalid_grant|invalid token|token (?:is )?(?:expired|invalid)|TOKEN_EXPIRED|INVALID_TOKEN|AUTHENTICATION_FAILED|NOT_AUTHORIZED|unauthori[sz]ed|access token/i.test(message);
+      if (authorizationLost) {
+        return fail(res, 409, "CTRADER_RECONNECT_REQUIRED", "cTrader authorization is expired or no longer valid. Reconnect cTrader to restore account access; no orders were submitted.");
+      }
+      throw error;
+    }
+    res.json({
+      accounts: selection.accounts.map((account) => ({
+        ...account,
+        environment: account.isLive ? "live" : "demo",
+      })),
+      selectedAccountId: selection.selected?.ctidTraderAccountId ?? null,
+      selectedAccountIsLive: selection.selected?.isLive ?? null,
+      liveSelectionRequired: !selection.selected && selection.accounts.some((account) => account.isLive),
+      message: selection.selected
+        ? `Selected ${selection.selected.isLive ? "live" : "demo"} cTrader account.`
+        : "Choose a cTrader account. Demo accounts are preferred; live accounts are never selected automatically.",
+    });
+  }),
+);
+
+apiRouter.post(
+  "/ctrader/account",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const accountId = typeof req.body?.accountId === "string" ? req.body.accountId.trim() : "";
+    if (!/^\d+$/.test(accountId)) return fail(res, 400, "INVALID_CTRADER_ACCOUNT", "Choose a valid cTrader account ID returned by your own account list.");
+    if (!(await credentialVault.hasCredential(user.uid, "ctrader"))) return fail(res, 409, "CTRADER_NOT_CONNECTED", "Connect your cTrader account first.");
+    const accounts = await (await cTraderClientForUser(user.uid)).listAccounts();
+    const selected = accounts.find((account) => account.ctidTraderAccountId === accountId);
+    if (!selected) return fail(res, 404, "CTRADER_ACCOUNT_NOT_FOUND", "That account was not returned by your own cTrader authorization.");
+    const existing = await persistence.profiles.get(user.uid);
+    const profile: UserProfile = existing ?? defaultProfileForUser(user.uid);
+    profile.ctraderAccountId = selected.ctidTraderAccountId;
+    profile.ctraderAccountIsLive = selected.isLive;
+    profile.updatedAt = new Date().toISOString();
+    await persistence.profiles.save(profile);
+    res.json({
+      success: true,
+      selectedAccount: {
+        ...selected,
+        environment: selected.isLive ? "live" : "demo",
+      },
+      warning: selected.isLive ? "Live trading account selected. Existing risk checks and explicit execution authorization remain mandatory." : null,
+    });
+  }),
+);
+
+apiRouter.delete(
+  "/ctrader/connect",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    await credentialVault.deleteCredential(user.uid, "ctrader");
+    const existing = await persistence.profiles.get(user.uid);
+    if (existing) {
+      delete existing.ctraderAccountId;
+      delete existing.ctraderAccountIsLive;
+      existing.updatedAt = new Date().toISOString();
+      await persistence.profiles.save(existing);
+    }
+    for (const key of [...cTraderProviderCache.keys()]) if (key.startsWith(`${user.uid}:`)) cTraderProviderCache.delete(key);
+    for (const key of [...cTraderMarketStateStores.keys()]) if (key.startsWith(`${user.uid}:`)) cTraderMarketStateStores.delete(key);
+    res.json({ success: true, connected: false });
+  }),
+);
+
+// ---- Settings / keys (user-scoped) ----------------------------------
+
+/**
+ * Per-user credential status. NEVER returns a secret.
+ *
+ * READS THROUGH THE VAULT, which is what makes this route safe to expose: the
+ * vault's status shape contains only `{configured, updatedAt, maskedHint,
+ * keyId}`. There is no code path from this response to a plaintext key, so
+ * there is nothing here that a future refactor could accidentally start
+ * returning.
+ */
+apiRouter.get(
+  "/settings/keys",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+
+    const [openrouter, groq, spacebunny, propdao, telegram, vaultConfigured] =
+      await Promise.all([
+        credentialVault.getCredentialStatus(user.uid, "openrouter"),
+        credentialVault.getCredentialStatus(user.uid, "groq"),
+        credentialVault.getCredentialStatus(user.uid, "spacebunny"),
+        credentialVault.getCredentialStatus(user.uid, "propdao"),
+        credentialVault.getCredentialStatus(user.uid, "telegram"),
+        Promise.resolve(credentialVault.isConfigured()),
+      ]);
+
+    res.json({
+      /**
+       * False when a value is stored but is not a usable key shape, so the UI
+       * cannot claim "your key is saved" while every wake fails.
+       */
+      openRouterKeyConfigured:
+        openrouter.configured &&
+        !/unreadable/.test(openrouter.maskedHint ?? ""),
+      openRouterKeyInvalid: Boolean(
+        openrouter.maskedHint?.includes("unreadable"),
+      ),
+      openRouterKeyHint: openrouter.maskedHint,
+      groqKeyConfigured:
+        groq.configured && !/unreadable/.test(groq.maskedHint ?? ""),
+      spaceBunnyKeyConfigured: spacebunny.configured && !/unreadable/.test(spacebunny.maskedHint ?? ""),
+      spaceBunnyKeyHint: spacebunny.maskedHint,
+      provider: await reasoningGateway.providerFor(user.uid),
+      propDaoKeyConfigured:
+        propdao.configured && !/unreadable/.test(propdao.maskedHint ?? ""),
+      propDaoKeyHint: propdao.maskedHint,
+      telegramTokenConfigured: telegram.configured,
+      telegramTokenHint: telegram.maskedHint,
+      /**
+       * False means the vault cannot encrypt. Saving any credential will fail
+       * with a clear error rather than silently storing plaintext — the UI
+       * surfaces this so a deployment mistake is visible before a user tries.
+       */
+      encryptionAvailable: vaultConfigured,
+      /** True when the vault is running with a per-process ephemeral key:
+       * storage works for testing, but credentials are lost on restart. */
+      ephemeralVaultKey:
+        vaultConfigured && credentialVault.isUsingEphemeralKey(),
+      serverKeyFallback: isPlausibleOpenRouterKey(
+        process.env.OPENROUTER_API_KEY,
+      ),
+    });
+  }),
+);
+
+apiRouter.post(
+  "/settings/keys",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const { openRouterKey, groqKey, spaceBunnyKey, telegramToken, telegramChatId, provider } =
+      req.body ?? {};
+
+    /**
+     * Provider choice is validated BEFORE any key is written.
+     *
+     * If the provider were saved first and the key then failed validation, the
+     * user would be left pointed at a provider with no credential — every wake
+     * falling back to DEMO, which looks like a working app producing no signals.
+     */
+    let nextProvider: AiProvider | undefined;
+    if (provider !== undefined && provider !== null && provider !== "") {
+      if (provider !== "openrouter" && provider !== "groq" && provider !== "spacebunny") {
+        return fail(
+          res,
+          400,
+          "INVALID_PROVIDER",
+          "provider must be openrouter, groq or spacebunny.",
+        );
+      }
+      nextProvider = provider;
+    }
+
+    // Throws CredentialValidationError (surfaced as 400) on a bad shape.
+    const nextOpenRouterKey = normaliseOpenRouterKey(openRouterKey);
+    const nextGroqKey = normaliseGroqKey(groqKey).key;
+    const nextSpaceBunnyKey = normaliseSpaceBunnyKey(spaceBunnyKey).key;
+    const nextTelegramToken = normaliseTelegramToken(telegramToken);
+
+    /**
+     * SECRETS GO THROUGH THE VAULT.
+     *
+     * `saveCredential` validates shape, encrypts with AES-256-GCM and stores
+     * only the envelope. An explicit `null` CLEARS a credential; an absent field
+     * means "leave unchanged", which is the long-standing settings semantics.
+     *
+     * When the master key is absent this THROWS rather than falling back to
+     * plaintext. The user gets a 503 with the remediation, which is strictly
+     * better than a key written in the clear that looks saved.
+     */
+    try {
+      if (nextOpenRouterKey.key !== undefined) {
+        await credentialVault.saveCredential(
+          user.uid,
+          "openrouter",
+          nextOpenRouterKey.key,
+        );
+        // Drop the cached client so the next request uses the new credential.
+        reasoningGateway.invalidate(user.uid);
+      }
+
+      if (nextGroqKey !== undefined) {
+        await credentialVault.saveCredential(user.uid, "groq", nextGroqKey);
+        reasoningGateway.invalidate(user.uid);
+      }
+      if (nextSpaceBunnyKey !== undefined) {
+        await credentialVault.saveCredential(user.uid, "spacebunny", nextSpaceBunnyKey);
+        reasoningGateway.invalidate(user.uid);
+      }
+
+      if (nextTelegramToken !== undefined) {
+        await credentialVault.saveCredential(
+          user.uid,
+          "telegram",
+          nextTelegramToken,
+        );
+      }
+
+      if (req.body?.propDaoApiKey !== undefined) {
+        const propDaoKey = normalisePropDaoKey(req.body.propDaoApiKey);
+        await credentialVault.saveCredential(user.uid, "propdao", propDaoKey);
+      }
+    } catch (error) {
+      if (error instanceof CredentialValidationError) {
+        return fail(res, 400, "INVALID_KEY", error.message);
+      }
+      if (error instanceof CredentialVaultError) {
+        return fail(res, 503, error.code, error.message);
+      }
+      throw error;
+    }
+
+    // Commit the provider choice only AFTER credential writes have succeeded,
+    // and only when that provider resolves to a usable key. Otherwise a failed
+    // key save could leave the account pointed at an unconfigured provider.
+    if (nextProvider) {
+      let providerHasKey: boolean;
+      try {
+        providerHasKey = await reasoningGateway.hasKeyFor(user.uid, nextProvider);
+      } catch (error) {
+        if (error instanceof CredentialVaultError) {
+          return fail(res, 503, error.code, error.message);
+        }
+        throw error;
+      }
+      if (!providerHasKey) {
+        return fail(
+          res,
+          400,
+          "AI_KEY_REQUIRED",
+          `Save a valid ${nextProvider} provider key before selecting it.`,
+        );
+      }
+      await keyStore.setProvider?.(user.uid, nextProvider);
+      reasoningGateway.setProviderFor(user.uid, nextProvider);
+    }
+
+    if (telegramChatId !== undefined && telegramChatId !== null) {
+      if (
+        typeof telegramChatId !== "string" ||
+        !/^-?\d{1,20}$/.test(telegramChatId.trim())
+      ) {
+        return fail(
+          res,
+          400,
+          "INVALID_KEY",
+          "telegramChatId must be a numeric Telegram chat id.",
+        );
+      }
+
+      /**
+       * A chat id may belong to exactly ONE account.
+       *
+       * Without this check, two users could claim the same chat id and each would
+       * then receive the other's signals: the second write silently reassigns the
+       * chat and the first user keeps a profile that no longer resolves.
+       */
+      const existing = await persistence.profiles.findByTelegramChatId(
+        telegramChatId.trim(),
+      );
+      if (existing && existing.id !== user.uid) {
+        return fail(
+          res,
+          409,
+          "CHAT_ID_IN_USE",
+          "That Telegram chat is already linked to another TradingVibes account. " +
+            "Unlink it there first, or use a different chat.",
+        );
+      }
+
+      const profile = (await persistence.profiles.get(user.uid)) ?? {
+        id: user.uid,
+        email: user.email ?? `${user.uid}@sirgoat.internal`,
+        displayName: "TradingVibes Trader",
+        telegramNotificationsEnabled: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await persistence.profiles.save({
+        ...profile,
+        telegramChatId: telegramChatId.trim(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    const activeProvider = await reasoningGateway.providerFor(user.uid);
+
+    // Status only. No secret is echoed, so a client that intercepts the response
+    // still learns nothing about the stored value.
+    const [openrouterStatus, groqStatus, spacebunnyStatus, propdaoStatus] = await Promise.all([
+      credentialVault.getCredentialStatus(user.uid, "openrouter"),
+      credentialVault.getCredentialStatus(user.uid, "groq"),
+      credentialVault.getCredentialStatus(user.uid, "spacebunny"),
+      credentialVault.getCredentialStatus(user.uid, "propdao"),
+    ]);
+
+    res.json({
+      success: true,
+      provider: activeProvider,
+      openRouterKeyConfigured: openrouterStatus.configured,
+      openRouterKeyHint: openrouterStatus.maskedHint,
+      groqKeyConfigured: groqStatus.configured,
+      spaceBunnyKeyConfigured: spacebunnyStatus.configured,
+      spaceBunnyKeyHint: spacebunnyStatus.maskedHint,
+      propDaoKeyConfigured: propdaoStatus.configured,
+      propDaoKeyHint: propdaoStatus.maskedHint,
+      ...(await readUserPreferences(user.uid)),
+    });
+  }),
+);
+
+/* ------------------------------------------------------------------ */
+/* USER PREFERENCES (autonomy mode + preferred model)                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Reads this user's non-secret preferences, always returning a full shape.
+ *
+ * `autonomyMode` defaults to `PROPOSAL` for a user who has never chosen. That
+ * default is the safe one and is not negotiable: a missing record must never
+ * be read as "autonomous", because that would turn an absent row into silent
+ * live trading.
+ */
+async function readUserPreferences(userId: string): Promise<{
+  autonomyMode: AutonomyMode;
+  autoTradeEnabled: boolean;
+  autoTradeAccountId: string | null;
+  autoTradeQty: number | null;
+  aiModel: string | null;
+  aiModelAvailable: boolean | null;
+  tradingProvider: TradingProvider;
+  tradingProviderAvailable: boolean;
+  tradingProviderUnavailableReason: string | null;
+  /** False when execution is impossible no matter the user's choice. */
+  autonomyExecutable: boolean;
+  autonomyBlockedReason: string;
+}> {
+  const profile = await persistence.profiles.get(userId).catch(() => null);
+  const autonomyMode = normaliseAutonomyMode(profile?.autonomyMode);
+  const tradingProvider = resolveUserTradingProvider(profile);
+  const execution = executionPolicyForProvider(userId, tradingProvider);
+  const tradingProviderReadiness = await liveExecutionReadinessForUser(userId, tradingProvider);
+  const tradingProviderRegistration = getTradingProviderRegistration(tradingProvider);
+
+  return {
+    autonomyMode,
+    autoTradeEnabled: profile?.autoTradeEnabled === true,
+    autoTradeAccountId: profile?.autoTradeAccountId ?? null,
+    autoTradeQty: typeof profile?.autoTradeQty === "number" ? profile.autoTradeQty : null,
+    aiModel: profile?.aiModel ?? null,
+    tradingProvider,
+    tradingProviderAvailable: tradingProviderReadiness.ready,
+    tradingProviderUnavailableReason: tradingProviderReadiness.ready ? null : (tradingProviderReadiness.reason ?? tradingProviderRegistration.unavailableReason ?? "Provider unavailable."),
+    /**
+     * Null when it cannot be checked (no key configured, or the catalogue is
+     * unreachable) — which is different from `false`, meaning "checked and it
+     * is gone". The UI only nags the user on an actual false.
+     */
+    aiModelAvailable: profile?.aiModel
+      ? await reasoningGateway
+          .isModelAvailable(userId, profile.aiModel)
+          .catch(() => null)
+      : null,
+    autonomyExecutable:
+      profile?.autoTradeEnabled !== true || (execution.enabled && execution.authorised),
+    autonomyBlockedReason:
+      profile?.autoTradeEnabled !== true || (execution.enabled && execution.authorised)
+        ? ""
+        : `Automatic order submission is blocked by the selected ${tradingProvider} execution policy. GOATs can still research and prepare proposals, but no order will be sent until execution is authorised.`,
+  };
+}
+
+apiRouter.get(
+  "/settings/preferences",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    res.json(await readUserPreferences(user.uid));
+  }),
+);
+
+/**
+ * Writes autonomy mode and/or the preferred model.
+ *
+ * Both fields are validated against reality before being stored, not after:
+ *
+ *   - `AUTONOMOUS` is accepted as a PREFERENCE even when the server cannot
+ *     execute yet, because the user is describing intent and the deployment
+ *     may enable execution later. The response says plainly that nothing will
+ *     be sent until it does — silently accepting the toggle and saying
+ *     nothing is how a user comes to believe orders are flowing.
+ *   - `aiModel` is checked against the caller's OWN live catalogue. Storing a
+ *     model OpenRouter no longer serves is exactly the failure this app
+ *     already shipped once, as a hardcoded default.
+ */
+apiRouter.post(
+  "/settings/preferences",
+  handle(async (req, res) => {
+    const user = requireUser(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+
+    const existing = await persistence.profiles.get(user.uid);
+    const profile: UserProfile = existing ?? {
+      id: user.uid,
+      email: user.email ?? `${user.uid}@sirgoat.internal`,
+      displayName: "TradingVibes Trader",
+      telegramNotificationsEnabled: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (body.tradingProvider !== undefined) {
       if (!isTradingProvider(body.tradingProvider)) {
         return fail(res, 400, "INVALID_TRADING_PROVIDER", "tradingProvider must be ctrader or hyperliquid.");
       }
