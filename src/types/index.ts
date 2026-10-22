@@ -435,6 +435,8 @@ export interface FundGoat {
   teamInstructions?: string;
   /** Optional per-GOAT AI provider override; absent inherits Settings. */
   aiProvider?: 'openrouter' | 'spacebunny';
+  /** Preferred publisher domains for cached market-news retrieval. */
+  researchSources?: string[];
   /**
    * Trading venue this GOAT was created for. New GOATs should persist this
    * explicitly. Missing values are legacy records and resolve to Hyperliquid

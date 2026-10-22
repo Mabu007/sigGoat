@@ -919,6 +919,7 @@ export class GoatRuntime {
         news = await newsService.getNewsForMarkets(
           this.goatConfig.markets,
           quote,
+          this.goatConfig.researchSources ?? [],
         );
       } catch (err) {
         console.warn(`[goat ${this.id}] news research failed:`, err);
