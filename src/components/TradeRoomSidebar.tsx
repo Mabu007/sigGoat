@@ -1053,6 +1053,50 @@ export function RunLogView({ log, loading, onBack }: { log: RoomRunLog | null; l
 }
 
 /* =========================================================================
+   PANEL — Robot Log
+   The actual scheduled analysis runs, newest first.
+   ========================================================================= */
+
+export function RobotLogPanel({ runs }: { runs: RoomRun[] }) {
+  const ordered = [...runs].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  if (!ordered.length) return <PanelEmpty title="Waiting for the first analysis run" hint="The robot’s scheduled market reviews will appear here." />;
+  return <div className="tr-news space-y-3">
+    {ordered.map((run, index) => <article key={run.workflowId + index} className="rounded-xl border border-line bg-panel-muted p-3">
+      <div className="flex items-start justify-between gap-2"><div><p className="text-[10px] font-bold uppercase tracking-wide text-accent-text">{run.market} · {run.outcome.replace('_', ' ')}</p><h3 className="mt-1 text-sm font-semibold text-fg">{run.headline}</h3></div><span className="rounded-full border border-line px-2 py-1 text-[9px] font-bold uppercase text-fg-subtle">{run.status}</span></div>
+      <p className="mt-2 whitespace-pre-line text-xs leading-5 text-fg-muted">{run.summary}</p>
+      {run.bias && <p className="mt-2 text-[10px] font-semibold text-fg-subtle">Bias: {run.bias}{run.confidence != null ? ` · ${Math.round(run.confidence * 100)}% confidence` : ''}</p>}
+      {run.levels && <p className="mt-1 text-[10px] text-fg-subtle">Entry {price(run.levels.entry)} · Stop {price(run.levels.stopLoss)} · Target {price(run.levels.takeProfit)}</p>}
+      <time className="mt-2 block text-[10px] text-fg-subtle" dateTime={run.completedAt ?? run.at}>{relativeTime(run.completedAt ?? run.at)}</time>
+    </article>)}
+  </div>;
+}
+
+export type RobotChatMessage = { role: 'user' | 'robot'; text: string; at: string };
+
+export function RobotChatPanel({ messages, onSend, sending, signedIn, onRequestSignIn, error }: {
+  messages: RobotChatMessage[]; onSend: (text: string) => void; sending: boolean; signedIn: boolean; onRequestSignIn: () => void; error: string;
+}) {
+  const [draft, setDraft] = useState('');
+  const submit = (event: React.FormEvent) => { event.preventDefault(); if (!draft.trim() || sending) return; onSend(draft.trim()); setDraft(''); };
+  return <div className="flex h-full min-h-0 flex-col gap-3 p-3">
+    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
+      <p className="rounded-xl border border-line bg-panel-muted p-3 text-xs leading-5 text-fg-muted">Ask this robot about its market data, latest analysis, breaking news, or your own connected account status. This conversation never triggers or changes a trading run.</p>
+      {messages.map((message,index)=><article key={message.at + index} className={`max-w-[92%] rounded-xl border border-line p-3 text-xs leading-5 ${message.role === 'user' ? 'ml-auto bg-accent-soft text-fg' : 'bg-panel-muted text-fg-muted'}`}><p className="whitespace-pre-wrap">{message.text}</p><time className="mt-1 block text-[9px] text-fg-subtle">{relativeTime(message.at)}</time></article>)}
+      {error && <p role="alert" className="text-xs text-danger">{error}</p>}
+    </div>
+    {!signedIn ? <button type="button" onClick={onRequestSignIn} className="btn btn-secondary justify-center">Sign in to chat with this robot</button> : <form onSubmit={submit} className="flex gap-2"><textarea value={draft} onChange={event=>setDraft(event.target.value)} rows={2} maxLength={2000} className="input min-w-0 flex-1 resize-none" placeholder="Ask about the current market…"/><button className="btn btn-primary self-end" type="submit" disabled={!draft.trim()||sending}>{sending?'Thinking…':'Send'}</button></form>}
+  </div>;
+}
+
+export function RobotNewsReportPanel({ market, report, loading, onRefresh }: { market: string; report: string; loading: boolean; onRefresh: () => void }) {
+  return <div className="tr-news">
+    <div className="tr-news-meta"><span className="tr-news-market">{market || 'MARKET'}</span><button type="button" className="tr-news-refresh" onClick={onRefresh} disabled={loading}><RefreshCw size={12} className={loading?'is-spinning':''}/><span>{loading?'Writing…':'Refresh report'}</span></button></div>
+    {loading && !report ? <PanelEmpty title="Analyzing current headlines…"/> : report ? <article className="rounded-xl border border-line bg-panel-muted p-4"><p className="whitespace-pre-line text-sm leading-6 text-fg-muted">{report}</p></article> : <PanelEmpty title="No report yet" hint="Refresh to generate an AI summary of current news and its likely market impact."/>}
+    <p className="tr-panel-disclaimer">AI analysis of available headlines. It may miss events and is not an instruction to trade.</p>
+  </div>;
+}
+
+/* =========================================================================
    PANEL — Breaking News
    ========================================================================= */
 
@@ -1124,8 +1168,30 @@ function MarketPanel({
       note: news ? undefined : 'Fetching headlines for this instrument.',
     },
     {
-      name: 'Market structure',
-      detail: indicators ? `${indicators.structureBias} · swings ${price(indicators.lastSwingLow)}–${price(indicators.lastSwingHigh)}` : 'Waiting for candles',
+      name: 'Trend',
+      detail: indicators ? indicators.structureBias === 'BULLISH' ? 'Bullish' : indicators.structureBias === 'BEARISH' ? 'Bearish' : 'Ranging / unconfirmed' : 'Waiting for candles',
+      state: indicators ? 'live' : 'off',
+    },
+    {
+      name: 'Recent high · HH',
+      detail: indicators ? price(indicators.lastSwingHigh) : 'Waiting for candles',
+      state: indicators ? 'live' : 'off',
+      note: 'Highest swing in the current structure window.',
+    },
+    {
+      name: 'Recent low · LL',
+      detail: indicators ? price(indicators.lastSwingLow) : 'Waiting for candles',
+      state: indicators ? 'live' : 'off',
+      note: 'Lowest swing in the current structure window.',
+    },
+    {
+      name: 'Retracement',
+      detail: indicators ? `${indicators.retracementPct.toFixed(1)}%` : 'Waiting for candles',
+      state: indicators ? 'live' : 'off',
+    },
+    {
+      name: 'Supply · demand',
+      detail: indicators ? `Supply ${price(indicators.supplyZone.low)}–${price(indicators.supplyZone.high)} · Demand ${price(indicators.demandZone.low)}–${price(indicators.demandZone.high)}` : 'Waiting for candles',
       state: indicators ? 'live' : 'off',
     },
     {
@@ -1351,7 +1417,7 @@ export interface RoomGroupMember {
 }
 
 export function GroupDetailsPanel({
-  room, members, memberCount, isMember, onJoin, onRequestSignIn, joining, joinError, signedIn,
+  room, members, memberCount, isMember, onJoin, onRequestSignIn, joining, joinError, signedIn, robotMode = false, reviewIntervals = [],
 }: {
   room: RoomGroupDetails | null;
   members: RoomGroupMember[];
@@ -1363,6 +1429,8 @@ export function GroupDetailsPanel({
   joining: boolean;
   joinError: string;
   signedIn: boolean;
+  robotMode?: boolean;
+  reviewIntervals?: number[];
 }) {
   if (!room) return <PanelEmpty title="Loading room details…" />;
 
@@ -1371,11 +1439,11 @@ export function GroupDetailsPanel({
 
   return (
     <div className="tr-details">
-      <SectionLabel>Room</SectionLabel>
+      <SectionLabel>{robotMode ? 'AI Robot' : 'Room'}</SectionLabel>
       <div className="tr-details-card">
         <h3 className="tr-details-name">{room.name}</h3>
         <div className="tr-details-tags">
-          <span className="tr-chip is-muted">{room.visibility === 'PUBLIC' ? 'Public room' : 'Private room'}</span>
+          <span className="tr-chip is-muted">{room.visibility === 'PUBLIC' ? (robotMode ? 'Public robot' : 'Public room') : 'Private room'}</span>
           <span className="tr-chip is-muted">{room.status}</span>
           <span className="tr-chip is-muted">{room.environment}</span>
         </div>
@@ -1388,14 +1456,11 @@ export function GroupDetailsPanel({
             </p>}
       </div>
 
-      <SectionLabel>Leader</SectionLabel>
+      <SectionLabel>{robotMode ? 'Robot activity' : 'Leader'}</SectionLabel>
       <div className="tr-details-card">
+        {robotMode && <div className="tr-details-row"><span className="tr-details-row-label">Creator</span><span className="tr-details-row-value">{room.leader.displayName}</span></div>}
         <div className="tr-details-row">
-          <span className="tr-details-row-label">Mentor</span>
-          <span className="tr-details-row-value">{room.leader.displayName}</span>
-        </div>
-        <div className="tr-details-row">
-          <span className="tr-details-row-label">Members</span>
+          <span className="tr-details-row-label">{robotMode ? 'Watchers' : 'Members'}</span>
           <span className="tr-details-row-value">{memberCount}</span>
         </div>
         <div className="tr-details-row">
@@ -1408,9 +1473,11 @@ export function GroupDetailsPanel({
         </div>
       </div>
 
-      {members.length > 0 && (
+      {robotMode && <div className="tr-details-card"><div className="tr-details-row"><span className="tr-details-row-label">Review schedule</span><span className="tr-details-row-value">Every {reviewIntervals[0] ?? 15} min</span></div><p className="tr-panel-disclaimer">Scheduled analysis runs appear in Robot Log. The robot keeps running independently of this conversation.</p></div>}
+
+      {members.length > 0 && !robotMode && (
         <>
-          <SectionLabel>Who is here</SectionLabel>
+          <SectionLabel>{robotMode ? 'Robot team' : 'Who is here'}</SectionLabel>
           <div className="tr-details-roster">
             {members.map(member => (
               <div className="tr-details-member" key={member.id}>
@@ -1540,8 +1607,10 @@ export const TradeRoomSidebar: React.FC<{
    * messages the panel happens to have loaded.
    */
   badges: SidebarTabBadge;
-}> = ({ panel, onPanelChange, status, statusTitle, badges }) => {
-  const active = ROOM_PANELS.find(entry => entry.id === panel) ?? ROOM_PANELS[0];
+  robotMode?: boolean;
+}> = ({ panel, onPanelChange, status, statusTitle, badges, robotMode = false }) => {
+  const panels = robotMode ? ROOM_PANELS.map(entry => ({ ...entry, label: ({ chat: 'Robot Log', mentor: 'Chat to Robot', details: 'Robot Details' } as Record<string, string>)[entry.id] ?? entry.label })) : ROOM_PANELS;
+  const active = panels.find(entry => entry.id === panel) ?? panels[0];
   const badgeFor = (id: RoomPanelId) => (id === 'news' ? badges.news : id === 'chat' ? badges.messages : 0);
 
   return (
@@ -1553,7 +1622,7 @@ export const TradeRoomSidebar: React.FC<{
         </span>
       </div>
       <div className="tr-panel-tabs" role="tablist" aria-label="Room panel">
-        {ROOM_PANELS.map(entry => {
+        {panels.map(entry => {
           const Icon = entry.icon;
           const badge = badgeFor(entry.id);
           return (

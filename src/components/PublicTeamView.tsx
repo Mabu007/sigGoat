@@ -6,9 +6,9 @@ import RecordingControls from './RecordingControls';
 import { RoomCoverPicker } from './RoomCoverPicker';
 import { RoomMembersModal } from './RoomMembersModal';
 import {
-  ConnectBrokerPanel, GroupDetailsPanel, MarketPanel, MentorChatPanel, NewsPanel, RoomChatPanel, TradeRoomSidebar,
+  ConnectBrokerPanel, GroupDetailsPanel, MarketPanel, MentorChatPanel, NewsPanel, RoomChatPanel, RobotLogPanel, RobotChatPanel, RobotNewsReportPanel, TradeRoomSidebar,
   type BrokerConnectionState, type MentorThreadSummary, type RoomChatMessage, type RoomGroupDetails, type RoomGroupMember,
-  type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId, type RoomRun,
+  type RoomIndicators, type RoomMember, type RoomNewsPayload, type RoomPanelId, type RoomRun, type RobotChatMessage,
 } from './TradeRoomSidebar';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -23,6 +23,7 @@ type Member = RoomMember;
 type Room = {
   id: string; owner?: boolean; slug: string; name: string; instructions?: string;
   robotKind?: 'AI_ROBOT' | 'COMMUNITY';
+  monitoringIntervals?: number[];
   visibility: 'PUBLIC' | 'PRIVATE'; status: string; memberCount: number; markets: string[];
   asset?: string; provider?: string; balance?: number | null; trades?: number;
 };
@@ -150,6 +151,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   const [settingsName, setSettingsName] = useState('');
   const [settingsDescription, setSettingsDescription] = useState('');
   const [settingsVisibility, setSettingsVisibility] = useState<'PUBLIC' | 'PRIVATE'>('PRIVATE');
+  const [settingsInterval, setSettingsInterval] = useState(15);
   const [assets, setAssets] = useState<AssetOption[]>([]);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assetSaving, setAssetSaving] = useState(false);
@@ -182,6 +184,11 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   const [mentorLoading, setMentorLoading] = useState(false);
   const [mentorError, setMentorError] = useState('');
   const [mentorSending, setMentorSending] = useState(false);
+  const [robotMessages, setRobotMessages] = useState<RobotChatMessage[]>([]);
+  const [robotChatError, setRobotChatError] = useState('');
+  const [robotChatSending, setRobotChatSending] = useState(false);
+  const [newsReport, setNewsReport] = useState('');
+  const [newsReportLoading, setNewsReportLoading] = useState(false);
   const [broker, setBroker] = useState<BrokerConnectionState>({ cTrader: null, propDao: null });
   const [brokerLoading, setBrokerLoading] = useState(false);
   const [brokerError, setBrokerError] = useState('');
@@ -189,6 +196,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   const { theme, toggleTheme } = useTheme();
 
   const signedIn = Boolean(currentUser) || authMode === 'dev';
+  const isAiRobot = data?.team.robotKind === 'AI_ROBOT';
 
   /**
    * Auth headers for a room request, or none at all for a visitor who is not
@@ -606,11 +614,11 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
   }, [slug, roomIdentity?.isMember, optionalAuthHeaders]);
 
   useEffect(() => {
-    if (panel !== 'mentor' || !roomIdentity?.isMember) return;
+    if (panel !== 'mentor' || isAiRobot || !roomIdentity?.isMember) return;
     void loadMentorChat(mentorSelection.current);
     const timer = window.setInterval(() => void loadMentorChat(mentorSelection.current), 8000);
     return () => window.clearInterval(timer);
-  }, [panel, roomIdentity?.isMember, loadMentorChat]);
+  }, [panel, isAiRobot, roomIdentity?.isMember, loadMentorChat]);
 
   const selectMentorThread = useCallback((memberId: string) => {
     mentorSelection.current = memberId;
@@ -679,7 +687,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
    * the member there with the right section in view.
    */
   const openBrokerSettings = useCallback((section: 'ctrader' | 'propdao') => {
-    window.location.hash = '/settings?section=' + section;
+    window.location.assign('/robots/#/settings?section=' + section);
   }, []);
 
   /* ------------------------------------------------------------------ */
@@ -783,6 +791,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
     setSettingsName(data.team.name);
     setSettingsDescription(data.team.instructions ?? '');
     setSettingsVisibility(data.team.visibility ?? 'PRIVATE');
+    setSettingsInterval(data.team.monitoringIntervals?.[0] ?? 15);
     setSettingsCategory(roomDetail?.category ?? 'general');
     setSettingsVoiceEnabled(roomDetail?.voiceEnabled !== false);
     setSettingsAllowDrawings(roomDetail?.allowDrawings !== false);
@@ -805,6 +814,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
           category: settingsCategory,
           voiceEnabled: settingsVoiceEnabled,
           allowDrawings: settingsAllowDrawings,
+          ...(data.team.robotKind === 'AI_ROBOT' ? { monitoringIntervals: [settingsInterval] } : {}),
         }),
       });
       await read<{ room: RoomDetail }>(response);
@@ -813,7 +823,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
       await loadRoomDetail();
     } catch (err) { setSettingsError(err instanceof Error ? err.message : 'Could not save the room settings.'); }
     finally { setSettingsSaving(false); }
-  }, [data, canManageRoom, settingsSaving, settingsName, settingsDescription, settingsVisibility, settingsCategory, settingsVoiceEnabled, settingsAllowDrawings, getApiAuthHeaders, load, loadRoomDetail]);
+  }, [data, canManageRoom, settingsSaving, settingsName, settingsDescription, settingsVisibility, settingsCategory, settingsVoiceEnabled, settingsAllowDrawings, settingsInterval, getApiAuthHeaders, load, loadRoomDetail]);
 
   /**
    * THE INSTRUMENT ON THE ROOM'S CHART.
@@ -914,6 +924,38 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
     return () => window.clearInterval(timer);
   }, [panel, loadNews]);
 
+  const askRobot = useCallback(async (question: string) => {
+    const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/json' });
+    for (const [key, value] of Object.entries(await getApiAuthHeaders())) headers.set(key, value);
+    return read<{ answer: string }>(await fetch('/api/team-rooms/' + encodeURIComponent(slug) + '/robot-chat', {
+      method: 'POST', headers, body: JSON.stringify({ question }), cache: 'no-store',
+    }));
+  }, [slug, getApiAuthHeaders]);
+
+  const sendRobotQuestion = useCallback(async (question: string) => {
+    setRobotChatSending(true); setRobotChatError('');
+    const askedAt = new Date().toISOString();
+    setRobotMessages(previous => [...previous, { role: 'user', text: question, at: askedAt }]);
+    try {
+      const answer = await askRobot(question);
+      setRobotMessages(previous => [...previous, { role: 'robot', text: answer.answer, at: new Date().toISOString() }]);
+    } catch (err) { setRobotChatError(err instanceof Error ? err.message : 'The robot could not answer right now.'); }
+    finally { setRobotChatSending(false); }
+  }, [askRobot]);
+
+  const writeNewsReport = useCallback(async () => {
+    setNewsReportLoading(true);
+    try {
+      const result = await askRobot(`Write a concise Breaking News Report for ${activeMarket || 'the robot\'s configured asset'}. Analyze the currently available breaking news and conclude what is happening, the likely direction and impact on this asset, what evidence is uncertain or conflicting, and what would change the conclusion. Use only news and market context supplied to you. Do not invent headlines, do not recommend placing an order, and say plainly when no relevant breaking news is available.`);
+      setNewsReport(result.answer);
+    } catch (err) { setNewsReport(err instanceof Error ? err.message : 'Could not generate the news report.'); }
+    finally { setNewsReportLoading(false); }
+  }, [askRobot, activeMarket]);
+
+  useEffect(() => {
+    if (isAiRobot && panel === 'news' && !newsReport && !newsReportLoading && signedIn) void writeNewsReport();
+  }, [isAiRobot, panel, newsReport, newsReportLoading, signedIn, writeNewsReport]);
+
   /**
    * A one-second clock, started at mount so the first paint already has the
    * real time instead of a placeholder that pops a frame later.
@@ -982,7 +1024,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
          * started a session. A member can open the room and read the
          * conversation either way, so this is information, never a gate.
          */}
-        {mentorOnline !== null && (
+        {!isAiRobot && mentorOnline !== null && (
           <span
             className={'trade-room-mentor ' + (mentorOnline ? 'is-online' : 'is-offline')}
             title={
@@ -994,13 +1036,13 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
             {mentorOnline ? 'Mentor online' : 'Mentor offline'}
           </span>
         )}
-        {liveSession && (
+        {!isAiRobot && liveSession && (
           <span className="trade-room-live-badge" role="status">
             <Radio size={11} strokeWidth={2.6} aria-hidden="true" />
             Live session
           </span>
         )}
-        {sessionRecording && (
+        {!isAiRobot && sessionRecording && (
           <span className="trade-room-rec-badge" role="status">
             <span className="trade-room-recording-dot" aria-hidden="true" />
             REC
@@ -1064,7 +1106,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
         {data.team.robotKind === 'AI_ROBOT' && <button type="button" className="sg-room-session-button" onClick={() => void createPersonalRobot()} disabled={copyingRobot} title="Create your own independently running copy, using your own account settings">
           {copyingRobot ? 'Starting your copy…' : 'Run your own copy'}
         </button>}
-        {canManageRoom && (
+        {!isAiRobot && canManageRoom && (
           <div className="sg-room-session-controls" role="group" aria-label="Live session">
             {liveSession ? (
               <button
@@ -1101,7 +1143,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
          * The hook lives in this component, not in the popover, so closing
          * the popover never takes the voice session down with it.
          */}
-        <div className="trade-room-popover-wrap">
+        {!isAiRobot && <div className="trade-room-popover-wrap">
           <button
             type="button"
             className={'trade-room-icon-button' + (voice.inVoice ? (voice.muted ? ' is-muted' : ' is-live') : '')}
@@ -1130,7 +1172,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
               />
             </div>
           )}
-        </div>
+        </div>}
 
         {/**
          * RECORDING.
@@ -1139,7 +1181,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
          * by itself: starting one opens the browser's own screen-capture
          * picker, and that has to be a deliberate click on "Record".
          */}
-        {canManageRoom && (
+        {!isAiRobot && canManageRoom && (
           <div className="trade-room-popover-wrap">
             <button
               type="button"
@@ -1298,7 +1340,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
           )}
 
           {data.team.owner && (
-            <button type="button" className="sg-room-settings-button sg-room-settings-button-public" onClick={() => void openRoomSettings()} aria-label="Room settings" title="Room settings"><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
+            <button type="button" className="sg-room-settings-button sg-room-settings-button-public" onClick={() => void openRoomSettings()} aria-label={isAiRobot ? 'Robot settings' : 'Room settings'} title={isAiRobot ? 'Robot settings' : 'Room settings'}><Settings size={14} aria-hidden="true" /><span>Settings</span></button>
           )}
         </div>
       </header>
@@ -1335,18 +1377,21 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
         onPanelChange={setPanel}
         status={quoteStatus}
         statusTitle={quoteStatusText}
+        robotMode={Boolean(isAiRobot)}
         badges={{
-          news: news?.headlines.length ?? 0,
+          news: isAiRobot ? 0 : news?.headlines.length ?? 0,
           /**
            * The UNREAD count, not the number of loaded messages. The badge
            * used to show every message the panel had ever held, so it grew
            * with the conversation and never went away.
            */
-          messages: chatUnread,
+          messages: isAiRobot ? 0 : chatUnread,
         }}
       />
       <div className="trade-room-stream-list">
-        {panel === 'chat' && <RoomChatPanel
+        {panel === 'chat' && isAiRobot && <RobotLogPanel runs={data.members.flatMap(member => member.runs)} />}
+
+        {panel === 'chat' && !isAiRobot && <RoomChatPanel
           messages={chatMessages}
           analysisRuns={data.members.flatMap(member => member.runs).sort((left, right) => left.at.localeCompare(right.at)) as RoomRun[]}
           onSend={content => void sendChatMessage(content)}
@@ -1363,9 +1408,19 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
           onUnreadCountChange={setChatUnread}
         />}
 
-        {panel === 'news' && <NewsPanel news={news} loading={newsLoading} onRefresh={() => void loadNews(true)} />}
+        {panel === 'news' && isAiRobot && <RobotNewsReportPanel market={activeMarket} report={newsReport} loading={newsReportLoading} onRefresh={() => void writeNewsReport()} />}
+        {panel === 'news' && !isAiRobot && <NewsPanel news={news} loading={newsLoading} onRefresh={() => void loadNews(true)} />}
 
-        {panel === 'mentor' && <MentorChatPanel
+        {panel === 'mentor' && isAiRobot && <RobotChatPanel
+          messages={robotMessages}
+          onSend={content => void sendRobotQuestion(content)}
+          sending={robotChatSending}
+          signedIn={signedIn}
+          onRequestSignIn={() => openAuthModal('signup')}
+          error={robotChatError}
+        />}
+
+        {panel === 'mentor' && !isAiRobot && <MentorChatPanel
           threads={mentorThreads}
           activeMemberId={mentorMemberId}
           onSelectThread={selectMentorThread}
@@ -1394,6 +1449,8 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
           joining={joining}
           joinError={identityError}
           signedIn={signedIn}
+          robotMode={Boolean(isAiRobot)}
+          reviewIntervals={data.team.monitoringIntervals ?? [15]}
         />}
 
         {panel === 'broker' && <ConnectBrokerPanel
@@ -1419,13 +1476,14 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
     )}
     {settingsOpen && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !settingsSaving) setSettingsOpen(false); }}>
       <section className="tr-room-settings" role="dialog" aria-modal="true" aria-labelledby="tr-room-settings-title">
-        <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">ROOM CONTROL</p><h2 id="tr-room-settings-title">Settings</h2><p>Your room, its description, who can see it and what it looks at.</p></div><button type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
+        <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">{isAiRobot ? 'ROBOT CONTROL' : 'ROOM CONTROL'}</p><h2 id="tr-room-settings-title">{isAiRobot ? 'Robot settings' : 'Settings'}</h2><p>{isAiRobot ? 'Manage the public robot, its cover, schedule and market.' : 'Your room, its description, who can see it and what it looks at.'}</p></div><button type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
         <div className="tr-room-settings-body">
           {!canManageRoom ? <>
             <div className="tr-room-preference-row"><div><strong>Appearance</strong><p>Choose how TradingVibes looks on this device.</p></div><button type="button" className="tr-room-preference-toggle" onClick={toggleTheme}>{theme === 'dark' ? '☀' : '☾'}{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button></div>
           </> : <>
             <label><span>Room name</span><input maxLength={80} value={settingsName} onChange={event => setSettingsName(event.target.value)} placeholder="Name your room" /></label>
             <label><span>Room description</span><textarea rows={4} maxLength={4000} value={settingsDescription} onChange={event => setSettingsDescription(event.target.value)} placeholder="What do you trade, and what do you want from the room?" /></label>
+            {isAiRobot && <label><span>AI analysis interval</span><select value={settingsInterval} onChange={event => setSettingsInterval(Number(event.target.value))}><option value={5}>Every 5 minutes</option><option value={15}>Every 15 minutes</option><option value={30}>Every 30 minutes</option><option value={60}>Every hour</option></select><span className="tr-room-settings-hint">The scheduler checks for a new analysis at this interval.</span></label>}
             <div>
               <p className="tr-room-settings-label">Room cover</p>
               <p className="tr-room-settings-hint">A cover makes the room recognisable in the directory. It is optional.</p>
@@ -1458,10 +1516,10 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
               </div>
             </div>
             <div>
-              <p className="tr-room-settings-label">Room features</p>
+              <p className="tr-room-settings-label">{isAiRobot ? 'Robot features' : 'Room features'}</p>
               <div className="tr-room-intervals">
                 <label><input type="checkbox" checked={settingsAllowDrawings} onChange={event => setSettingsAllowDrawings(event.target.checked)} /><span>Members may draw on the shared chart</span></label>
-                <label><input type="checkbox" checked={settingsVoiceEnabled} onChange={event => setSettingsVoiceEnabled(event.target.checked)} /><span>Voice is available in this room</span></label>
+                {!isAiRobot && <label><input type="checkbox" checked={settingsVoiceEnabled} onChange={event => setSettingsVoiceEnabled(event.target.checked)} /><span>Voice is available in this room</span></label>}
               </div>
             </div>
             <div>
@@ -1482,17 +1540,17 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
               </div>
             </div>
             <div>
-              <p className="tr-room-settings-label">In the directory</p>
+              <p className="tr-room-settings-label">{isAiRobot ? 'Robot visibility' : 'In the directory'}</p>
               <div className="tr-room-creator-actions">
                 <button type="button" className="sg-room-lifecycle-button" disabled={settingsSaving} onClick={() => void toggleRoomPublished()}>
-                  {data.team.status === 'PAUSED' ? 'Publish room' : 'Pause room'}
+                  {data.team.status === 'PAUSED' ? (isAiRobot ? 'Publish robot' : 'Publish room') : (isAiRobot ? 'Pause robot' : 'Pause room')}
                 </button>
               </div>
-              <p className="tr-room-settings-hint">A paused room keeps its conversation and its members, but stops appearing in the directory.</p>
+              <p className="tr-room-settings-hint">A paused {isAiRobot ? 'robot' : 'room'} keeps its data but stops appearing in the directory and no longer runs scheduled analysis.</p>
             </div>
             <div className="tr-room-danger">
-              <p className="tr-room-settings-label">Delete this room</p>
-              <p className="tr-room-settings-hint">Removes the room, its conversation and its members permanently.</p>
+              <p className="tr-room-settings-label">Delete this {isAiRobot ? 'robot' : 'room'}</p>
+              <p className="tr-room-settings-hint">Permanently removes the {isAiRobot ? 'robot and' : 'room,'} its conversation and its members.</p>
               <button type="button" className="sg-room-lifecycle-button is-reset" disabled={deleteBusy || settingsSaving} onClick={() => void deleteRoom()}>
                 <Trash2 size={13} /> {deleteBusy ? 'Deleting…' : 'Delete room'}
               </button>
