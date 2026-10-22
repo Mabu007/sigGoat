@@ -307,6 +307,31 @@ describe('the robot broker connections', () => {
 });
 
 describe('the directory', () => {
+  test('a signed-in user can copy a public bot into a private, independently configurable bot', async () => {
+    const source = await req('POST', '/robot-marketplace', { userId: 'publisher_copy', body: { clientRequestId: 'public_copy_request_001', definition: { ...definition(), visibility: 'PUBLIC' } } });
+    expect(source.status).toBe(201);
+    const copied = await req('POST', `/robot-marketplace/${source.json.robot.slug}/copy`, { userId: 'reader_copy', body: {} });
+    expect(copied.status).toBe(201);
+    expect(copied.json.robot.ownerUserId).toBe('reader_copy');
+    expect(copied.json.robot.visibility).toBe('PRIVATE');
+    expect(copied.json.robot.assetSelected).toBeFalsy();
+    const own = await req('GET', `/robot-marketplace/${copied.json.robot.slug}`, { userId: 'reader_copy' });
+    expect(own.json.canManage).toBe(true);
+    const other = await req('GET', `/robot-marketplace/${copied.json.robot.slug}`, { userId: 'publisher_copy' });
+    expect(other.status).toBe(404);
+  });
+
+  test('trades and Telegram settings are scoped to the bot owner', async () => {
+    const robot = await createRobot('owner_trade_scope', 'trade_scope_request_001');
+    const trades = await req('GET', '/robot-trades', { userId: 'owner_trade_scope' });
+    expect(trades.status).toBe(200);
+    expect(trades.json.trades).toEqual([]);
+    expect((await req('GET', `/robot-marketplace/${robot.slug}/telegram`, { userId: 'stranger_trade_scope' })).status).toBe(403);
+    const telegram = await req('GET', `/robot-marketplace/${robot.slug}/telegram`, { userId: 'owner_trade_scope' });
+    expect(telegram.status).toBe(200);
+    expect(telegram.json.tokenConfigured).toBe(false);
+    expect(telegram.json).not.toHaveProperty('telegramToken');
+  });
   test('the owner sees their robot with a cover url and no broker binding', async () => {
     const robot = await createRobot('owner_directory', 'directory_request_0001');
     const mine = await req('GET', '/robot-marketplace/mine', { userId: 'owner_directory' });
@@ -334,5 +359,36 @@ describe('the directory', () => {
     await createRobot('owner_hidden', 'directory_request_0002');
     const published = await req('GET', '/robot-marketplace');
     expect(published.json.robots.some((robot: any) => robot.ownerUserId === 'owner_hidden')).toBe(false);
+  });
+});
+
+describe('robot asset and alert settings', () => {
+  test('requires an asset, versions the strategy, and saves alert choices', async () => {
+    const owner = 'owner_asset_flow';
+    const robot = await createRobot(owner, 'asset_request_0001');
+    const before = await req('POST', `/robot-marketplace/${robot.slug}/start`, { userId: owner, body: {} });
+    expect(before.status).toBe(409);
+    expect(before.json.error.code).toBe('ASSET_REQUIRED');
+
+    const denied = await req('POST', `/robot-marketplace/${robot.slug}/market`, { userId: 'stranger', body: { provider: 'biquote', instrument: 'EURUSD' } });
+    expect(denied.status).toBe(403);
+    const invalid = await req('POST', `/robot-marketplace/${robot.slug}/market`, { userId: owner, body: { provider: 'biquote', instrument: 'NOTREAL' } });
+    expect(invalid.status).toBe(400);
+
+    const selected = await req('POST', `/robot-marketplace/${robot.slug}/market`, { userId: owner, body: { provider: 'biquote', instrument: 'EURUSD' } });
+    expect(selected.status).toBe(200);
+    const detail = await req('GET', `/robot-marketplace/${robot.slug}`, { userId: owner });
+    expect(detail.json.robot.assetSelected).toBe(true);
+    expect(detail.json.robot.currentVersion).toBe(2);
+    expect(detail.json.definition.market).toMatchObject({ provider: 'biquote', instrument: 'EURUSD' });
+
+    const alerts = { entry: true, exit: false, fill: true, risk: true };
+    const saved = await req('POST', `/robot-marketplace/${robot.slug}/alerts`, { userId: owner, body: alerts });
+    expect(saved.status).toBe(200);
+    expect((await req('GET', `/robot-marketplace/${robot.slug}`, { userId: owner })).json.robot.alertPreferences).toEqual(alerts);
+    const started = await req('POST', `/robot-marketplace/${robot.slug}/start`, { userId: owner, body: {} });
+    expect(started.status).toBe(200);
+    const changeWhileRunning = await req('POST', `/robot-marketplace/${robot.slug}/market`, { userId: owner, body: { provider: 'biquote', instrument: 'GBPUSD' } });
+    expect(changeWhileRunning.status).toBe(409);
   });
 });

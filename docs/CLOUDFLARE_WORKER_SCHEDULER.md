@@ -5,7 +5,8 @@ This is the low-cost replacement for Firebase Functions / Cloud Run. Firebase Au
 ## Runtime responsibilities
 
 - **Firebase Auth + Firestore:** user identity, GOAT/job description, attached skills, schedule generations, leases, thesis, immutable condition plan, condition states, signals, wake events, and Telegram notification outbox.
-- **Cloudflare Worker Cron Trigger:** invokes `GET /api/internal/cron` every minute with the shared `CRON_SECRET`. No durable Worker objects, Workers KV, Queues, or paid Firebase Functions are required for the dispatch loop.
+- **Cloudflare Worker Cron Trigger:** invokes `GET /api/internal/cron` every minute with the shared `CRON_SECRET` for GOAT work.
+- **RobotRunner Durable Object:** one alarm per running trading robot calls the authenticated robot candle endpoint every minute. Trade starts the alarm; Stop removes it. The API persists the runtime and rejects processing a stopped robot.
 - **Existing SIRGOAT API runtime:** claims due Firestore work, fetches market data, computes indicator values deterministically, calls the selected AI provider only for initial/routine/triggered analysis, applies SignalGate, persists outcomes, and drains Telegram notifications.
 
 **Important:** Cloudflare is the scheduler/dispatch compute in this migration, not a full port of the Node API into the Worker runtime. The current API origin must remain reachable. The business logic stays in one place to avoid divergence in signal validation and Telegram behavior.
@@ -24,9 +25,13 @@ npx wrangler secret put CRON_SECRET
 npx wrangler deploy
 ```
 
+Set `ROBOT_WORKER_URL` on the API host to the deployed scheduler Worker's HTTPS origin. The API needs the same `CRON_SECRET`. A production Trade request fails clearly if either setting is missing or the Worker rejects the start request. Firestore must be configured for durable robot runtime state.
+
 Set the API origin without a trailing slash. Keep `CRON_SECRET` private; do not put it in `wrangler.toml`, source code, or a `VITE_*` variable. Worker requests use the `Authorization: Bearer <secret>` header expected by `/api/internal/cron`.
 
 Check `https://<worker-subdomain>.workers.dev/health`. To test the dispatch manually, send `POST /dispatch` with `x-worker-admin-secret` equal to the same secret. This endpoint is intended for controlled operator testing; do not expose the secret to the browser.
+
+For a robot smoke test, choose an asset, press Trade, close the browser, wait for a completed candle, then reopen its workspace and check the last processed candle and Trades page. Press Stop and confirm the last processed candle does not advance. The Durable Object stores the robot id and alarm only; it never receives broker or Telegram credentials.
 
 ## Cutover without missed schedules
 

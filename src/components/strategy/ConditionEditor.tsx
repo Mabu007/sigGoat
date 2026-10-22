@@ -69,8 +69,8 @@ export function ConditionEditor({
   return <div className={depth ? 'mt-2 space-y-2 border-l border-line pl-3' : 'space-y-2'}>
     {conditions.map((condition, index) => <div key={condition.id} className="rounded-xl border border-line p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-1 text-[11px] text-fg-muted">
-          <input type="checkbox" checked={condition.negate} onChange={event => update(index, { negate: event.target.checked } as Partial<ConditionDraft>)} /> NOT
+        <label className="flex min-h-9 items-center gap-1.5 rounded-md px-1 text-[11px] text-fg-muted">
+          <input aria-label="Negate condition" type="checkbox" checked={condition.negate} onChange={event => update(index, { negate: event.target.checked } as Partial<ConditionDraft>)} /> NOT
         </label>
         {condition.kind === 'comparison' && <select
           aria-label="Condition type"
@@ -155,14 +155,27 @@ export function ConditionEditor({
         </div>
       </div>
 
-      {condition.kind === 'comparison' && <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_150px_1fr]">
-        <OperandEditor draft={condition.left} indicators={indicators} onChange={left => update(index, { left } as Partial<ConditionDraft>)} />
-        <select aria-label="Operator" value={condition.operator} onChange={event => { const operator=event.target.value as StrategyOperator; update(index, { operator, rangeTo: ['BETWEEN','OUTSIDE'].includes(operator) ? (condition.rangeTo ?? newOperand('constant')) : undefined } as Partial<ConditionDraft>); }} className="input self-end">
-          {OPERATORS.map(operator => <option key={operator} value={operator}>{OPERATOR_LABELS[operator]}</option>)}
+      {condition.kind === 'comparison' && <div className="mt-2 grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(130px,160px)_minmax(0,1fr)]">
+        <OperandEditor draft={condition.left} indicators={indicators} onChange={left => {
+          const bothConstant = left.kind === 'constant' && condition.right.kind === 'constant';
+          update(index, { left, ...(bothConstant && ['CROSS_ABOVE', 'CROSS_BELOW'].includes(condition.operator) ? { operator: 'GT' as const } : {}) } as Partial<ConditionDraft>);
+        }} />
+        <select aria-label="Operator" value={condition.operator} onChange={event => {
+          const operator = event.target.value as StrategyOperator;
+          const right = ['CHANGE_PCT_GT', 'CHANGE_PCT_LT'].includes(operator) && condition.right.kind !== 'constant'
+            ? newOperand('constant')
+            : condition.right;
+          update(index, { operator, right, rangeTo: ['BETWEEN','OUTSIDE'].includes(operator) ? (condition.rangeTo ?? newOperand('constant')) : undefined } as Partial<ConditionDraft>);
+        }} className="input min-w-0 self-end">
+          {OPERATORS.filter(operator => !(['CROSS_ABOVE', 'CROSS_BELOW'].includes(operator) && condition.left.kind === 'constant' && condition.right.kind === 'constant')).map(operator => <option key={operator} value={operator}>{OPERATOR_LABELS[operator]}</option>)}
         </select>
-        <OperandEditor draft={condition.right} indicators={indicators} onChange={right => update(index, { right } as Partial<ConditionDraft>)} />
+        {!['INCREASING', 'DECREASING'].includes(condition.operator) && <OperandEditor draft={condition.right} indicators={indicators} onChange={right => {
+          const bothConstant = condition.left.kind === 'constant' && right.kind === 'constant';
+          update(index, { right, ...(bothConstant && ['CROSS_ABOVE', 'CROSS_BELOW'].includes(condition.operator) ? { operator: 'GT' as const } : {}) } as Partial<ConditionDraft>);
+        }} />}
         {condition.rangeTo && <><span className="hidden sm:block"/><span className="text-[10px] text-fg-subtle sm:col-span-2">and upper bound</span><OperandEditor draft={condition.rangeTo} indicators={indicators} onChange={rangeTo => update(index, { rangeTo } as Partial<ConditionDraft>)}/></>}
         {condition.operator === 'EQ' && advanced && <label className="text-[10px] text-fg-subtle sm:col-span-3">Numeric tolerance<input type="number" min="0" step="any" value={condition.tolerance ?? 0} onChange={event=>update(index,{tolerance:Number(event.target.value)} as Partial<ConditionDraft>)} className="input mt-1"/></label>}
+        {['CHANGE_PCT_GT', 'CHANGE_PCT_LT'].includes(condition.operator) && <p className="text-[10px] text-fg-subtle sm:col-span-3">Enter the percentage amount in the number field (for example, 2 means 2%).</p>}
       </div>}
 
       {condition.kind === 'price_action' && <>

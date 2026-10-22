@@ -40,12 +40,25 @@ describe('the directory header', () => {
     expect(source).not.toContain('Robot Marketplace');
   });
 
-  test('the filters, the create button and the listing are still there', () => {
+  test('the directory is one bot feed with no category filters', () => {
     const source = read(VIEW);
-    expect(source).toContain('Public Robots');
-    expect(source).toContain('My Robots');
-    expect(source).toContain('Create Trading Robot');
+    expect(source).toContain('Explore trading bots');
+    expect(source).toContain('Create bot');
+    expect(source).not.toContain('Public Robots');
+    expect(source).not.toContain('My Robots');
     expect(source).toContain('<RobotCard');
+  });
+});
+
+describe('the professional robot studio', () => {
+  test('strategy context is defined with conditions and market binding happens at deployment', () => {
+    const source = read(BUILDER);
+    expect(source).toContain('Signal context');
+    expect(source).toContain('Condition timeframe');
+    expect(source).toContain('Position intent');
+    expect(source).toContain('Deployment profile');
+    expect(source).toContain('Deployment instrument');
+    expect(source).toContain('Validate & deploy robot');
   });
 });
 
@@ -54,10 +67,10 @@ describe('the directory header', () => {
 /* ------------------------------------------------------------------ */
 
 describe('the robot card', () => {
-  test('it has a portrait cover with rounded corners', () => {
+  test('it has a YouTube-style widescreen cover with rounded corners', () => {
     const source = read(CARD);
-    expect(source).toContain('aspect-[4/5]');
-    expect(source).toContain('rounded-[22px]');
+    expect(source).toContain('aspect-video');
+    expect(source).toContain('rounded-2xl');
     expect(source).toContain('overflow-hidden');
   });
 
@@ -72,45 +85,25 @@ describe('the robot card', () => {
     expect(source).toContain('onError');
   });
 
-  test('the name and the description sit over the cover with a dark gradient', () => {
+  test('the title and description stay readable over the cover', () => {
     const source = read(CARD);
-    expect(source).toContain('from-black via-black/55 to-transparent');
+    expect(source).toContain('bg-gradient-to-t');
     expect(source).toContain('robot.name');
     expect(source).toContain('robot.description');
   });
 
-  test('the control bar is a floating black bar with a red outline', () => {
+  test('the thumbnail opens the robot workspace', () => {
     const source = read(CARD);
-    expect(source).toContain('-mt-5');
-    expect(source).toContain('border-red-500/70');
-    expect(source).toContain('bg-[#0b0709]/95');
-    expect(source).toContain('shadow-[0_0_26px_rgba(239,68,68,.28)]');
+    expect(source).toContain('onClick={onOpen}');
+    expect(source).toContain('aria-label={`Open ${robot.name}`}');
   });
 
-  test('the three controls are real buttons that raise three different actions', () => {
-    const source = read(CARD);
-    expect(source).toContain('PAIRS');
-    expect(source).toContain('INFO');
-    expect(source).toContain("onAction('pairs')");
-    expect(source).toContain("onAction('trade')");
-    expect(source).toContain("onAction('info')");
-    // A real control is a <button>, not a decorative <span>.
-    const buttons = source.match(/<button/g)?.length ?? 0;
-    expect(buttons).toBeGreaterThanOrEqual(4);
-  });
-
-  test('the play button is the large red circle in the middle', () => {
-    const source = read(CARD);
-    expect(source).toContain('h-12 w-12');
-    expect(source).toContain('rounded-full bg-red-600');
-    expect(source).toContain('<Play');
-  });
-
-  test('the creator and the status are on the card', () => {
-    const source = read(CARD);
-    expect(source).toContain('robot.creatorName');
-    expect(source).toContain('STATUS_LABEL');
-    expect(source).toContain('robot.runtimeStatus');
+  test('the workspace has PAIRS, TRADE and BACKTEST controls', () => {
+    const source = read(VIEW);
+    expect(source).toContain('Choose an asset');
+    expect(source).toContain("<span>PAIRS</span>");
+    expect(source).toContain("<span>BACKTEST</span>");
+    expect(source).toContain("running?'STOP':'TRADE'");
   });
 });
 
@@ -189,12 +182,11 @@ describe('the broker connections', () => {
     expect(boundary).toBeLessThan(accounts);
   });
 
-  test('it reuses the existing cTrader OAuth and PropDAO vault routes', () => {
+  test('it uses cTrader OAuth and a separate PropDAO key for each robot', () => {
     const source = read(BROKER);
     expect(source).toContain("'/api/ctrader/connect'");
-    expect(source).toContain("'/api/propdao/connect'");
-    expect(source).toContain("'/api/settings/keys'");
-    expect(source).toContain('propDaoApiKey');
+    expect(source).toContain('/broker/propdao-key');
+    expect(source).toContain('apiKey: key');
   });
 
   test('the key is never read back and is cleared once it is saved', () => {
@@ -239,10 +231,12 @@ describe('the mobile layout', () => {
     expect(source).toContain('max-h-80 overflow-auto');
   });
 
-  test('the workspace navigation scrolls sideways instead of wrapping into the page', () => {
-    const source = read(VIEW);
-    expect(source).toContain('overflow-x-auto');
-    expect(source).toContain('shrink-0');
+  test('the workspace becomes a persistent app navigation on a phone', () => {
+    const view = read(VIEW);
+    const styles = read('src/components/views/robot-workspace.css');
+    expect(view).toContain('robot-mobile-nav');
+    expect(styles).toContain('position:fixed');
+    expect(styles).toContain('grid-template-columns:repeat(4,1fr)');
   });
 
   test('the backtest table scrolls inside its own box', () => {
@@ -267,9 +261,9 @@ describe('the mobile layout', () => {
   });
 
   test('the workspace panels stack on a phone', () => {
-    const source = read(VIEW);
-    expect(source).toContain('grid gap-4 lg:grid-cols-2');
-    expect(source).toContain('sm:grid-cols-[200px_1fr]');
+    const styles = read('src/components/views/robot-workspace.css');
+    expect(styles).toContain('.robot-panels{grid-template-columns:1fr}');
+    expect(styles).toContain('.robot-modal-bg{align-items:flex-end');
   });
 });
 
@@ -294,7 +288,7 @@ describe('the strategy engine is preserved', () => {
 
   test('the schema is still version 2 with its migration', () => {
     const source = read('src/services/strategy/schema.ts');
-    expect(source).toContain('STRATEGY_SCHEMA_VERSION = 2');
+    expect(source).toContain('STRATEGY_SCHEMA_VERSION = 3');
     expect(source).toContain('migrateStrategyDefinition');
   });
 });

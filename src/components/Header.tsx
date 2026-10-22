@@ -37,7 +37,7 @@ export function Header({ displayName, email, onOpenSettings, onRefresh, refreshi
   const submitSearch = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     window.dispatchEvent(new CustomEvent('tradingvibes-directory-search', { detail: search.trim() }));
-    if (window.location.hash !== '#/rooms') window.location.hash = '/rooms';
+    if (window.location.hash !== '#/bots') window.location.hash = '/bots';
   };
 
   /**
@@ -61,7 +61,7 @@ export function Header({ displayName, email, onOpenSettings, onRefresh, refreshi
   return (
     <header className="premium-header yt-header sticky top-0 z-30 border-b border-line">
       <div className="yt-header-inner flex h-[68px] w-full items-center gap-4 px-4 sm:px-6">
-        <button type="button" onClick={() => { window.location.hash = '/rooms'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} aria-label="TradingVibes home — Robots" title="Back to Robots" className="flex shrink-0 items-center gap-3 rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+        <button type="button" onClick={() => { window.location.hash = '/bots'; window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }); }} aria-label="TradingVibes home — Bots" title="Back to Bots" className="flex shrink-0 items-center gap-3 rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
           <BrandMark compact />
           <span className="hidden text-[15px] font-extrabold tracking-tight text-fg sm:inline">TRADING<span className="text-accent-text">VIBES</span></span>
         </button>

@@ -4532,11 +4532,14 @@ apiRouter.use(authMiddleware);
 apiRouter.post('/robot-marketplace/ai-draft', handle(async (req, res) => {
   const user = requireUser(req);
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+  const profile = await persistence.profiles.get(user.uid);
+  const freeModels = await reasoningGateway.listModels(user.uid, 'openrouter').then(catalogue => catalogue.models.filter(model => model.free)).catch(() => []);
+  const preferredModel = freeModels.find(model => model.id === profile?.aiModel)?.id ?? freeModels[0]?.id ?? null;
   const outcome = await draftStrategy({
     prompt,
-    hasProvider: () => reasoningGateway.hasKeyFor(user.uid),
-    pickModel: () => reasoningGateway.pickAnyModel(user.uid),
-    provider: () => reasoningGateway.providerFor(user.uid),
+    hasProvider: () => reasoningGateway.hasKeyFor(user.uid, 'openrouter'),
+    pickModel: async () => preferredModel,
+    provider: async () => 'openrouter',
     askModel: (request, model) => reasoningGateway.answerGoatQuestion(request, {
       userId: user.uid, goatId: 'strategy-drafter', goatName: 'Strategy Drafter', goatGoal: 'Translate a trading request into a structured, editable strategy draft without inventing logic.', market: 'UNSELECTED', skills: [], activeThesis: null, dataSource: 'LIVE',
     }, model),
@@ -5340,6 +5343,7 @@ apiRouter.delete(
  */
 
 const robotBrokerStore = createRobotStore();
+const robotSecretOwner = (userId: string, robotId: string) => `${userId}:robot:${robotId}`;
 
 /** Resolves a robot the caller OWNS. A stranger's robot is reported as missing. */
 async function ownedRobotForBroker(idOrSlug: string, userId: string, res: Response): Promise<RobotRecord | null> {
@@ -5386,12 +5390,13 @@ apiRouter.get("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) => 
   const propDaoAccounts: BrokerAccountChoice[] = [];
   let propDaoError: string | null = null;
   let propDaoConnected = false;
-  if (await credentialVault.hasCredential(user.uid, "propdao")) {
+  const secretOwner = robotSecretOwner(user.uid, robot.id);
+  if (await credentialVault.hasCredential(secretOwner, "propdao")) {
     try {
-      const verification = await propDaoFor(user.uid).verifyConnection();
+      const verification = await propDaoFor(secretOwner).verifyConnection();
       propDaoConnected = verification.connected === true;
       if (propDaoConnected) {
-        for (const account of await propDaoFor(user.uid).listAccounts()) {
+        for (const account of await propDaoFor(secretOwner).listAccounts()) {
           const status = (account.status ?? "").toLowerCase();
           const isChallenge = Boolean(account.challengeId) || status.includes("challenge") || status.includes("evaluation");
           propDaoAccounts.push({
@@ -5432,6 +5437,31 @@ apiRouter.get("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) => 
   });
 }));
 
+apiRouter.post('/robot-marketplace/:idOrSlug/broker/propdao-key', handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+  const key = typeof req.body?.apiKey === 'string' ? req.body.apiKey.trim() : '';
+  if (!key || key.length > 1024) return fail(res, 400, 'INVALID_KEY', 'Enter a valid PropDAO API key.');
+  const secretOwner = robotSecretOwner(user.uid, robot.id);
+  await credentialVault.saveCredential(secretOwner, 'propdao', key);
+  const verification = await propDaoFor(secretOwner).verifyConnection();
+  if (!verification.connected) {
+    await credentialVault.saveCredential(secretOwner, 'propdao', null);
+    return fail(res, 400, 'PROPDAO_VERIFY_FAILED', 'message' in verification ? verification.message : 'PropDAO rejected the key.');
+  }
+  res.json({ connected: true });
+}));
+
+apiRouter.delete('/robot-marketplace/:idOrSlug/broker/propdao-key', handle(async (req, res) => {
+  const user = requireUser(req);
+  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
+  if (!robot) return;
+  await credentialVault.saveCredential(robotSecretOwner(user.uid, robot.id), 'propdao', null);
+  if (robot.brokerAccount?.provider === 'propdao') await robotBrokerStore.setBrokerAccount(robot, undefined);
+  res.json({ connected: false });
+}));
+
 apiRouter.post("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) => {
   const user = requireUser(req);
   const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
@@ -5445,6 +5475,8 @@ apiRouter.post("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) =>
   if (!accountId || accountId.length > 128) {
     return fail(res, 400, "INVALID_BROKER_ACCOUNT", "Choose an account from your own account list.");
   }
+  const alreadyBound = (await robotBrokerStore.listForOwner(user.uid)).find(other => other.id !== robot.id && other.brokerAccount?.provider === provider && other.brokerAccount.accountId === accountId);
+  if (alreadyBound) return fail(res, 409, 'ACCOUNT_IN_USE', `That account is already bound to ${alreadyBound.name}. Choose a different account for this robot.`);
 
   /**
    * The account is looked up in the CALLER'S OWN list, never trusted from
@@ -5471,10 +5503,11 @@ apiRouter.post("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) =>
       isLive: found.isLive,
     };
   } else {
-    if (!(await credentialVault.hasCredential(user.uid, "propdao"))) {
+    const secretOwner = robotSecretOwner(user.uid, robot.id);
+    if (!(await credentialVault.hasCredential(secretOwner, "propdao"))) {
       return fail(res, 409, "PROPDAO_NOT_CONNECTED", "Save your PropDAO API key first.");
     }
-    const providerClient = propDaoFor(user.uid);
+    const providerClient = propDaoFor(secretOwner);
     let accounts: Awaited<ReturnType<typeof providerClient.listAccounts>>;
     try {
       accounts = await providerClient.listAccounts();

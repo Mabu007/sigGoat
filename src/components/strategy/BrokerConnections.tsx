@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ExternalLink, Link2, Loader2, ShieldCheck, Unlink } from 'lucide-react';
+import { AlertTriangle, Link2, Loader2, ShieldCheck, Unlink } from 'lucide-react';
 
 /**
  * BROKER CONNECTIONS
@@ -109,18 +109,13 @@ export function BrokerConnections({
     window.location.href = body.authorizationUrl;
   }, '');
 
-  const disconnectCTrader = () => run(async () => {
-    const response = await fetch('/api/ctrader/connect', { method: 'DELETE', headers: await headers() });
-    if (!response.ok) throw new Error('cTrader could not be disconnected.');
-  }, 'cTrader disconnected. The stored token was deleted.');
-
   const savePropDaoKey = () => run(async () => {
     const key = propDaoKey.trim();
     if (!key) throw new Error('Enter your PropDAO API key.');
-    const response = await fetch('/api/settings/keys', {
+    const response = await fetch(`/api/robot-marketplace/${encodeURIComponent(robotSlug)}/broker/propdao-key`, {
       method: 'POST',
       headers: await headers(true),
-      body: JSON.stringify({ propDaoApiKey: key }),
+      body: JSON.stringify({ apiKey: key }),
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body?.error?.message || 'The PropDAO key could not be saved.');
@@ -130,7 +125,7 @@ export function BrokerConnections({
   }, 'PropDAO key saved in the encrypted vault.');
 
   const disconnectPropDao = () => run(async () => {
-    const response = await fetch('/api/propdao/connect', { method: 'DELETE', headers: await headers() });
+    const response = await fetch(`/api/robot-marketplace/${encodeURIComponent(robotSlug)}/broker/propdao-key`, { method: 'DELETE', headers: await headers() });
     if (!response.ok) throw new Error('PropDAO could not be disconnected.');
   }, 'PropDAO key deleted from the vault.');
 
@@ -200,9 +195,7 @@ export function BrokerConnections({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm font-semibold text-fg">cTrader</p>
             {state.cTrader.connected ? (
-              <button type="button" disabled={busy} onClick={() => void disconnectCTrader()} className="btn btn-secondary text-[11px]">
-                <Unlink size={12} /> Disconnect
-              </button>
+              <span className="text-[11px] text-positive">Connected</span>
             ) : (
               <button type="button" disabled={busy || !state.cTrader.configured} onClick={() => void connectCTrader()} className="btn btn-secondary text-[11px]">
                 <Link2 size={12} /> Connect
@@ -304,9 +297,7 @@ export function BrokerConnections({
           </p>
         </div>
 
-        <a href="#/settings" className="inline-flex items-center gap-1 text-[11px] text-fg-subtle hover:text-fg">
-          Manage every connection in Settings <ExternalLink size={11} />
-        </a>
+        <p className="text-[11px] text-fg-subtle">Each robot keeps its own PropDAO key and one broker account binding.</p>
       </>
     )}
   </div>;
