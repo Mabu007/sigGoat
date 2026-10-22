@@ -6,13 +6,13 @@ workers_dev = true
 [triggers]
 crons = ["* * * * *"]
 
-[[durable_objects.bindings]]
-name = "ROBOT_RUNNER"
-class_name = "RobotRunner"
-
 [[migrations]]
 tag = "robot-runner-v1"
 new_sqlite_classes = ["RobotRunner"]
+
+[[migrations]]
+tag = "robot-runner-v2-remove"
+deleted_classes = ["RobotRunner"]
 
 [vars]
 CRON_TIMEOUT_MS = "250000"

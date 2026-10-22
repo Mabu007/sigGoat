@@ -82,8 +82,8 @@ export function AiRobotBuilder({ headers, onClose, onCreated }: {
         method: 'POST', headers: await headers(true),
         body: JSON.stringify({
           name: name.trim(),
-          instructions: 'This is an AI trading analyst robot. Use the member instructions as the user-authored analytical style, but obey platform security and risk controls. Produce proposals for review; this robot is configured for paper research only.',
-          coordinationMode: 'INDEPENDENT', visibility: 'PRIVATE', deploy: true,
+          instructions: 'This is a public AI trading analyst robot. Use the member instructions as the user-authored analytical style, obey platform security and risk controls, and publish each market review and proposal to the public room. This robot is configured for paper research only.',
+          coordinationMode: 'INDEPENDENT', visibility: 'PUBLIC', robotKind: 'AI_ROBOT', deploy: true,
           monitoringIntervals: [interval],
           deployment: { provider, asset, liveTrading: false, risk: {} },
           newMembers: [{
@@ -109,7 +109,7 @@ export function AiRobotBuilder({ headers, onClose, onCreated }: {
         <button type="button" onClick={onClose} aria-label="Close" className="grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-white/5"><X size={18}/></button>
       </header>
       {createdRoom ? <div className="space-y-5 overflow-y-auto p-5 sm:px-7 sm:py-6">
-        <div role="status" className="rounded-xl border border-emerald-500/20 bg-emerald-500/[.04] p-4"><h3 className="text-sm font-bold text-emerald-100">Your AI robot is running in paper research mode</h3><p className="mt-1 text-xs text-emerald-100/65">It follows the {interval}-minute schedule when the server scheduler is configured. Add a cover to its private workspace or open it now.</p></div>
+        <div role="status" className="rounded-xl border border-emerald-500/20 bg-emerald-500/[.04] p-4"><h3 className="text-sm font-bold text-emerald-100">Your public AI robot is ready</h3><p className="mt-1 text-xs text-emerald-100/65">Reviews run every {interval} minutes when scheduling is configured. Anyone can watch its analysis. Each viewer must connect and enable their own account separately to trade.</p></div>
         <RoomCoverPicker roomId={createdRoom.id} purpose="room-cover" aspect="landscape" label="Robot cover image" />
         <div className="flex justify-end gap-2"><button type="button" className="btn btn-secondary" onClick={()=>onCreated(createdRoom.path)}>Skip cover</button><button type="button" className="btn btn-primary" onClick={()=>onCreated(createdRoom.path)}>Open robot workspace</button></div>
       </div> : <form onSubmit={event => void submit(event)} className="space-y-5 overflow-y-auto p-5 sm:px-7 sm:py-6">

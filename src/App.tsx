@@ -8,8 +8,7 @@ import { Navigation, type TabId } from './components/Navigation';
 import { AuthGate } from './components/AuthGate';
 import { AuthModal } from './components/AuthModal';
 
-const TradingRobotsView = React.lazy(() => import('./components/views/TradingRobotsView').then(module => ({ default: module.TradingRobotsView })));
-const TradesView = React.lazy(() => import('./components/views/TradesView').then(module => ({ default: module.TradesView })));
+const AiRobotsView = React.lazy(() => import('./components/views/AiRobotsView').then(module => ({ default: module.AiRobotsView })));
 const SettingsView = React.lazy(() => import('./components/views/SettingsView').then(module => ({ default: module.SettingsView })));
 const PublicTeamView = React.lazy(() => import('./components/PublicTeamView').then(module => ({ default: module.PublicTeamView })));
 
@@ -31,7 +30,7 @@ const ViewLoadingFallback: React.FC = () => (
 function tabFromHash(): TabId {
   if (typeof window === 'undefined') return 'bots';
   const raw = hashPath();
-  const allowed: TabId[] = ['bots', 'trades', 'settings'];
+  const allowed: TabId[] = ['bots', 'settings'];
   /**
    * Everything that used to be a destination belongs to a different product.
    * Those hashes now land on the bot directory, which is where the product
@@ -67,13 +66,12 @@ function hashSection(): string {
 
 const MainApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
-  const [robotDetailOpen, setRobotDetailOpen] = useState(() => hashPath().startsWith('robots/'));
   const [settingsSection, setSettingsSection] = useState<string>(hashSection);
   const { currentUser, profile } = useAuth();
   const { refreshQuotes, quotes } = useMarket();
 
   useEffect(() => {
-    const onHashChange = () => { setActiveTab(tabFromHash()); setSettingsSection(hashSection()); setRobotDetailOpen(hashPath().startsWith('robots/')); };
+    const onHashChange = () => { setActiveTab(tabFromHash()); setSettingsSection(hashSection()); };
     window.addEventListener('hashchange', onHashChange);
     if (!hashPath() || hashPath() === 'rooms' || hashPath() === 'robots') window.history.replaceState(null, '', '#/bots');
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -81,7 +79,6 @@ const MainApp: React.FC = () => {
 
   const navigate = useCallback((tab: TabId) => {
     setActiveTab(tab);
-    setRobotDetailOpen(false);
     if (typeof window !== 'undefined') {
       window.location.hash = `/${tab}`;
       window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
@@ -95,24 +92,23 @@ const MainApp: React.FC = () => {
 
   return (
     <div className="premium-shell flex min-h-screen flex-col text-fg">
-      <div className={`flex min-h-screen min-w-0 flex-1 flex-col ${robotDetailOpen ? '' : 'pb-20'}`}>
-        {!robotDetailOpen && <Header
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-20">
+        <Header
           displayName={profile?.displayName ?? null}
           email={currentUser?.email ?? null}
           onOpenSettings={() => navigate('settings')}
           onRefresh={() => void refreshQuotes()}
           lastUpdatedMs={lastUpdatedMs}
-        />}
+        />
 
-        <main className={robotDetailOpen ? 'w-full flex-1' : 'w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8'}>
+        <main className="w-full flex-1 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
           <React.Suspense fallback={<ViewLoadingFallback />}>
-            {activeTab === 'bots' && <TradingRobotsView />}
-            {activeTab === 'trades' && <TradesView />}
+            {activeTab === 'bots' && <AiRobotsView />}
             {activeTab === 'settings' && <SettingsView section={settingsSection} />}
           </React.Suspense>
         </main>
       </div>
-      {!robotDetailOpen && <Navigation activeTab={activeTab} onSelect={navigate} />}
+      <Navigation activeTab={activeTab} onSelect={navigate} />
     </div>
   );
 };

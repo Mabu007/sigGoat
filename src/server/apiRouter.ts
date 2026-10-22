@@ -85,8 +85,6 @@ import {
   tradableMarkets,
 } from "../services/market-data/hyperliquid/MarketCatalog";
 import { paperProvider, PaperMarketDataProvider, PAPER_DATA_MODE } from "../services/market-data/PaperMarketDataProvider";
-import { draftStrategy } from '../services/strategy/aiDrafting';
-import { createRobotStore, type RobotRecord } from './robots/RobotStore';
 import { CTRADER_CATALOG, CTRADER_REFERENCE_PRICES, CTRADER_SYMBOLS } from "../services/market-data/ctrader/CTraderSymbolCatalog";
 import {
   MarketDataProvider,
@@ -3834,10 +3832,24 @@ apiRouter.get("/robots/:slug/market", handle(async (req, res) => {
 }));
 
 /** Public discovery feed for deployed PUBLIC teams only. */
-apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
+apiRouter.get("/goat-teams/public", optionalAuthMiddleware, handle(async (req, res) => {
+  if (req.user?.uid) {
+    const ownedTeams = await goatTeamStore.listForUser(req.user.uid);
+    for (const team of ownedTeams) {
+      if (team.visibility !== "PRIVATE" || team.memberGoatIds.length !== 1) continue;
+      const member = await persistence.goats.getForUser(team.memberGoatIds[0], req.user.uid);
+      if (member?.model && team.instructions?.startsWith("This is an AI trading analyst robot.")) {
+        await goatTeamStore.save({ ...team, visibility: "PUBLIC", robotKind: "AI_ROBOT", updatedAt: new Date().toISOString() });
+      }
+    }
+  }
   const teams = (await goatTeamStore.listPublic()).filter(team => team.status === "DEPLOYED");
-  const rooms = await Promise.all(teams.map(async team => {
+  const rooms = (await Promise.all(teams.map(async team => {
     const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
+    const legacyAiRobot = team.memberGoatIds.length === 1 && Boolean(members[0]?.model) && Boolean(team.instructions?.startsWith("This is an AI trading analyst robot."));
+    const robotKind = team.robotKind === "AI_ROBOT" || legacyAiRobot ? "AI_ROBOT" : "COMMUNITY";
+    if (robotKind !== "AI_ROBOT") return null;
+    if (legacyAiRobot && team.robotKind !== "AI_ROBOT") await goatTeamStore.save({ ...team, robotKind: "AI_ROBOT", updatedAt: new Date().toISOString() });
     const theses = await Promise.all(team.memberGoatIds.map(id => persistence.theses.listByGoat(id, 1)));
     const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     /**
@@ -3852,7 +3864,7 @@ apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
      */
     const creator = await persistence.profiles.get(team.ownerUserId).catch(() => null);
     return {
-      id: team.id, slug: team.publicSlug, name: team.name,
+      id: team.id, slug: team.publicSlug, name: team.name, robotKind,
       description: described ? described.slice(0, 220) : "A trading room for sharing market analysis.",
       environment: team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO"),
       marketDataProvider: (team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO")) === "DEMO" ? "biquote" : (team.liveTradingProvider ?? team.deployment?.provider ?? null),
@@ -3861,9 +3873,71 @@ apiRouter.get("/goat-teams/public", handle(async (_req, res) => {
       latestThesis: latest ? { market: latest.market, bias: latest.directionalHypothesis, summary: latest.summary ?? latest.assetState ?? "Market review recorded.", updatedAt: latest.updatedAt } : null,
       updatedAt: team.updatedAt,
     };
-  }));
+  }))).filter((room): room is NonNullable<typeof room> => room !== null);
   res.setHeader("Cache-Control", "public, max-age=10, stale-while-revalidate=20");
   res.json({ rooms });
+}));
+
+/**
+ * Start a separate personal instance of a public AI robot. Its analyses are
+ * generated independently under the caller's account, so any execution uses
+ * only that caller's own broker connection and explicit automation settings.
+ */
+apiRouter.post("/team-rooms/:slug/copy", handle(async (req, res) => {
+  const user = requireUser(req);
+  const sourceTeam = await goatTeamStore.getPublicBySlug(String(req.params.slug || ""));
+  if (!sourceTeam || sourceTeam.visibility !== "PUBLIC" || sourceTeam.status !== "DEPLOYED" || sourceTeam.robotKind !== "AI_ROBOT") {
+    return fail(res, 404, "AI_ROBOT_NOT_FOUND", "That public AI robot cannot be copied.");
+  }
+  if (sourceTeam.memberGoatIds.length !== 1) return fail(res, 409, "AI_ROBOT_SHAPE_UNSUPPORTED", "This robot cannot yet create a personal instance.");
+  const source = await persistence.goats.getForUser(sourceTeam.memberGoatIds[0], sourceTeam.ownerUserId);
+  if (!source?.model) return fail(res, 409, "AI_ROBOT_CONFIG_UNAVAILABLE", "This robot's AI configuration is unavailable.");
+  if (source.aiProvider && source.aiProvider !== "openrouter") return fail(res, 409, "AI_PROVIDER_UNSUPPORTED", "This AI provider cannot yet be copied to a personal robot.");
+  if (scheduler.kind === "disabled") return fail(res, 503, "AI_SCHEDULER_UNAVAILABLE", "The server scheduler is not configured, so a personal robot cannot be started.");
+  const catalogue = await reasoningGateway.listModels(user.uid, source.aiProvider ?? "openrouter").catch(() => null);
+  if (!catalogue?.models.some(model => model.id === source.model && model.supportsStructuredOutputs)) {
+    return fail(res, 409, "AI_MODEL_NOT_AVAILABLE", "Connect an AI provider that offers this robot's model before creating your personal instance.");
+  }
+  const asset = source.markets[0] ?? sourceTeam.deployment?.asset ?? "";
+  let member: FundGoat;
+  try {
+    member = await createTeamMemberRecord(user.uid, {
+      name: source.name,
+      jobTitle: source.jobTitle ?? "AI Trading Analyst",
+      jobDescription: source.goal,
+      skills: source.skills ?? [],
+      asset,
+      tradingProvider: resolveGoatTradingProvider(source),
+      model: source.model,
+      aiProvider: "openrouter",
+      researchSources: source.researchSources ?? [],
+    });
+  } catch (error) {
+    return fail(res, 400, "AI_ROBOT_COPY_FAILED", error instanceof Error ? error.message : "The personal robot could not be created.");
+  }
+  const intervals = sourceTeam.monitoringIntervals ?? [15];
+  const now = new Date().toISOString();
+  const interval = Math.min(...intervals);
+  await persistence.goats.save({ ...member, schedule: { mode: "INTERVAL", intervalMinutes: interval }, updatedAt: now });
+  const slugBase = `${sourceTeam.name}-personal`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "ai-robot-personal";
+  const team: GoatTeam = await goatTeamStore.create({
+    id: `team_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    ownerUserId: user.uid, name: `${sourceTeam.name} · Personal`, memberGoatIds: [member.id],
+    instructions: sourceTeam.instructions ?? "Independent personal instance of a public AI robot.",
+    coordinationMode: "INDEPENDENT", robotKind: "AI_ROBOT", visibility: "PUBLIC",
+    publicSlug: `${slugBase}-${randomBytes(18).toString("hex")}`,
+    environment: "DEMO", marketDataProvider: "biquote", monitoringIntervals: intervals,
+    deployment: { provider: resolveGoatTradingProvider(source), asset, liveTrading: false, risk: sourceTeam.deployment?.risk ?? {} },
+    status: "DEPLOYED", deployedAt: now, createdAt: now, updatedAt: now,
+  });
+  await stampTeamInstructions(user.uid, [member.id], team.instructions ?? "");
+  try {
+    await setGoatStatusFor(user.uid, member.id, false, false);
+  } catch (error) {
+    await goatTeamStore.save({ ...team, status: "PARTIAL", updatedAt: new Date().toISOString() });
+    return fail(res, 503, "AI_SCHEDULER_UNAVAILABLE", error instanceof Error ? error.message : "The scheduler could not start the personal robot.");
+  }
+  return res.status(201).json({ team, shareUrl: `/team/${team.publicSlug}`, personalInstance: true, independentlyGenerated: true });
 }));
 
 /**
@@ -3966,15 +4040,15 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
        * produced by time window — otherwise every message in Team Chat would
        * show the newest review regardless of when it ran.
        */
-      persistence.theses.listByGoat(member!.id, 8),
+      persistence.theses.listByGoat(member!.id, 200),
       // A room shows a trade log, not a five-item preview: the Trades panel
       // needs history. Still bounded so a long-lived room cannot grow this
       // public, cached response without limit.
-      persistence.signals.listByGoat(member!.id, 20),
+      persistence.signals.listByGoat(member!.id, 200),
       // Only a submitted execution is a trade that reached a venue. Claimed and
       // failed rows are attempts, and counting them would overstate activity.
       goatWorkflowStore.listActivities(member!.id, 500),
-      goatWorkflowStore.listRuns(member!.id, 12),
+      goatWorkflowStore.listRuns(member!.id, 200),
     ]);
     const thesis = theses[0];
     return {
@@ -4029,14 +4103,14 @@ apiRouter.get("/team-rooms/:slug", optionalAuthMiddleware, handle(async (req, re
        * Chat: a message is not a rendered thesis but a run, so clicking it can
        * open that run's real activity log rather than inventing a transcript.
        */
-      runs: runs.slice(0, 8).map(run => summariseRoomRun(run, theses, signals, isOwner)),
+      runs: runs.map(run => summariseRoomRun(run, theses, signals, isOwner)).reverse(),
     };
   }));
   // Per-viewer `owner` means this response must never land in a shared cache.
   res.setHeader("Cache-Control", isOwner ? "private, no-store" : "public, max-age=5, stale-while-revalidate=10");
   res.json({
     team: {
-      id: team.id, slug: team.publicSlug, name: team.name, instructions: isOwner ? (team.instructions ?? "") : undefined,
+      id: team.id, slug: team.publicSlug, name: team.name, robotKind: team.robotKind ?? "COMMUNITY", instructions: isOwner ? (team.instructions ?? "") : undefined,
       monitoringIntervals: team.monitoringIntervals ?? [15], visibility: team.visibility ?? "PRIVATE", status: team.status,
       owner: isOwner,
       coordinationMode: team.coordinationMode,
@@ -4516,50 +4590,6 @@ apiRouter.get("/team-rooms/:slug/me", optionalAuthMiddleware, handle(async (req,
 }));
 
 apiRouter.use(authMiddleware);
-
-/**
- * NATURAL-LANGUAGE STRATEGY DRAFTING
- *
- * The model interprets the request and produces a DRAFT, not an executable
- * strategy. A draft may be incomplete, and the endpoint says so: it returns
- * the draft, the fields that still need a decision, the ambiguities, the
- * unsupported requests and the assumptions the model made. The builder opens
- * the same manual editor for both a hand written and a drafted strategy.
- *
- * The model never produces trading code. Its answer is parsed with a strict
- * schema, and only the declarative condition tree this repository evaluates
- * can ever be executed.
- */
-apiRouter.post('/robot-marketplace/ai-draft', handle(async (req, res) => {
-  const user = requireUser(req);
-  const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
-  const profile = await persistence.profiles.get(user.uid);
-  const freeModels = await reasoningGateway.listModels(user.uid, 'openrouter').then(catalogue => catalogue.models.filter(model => model.free)).catch(() => []);
-  const preferredModel = freeModels.find(model => model.id === profile?.aiModel)?.id ?? freeModels[0]?.id ?? null;
-  const outcome = await draftStrategy({
-    prompt,
-    hasProvider: () => reasoningGateway.hasKeyFor(user.uid, 'openrouter'),
-    pickModel: async () => preferredModel,
-    provider: async () => 'openrouter',
-    askModel: (request, model) => reasoningGateway.answerGoatQuestion(request, {
-      userId: user.uid, goatId: 'strategy-drafter', goatName: 'Strategy Drafter', goatGoal: 'Translate a trading request into a structured, editable strategy draft without inventing logic.', market: 'UNSELECTED', skills: [], activeThesis: null, dataSource: 'LIVE',
-    }, model),
-  });
-  if (outcome.status === 'invalid_prompt') return fail(res, 400, 'INVALID_STRATEGY_PROMPT', outcome.message);
-  if (outcome.status === 'provider_unavailable' || outcome.status === 'model_unavailable') {
-    const code = outcome.status === 'provider_unavailable' ? 'AI_NOT_CONFIGURED' : 'AI_MODEL_UNAVAILABLE';
-    res.status(503).json({ error: { code, message: outcome.message }, prompt: outcome.prompt });
-    return;
-  }
-  res.json({
-    draft: outcome.draft,
-    gaps: outcome.gaps,
-    warnings: outcome.warnings,
-    source: outcome.draft.source,
-    model: outcome.model,
-    provider: outcome.provider,
-  });
-}));
 
 /**
  * Wake every member of a team.
@@ -5314,253 +5344,6 @@ apiRouter.delete(
     res.json({ success: true, connected: false });
   }),
 );
-
-// ---- Robot broker connections ----------------------------------------
-
-/**
- * A ROBOT'S BROKER CONNECTION
- * ============================
- *
- * A robot owner may bind the robot to one of THEIR OWN broker accounts, so
- * the robot knows which venue it would trade on. Two rules hold here, and
- * both of them are the point of this route:
- *
- *   1. ONLY A REFERENCE IS STORED. The robot remembers the provider, the
- *      account id, a label and the environment. The OAuth token and the
- *      PropDAO API key stay in the encrypted vault and are never written to
- *      a robot record, never returned to a browser and never stored in a
- *      strategy definition.
- *
- *   2. CONNECTING DOES NOT ENABLE LIVE EXECUTION. The runtime in this
- *      build is PAPER only. The response says so explicitly, and the
- *      interface is built from that statement rather than from an
- *      assumption. Enabling live trading needs a supported broker adapter,
- *      risk validation and an intentional activation flow, none of which
- *      exist here yet.
- *
- * The account must come from the caller's OWN authorized list. The route
- * asks the provider again rather than trusting the id in the request, so a
- * caller cannot bind somebody else's account by guessing its id.
- */
-
-const robotBrokerStore = createRobotStore();
-const robotSecretOwner = (userId: string, robotId: string) => `${userId}:robot:${robotId}`;
-
-/** Resolves a robot the caller OWNS. A stranger's robot is reported as missing. */
-async function ownedRobotForBroker(idOrSlug: string, userId: string, res: Response): Promise<RobotRecord | null> {
-  const robot = await robotBrokerStore.get(idOrSlug);
-  if (!robot || robot.ownerUserId !== userId) {
-    fail(res, 404, "ROBOT_NOT_FOUND", "That trading robot does not exist.");
-    return null;
-  }
-  return robot;
-}
-
-interface BrokerAccountChoice {
-  accountId: string;
-  label: string;
-  environment: "demo" | "live" | "challenge" | "funded" | "unknown";
-  isLive: boolean;
-}
-
-apiRouter.get("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-
-  const cTraderAccounts: BrokerAccountChoice[] = [];
-  let cTraderError: string | null = null;
-  let cTraderConnected = false;
-  if (await credentialVault.hasCredential(user.uid, "ctrader")) {
-    cTraderConnected = true;
-    try {
-      const accounts = await (await cTraderClientForUser(user.uid)).listAccounts();
-      for (const account of accounts) {
-        cTraderAccounts.push({
-          accountId: account.ctidTraderAccountId,
-          label: account.brokerTitleShort || account.traderLogin || `Account ${account.ctidTraderAccountId}`,
-          environment: account.isLive ? "live" : "demo",
-          isLive: account.isLive,
-        });
-      }
-    } catch (error) {
-      cTraderError = error instanceof Error ? error.message : "The cTrader account list could not be read.";
-    }
-  }
-
-  const propDaoAccounts: BrokerAccountChoice[] = [];
-  let propDaoError: string | null = null;
-  let propDaoConnected = false;
-  const secretOwner = robotSecretOwner(user.uid, robot.id);
-  if (await credentialVault.hasCredential(secretOwner, "propdao")) {
-    try {
-      const verification = await propDaoFor(secretOwner).verifyConnection();
-      propDaoConnected = verification.connected === true;
-      if (propDaoConnected) {
-        for (const account of await propDaoFor(secretOwner).listAccounts()) {
-          const status = (account.status ?? "").toLowerCase();
-          const isChallenge = Boolean(account.challengeId) || status.includes("challenge") || status.includes("evaluation");
-          propDaoAccounts.push({
-            accountId: account.accountId,
-            label: account.challengeId ? `Challenge ${account.challengeId}` : `Account ${account.accountId}`,
-            environment: isChallenge ? "challenge" : "funded",
-            isLive: false,
-          });
-        }
-      } else {
-        propDaoError = verification.connected === false ? verification.message : null;
-      }
-    } catch (error) {
-      propDaoError = error instanceof Error ? error.message : "The PropDAO account list could not be read.";
-    }
-  }
-
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({
-    robot: { id: robot.id, slug: robot.slug, name: robot.name },
-    bound: robot.brokerAccount ?? null,
-    execution: {
-      mode: "PAPER",
-      liveTradingSupported: false,
-      message: "This build executes in paper mode only. Binding a broker records which account the robot is intended for; it does not enable live orders.",
-    },
-    cTrader: {
-      configured: Boolean(process.env.CTRADER_CLIENT_ID && process.env.CTRADER_SECRET && process.env.CTRADER_REDIRECT_URI),
-      connected: cTraderConnected,
-      accounts: cTraderAccounts,
-      error: cTraderError,
-    },
-    propDao: {
-      connected: propDaoConnected,
-      accounts: propDaoAccounts,
-      error: propDaoError,
-    },
-  });
-}));
-
-apiRouter.post('/robot-marketplace/:idOrSlug/broker/propdao-key', handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  const key = typeof req.body?.apiKey === 'string' ? req.body.apiKey.trim() : '';
-  if (!key || key.length > 1024) return fail(res, 400, 'INVALID_KEY', 'Enter a valid PropDAO API key.');
-  const secretOwner = robotSecretOwner(user.uid, robot.id);
-  await credentialVault.saveCredential(secretOwner, 'propdao', key);
-  const verification = await propDaoFor(secretOwner).verifyConnection();
-  if (!verification.connected) {
-    await credentialVault.saveCredential(secretOwner, 'propdao', null);
-    return fail(res, 400, 'PROPDAO_VERIFY_FAILED', 'message' in verification ? verification.message : 'PropDAO rejected the key.');
-  }
-  res.json({ connected: true });
-}));
-
-apiRouter.delete('/robot-marketplace/:idOrSlug/broker/propdao-key', handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  await credentialVault.saveCredential(robotSecretOwner(user.uid, robot.id), 'propdao', null);
-  if (robot.brokerAccount?.provider === 'propdao') await robotBrokerStore.setBrokerAccount(robot, undefined);
-  res.json({ connected: false });
-}));
-
-apiRouter.post("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-
-  const provider = typeof req.body?.provider === "string" ? req.body.provider : "";
-  const accountId = typeof req.body?.accountId === "string" ? req.body.accountId.trim() : "";
-  if (provider !== "ctrader" && provider !== "propdao") {
-    return fail(res, 400, "INVALID_BROKER", "Choose cTrader or PropDAO.");
-  }
-  if (!accountId || accountId.length > 128) {
-    return fail(res, 400, "INVALID_BROKER_ACCOUNT", "Choose an account from your own account list.");
-  }
-  const alreadyBound = (await robotBrokerStore.listForOwner(user.uid)).find(other => other.id !== robot.id && other.brokerAccount?.provider === provider && other.brokerAccount.accountId === accountId);
-  if (alreadyBound) return fail(res, 409, 'ACCOUNT_IN_USE', `That account is already bound to ${alreadyBound.name}. Choose a different account for this robot.`);
-
-  /**
-   * The account is looked up in the CALLER'S OWN list, never trusted from
-   * the request. A caller cannot bind an account they are not authorized for
-   * by guessing its id.
-   */
-  let choice: BrokerAccountChoice | null = null;
-  if (provider === "ctrader") {
-    if (!(await credentialVault.hasCredential(user.uid, "ctrader"))) {
-      return fail(res, 409, "CTRADER_NOT_CONNECTED", "Connect your cTrader account first.");
-    }
-    let accounts: CTraderAccount[];
-    try {
-      accounts = await (await cTraderClientForUser(user.uid)).listAccounts();
-    } catch (error) {
-      return fail(res, 502, "CTRADER_ACCOUNTS_UNAVAILABLE", error instanceof Error ? error.message : "The cTrader account list could not be read.");
-    }
-    const found = accounts.find((account) => account.ctidTraderAccountId === accountId);
-    if (!found) return fail(res, 404, "BROKER_ACCOUNT_NOT_FOUND", "That account is not in your own cTrader account list.");
-    choice = {
-      accountId: found.ctidTraderAccountId,
-      label: found.brokerTitleShort || found.traderLogin || `Account ${found.ctidTraderAccountId}`,
-      environment: found.isLive ? "live" : "demo",
-      isLive: found.isLive,
-    };
-  } else {
-    const secretOwner = robotSecretOwner(user.uid, robot.id);
-    if (!(await credentialVault.hasCredential(secretOwner, "propdao"))) {
-      return fail(res, 409, "PROPDAO_NOT_CONNECTED", "Save your PropDAO API key first.");
-    }
-    const providerClient = propDaoFor(secretOwner);
-    let accounts: Awaited<ReturnType<typeof providerClient.listAccounts>>;
-    try {
-      accounts = await providerClient.listAccounts();
-    } catch (error) {
-      return fail(res, 502, "PROPDAO_ACCOUNTS_UNAVAILABLE", error instanceof Error ? error.message : "The PropDAO account list could not be read.");
-    }
-    const found = accounts.find((account) => account.accountId === accountId);
-    if (!found) return fail(res, 404, "BROKER_ACCOUNT_NOT_FOUND", "That account is not in your own PropDAO account list.");
-    const status = (found.status ?? "").toLowerCase();
-    const isChallenge = Boolean(found.challengeId) || status.includes("challenge") || status.includes("evaluation");
-    choice = {
-      accountId: found.accountId,
-      label: found.challengeId ? `Challenge ${found.challengeId}` : `Account ${found.accountId}`,
-      environment: isChallenge ? "challenge" : "funded",
-      isLive: false,
-    };
-  }
-
-  await robotBrokerStore.setBrokerAccount(robot, {
-    provider,
-    accountId: choice.accountId,
-    label: choice.label,
-    environment: choice.environment,
-    updatedAt: new Date().toISOString(),
-  });
-
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({
-    ok: true,
-    bound: {
-      provider,
-      accountId: choice.accountId,
-      label: choice.label,
-      environment: choice.environment,
-      updatedAt: new Date().toISOString(),
-    },
-    execution: {
-      mode: "PAPER",
-      liveTradingSupported: false,
-      message: "The account is recorded. This robot still runs in paper mode: no live orders are possible.",
-    },
-  });
-}));
-
-apiRouter.delete("/robot-marketplace/:idOrSlug/broker", handle(async (req, res) => {
-  const user = requireUser(req);
-  const robot = await ownedRobotForBroker(req.params.idOrSlug, user.uid, res);
-  if (!robot) return;
-  await robotBrokerStore.setBrokerAccount(robot, undefined);
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ ok: true, bound: null });
-}));
 
 // ---- Settings / keys (user-scoped) ----------------------------------
 
@@ -7402,7 +7185,16 @@ function normaliseTeamMonitoringIntervals(value: unknown): number[] {
 
 apiRouter.get("/goat-teams", handle(async (req, res) => {
   const user = requireUser(req);
-  const teams = await goatTeamStore.listForUser(user.uid);
+  let teams = await goatTeamStore.listForUser(user.uid);
+  // AI robots created by the earlier builder were mistakenly private. Their
+  // public share link and scheduled GOAT already exist; mark only that
+  // recognizable builder-created shape public so it can be discovered.
+  teams = await Promise.all(teams.map(async team => {
+    if (team.visibility !== "PRIVATE" || team.memberGoatIds.length !== 1) return team;
+    const member = await persistence.goats.getForUser(team.memberGoatIds[0], user.uid);
+    if (!member?.model || !team.instructions?.startsWith("This is an AI trading analyst robot.")) return team;
+    return goatTeamStore.save({ ...team, visibility: "PUBLIC", robotKind: "AI_ROBOT", updatedAt: new Date().toISOString() });
+  }));
   const expanded = await Promise.all(teams.map(async team => ({
     ...team,
     members: (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, user.uid)))).filter(Boolean),
@@ -7426,7 +7218,8 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
   const coordinationMode: GoatTeamCoordinationMode =
     rawMode === "CONSENSUS" || rawMode === "LEAD_REVIEW" ? rawMode : "INDEPENDENT";
   const leadGoatId = typeof req.body?.leadGoatId === "string" ? req.body.leadGoatId : undefined;
-  const visibility: "PUBLIC" | "PRIVATE" = req.body?.visibility === "PUBLIC" ? "PUBLIC" : "PRIVATE";
+  const robotKind = req.body?.robotKind === "AI_ROBOT" ? "AI_ROBOT" as const : "COMMUNITY" as const;
+  const visibility: "PUBLIC" | "PRIVATE" = robotKind === "AI_ROBOT" || req.body?.visibility === "PUBLIC" ? "PUBLIC" : "PRIVATE";
   const shouldDeploy = req.body?.deploy === true;
   if (!name || name.length > 80) return fail(res, 400, "INVALID_TEAM_NAME", "Team name must be between 1 and 80 characters.");
   if (instructions.length > 4000) return fail(res, 400, "INVALID_TEAM_INSTRUCTIONS", "Team instructions must be 4000 characters or fewer.");
@@ -7503,6 +7296,7 @@ apiRouter.post("/goat-teams", handle(async (req, res) => {
     memberGoatIds,
     ...(instructions ? { instructions } : {}),
     coordinationMode,
+    robotKind,
     visibility,
     publicSlug: shareSlug,
     environment: "DEMO",

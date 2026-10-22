@@ -390,6 +390,8 @@ function ChatMessageBody({ content }: { content: string }) {
 export interface RoomChatPanelProps {
   /** The messages the room holds right now, oldest first. */
   messages: RoomChatMessage[];
+  /** Public AI analysis runs, oldest first. */
+  analysisRuns?: RoomRun[];
   /**
    * Posts a message.
    *
@@ -440,7 +442,7 @@ export function RoomChatPanel(props: RoomChatPanelProps) {
 }
 
 function RoomChatConversation({
-  messages, onSend, sending, canPost, onRequestSignIn, viewerId, participantCount, signedIn, joinError,
+  messages, analysisRuns = [], onSend, sending, canPost, onRequestSignIn, viewerId, participantCount, signedIn, joinError,
   roomId = null, hasMore = false, initialUnreadCount = 0, lastReadMessageId = null,
   onUnreadCountChange, onLoadOlder, onMarkRead,
 }: RoomChatPanelProps) {
@@ -869,7 +871,7 @@ function RoomChatConversation({
         )}
         {olderError && <p className="tr-panel-error" role="alert">{olderError}</p>}
 
-        {merged.length === 0 ? (
+        {merged.length === 0 && analysisRuns.length === 0 ? (
           <PanelEmpty
             title="No messages yet"
             hint="Start the conversation — share an idea, ask a question, or post what you are watching."
@@ -883,6 +885,21 @@ function RoomChatConversation({
             aria-relevant="additions"
             aria-label="Room messages"
           >
+            {analysisRuns.map(run => <article key={`analysis-${run.workflowId}`} className="tr-chat-row border border-accent/20 bg-accent/5">
+              <div className="tr-chat-row-head">
+                <span className="tr-chat-row-author">{run.agentName} · AI analysis</span>
+                <span className="tr-chat-row-role">{run.outcome.replace(/_/g, ' ')}</span>
+                <time className="tr-chat-row-time" dateTime={run.at} title={new Date(run.at).toLocaleString()}>{localMessageTime(run.at)}</time>
+              </div>
+              <strong className="block text-sm text-fg">{run.headline}</strong>
+              {run.bias && <p className="mt-1 text-[11px] text-fg-muted">Bias: {run.bias}{run.confidence != null ? ` · ${Math.round(run.confidence * 100)}% confidence` : ''}</p>}
+              <ChatMessageBody content={run.summary || 'No analysis summary was recorded for this run.'} />
+              {run.levels && <p className="mt-2 text-[10px] text-fg-subtle">{[
+                run.levels.entry != null ? `Entry ${run.levels.entry}` : '',
+                run.levels.stopLoss != null ? `Stop ${run.levels.stopLoss}` : '',
+                run.levels.takeProfit != null ? `Target ${run.levels.takeProfit}` : '',
+              ].filter(Boolean).join(' · ')}</p>}
+            </article>)}
             {merged.map(message => {
               const own = isOwnMessage(message);
               return (

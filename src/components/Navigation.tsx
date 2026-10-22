@@ -18,11 +18,10 @@
  * accent from the muted foreground.
  */
 
-import { Bot, ReceiptText, Settings, type LucideIcon } from 'lucide-react';
+import { Bot, Settings, type LucideIcon } from 'lucide-react';
 
 export type TabId =
   | 'bots'
-  | 'trades'
   | 'settings';
 
 export interface NavigationItem {
@@ -34,8 +33,7 @@ export interface NavigationItem {
 }
 
 export const NAVIGATION_ITEMS: NavigationItem[] = [
-  { id: 'bots', label: 'Bots', icon: Bot },
-  { id: 'trades', label: 'Trades', icon: ReceiptText },
+  { id: 'bots', label: 'AI Robots', shortLabel: 'AI Robots', icon: Bot },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -102,7 +100,7 @@ export function Navigation({ activeTab, onSelect }: NavigationProps) {
       className="premium-header fixed inset-x-0 bottom-0 z-40 border-t border-line md:hidden"
       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
     >
-      <ul className="mx-auto grid max-w-lg grid-cols-3">
+      <ul className="mx-auto grid max-w-lg grid-cols-2">
         {NAVIGATION_ITEMS.map((item) => {
           const Icon = item.icon;
           const active = item.id === activeTab;
