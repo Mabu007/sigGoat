@@ -49,9 +49,13 @@ export function AiRobotBuilder({ headers, onClose, onCreated }: {
       }),
     ]);
         if (cancelled) return;
-        setModels(availableModels);
+        // Robot analysis is configured to use OpenRouter's explicit free tier.
+        // A zero-price catalogue entry without the :free tier can still return
+        // 402 for accounts with no credits, so only offer documented free IDs.
+        const freeStructuredModels = availableModels.filter(item => item.id.endsWith(':free') && item.supportsStructuredOutputs);
+        setModels(freeStructuredModels);
         setAssets(availableAssets);
-        setModel(current => current || availableModels.find(item => item.supportsStructuredOutputs)?.id || availableModels[0]?.id || '');
+        setModel(current => freeStructuredModels.some(item => item.id === current) ? current : freeStructuredModels[0]?.id || '');
         setAsset(current => availableAssets.some(item => item.symbol === current) ? current : availableAssets[0]?.symbol || '');
       } catch (cause) {
         if (!cancelled) setError(cause instanceof Error ? cause.message : 'Could not load AI robot settings.');
@@ -117,7 +121,7 @@ export function AiRobotBuilder({ headers, onClose, onCreated }: {
         <label className="block text-xs text-white/65">Robot name<input required minLength={2} maxLength={80} value={name} onChange={event => setName(event.target.value)} className="input mt-1 w-full" placeholder="e.g. Gold Structure Analyst" /></label>
         <label className="block text-xs text-white/65">Personality and analysis instructions<textarea required minLength={20} maxLength={4000} rows={7} value={prompt} onChange={event => setPrompt(event.target.value)} className="input mt-1 w-full" /><span className="mt-1 block text-[10px] text-white/35">This shapes the robot's analysis. Platform risk and tool restrictions still apply.</span></label>
         <div className="grid gap-4 sm:grid-cols-3">
-          <label className="block text-xs text-white/65">AI model<select required value={model} onChange={event => setModel(event.target.value)} className="input mt-1 w-full" disabled={loading}><option value="">Select a model</option>{models.map(item=><option key={item.id} value={item.id} disabled={!item.supportsStructuredOutputs}>{item.name}{item.free?' · free':''}{item.supportsStructuredOutputs?' · structured JSON':' · incompatible'}</option>)}</select><span className="mt-1 block text-[10px] text-white/35">The runtime requires structured JSON decisions. Its market tools are server-controlled context, not open-ended model tool calls.</span></label>
+          <label className="block text-xs text-white/65">Free AI model<select required value={model} onChange={event => setModel(event.target.value)} className="input mt-1 w-full" disabled={loading || models.length === 0}><option value="">{loading ? 'Loading free models…' : 'No free compatible models available'}</option>{models.map(item=><option key={item.id} value={item.id}>{item.name} · OpenRouter free · structured JSON</option>)}</select><span className="mt-1 block text-[10px] text-white/35">Uses a free OpenRouter model with the server’s OPENROUTER_API_KEY when no personal key is saved. The runtime requires structured JSON decisions.</span></label>
           <label className="block text-xs text-white/65">Trading provider<select value={provider} onChange={event=>{setProvider(event.target.value as Provider);setAsset('')}} className="input mt-1 w-full"><option value="hyperliquid">PropDAO / Hyperliquid</option><option value="ctrader">cTrader</option></select></label>
           <label className="block text-xs text-white/65">AI analysis interval<select value={interval} onChange={event=>setInterval(Number(event.target.value))} className="input mt-1 w-full"><option value={5}>5 minutes</option><option value={15}>15 minutes · default</option><option value={30}>30 minutes</option><option value={60}>1 hour</option></select></label>
         </div>
