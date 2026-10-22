@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Clock, PanelRightClose, PanelRightOpen, Settings, X, Save, Trash2, Users, Globe, LockKeyhole, ChevronDown, Radio, Mic, MicOff, Square, Play, SlidersHorizontal, Video, Wifi } from 'lucide-react';
+import { ArrowLeft, Clock, PanelRightClose, PanelRightOpen, Settings, X, Save, Trash2, Users, ChevronDown, Radio, Mic, MicOff, Square, Play, SlidersHorizontal, Video, Wifi } from 'lucide-react';
 import { RoomChartPanel } from './room-chart/RoomChartPanel';
 import { RoomVoiceControlsView } from './RoomVoiceControls';
 import RecordingControls from './RecordingControls';
@@ -821,7 +821,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
         body: JSON.stringify({
           name: settingsName.trim(),
           description: settingsDescription,
-          visibility: settingsVisibility,
+          ...(!isAiRobot ? { visibility: settingsVisibility } : {}),
           category: settingsCategory,
           voiceEnabled: settingsVoiceEnabled,
           allowDrawings: settingsAllowDrawings,
@@ -834,7 +834,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
       await loadRoomDetail();
     } catch (err) { setSettingsError(err instanceof Error ? err.message : 'Could not save the room settings.'); }
     finally { setSettingsSaving(false); }
-  }, [data, canManageRoom, settingsSaving, settingsName, settingsDescription, settingsVisibility, settingsCategory, settingsVoiceEnabled, settingsAllowDrawings, settingsInterval, getApiAuthHeaders, load, loadRoomDetail]);
+  }, [data, canManageRoom, isAiRobot, settingsSaving, settingsName, settingsDescription, settingsVisibility, settingsCategory, settingsVoiceEnabled, settingsAllowDrawings, settingsInterval, getApiAuthHeaders, load, loadRoomDetail]);
 
   /**
    * THE INSTRUMENT ON THE ROOM'S CHART.
@@ -1510,7 +1510,7 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
     )}
     {settingsOpen && <div className="tr-room-settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !settingsSaving) setSettingsOpen(false); }}>
       <section className="tr-room-settings" role="dialog" aria-modal="true" aria-labelledby="tr-room-settings-title">
-        <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">{isAiRobot ? 'ROBOT CONTROL' : 'ROOM CONTROL'}</p><h2 id="tr-room-settings-title">{isAiRobot ? 'Robot settings' : 'Settings'}</h2><p>{isAiRobot ? 'Manage the public robot, its cover, schedule and market.' : 'Your room, its description, who can see it and what it looks at.'}</p></div><button type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
+        <header className="tr-room-settings-head"><div><p className="tr-room-settings-eyebrow">{isAiRobot ? 'ROBOT CONTROL' : 'ROOM CONTROL'}</p><h2 id="tr-room-settings-title">{isAiRobot ? 'Robot settings' : 'Settings'}</h2><p>{isAiRobot ? 'Manage the robot, its cover, schedule and market.' : 'Your room, its description, who can see it and what it looks at.'}</p></div><button type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
         <div className="tr-room-settings-body">
           {!canManageRoom ? <>
             <div className="tr-room-preference-row"><div><strong>Appearance</strong><p>Choose how TradingVibes looks on this device.</p></div><button type="button" className="tr-room-preference-toggle" onClick={toggleTheme}>{theme === 'dark' ? '☀' : '☾'}{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button></div>
@@ -1542,13 +1542,14 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
                 </label>)}
               </div>
             </div>
-            <div>
+            {!isAiRobot && <div>
               <p className="tr-room-settings-label">Who can see this room</p>
               <div className="tr-room-intervals">
-                <label><input type="radio" name="room-visibility" checked={settingsVisibility === 'PUBLIC'} onChange={() => setSettingsVisibility('PUBLIC')} /><span><Globe size={12} /> Listed in the directory</span></label>
-                <label><input type="radio" name="room-visibility" checked={settingsVisibility === 'PRIVATE'} onChange={() => setSettingsVisibility('PRIVATE')} /><span><LockKeyhole size={12} /> Invite only</span></label>
+                <label><input type="radio" name="room-visibility" checked={settingsVisibility === 'PUBLIC'} onChange={() => setSettingsVisibility('PUBLIC')} /><span>Listed in the directory</span></label>
+                <label><input type="radio" name="room-visibility" checked={settingsVisibility === 'PRIVATE'} onChange={() => setSettingsVisibility('PRIVATE')} /><span>Invite only</span></label>
               </div>
-            </div>
+            </div>}
+            {isAiRobot && <div className="tr-room-settings-hint">Every AI robot appears in the AI Robots directory. Stopping a robot pauses its analysis; it stays visible.</div>}
             <div>
               <p className="tr-room-settings-label">{isAiRobot ? 'Robot features' : 'Room features'}</p>
               <div className="tr-room-intervals">
@@ -1574,13 +1575,13 @@ export function PublicTeamView({ slug, backLabel = 'Bots', onBack = () => { wind
               </div>
             </div>}
             <div>
-              <p className="tr-room-settings-label">{isAiRobot ? 'Robot visibility' : 'In the directory'}</p>
+              <p className="tr-room-settings-label">{isAiRobot ? 'Robot controls' : 'Room status'}</p>
               <div className="tr-room-creator-actions">
                 <button type="button" className={'sg-room-lifecycle-button ' + (data.team.status === 'PAUSED' ? 'is-play' : 'is-pause')} disabled={settingsSaving || robotStatusSaving} onClick={() => void toggleRoomPublished()}>
                   {data.team.status === 'PAUSED' ? (isAiRobot ? 'Play robot' : 'Publish room') : (isAiRobot ? 'Stop robot' : 'Pause room')}
                 </button>
               </div>
-              <p className="tr-room-settings-hint">A stopped {isAiRobot ? 'robot' : 'room'} keeps its data but is hidden from the directory. A stopped robot has no due analysis or tracker work.</p>
+              <p className="tr-room-settings-hint">{isAiRobot ? 'A stopped robot stays in the directory, but its scheduled analysis and tracker work are paused.' : 'Pausing a room keeps its data and conversation.'}</p>
             </div>
             <div className="tr-room-danger">
               <p className="tr-room-settings-label">Delete this {isAiRobot ? 'robot' : 'room'}</p>

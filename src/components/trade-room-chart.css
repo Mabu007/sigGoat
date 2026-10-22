@@ -2303,3 +2303,54 @@
   background: var(--color-raised);
   color: var(--color-fg-subtle);
 }
+
+/* AI robot chat: readable editorial text, calm surfaces, and clear speaker hierarchy. */
+.tr-robot-chat,
+.tr-robot-chat * { font-family: var(--tr-sans); }
+.tr-robot-chat-scroll { padding: 1px 3px 8px 1px; scrollbar-width: thin; }
+.tr-robot-chat-intro {
+  margin: 2px 0 18px;
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, var(--tr-line));
+  border-radius: 14px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 8%, var(--color-panel-muted)), var(--color-panel-muted));
+  color: var(--color-fg-muted);
+  font-size: 12px;
+  line-height: 1.75;
+  letter-spacing: .005em;
+}
+.tr-robot-chat-message {
+  max-width: 94%;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--tr-line);
+  border-radius: 15px;
+  background: var(--color-panel-muted);
+  box-shadow: 0 5px 18px rgb(0 0 0 / 4%);
+}
+.tr-robot-chat-message.is-user {
+  margin-left: auto;
+  border-color: color-mix(in srgb, var(--color-accent) 22%, var(--tr-line));
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-panel-muted));
+}
+.tr-robot-chat-role {
+  margin: 0 0 6px;
+  color: var(--color-accent-text);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.tr-robot-chat-copy {
+  margin: 0;
+  color: var(--color-fg);
+  font-size: 13px;
+  font-weight: 430;
+  line-height: 1.75;
+  letter-spacing: .002em;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.tr-robot-chat-time { display: block; margin-top: 8px; color: var(--color-fg-subtle); font-size: 10px; line-height: 1.4; }
+.tr-robot-chat-error { margin: 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--color-negative) 35%, transparent); border-radius: 12px; color: var(--color-negative); font-size: 12px; line-height: 1.6; }
+.tr-robot-chat-composer { padding-top: 10px; border-top: 1px solid var(--tr-line); }
+.tr-robot-chat-composer textarea { min-height: 48px; border-radius: 13px; font: 450 13px/1.55 var(--tr-sans); }

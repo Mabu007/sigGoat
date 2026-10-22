@@ -708,8 +708,11 @@ roomsRouter.patch("/rooms/:roomId", authMiddleware, handle(async (req, res) => {
     if (body.visibility !== "PUBLIC" && body.visibility !== "PRIVATE") {
       return fail(res, 400, "INVALID_VISIBILITY", "Visibility must be PUBLIC or PRIVATE.");
     }
-    updates.visibility = body.visibility;
+    // AI robots are discoverable by everyone; community rooms keep their
+    // existing public/invite-only setting.
+    updates.visibility = team.robotKind === "AI_ROBOT" ? "PUBLIC" : body.visibility;
   }
+  if (team.robotKind === "AI_ROBOT") updates.visibility = "PUBLIC";
 
   if (body.category !== undefined) {
     if (!isRoomCategory(body.category)) {

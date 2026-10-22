@@ -264,15 +264,25 @@ async function getPublishedRobotMembership(slug: string, userId: string): Promis
   const id = publishedRobotMembershipId(slug, userId);
   const admin = getFirebaseAdmin();
   if (admin) {
-    const snap = await admin.firestore.collection("publishedRobotUsers").doc(id).get();
-    return snap.exists ? snap.data() as PublishedRobotMembership : null;
+    try {
+      const snap = await admin.firestore.collection("publishedRobotUsers").doc(id).get();
+      return snap.exists ? snap.data() as PublishedRobotMembership : localPublishedRobotMemberships.get(id) ?? null;
+    } catch (error) {
+      console.warn("[robot-chat] Durable chat limit lookup unavailable; using process-local throttle:", error);
+    }
   }
   return localPublishedRobotMemberships.get(id) ?? null;
 }
 async function savePublishedRobotMembership(membership: PublishedRobotMembership): Promise<void> {
   localPublishedRobotMemberships.set(membership.id, membership);
   const admin = getFirebaseAdmin();
-  if (admin) await admin.firestore.collection("publishedRobotUsers").doc(membership.id).set(membership, { merge: true });
+  if (admin) {
+    try {
+      await admin.firestore.collection("publishedRobotUsers").doc(membership.id).set(membership, { merge: true });
+    } catch (error) {
+      console.warn("[robot-chat] Durable chat limit write unavailable; keeping a process-local throttle:", error);
+    }
+  }
 }
 
 
@@ -997,11 +1007,15 @@ async function setGoatStatusFor(
   runtime.updateConfig(updated, await allSkillsFor(userId));
   if (paused) runtime.pause();
   else runtime.play();
-  if (!paused && goat.deploymentState !== 'DEPLOYED') {
+  if (!paused) {
     keepBackgroundTaskAlive(
-      runtime.wake('Initial market review on deployment', 'MANUAL_REEVALUATE', updated.markets[0])
-        .then((reviewedState) => notifyGoatMarketReview(updated, reviewedState, 'Initial deployment review'))
-        .catch((error) => console.error(`[api] first review for ${updated.id} failed:`, error)),
+      runtime.wake(
+        deployingDraft ? 'Initial market review on deployment' : 'Fresh market review after Play',
+        'MANUAL_REEVALUATE',
+        updated.markets[0],
+      )
+        .then((reviewedState) => notifyGoatMarketReview(updated, reviewedState, deployingDraft ? 'Initial deployment review' : 'Fresh market review'))
+        .catch((error) => console.error(`[api] immediate review for ${updated.id} failed:`, error)),
     );
   }
 
@@ -3844,25 +3858,22 @@ apiRouter.get("/robots/:slug/market", handle(async (req, res) => {
   }
 }));
 
-/** Public discovery feed for deployed PUBLIC teams only. */
+/** Public discovery feed for every AI robot, regardless of its former visibility setting. */
 apiRouter.get("/goat-teams/public", optionalAuthMiddleware, handle(async (req, res) => {
-  if (req.user?.uid) {
-    const ownedTeams = await goatTeamStore.listForUser(req.user.uid);
-    for (const team of ownedTeams) {
-      if (team.visibility !== "PRIVATE" || team.memberGoatIds.length !== 1) continue;
-      const member = await persistence.goats.getForUser(team.memberGoatIds[0], req.user.uid);
-      if (member?.model && team.instructions?.startsWith("This is an AI trading analyst robot.")) {
-        await goatTeamStore.save({ ...team, visibility: "PUBLIC", robotKind: "AI_ROBOT", updatedAt: new Date().toISOString() });
-      }
-    }
-  }
-  const teams = (await goatTeamStore.listPublic()).filter(team => team.status === "DEPLOYED");
+  const teams = await goatTeamStore.listAll();
   const rooms = (await Promise.all(teams.map(async team => {
     const members = (await Promise.all(team.memberGoatIds.map(id => persistence.goats.getForUser(id, team.ownerUserId)))).filter(Boolean);
     const legacyAiRobot = team.memberGoatIds.length === 1 && Boolean(members[0]?.model) && Boolean(team.instructions?.startsWith("This is an AI trading analyst robot."));
     const robotKind = team.robotKind === "AI_ROBOT" || legacyAiRobot ? "AI_ROBOT" : "COMMUNITY";
     if (robotKind !== "AI_ROBOT") return null;
-    if (legacyAiRobot && team.robotKind !== "AI_ROBOT") await goatTeamStore.save({ ...team, robotKind: "AI_ROBOT", updatedAt: new Date().toISOString() });
+    // Formerly private AI robots are now discoverable by everyone. Keep the
+    // stored slug stable; only normalize visibility and legacy robot metadata.
+    const slugBase = team.name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "ai-robot";
+    const slugSuffix = team.id.replace(/[^a-zA-Z0-9]/g, "").slice(-7).toLowerCase();
+    const publicSlug = team.publicSlug || `${slugBase}-${slugSuffix}`;
+    if (team.visibility !== "PUBLIC" || team.robotKind !== "AI_ROBOT" || !team.publicSlug) {
+      await goatTeamStore.save({ ...team, publicSlug, visibility: "PUBLIC", robotKind: "AI_ROBOT", updatedAt: new Date().toISOString() });
+    }
     const theses = await Promise.all(team.memberGoatIds.map(id => persistence.theses.listByGoat(id, 1)));
     const latest = theses.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     const cover = await roomMediaStore.getCover(team.id).catch(() => null);
@@ -3878,7 +3889,7 @@ apiRouter.get("/goat-teams/public", optionalAuthMiddleware, handle(async (req, r
      */
     const creator = await persistence.profiles.get(team.ownerUserId).catch(() => null);
     return {
-      id: team.id, slug: team.publicSlug, name: team.name, robotKind,
+      id: team.id, slug: publicSlug, name: team.name, robotKind,
       coverUrl: toMediaReference(cover, "room-cover")?.url ?? null,
       description: described ? described.slice(0, 220) : "A trading room for sharing market analysis.",
       environment: team.environment ?? (team.deployment?.provider === "hyperliquid" || team.deployment?.liveTrading === true ? "LIVE" : "DEMO"),
@@ -3901,8 +3912,8 @@ apiRouter.get("/goat-teams/public", optionalAuthMiddleware, handle(async (req, r
 apiRouter.post("/team-rooms/:slug/copy", handle(async (req, res) => {
   const user = requireUser(req);
   const sourceTeam = await goatTeamStore.getPublicBySlug(String(req.params.slug || ""));
-  if (!sourceTeam || sourceTeam.visibility !== "PUBLIC" || sourceTeam.status !== "DEPLOYED" || sourceTeam.robotKind !== "AI_ROBOT") {
-    return fail(res, 404, "AI_ROBOT_NOT_FOUND", "That public AI robot cannot be copied.");
+  if (!sourceTeam || sourceTeam.status !== "DEPLOYED" || sourceTeam.robotKind !== "AI_ROBOT") {
+    return fail(res, 404, "AI_ROBOT_NOT_FOUND", "That AI robot cannot be copied.");
   }
   if (sourceTeam.memberGoatIds.length !== 1) return fail(res, 409, "AI_ROBOT_SHAPE_UNSUPPORTED", "This robot cannot yet create a personal instance.");
   const source = await persistence.goats.getForUser(sourceTeam.memberGoatIds[0], sourceTeam.ownerUserId);
@@ -4520,7 +4531,7 @@ apiRouter.get("/team-rooms/:slug/news", handle(async (req, res) => {
 }));
 
 /**
- * A private, read-only conversation with a public AI robot. It uses the
+ * A member-only, read-only conversation with an AI robot. It uses the
  * robot creator's configured model and current analytical context, plus only
  * the requesting viewer's own account connection status. It never wakes,
  * edits, or schedules the robot.
@@ -4532,8 +4543,8 @@ apiRouter.post("/team-rooms/:slug/robot-chat", handle(async (req, res) => {
   if (!question) return fail(res, 400, "INVALID_QUESTION", "Enter a message for this robot.");
   if (question.length > 2000) return fail(res, 400, "INVALID_QUESTION", "Messages must be 2,000 characters or fewer.");
   const team = await goatTeamStore.getPublicBySlug(slug);
-  if (!team || team.status !== "DEPLOYED" || team.robotKind !== "AI_ROBOT" || team.memberGoatIds.length !== 1) {
-    return fail(res, 404, "AI_ROBOT_NOT_FOUND", "This public AI robot is not available.");
+  if (!team || team.robotKind !== "AI_ROBOT" || team.memberGoatIds.length !== 1) {
+    return fail(res, 404, "AI_ROBOT_NOT_FOUND", "This AI robot is not available.");
   }
   const robot = await persistence.goats.getForUser(team.memberGoatIds[0], team.ownerUserId);
   if (!robot?.model) return fail(res, 503, "AI_ROBOT_UNAVAILABLE", "This robot's AI configuration is unavailable.");
@@ -4559,26 +4570,31 @@ apiRouter.post("/team-rooms/:slug/robot-chat", handle(async (req, res) => {
     chatCountInWindow: count + 1,
   });
 
-  const marketProvider = await marketDataProviderForGoat(robot);
-  const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider }, robot.id, team.ownerUserId);
-  const [theses, news, propDao, cTrader] = await Promise.all([
-    persistence.theses.listByGoat(robot.id, 1).catch(() => []),
-    newsService.getNews(context.market).catch(() => null),
-    credentialVault.getCredentialStatus(user.uid, "propdao").catch(() => ({ configured: false })),
-    credentialVault.getCredentialStatus(user.uid, "ctrader").catch(() => ({ configured: false })),
-  ]);
-  context.activeThesis = theses[0] ?? null;
-  context.news = news?.headlines ?? [];
-  context.historyContext = {
-    robotStatus: team.status,
-    analysisIntervalMinutes: Math.min(...(team.monitoringIntervals ?? [15])),
-    robotLatestAnalysisAt: theses[0]?.updatedAt ?? null,
-    viewerAccountConnections: { propDaoConnected: propDao.configured, cTraderConnected: cTrader.configured },
-    responseRules: "This is an informational chat only. Never create or alter trades, signal decisions, schedules, or robot settings. Account connection booleans belong to the requesting viewer only; never imply access to account balances, positions, or credentials.",
-  };
-  const answer = await reasoningGateway.answerGoatQuestion(question, context, model || robot.model, robot.aiProvider);
-  res.setHeader("Cache-Control", "private, no-store");
-  res.json({ answer });
+  try {
+    const marketProvider = await marketDataProviderForGoat(robot);
+    const { context, model } = await buildGoatContext({ goats: persistence.goats, skills: persistence.skills, marketProvider }, robot.id, team.ownerUserId);
+    const [theses, news, propDao, cTrader] = await Promise.all([
+      persistence.theses.listByGoat(robot.id, 1).catch(() => []),
+      newsService.getNews(context.market).catch(() => null),
+      credentialVault.getCredentialStatus(user.uid, "propdao").catch(() => ({ configured: false })),
+      credentialVault.getCredentialStatus(user.uid, "ctrader").catch(() => ({ configured: false })),
+    ]);
+    context.activeThesis = theses[0] ?? null;
+    context.news = news?.headlines ?? [];
+    context.historyContext = {
+      robotStatus: team.status,
+      analysisIntervalMinutes: Math.min(...(team.monitoringIntervals ?? [15])),
+      robotLatestAnalysisAt: theses[0]?.updatedAt ?? null,
+      viewerAccountConnections: { propDaoConnected: propDao.configured, cTraderConnected: cTrader.configured },
+      responseRules: "This is an informational chat only. Never create or alter trades, signal decisions, schedules, or robot settings. Account connection booleans belong to the requesting viewer only; never imply access to account balances, positions, or credentials.",
+    };
+    const answer = await reasoningGateway.answerGoatQuestion(question, context, model || robot.model, robot.aiProvider);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ answer });
+  } catch (error) {
+    console.error(`[robot-chat] Failed to answer for robot ${robot.id}:`, error);
+    return fail(res, 502, "ROBOT_CHAT_UNAVAILABLE", "The robot could not reach its market or AI provider. Please try again shortly.");
+  }
 }));
 
 /**
